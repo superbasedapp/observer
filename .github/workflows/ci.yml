@@ -34,7 +34,7 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: npm ci
         run: |
@@ -179,7 +179,7 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: package-lock.json
       - name: npm ci
         run: |
           cd web
@@ -229,7 +229,7 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: package-lock.json
       - name: npm ci
         run: |
           cd web
