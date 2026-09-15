@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -42,6 +43,73 @@ const (
 func PushSigningMessage(unixTimestamp int64, wireBody []byte) []byte {
 	sum := sha256.Sum256(wireBody)
 	return []byte(strconv.FormatInt(unixTimestamp, 10) + "\n" + hex.EncodeToString(sum[:]))
+}
+
+// Org-served Cloud Intelligence result-rail signing
+// (docs/plans/org-served-cloud-intelligence-plan-2026-09-10.md §2.5; adversarial
+// finding 1). The intel RESULT rail reuses the judge-relay AUTH SHAPE (enrolment
+// bearer + per-request Ed25519 proof + skew + audience) but MUST NOT reuse its
+// signing MESSAGE: JudgeRelay signs PushSigningMessage(ts, body), so a captured
+// judge-relay proof inside the skew window could otherwise be replayed as an
+// intel GET (and vice versa). This rail's proof is DOMAIN-SEPARATED and binds
+// the request's method, path, canonical query and the org (audience) id, so a
+// signature minted for one rail can never verify on the other. Client and
+// server MUST derive it through these shared helpers — the PushSigningMessage
+// precedent.
+
+// intelRailSigningDomain domain-separates intel-rail proofs from every other
+// Ed25519 use in the protocol, most importantly PushSigningMessage (which binds
+// only ts + body hash and is what the judge relay signs).
+const intelRailSigningDomain = "sbo-intel-rail-v1"
+
+// IntelResultsPath is the fixed path of the agent RESULT rail. BOTH the node
+// signer and the server verifier bind this CONSTANT (not the received
+// r.URL.Path) into the proof, so a reverse proxy that rewrites the path cannot
+// break verification and the two sides can never disagree on the bound value.
+const IntelResultsPath = "/api/agent/intel/results"
+
+// IntelRailCanonicalQuery returns the canonical, order-independent encoding of
+// the intel rail's query parameters (since, limit) that BOTH the node and the
+// server bind into the signing message, and that the node also uses to build
+// the request URL — so the signed bytes and the wire query derive from one
+// function and can never drift. An empty since and a non-positive limit yield
+// the empty string (the no-cursor first page).
+func IntelRailCanonicalQuery(since string, limit int) string {
+	v := url.Values{}
+	if since != "" {
+		v.Set("since", since)
+	}
+	if limit > 0 {
+		v.Set("limit", strconv.Itoa(limit))
+	}
+	return v.Encode()
+}
+
+// IntelRailSigningMessage returns the canonical bytes signed over one intel
+// RESULT-rail request: SHA-256 over
+//
+//	domain || 0x00 || decimal(ts) || 0x00 || method || 0x00 || path ||
+//	0x00 || canonicalQuery || 0x00 || orgID
+//
+// The NUL separators make the encoding unambiguous. Binding method/path/query/
+// org domain-separates this proof from PushSigningMessage, which is exactly the
+// replay the adversarial review flagged: a judge-relay proof (ts + body hash)
+// can never satisfy this message, and this proof can never satisfy the judge
+// relay's.
+func IntelRailSigningMessage(ts int64, method, path, canonicalQuery, orgID string) []byte {
+	h := sha256.New()
+	h.Write([]byte(intelRailSigningDomain))
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.FormatInt(ts, 10)))
+	h.Write([]byte{0})
+	h.Write([]byte(method))
+	h.Write([]byte{0})
+	h.Write([]byte(path))
+	h.Write([]byte{0})
+	h.Write([]byte(canonicalQuery))
+	h.Write([]byte{0})
+	h.Write([]byte(orgID))
+	return h.Sum(nil)
 }
 
 // Policy-bundle signing (guard spec §14.2). The org server signs every
@@ -172,7 +240,8 @@ func AnnouncementSigningMessage(version int64, body string) []byte {
 // The message shape mirrors [AnnouncementSigningMessage] byte-for-byte
 // in composition style, with a DIFFERENT domain tag, so a signature
 // minted on either rail can never verify on the other even though ONE
-// org key (orgserver/routingpolicy.SigningKey) signs both.
+// org key (orgserver/routingpolicy.SigningKeyWith — the org's configured
+// key file when there is one, the database row otherwise) signs both.
 
 // routingPolicySigningV2Domain domain-separates v2 routing-policy
 // signatures from every other Ed25519 use in the protocol — including

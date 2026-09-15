@@ -1,0 +1,260 @@
+{
+ "session_id": "sess0001-0000-4000-8000-000000000001",
+ "cwd": "C:\\Users\\<u>\\demo-workspace\\antigravity",
+ "created_at": "2026-09-03T09:41:14.631792600Z",
+ "updated_at": "2026-09-03T09:42:34.731206200Z",
+ "title": "[AGENT SYSTEM PROMPT]",
+ "session_created_reason": "subagent",
+ "session_state": {
+  "version": "v1",
+  "conversation_metadata": {
+   "user_turn_metadatas": [
+    {
+     "loop_id": {
+      "agent_id": {
+       "name": "kiro_default",
+       "parent_id": null,
+       "rand": null
+      },
+      "rand": 971271094
+     },
+     "result": {
+      "Ok": {
+       "id": "c009ae40-a4a4-484e-b883-b402717f1e95",
+       "role": "assistant",
+       "content": [
+        {
+         "kind": "thinking",
+         "data": {
+          "text": "",
+          "signature": null,
+          "redactedContent": [
+           46,
+           75,
+           84,
+           82,
+           126,
+           126,
+           101,
+           121,
+           74,
+           108,
+           98,
+           109,
+           78,
+           121,
+           101,
+           88,
+           66,
+           48,
+           97,
+           87,
+           57,
+           117,
+           85,
+           109,
+           86,
+           110,
+           97,
+           87,
+           57,
+           117,
+           73,
+           106,
+           112,
+           117,
+           100,
+           87,
+           120,
+           115,
+           76,
+           67,
+           74,
+           116,
+           98,
+           50,
+           82,
+           108,
+           98,
+           69,
+           104,
+           104,
+           99,
+           50,
+           103,
+           105,
+           79,
+           105,
+           74,
+           53,
+           82,
+           85,
+           120,
+           87,
+           79,
+           88,
+           104,
+           105,
+           89,
+           50,
+           90,
+           51,
+           100,
+           108,
+           85,
+           105,
+           76,
+           67,
+           74,
+           122,
+           98,
+           71,
+           57,
+           48,
+           99,
+           121,
+           73,
+           54,
+           87,
+           49,
+           48,
+           115,
+           73,
+           110,
+           89,
+           105,
+           79,
+           106,
+           70,
+           57
+          ],
+          "modelId": "auto"
+         }
+        },
+        {
+         "kind": "text",
+         "data": "`hello.py` is gone. Directory now contains only `.kiro` and `README.md` — back to its original state.\n\n**Summary of what was done:**\n1. Created `hello.py` → printed `Hello World`\n2. Updated it → printed `Hello Universe`\n3. Deleted it → confirmed absent from directory listing"
+        }
+       ],
+       "meta": {
+        "timestamp": 1700000554
+       }
+      }
+     },
+     "message_ids": [
+      "msg00001-0000-4000-8000-000000000000",
+      "msg00002-0000-4000-8000-000000000000",
+      "msg00003-0000-4000-8000-000000000000",
+      "msg00004-0000-4000-8000-000000000000",
+      "msg00005-0000-4000-8000-000000000000",
+      "msg00006-0000-4000-8000-000000000000",
+      "msg00007-0000-4000-8000-000000000000",
+      "msg00008-0000-4000-8000-000000000000",
+      "msg00009-0000-4000-8000-000000000000",
+      "msg00010-0000-4000-8000-000000000000",
+      "msg00011-0000-4000-8000-000000000000",
+      "msg00012-0000-4000-8000-000000000000",
+      "msg00013-0000-4000-8000-000000000000",
+      "msg00014-0000-4000-8000-000000000000",
+      "msg00015-0000-4000-8000-000000000000",
+      "msg00016-0000-4000-8000-000000000000",
+      "msg00017-0000-4000-8000-000000000000",
+      "msg00018-0000-4000-8000-000000000000",
+      "msg00019-0000-4000-8000-000000000000",
+      "msg00020-0000-4000-8000-000000000000"
+     ],
+     "total_request_count": 10,
+     "number_of_cycles": 9,
+     "builtin_tool_uses": 9,
+     "turn_duration": {
+      "secs": 77,
+      "nanos": 328715700
+     },
+     "end_reason": "UserTurnEnd",
+     "end_timestamp": "2026-09-03T09:42:34.729380900Z",
+     "input_token_count": 0,
+     "output_token_count": 0,
+     "cache_read_input_token_count": 0,
+     "cache_write_input_token_count": 0,
+     "model": "auto",
+     "assistant_response_length": 875,
+     "request_attempts": 10,
+     "context_usage_percentage": 6.1836,
+     "final_context_usage_percentage": 6.1836,
+     "metering_usage": [
+      {
+       "value": 0.20200713665008294,
+       "unit": "credit",
+       "unitPlural": "credits"
+      },
+      {
+       "value": 0.13206455223880598,
+       "unit": "credit",
+       "unitPlural": "credits"
+      },
+      {
+       "value": 0.11703486915422887,
+       "unit": "credit",
+       "unitPlural": "credits"
+      },
+      {
+       "value": 0.12276581326699833,
+       "unit": "credit",
+       "unitPlural": "credits"
+      },
+      {
+       "value": 0.11678879900497512,
+       "unit": "credit",
+       "unitPlural": "credits"
+      },
+      {
+       "value": 0.11897677844112768,
+       "unit": "credit",
+       "unitPlural": "credits"
+      },
+      {
+       "value": 0.11785742305140963,
+       "unit": "credit",
+       "unitPlural": "credits"
+      },
+      {
+       "value": 0.11680349071310116,
+       "unit": "credit",
+       "unitPlural": "credits"
+      },
+      {
+       "value": 0.11906196351575456,
+       "unit": "credit",
+       "unitPlural": "credits"
+      },
+      {
+       "value": 0.11348314527363186,
+       "unit": "credit",
+       "unitPlural": "credits"
+      }
+     ],
+     "user_prompt_length": 71283
+    }
+   ],
+   "last_context_usage": {
+    "percentage": 6.1836,
+    "model_id": "auto"
+   },
+   "user_turn_start_request": null,
+   "last_request": null
+  },
+  "rts_model_state": {
+   "conversation_id": "sess0001-0000-4000-8000-000000000001",
+   "model_info": {
+    "model_name": "auto",
+    "description": "Models chosen by task for optimal usage and consistent quality",
+    "model_id": "auto",
+    "context_window_tokens": 1000000,
+    "rate_multiplier": 1,
+    "rate_unit": "Credit"
+   },
+   "context_usage_percentage": 6.1836
+  },
+  "agent_name": "kirocrew"
+ }
+}

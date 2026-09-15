@@ -79,7 +79,8 @@ UPDATE actions
    AND action_type = 'unknown'
    AND raw_tool_name IN (
      'applypatch', 'edit', 'editfile', 'patch', 'replace',
-     'structured.artifact_write'
+     'replacefilecontent', 'structured.artifact_write',
+     'transcript.code_action'
    );
 
 UPDATE actions
@@ -87,8 +88,8 @@ UPDATE actions
  WHERE tool = 'antigravity'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'cat', 'read', 'readfile', 'structured.file_view', 'view',
-     'viewfile'
+     'cat', 'read', 'readfile', 'structured.file_view',
+     'transcript.view_file', 'view', 'viewfile'
    );
 
 UPDATE actions
@@ -98,7 +99,7 @@ UPDATE actions
    AND raw_tool_name IN (
      'bash', 'cmd', 'cmdexe', 'exec', 'execute', 'powershell',
      'pwsh', 'run', 'runcommand', 'runshellcommand', 'shell',
-     'structured.run_command'
+     'structured.run_command', 'transcript.run_command'
    );
 
 UPDATE actions
@@ -106,7 +107,8 @@ UPDATE actions
  WHERE tool = 'antigravity'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'filesearch', 'findfiles', 'glob', 'listfiles', 'ls'
+     'filesearch', 'findbyname', 'findfiles', 'glob', 'listdir',
+     'listfiles', 'ls', 'transcript.list_directory'
    );
 
 UPDATE actions
@@ -114,7 +116,7 @@ UPDATE actions
  WHERE tool = 'antigravity'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'findtext', 'grep', 'searchtext'
+     'findtext', 'grep', 'searchtext', 'transcript.grep_search'
    );
 
 UPDATE actions
@@ -138,7 +140,7 @@ UPDATE actions
  WHERE tool = 'antigravity'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'create', 'createfile', 'write', 'writefile'
+     'create', 'createfile', 'write', 'writefile', 'writetofile'
    );
 
 UPDATE actions
@@ -147,7 +149,8 @@ UPDATE actions
    AND action_type = 'unknown'
    AND raw_tool_name IN (
      'applypatch', 'edit', 'editfile', 'patch', 'replace',
-     'structured.artifact_write'
+     'replacefilecontent', 'structured.artifact_write',
+     'transcript.code_action'
    );
 
 UPDATE actions
@@ -155,8 +158,8 @@ UPDATE actions
  WHERE tool = 'antigravity-cli'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'cat', 'read', 'readfile', 'structured.file_view', 'view',
-     'viewfile'
+     'cat', 'read', 'readfile', 'structured.file_view',
+     'transcript.view_file', 'view', 'viewfile'
    );
 
 UPDATE actions
@@ -166,7 +169,7 @@ UPDATE actions
    AND raw_tool_name IN (
      'bash', 'cmd', 'cmdexe', 'exec', 'execute', 'powershell',
      'pwsh', 'run', 'runcommand', 'runshellcommand', 'shell',
-     'structured.run_command'
+     'structured.run_command', 'transcript.run_command'
    );
 
 UPDATE actions
@@ -174,7 +177,8 @@ UPDATE actions
  WHERE tool = 'antigravity-cli'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'filesearch', 'findfiles', 'glob', 'listfiles', 'ls'
+     'filesearch', 'findbyname', 'findfiles', 'glob', 'listdir',
+     'listfiles', 'ls', 'transcript.list_directory'
    );
 
 UPDATE actions
@@ -182,7 +186,7 @@ UPDATE actions
  WHERE tool = 'antigravity-cli'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'findtext', 'grep', 'searchtext'
+     'findtext', 'grep', 'searchtext', 'transcript.grep_search'
    );
 
 UPDATE actions
@@ -206,7 +210,7 @@ UPDATE actions
  WHERE tool = 'antigravity-cli'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'create', 'createfile', 'write', 'writefile'
+     'create', 'createfile', 'write', 'writefile', 'writetofile'
    );
 
 UPDATE actions
@@ -1091,6 +1095,12 @@ UPDATE actions
    );
 
 UPDATE actions
+   SET action_type = 'todo_update'
+ WHERE tool = 'cursor'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'TodoWrite';
+
+UPDATE actions
    SET action_type = 'write_file'
  WHERE tool = 'cursor'
    AND action_type = 'unknown'
@@ -1380,6 +1390,18 @@ UPDATE actions
    );
 
 UPDATE actions
+   SET action_type = 'ask_user'
+ WHERE tool = 'freebuff'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'ask_user';
+
+UPDATE actions
+   SET action_type = 'browser_action'
+ WHERE tool = 'freebuff'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'browser_use';
+
+UPDATE actions
    SET action_type = 'edit_file'
  WHERE tool = 'freebuff'
    AND action_type = 'unknown'
@@ -1407,7 +1429,9 @@ UPDATE actions
    SET action_type = 'search_files'
  WHERE tool = 'freebuff'
    AND action_type = 'unknown'
-   AND raw_tool_name = 'find_files';
+   AND raw_tool_name IN (
+     'find_files', 'glob', 'list_directory'
+   );
 
 UPDATE actions
    SET action_type = 'search_text'
@@ -1418,12 +1442,30 @@ UPDATE actions
    );
 
 UPDATE actions
+   SET action_type = 'skill_invoke'
+ WHERE tool = 'freebuff'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'skill';
+
+UPDATE actions
    SET action_type = 'spawn_subagent'
  WHERE tool = 'freebuff'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
      'spawn_agent', 'spawn_agents'
    );
+
+UPDATE actions
+   SET action_type = 'task_complete'
+ WHERE tool = 'freebuff'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'set_output';
+
+UPDATE actions
+   SET action_type = 'todo_update'
+ WHERE tool = 'freebuff'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'write_todos';
 
 UPDATE actions
    SET action_type = 'web_fetch'
@@ -1502,6 +1544,18 @@ UPDATE actions
  WHERE tool = 'gemini-cli'
    AND action_type = 'unknown'
    AND raw_tool_name = 'invokeagent';
+
+UPDATE actions
+   SET action_type = 'task_complete'
+ WHERE tool = 'gemini-cli'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'complete_task';
+
+UPDATE actions
+   SET action_type = 'todo_update'
+ WHERE tool = 'gemini-cli'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'write_todos';
 
 UPDATE actions
    SET action_type = 'web_fetch'
@@ -1775,6 +1829,30 @@ UPDATE actions
    AND substr(raw_tool_name, 1, 4) = 'mcp_';
 
 UPDATE actions
+   SET action_type = 'edit_file'
+ WHERE tool = 'junie'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'idea/apply_patch';
+
+UPDATE actions
+   SET action_type = 'run_command'
+ WHERE tool = 'junie'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'idea/execute_terminal_command';
+
+UPDATE actions
+   SET action_type = 'search_files'
+ WHERE tool = 'junie'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'idea/list_directory_tree';
+
+UPDATE actions
+   SET action_type = 'write_file'
+ WHERE tool = 'junie'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'idea/create_new_file';
+
+UPDATE actions
    SET action_type = 'ask_user'
  WHERE tool = 'kilo-code'
    AND action_type = 'unknown'
@@ -2006,24 +2084,66 @@ UPDATE actions
    );
 
 UPDATE actions
+   SET action_type = 'edit_file'
+ WHERE tool = 'kiro-cli'
+   AND action_type = 'unknown'
+   AND raw_tool_name IN (
+     'delete_file', 'str_replace'
+   );
+
+UPDATE actions
    SET action_type = 'read_file'
  WHERE tool = 'kiro-cli'
    AND action_type = 'unknown'
-   AND raw_tool_name = 'fs_read';
+   AND raw_tool_name IN (
+     'fs_read', 'read', 'read_file'
+   );
 
 UPDATE actions
    SET action_type = 'run_command'
  WHERE tool = 'kiro-cli'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'execute_bash', 'execute_cmd'
+     'execute_bash', 'execute_cmd', 'execute_pwsh', 'shell'
    );
+
+UPDATE actions
+   SET action_type = 'search_files'
+ WHERE tool = 'kiro-cli'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'list_directory';
+
+UPDATE actions
+   SET action_type = 'todo_update'
+ WHERE tool = 'kiro-cli'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'todo_list';
 
 UPDATE actions
    SET action_type = 'write_file'
  WHERE tool = 'kiro-cli'
    AND action_type = 'unknown'
-   AND raw_tool_name = 'fs_write';
+   AND raw_tool_name IN (
+     'fs_write', 'write'
+   );
+
+UPDATE actions
+   SET action_type = 'edit_file'
+ WHERE tool = 'kiro-crew'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'edit';
+
+UPDATE actions
+   SET action_type = 'read_file'
+ WHERE tool = 'kiro-crew'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'read';
+
+UPDATE actions
+   SET action_type = 'run_command'
+ WHERE tool = 'kiro-crew'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'execute';
 
 UPDATE actions
    SET action_type = 'ask_user'
@@ -2557,6 +2677,48 @@ UPDATE actions
 
 UPDATE actions
    SET action_type = 'edit_file'
+ WHERE tool = 'poolside'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'edit';
+
+UPDATE actions
+   SET action_type = 'read_file'
+ WHERE tool = 'poolside'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'read';
+
+UPDATE actions
+   SET action_type = 'run_command'
+ WHERE tool = 'poolside'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'shell';
+
+UPDATE actions
+   SET action_type = 'search_files'
+ WHERE tool = 'poolside'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'list_directory_tree';
+
+UPDATE actions
+   SET action_type = 'task_complete'
+ WHERE tool = 'poolside'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'exit';
+
+UPDATE actions
+   SET action_type = 'todo_update'
+ WHERE tool = 'poolside'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'todo_action';
+
+UPDATE actions
+   SET action_type = 'write_file'
+ WHERE tool = 'poolside'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'write';
+
+UPDATE actions
+   SET action_type = 'edit_file'
  WHERE tool = 'prime-agent'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
@@ -2631,7 +2793,7 @@ UPDATE actions
  WHERE tool = 'qoder'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'Edit', 'MultiEdit', 'NotebookEdit'
+     'Edit', 'MultiEdit', 'NotebookEdit', 'SearchReplace'
    );
 
 UPDATE actions
@@ -2947,6 +3109,105 @@ UPDATE actions
    AND raw_tool_name IN (
      'create', 'write'
    );
+
+UPDATE actions
+   SET action_type = 'edit_file'
+ WHERE tool = 'zed'
+   AND action_type = 'unknown'
+   AND raw_tool_name IN (
+     'delete_path', 'edit_file'
+   );
+
+UPDATE actions
+   SET action_type = 'read_file'
+ WHERE tool = 'zed'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'read_file';
+
+UPDATE actions
+   SET action_type = 'run_command'
+ WHERE tool = 'zed'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'terminal';
+
+UPDATE actions
+   SET action_type = 'search_files'
+ WHERE tool = 'zed'
+   AND action_type = 'unknown'
+   AND raw_tool_name IN (
+     'find_path', 'list_directory'
+   );
+
+UPDATE actions
+   SET action_type = 'write_file'
+ WHERE tool = 'zed'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'write_file';
+
+UPDATE actions
+   SET action_type = 'ask_user'
+ WHERE tool = 'zoo-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'ask_followup_question';
+
+UPDATE actions
+   SET action_type = 'browser_action'
+ WHERE tool = 'zoo-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'browser_action';
+
+UPDATE actions
+   SET action_type = 'edit_file'
+ WHERE tool = 'zoo-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'replace_in_file';
+
+UPDATE actions
+   SET action_type = 'mcp_call'
+ WHERE tool = 'zoo-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name IN (
+     'access_mcp_resource', 'use_mcp_tool'
+   );
+
+UPDATE actions
+   SET action_type = 'read_file'
+ WHERE tool = 'zoo-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'read_file';
+
+UPDATE actions
+   SET action_type = 'run_command'
+ WHERE tool = 'zoo-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name IN (
+     'bash', 'cmd', 'cmd.exe', 'execute_command', 'powershell',
+     'pwsh', 'sh'
+   );
+
+UPDATE actions
+   SET action_type = 'search_files'
+ WHERE tool = 'zoo-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'list_files';
+
+UPDATE actions
+   SET action_type = 'search_text'
+ WHERE tool = 'zoo-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'search_files';
+
+UPDATE actions
+   SET action_type = 'task_complete'
+ WHERE tool = 'zoo-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'attempt_completion';
+
+UPDATE actions
+   SET action_type = 'write_file'
+ WHERE tool = 'zoo-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'write_to_file';
 
 UPDATE actions
    SET action_type = 'edit_file'

@@ -211,13 +211,13 @@ function TemplatePreview({ t, onDone }: { t: PolicyTemplate; onDone: () => void 
         <Card title="Sets per-user budget">
           <p className="text-[12px] text-fg-2">
             ${t.budget.PerUser5hUSD} / 5h · ${t.budget.PerUserWeeklyUSD} / week · ${t.budget.PerUserMonthlyUSD} / month.
-            <span className="text-fg-3"> Read at daemon start — needs a restart.</span>
+            <span className="text-fg-3"> Read at daemon start - needs a restart.</span>
           </p>
         </Card>
       )}
 
       <div className="rounded-2 border border-line-1 bg-bg-2/40 px-3 py-2 text-[11px] leading-relaxed text-fg-3">
-        Applying merges this into your current policy (criteria by id, rules by name — nothing is removed).
+        Applying merges this into your current policy (criteria by id, rules by name - nothing is removed).
         If the target policy is off it moves to a shadow mode ({touches.includes("routing") ? "advise" : "observe"}), never straight to enforce.
       </div>
 

@@ -31,6 +31,7 @@ func newOrgEmitManagedSettingsCmd() *cobra.Command {
 		printMDM     bool
 		mcpPackage   string
 		endpointFlag string
+		gatewayURL   string
 	)
 	cmd := &cobra.Command{
 		Use:   "emit-managed-settings",
@@ -54,12 +55,14 @@ func newOrgEmitManagedSettingsCmd() *cobra.Command {
 					configPath: configPath, scope: scope, outDir: outDir,
 					noMCP: noMCP, noTelemetry: noTelemetry,
 					mcpPackage: mcpPackage, endpointFlag: endpointFlag,
+					gatewayBaseURL: gatewayURL,
 				})
 			case "codex":
 				return runEmitCodex(cmd, emitCodexArgs{
 					configPath: configPath, scope: scope, outDir: outDir,
 					noMCP: noMCP, noProxyRoute: noProxyRoute, enforceHooks: enforceHooks,
 					printMDM: printMDM, mcpPackage: mcpPackage, endpointFlag: endpointFlag,
+					gatewayBaseURL: gatewayURL,
 				})
 			default:
 				return fmt.Errorf("--provider must be claude-code or codex, got %q", provider)
@@ -77,15 +80,22 @@ func newOrgEmitManagedSettingsCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&printMDM, "print-mdm-base64", false, "[codex] also print requirements.toml as the MDM requirements_toml_base64 value")
 	cmd.Flags().StringVar(&mcpPackage, "mcp-package", "", "npm package for the MCP pin (default @superbased/observer)")
 	cmd.Flags().StringVar(&endpointFlag, "otel-endpoint", "", "override the OTLP endpoint (default derived from [ingest.otel].grpc_addr)")
+	cmd.Flags().StringVar(&gatewayURL, "gateway-base-url", "",
+		"Gateway-Mode thin deployments: base URL of the org AI Gateway to route through instead of\n"+
+			"the node proxy. claude-code: written verbatim as ANTHROPIC_BASE_URL. codex: written verbatim\n"+
+			"as openai_base_url (include the /v1 suffix). Default: today's node-proxy behavior (:8820).")
 	return cmd
 }
 
 type emitCCArgs struct {
-	configPath, scope, outDir, mcpPackage, endpointFlag string
-	noMCP, noTelemetry                                  bool
+	configPath, scope, outDir, mcpPackage, endpointFlag, gatewayBaseURL string
+	noMCP, noTelemetry                                                  bool
 }
 
-// runEmitClaudeCode preserves the original (pre-Codex) behavior byte-for-byte.
+// runEmitClaudeCode preserves the original (pre-Codex) behavior byte-for-byte
+// when --gateway-base-url is unset; setting it adds an ANTHROPIC_BASE_URL
+// override to the managed-settings.json env block (node-proxy → thin-mode
+// Gateway swap, Luna L19 — no other artifact changes).
 func runEmitClaudeCode(cmd *cobra.Command, a emitCCArgs) error {
 	endpoint := a.endpointFlag
 	if endpoint == "" {
@@ -98,6 +108,7 @@ func runEmitClaudeCode(cmd *cobra.Command, a emitCCArgs) error {
 
 	arts, err := managedsettings.GenerateClaudeCode(managedsettings.ClaudeCodeOptions{
 		OTelGRPCEndpoint: endpoint,
+		AnthropicBaseURL: a.gatewayBaseURL,
 		MCPPackage:       a.mcpPackage,
 		IncludeMCP:       !a.noMCP,
 		IncludeTelemetry: !a.noTelemetry,
@@ -113,18 +124,24 @@ func runEmitClaudeCode(cmd *cobra.Command, a emitCCArgs) error {
 }
 
 type emitCodexArgs struct {
-	configPath, scope, outDir, mcpPackage, endpointFlag string
-	noMCP, noProxyRoute, enforceHooks, printMDM         bool
+	configPath, scope, outDir, mcpPackage, endpointFlag, gatewayBaseURL string
+	noMCP, noProxyRoute, enforceHooks, printMDM                         bool
 }
 
-// runEmitCodex generates the Codex managed_config.toml + requirements.toml pair.
+// runEmitCodex generates the Codex managed_config.toml + requirements.toml
+// pair. --gateway-base-url, when set, overrides the derived node-proxy
+// openai_base_url with a direct thin-mode Gateway URL (Luna L19).
 func runEmitCodex(cmd *cobra.Command, a emitCodexArgs) error {
 	cfg, err := config.Load(config.LoadOptions{GlobalPath: a.configPath})
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	baseURL := a.gatewayBaseURL
+	if baseURL == "" {
+		baseURL = codexProxyBaseURL(cfg)
+	}
 	opts := managedsettings.CodexOptions{
-		OpenAIBaseURL:           codexProxyBaseURL(cfg),
+		OpenAIBaseURL:           baseURL,
 		OTelEndpoint:            a.endpointFlag,
 		MCPPackage:              a.mcpPackage,
 		IncludeMCP:              !a.noMCP,

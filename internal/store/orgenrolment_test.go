@@ -138,6 +138,20 @@ func TestDeleteEnrolment_ClearsOrgDistributionCaches(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertOrgRoutingPolicy: %v", err)
 	}
+	// The org's signed price document (finding F6): the org's rates are the
+	// org's, so leaving the org must drop them too, or a departed node with
+	// [guard.budget].from_org still set keeps pricing captured turns at the dead
+	// org's negotiated rates forever (cost is stamped at capture, never re-priced).
+	in := 100.0
+	if err := s.SaveOrgPricing(ctx, orgcontract.PricingPolicyDoc{
+		PricingPolicyBody: orgcontract.PricingPolicyBody{
+			Version: 9,
+			Rows:    []orgcontract.PricingPolicyRow{{Model: "claude-opus-4-8", InputPerMTok: &in, Source: "negotiated"}},
+		},
+		Signature: "c2lnbmVk",
+	}, "old-org-fingerprint", orgcontract.PricingFetchVerified); err != nil {
+		t.Fatalf("SaveOrgPricing: %v", err)
+	}
 
 	if err := s.DeleteEnrolment(ctx); err != nil {
 		t.Fatalf("DeleteEnrolment: %v", err)
@@ -148,6 +162,11 @@ func TestDeleteEnrolment_ClearsOrgDistributionCaches(t *testing.T) {
 	}
 	if row, ok, err := s.GetOrgRoutingPolicy(ctx); err != nil || ok {
 		t.Errorf("routing-policy cache survived unenrolment: %+v ok=%v err=%v", row, ok, err)
+	}
+	// pricing_feed_cache is the node's OWN standalone data and must be LEFT
+	// alone; org_pricing_cache is the org's and must be cleared.
+	if cached, err := s.LoadOrgPricing(ctx); err != nil || cached.Have {
+		t.Errorf("org pricing document survived unenrolment: have=%v err=%v", cached.Have, err)
 	}
 	// Idempotent: a second unenrol on already-clean state is a no-op.
 	if err := s.DeleteEnrolment(ctx); err != nil {

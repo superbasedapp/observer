@@ -95,7 +95,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	}
 	defer database.Close()
 
-	rootCache := map[string]string{}
+	rootCache := map[string]zcodeCacheEntry{}
 	// Resolve reasoning → successor assignment BEFORE any emitter runs,
 	// so the threading can't depend on loader order (see
 	// loadReasoningIndex). Reasoning parts are never rows of their own.
@@ -151,6 +151,13 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	res.ToolEvents = append(res.ToolEvents, stepFinishes...)
 	res.ToolEvents = append(res.ToolEvents, todos...)
 	res.TokenEvents = append(res.TokenEvents, tokens...)
+	identitiesByRoot := make(map[string]git.Identity, len(rootCache))
+	for _, entry := range rootCache {
+		if entry.root != "" {
+			identitiesByRoot[entry.root] = entry.identity
+		}
+	}
+	adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot)
 	return res, nil
 }
 
@@ -276,7 +283,7 @@ type toolInput struct {
 	FilePath string `json:"filePath"`
 }
 
-func (a *Adapter) loadUserPromptEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]string) ([]models.ToolEvent, error) {
+func (a *Adapter) loadUserPromptEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]zcodeCacheEntry) ([]models.ToolEvent, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT m.id, m.session_id, COALESCE(s.directory, ''), m.time_created, m.time_updated, m.data
 		  FROM message m
@@ -306,7 +313,7 @@ func (a *Adapter) loadUserPromptEvents(ctx context.Context, db *sql.DB, sourceFi
 	return out, rows.Err()
 }
 
-func (a *Adapter) userPromptEvent(ctx context.Context, db *sql.DB, sourceFile string, row messageRow, rootCache map[string]string) (models.ToolEvent, bool, error) {
+func (a *Adapter) userPromptEvent(ctx context.Context, db *sql.DB, sourceFile string, row messageRow, rootCache map[string]zcodeCacheEntry) (models.ToolEvent, bool, error) {
 	var msg messageData
 	if err := json.Unmarshal([]byte(row.Data), &msg); err != nil {
 		return models.ToolEvent{}, false, nil
@@ -441,7 +448,7 @@ func (a *Adapter) loadReasoningIndex(ctx context.Context, db *sql.DB, fromOffset
 // none was.
 func (r reasoningIndex) threaded(partID string) string { return r[partID] }
 
-func (a *Adapter) loadToolEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]string, reasoning reasoningIndex) ([]models.ToolEvent, error) {
+func (a *Adapter) loadToolEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]zcodeCacheEntry, reasoning reasoningIndex) ([]models.ToolEvent, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT p.id, p.message_id, p.session_id, COALESCE(s.directory, ''), p.time_created, p.time_updated, p.data, m.data
 		  FROM part p
@@ -469,7 +476,7 @@ func (a *Adapter) loadToolEvents(ctx context.Context, db *sql.DB, sourceFile str
 	return out, rows.Err()
 }
 
-func (a *Adapter) toolEvent(sourceFile string, row partRow, rootCache map[string]string, reasoning reasoningIndex) (models.ToolEvent, bool) {
+func (a *Adapter) toolEvent(sourceFile string, row partRow, rootCache map[string]zcodeCacheEntry, reasoning reasoningIndex) (models.ToolEvent, bool) {
 	var msg messageData
 	if err := json.Unmarshal([]byte(row.Message), &msg); err != nil {
 		return models.ToolEvent{}, false
@@ -547,7 +554,7 @@ func (a *Adapter) toolEvent(sourceFile string, row partRow, rootCache map[string
 	}, true
 }
 
-func (a *Adapter) loadCompletionEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]string) ([]models.ToolEvent, error) {
+func (a *Adapter) loadCompletionEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]zcodeCacheEntry) ([]models.ToolEvent, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT m.id, m.session_id, COALESCE(s.directory, ''), m.time_created, m.time_updated, m.data
 		  FROM message m
@@ -575,7 +582,7 @@ func (a *Adapter) loadCompletionEvents(ctx context.Context, db *sql.DB, sourceFi
 	return out, rows.Err()
 }
 
-func (a *Adapter) completionEvent(sourceFile string, row messageRow, rootCache map[string]string) (models.ToolEvent, bool) {
+func (a *Adapter) completionEvent(sourceFile string, row messageRow, rootCache map[string]zcodeCacheEntry) (models.ToolEvent, bool) {
 	var msg messageData
 	if err := json.Unmarshal([]byte(row.Data), &msg); err != nil {
 		return models.ToolEvent{}, false
@@ -637,7 +644,7 @@ func withStopReason(meta *models.ActionMetadata, reason string) *models.ActionMe
 // carries no body. This loader complements it by surfacing the
 // actual text content. No token/cost fields are set; token usage
 // flows through loadTokenEvents.
-func (a *Adapter) loadAssistantTextEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]string, reasoning reasoningIndex) ([]models.ToolEvent, error) {
+func (a *Adapter) loadAssistantTextEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]zcodeCacheEntry, reasoning reasoningIndex) ([]models.ToolEvent, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT p.id, p.message_id, p.session_id, COALESCE(s.directory, ''), p.time_created, p.time_updated, p.data, m.data
 		  FROM part p
@@ -666,7 +673,7 @@ func (a *Adapter) loadAssistantTextEvents(ctx context.Context, db *sql.DB, sourc
 	return out, rows.Err()
 }
 
-func (a *Adapter) assistantTextEvent(sourceFile string, row partRow, rootCache map[string]string, reasoning reasoningIndex) (models.ToolEvent, bool) {
+func (a *Adapter) assistantTextEvent(sourceFile string, row partRow, rootCache map[string]zcodeCacheEntry, reasoning reasoningIndex) (models.ToolEvent, bool) {
 	var msg messageData
 	if err := json.Unmarshal([]byte(row.Message), &msg); err != nil {
 		return models.ToolEvent{}, false
@@ -758,7 +765,7 @@ type stepFinishPartData struct {
 // RawToolInput carries the verbatim step-finish JSON (tokens +
 // cost) so the dashboard can render per-step cost histograms once
 // the UI lands.
-func (a *Adapter) loadStepFinishEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]string) ([]models.ToolEvent, error) {
+func (a *Adapter) loadStepFinishEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]zcodeCacheEntry) ([]models.ToolEvent, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT p.id, p.message_id, p.session_id, COALESCE(s.directory, ''), p.time_created, p.time_updated, p.data, m.data
 		  FROM part p
@@ -786,7 +793,7 @@ func (a *Adapter) loadStepFinishEvents(ctx context.Context, db *sql.DB, sourceFi
 	return out, rows.Err()
 }
 
-func (a *Adapter) stepFinishEvent(sourceFile string, row partRow, rootCache map[string]string) (models.ToolEvent, bool) {
+func (a *Adapter) stepFinishEvent(sourceFile string, row partRow, rootCache map[string]zcodeCacheEntry) (models.ToolEvent, bool) {
 	var msg messageData
 	if err := json.Unmarshal([]byte(row.Message), &msg); err != nil {
 		return models.ToolEvent{}, false
@@ -864,7 +871,7 @@ type modelUsageRow struct {
 // The watermark is model_usage's own COALESCE(completed_at, started_at),
 // consistent with latestWatermark's UNION so re-parse is idempotent (the
 // SourceEventID "tokens:"+id also dedupes at the store).
-func (a *Adapter) loadTokenEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]string) ([]models.TokenEvent, error) {
+func (a *Adapter) loadTokenEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]zcodeCacheEntry) ([]models.TokenEvent, error) {
 	if !tableExists(ctx, db, "model_usage") {
 		return nil, nil
 	}
@@ -905,7 +912,7 @@ func (a *Adapter) loadTokenEvents(ctx context.Context, db *sql.DB, sourceFile st
 // input against cache reads. Returns ok=false when the row carries no usage
 // at all (a completed call that reported nothing — e.g. a provider error
 // row) so we don't mint empty token rows.
-func (a *Adapter) tokenEvent(sourceFile string, row modelUsageRow, rootCache map[string]string) (models.TokenEvent, bool) {
+func (a *Adapter) tokenEvent(sourceFile string, row modelUsageRow, rootCache map[string]zcodeCacheEntry) (models.TokenEvent, bool) {
 	if row.InputTokens == 0 && row.OutputTokens == 0 &&
 		row.ReasoningTokens == 0 && row.CacheReadTokens == 0 &&
 		row.CacheCreationTokens == 0 {
@@ -967,7 +974,7 @@ func (a *Adapter) tokenEvent(sourceFile string, row modelUsageRow, rootCache map
 // session). Neither this loader nor loadToolEvents currently cross-links
 // the ActionSpawnSubagent row to that child session id; see
 // docs/zcode-adapter.md "Known gaps".
-func (a *Adapter) loadSubtaskEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]string) ([]models.ToolEvent, error) {
+func (a *Adapter) loadSubtaskEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]zcodeCacheEntry) ([]models.ToolEvent, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT p.id, p.message_id, p.session_id, COALESCE(s.directory, ''),
 		       p.time_created, p.time_updated, p.data, m.data
@@ -1043,7 +1050,7 @@ func (a *Adapter) loadSubtaskEvents(ctx context.Context, db *sql.DB, sourceFile 
 // Tolerant of older OpenCode schemas that lack the todo table —
 // the SQL error gets swallowed and the function returns an empty
 // slice rather than failing the whole parse pass.
-func (a *Adapter) loadTodoEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]string) ([]models.ToolEvent, error) {
+func (a *Adapter) loadTodoEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]zcodeCacheEntry) ([]models.ToolEvent, error) {
 	if !tableExists(ctx, db, "todo") {
 		return nil, nil
 	}
@@ -1158,7 +1165,7 @@ func mapTool(part toolPartData) (actionType, target string, success bool, errMsg
 //   - real cwd outside any git tree → the cwd itself (post-symlink).
 //
 // The cache lives for one ParseSessionFile call; same cwd resolves once.
-func (a *Adapter) resolveProjectRoot(cwd string, cache map[string]string) string {
+func (a *Adapter) resolveProjectRoot(cwd string, cache map[string]zcodeCacheEntry) string {
 	if cwd == "" {
 		return "[zcode]"
 	}
@@ -1174,16 +1181,27 @@ func (a *Adapter) resolveProjectRoot(cwd string, cache map[string]string) string
 	// claudecode adapter.go:1055 and codex adapter.go:2494
 	// ([[feedback-foreign-path-git-resolve]]).
 	cwd = crossmount.TranslateForeignPath(cwd)
-	if root, ok := cache[cwd]; ok {
-		return root
+	if entry, ok := cache[cwd]; ok {
+		return entry.root
 	}
-	info, err := git.Resolve(cwd)
+	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
-		cache[cwd] = cwd
+		cache[cwd] = zcodeCacheEntry{root: cwd}
 		return cwd
 	}
-	cache[cwd] = info.Root
-	return info.Root
+	cache[cwd] = zcodeCacheEntry{root: id.Root, identity: id}
+	return id.Root
+}
+
+// zcodeCacheEntry is the resolveProjectRoot cache entry: the resolved
+// project root plus the Project Identity Resolver v2 bundle (2026-09-06,
+// §3.1 / W1) resolved alongside it. A zcode db can span multiple
+// sessions/cwds within one ParseSessionFile call, so identities are
+// applied at the end via adapter.ApplyProjectIdentityByRoot, keyed by
+// root.
+type zcodeCacheEntry struct {
+	root     string
+	identity git.Identity
 }
 
 func latestWatermark(ctx context.Context, path string) (int64, error) {

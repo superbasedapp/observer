@@ -1,0 +1,17 @@
+[
+  {
+    "sessionId": "11111111-2222-4333-8444-555555555555",
+    "title": "Wire up the health endpoint",
+    "dateCreated": 1777720080000,
+    "dateUpdated": 1777720201200,
+    "workspaceDirectory": "/home/dev/needlehaystack",
+    "messageCount": 6
+  },
+  {
+    "sessionId": "99999999-8888-4777-8666-555555555555",
+    "title": "Some other thread",
+    "dateCreated": "2026-08-24T09:00:00Z",
+    "dateUpdated": "2026-08-24T09:12:00Z",
+    "workspaceDirectory": "/home/dev/other"
+  }
+]

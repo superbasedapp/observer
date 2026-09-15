@@ -16,6 +16,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/browserhost"
 	"github.com/marmutapp/superbased-observer/internal/browserhost/hostfiles"
+	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/guard/compile"
 	"github.com/marmutapp/superbased-observer/internal/hook"
@@ -578,7 +579,9 @@ type WireAIClientsOptions struct {
 	// verify ownership (R1/F3). Each is the Windows USER home (e.g.
 	// /mnt/c/Users/<you>) — the registrar appends .claude/.codex. The claude
 	// value ALSO feeds the hook registrar's WindowsClaudeHome so the two
-	// Windows writers agree on the same home; codex has no hook-side option.
+	// Windows writers agree on the same home; the codex value likewise feeds
+	// the hook registrar's WindowsCodexHome (the `codex-windows` hook bridge,
+	// IDE-11 parity) so the proxy-route and hook writers target one home.
 	// Empty = auto-detect (the production default). Fed by the
 	// --windows-claude-home / --windows-codex-home flags.
 	WindowsClaudeHome string
@@ -624,6 +627,7 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 		HomeDir:           opts.HomeDir,
 		WindowsClaudeHome: opts.WindowsClaudeHome,
 		WindowsCursorHome: opts.WindowsCursorHome,
+		WindowsCodexHome:  opts.WindowsCodexHome,
 	})
 	if err != nil {
 		return nil, "", "", false, err
@@ -667,12 +671,38 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 		return nil, "", "", false, nil
 	}
 
+	// FIXED (B3, final-fix review): mirrors autoRegisterHooks'
+	// promptLaneEnabled gate (cmd/observer/start.go) — a mechanism
+	// whose ENTIRE hook surface is one prompt-submit event
+	// (integration.Capability.Hook.PromptLaneOnly: gemini-cli,
+	// qwen-code, droid, qoder, poolside, devin/cascade,
+	// command-code) has nothing useful to register when the
+	// operator's own config says the prompt-submit engine won't
+	// evaluate the hook lane at all. None of these six vendors has a
+	// dedicated `--<tool>` selector flag (only claude-code/codex/
+	// cursor/cline do, none of which is PromptLaneOnly) — they can
+	// only ever enter `tools` via `--all` or the zero-flag
+	// auto-detect fallback (resolveTools), never by the operator
+	// "naming the tool explicitly" — so a disabled prompt lane must
+	// skip their HOOK registration unconditionally, exactly like the
+	// auto-register path — but gates the HOOK step only: a
+	// PromptLaneOnly tool can still carry its own independent MCP
+	// capability (e.g. droid's ~/.factory/mcp.json), which has
+	// nothing to do with the prompt-submit engine and must not be
+	// skipped just because the hook lane is off.
+	promptCfg, _ := config.Load(config.LoadOptions{GlobalPath: opts.ConfigPath})
+	promptLaneEnabled := promptCfg.Guard.Prompt.Enabled && promptCfg.Guard.Prompt.HookLane
+
 	var buf strings.Builder
 	registeredClaudeCode := false
 	registeredCodex := false
 	registeredCodexHooks := false
 	for _, t := range tools {
-		if !opts.SkipHooks && hookSupported(t) {
+		promptLaneOnlyBlocked := false
+		if c, _, ok := advertisedCapability(t); ok && c.Hook.PromptLaneOnly && !promptLaneEnabled {
+			promptLaneOnlyBlocked = true
+		}
+		if !opts.SkipHooks && hookSupported(t) && !promptLaneOnlyBlocked {
 			res := hookReg.Register(t)
 			printHookResult(&buf, t, res, opts.DryRun)
 			if t == "codex" && res.Error == nil && len(res.HooksAdded) > 0 {
@@ -946,14 +976,43 @@ func printProxyRouteResult(out io.Writer, tool string, res proxyroute.Registrati
 // hooks.jsonl is a tailer the operator wires manually (AutoWired=false) —
 // both are excluded here by mechanism, not by a tool branch. A new
 // hook-capable client is a registry row + (if a new mechanism) one writer.
-func hookSupported(tool string) bool {
+// advertisedCapability resolves an `observer init` TARGET name to its
+// registry row, applying the two rules every init predicate below shares:
+//
+//  1. the cross-OS "-windows" virtual target (a WSL daemon writing into a
+//     Windows-side .claude / .codex / VS Code) resolves to its BASE adapter —
+//     isWindows tells the caller to gate on that capability's own
+//     CrossOSBridge flag;
+//  2. a row the harness lifecycle policy no longer ADVERTISES (deprecated or
+//     dead — integration.Capability.Advertised) is refused up front, so init
+//     never wires a fresh install into a sunset product. Capture is untouched:
+//     lifecycle gates advertising only (docs/harness-lifecycle-policy.md).
+//
+// ok is false for an unknown tool and for an unadvertised one; the caller then
+// answers false without inspecting any further capability shape.
+func advertisedCapability(tool string) (c integration.Capability, isWindows bool, ok bool) {
 	base, isWindows := strings.CutSuffix(tool, "-windows")
-	c, ok := integration.For(base)
+	c, ok = integration.For(base)
+	if !ok || !c.Advertised() {
+		return integration.Capability{Tool: base}, isWindows, false
+	}
+	return c, isWindows, true
+}
+
+func hookSupported(tool string) bool {
+	c, isWindows, ok := advertisedCapability(tool)
 	if !ok || !c.Hook.AutoWired {
 		return false
 	}
 	switch c.Hook.Mechanism {
-	case integration.HookClaudeSettings, integration.HookCursor, integration.HookCodexConfig:
+	case integration.HookClaudeSettings, integration.HookCursor, integration.HookCodexConfig,
+		integration.HookGeminiSettings, integration.HookQwenSettings, integration.HookFactoryJSON,
+		// Part B item 2 (phase-3a): the documented long-tail vendors —
+		// all four handled by hook.Registry.Register like every other
+		// case here. zcode is NOT listed: its AutoWired stays false
+		// (no register* writer exists at all, gated on a liveness
+		// probe), so it never reaches this switch.
+		integration.HookQoderJSON, integration.HookPoolsideYAML, integration.HookCascadeJSON, integration.HookCommandCodeMod:
 		// handled by hook.Registry.Register
 	default:
 		return false // HermesPlugin → runHermesInit; ClineCLIJSONL → manual tailer
@@ -976,8 +1035,7 @@ func hookSupported(tool string) bool {
 func mcpSupported(tool string) bool {
 	// Resolve the cross-OS "-windows" virtual target to its base adapter and
 	// gate on the registry's MCP.CrossOSBridge flag (mirrors hookSupported).
-	base, isWindows := strings.CutSuffix(tool, "-windows")
-	c, ok := integration.For(base)
+	c, isWindows, ok := advertisedCapability(tool)
 	if !ok || c.MCP == nil || !c.MCP.Implemented {
 		return false
 	}
@@ -1007,8 +1065,7 @@ func mcpSupported(tool string) bool {
 // gated on the registry's Proxy.CrossOSBridge flag — the exact template
 // hookSupported/mcpSupported use for their own "-windows" variants.
 func routeSupported(tool string) bool {
-	base, isWindows := strings.CutSuffix(tool, "-windows")
-	c, ok := integration.For(base)
+	c, isWindows, ok := advertisedCapability(tool)
 	if !ok || c.Proxy == nil {
 		return false
 	}
@@ -1030,7 +1087,7 @@ func routeSupported(tool string) bool {
 // plain scoped run. Registry-driven (CLAUDE.md #3): the answer is the shape
 // of the registry row, never a tool-name hand-list.
 func routeProbeSupported(tool string) bool {
-	c, ok := integration.For(tool)
+	c, _, ok := advertisedCapability(tool)
 	return ok && c.ProxyProbe != nil
 }
 
@@ -1044,7 +1101,7 @@ func routeProbeSupported(tool string) bool {
 // runs a single browser-extension step when ANY *-web tool is
 // extensionSupported — the manifest is shared across every browser site.
 func extensionSupported(tool string) bool {
-	c, ok := integration.For(tool)
+	c, _, ok := advertisedCapability(tool)
 	if !ok || !c.Hook.AutoWired {
 		return false
 	}
@@ -1701,28 +1758,44 @@ func resolveTools(all, cc, codex, cursor, cline bool, installed []string, crossO
 			requested[t] = true
 		}
 	}
-	// supported is the vocabulary resolveTools understands for a no-flag
-	// (auto-detected) selection. A tool with a registry MCP/Hook capability
-	// but no dedicated init flag (opencode, cline, droid) still needs an
-	// entry here or it is silently dropped even though mcpSupported/
-	// hookSupported would say yes — hermes is the deliberate exception,
-	// wired through its own --hermes path instead.
-	supported := map[string]bool{
-		"claude-code": true, "claude-code-windows": true,
-		"cursor": true, "cursor-windows": true,
-		"codex": true, "codex-windows": true,
-		"opencode": true,
-		"cline":    true, "cline-windows": true,
-		"droid":        true,
-		"command-code": true,
-	}
 	var out []string
 	for t := range requested {
-		if supported[t] {
+		if autoInitSupported(t) {
 			out = append(out, t)
 		}
 	}
 	return out
+}
+
+// autoInitSupported reports whether tool participates in a no-flag
+// (auto-detected) `observer init`/`observer uninstall` selection —
+// resolveTools' shared vocabulary gate. Registry-driven (CLAUDE.md
+// #3/#5): a tool qualifies the moment it has ANY init-writable
+// capability SHAPE — a hook mechanism init can auto-wire
+// (hookSupported), an MCP format init can write (mcpSupported), or a
+// persisted proxy-route kind init can write (routeSupported) —
+// dispatched through the SAME predicates every other init/uninstall
+// call site already uses, never a hardcoded tool-name list.
+//
+// B2 (phase-3a review): this used to be a hardcoded `supported` map
+// naming only 2 of the 7 vendors Part B item 2 wired hook mechanisms
+// for (droid + command-code) — `observer init --all` silently skipped
+// gemini-cli/qwen-code/qoder/poolside/devin even though their hook
+// rows are HookSpec{AutoWired: true} today, and `observer uninstall`
+// (selectTools shares resolveTools with selectToolsForInit) could
+// never reach those hosts to remove what `observer start`'s
+// auto-register loop had already written there.
+//
+// zcode correctly stays excluded: its registry row deliberately sets
+// Hook.AutoWired=false pending a liveness probe (see internal/
+// integration's zcode row), so hookSupported already answers false
+// for it — no special-casing needed. hermes and cline-cli correctly
+// stay excluded too: their mechanisms (HermesPlugin, HookClineCLIJSONL)
+// and hermes' MCP format (YAML) are deliberately excluded from
+// hookSupported/mcpSupported's own switches (see those functions' doc
+// comments) — hermes is wired through its own --hermes path instead.
+func autoInitSupported(tool string) bool {
+	return hookSupported(tool) || mcpSupported(tool) || routeSupported(tool)
 }
 
 // absoluteBinaryPath returns the absolute path of the running binary so that

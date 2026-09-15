@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -134,5 +135,58 @@ func TestConsumeLaunchSeeds_LaunchFailureLeavesNothingBehind(t *testing.T) {
 	pending, err := st.PendingLaunchSeeds(context.Background(), time.Hour)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("pending = (%+v, %v), want empty on a fresh DB", pending, err)
+	}
+}
+
+// TestConsumeLaunchSeeds_LauncherVerbLabelStillBinds is the end-to-end pin for
+// the class the 2026-08-26 sweep found: a launcher that records its seed under
+// its own VERB label (`gemini`) rather than the canonical adapter key the
+// watcher stores on sessions.tool (`gemini-cli`) used to write a seed that
+// MatchLaunchSeeds could never pair — the launch silently degraded to lazy
+// correlation and the session's process/network panels stayed blank.
+func TestConsumeLaunchSeeds_LauncherVerbLabelStillBinds(t *testing.T) {
+	path, database, st, bridge := newLaunchSeedTestDB(t)
+	ctx := context.Background()
+	mustLaunchSeedSession(t, database, st, "sess-gemini", "gemini-cli", "/proj", time.Now().UTC())
+
+	recordLaunchSeed(path, "gemini", "/proj", 4242, nil)
+	consumeLaunchSeeds(ctx, st, bridge, nil)
+
+	entry, ok, err := bridge.Lookup(ctx, 4242)
+	if err != nil || !ok {
+		t.Fatalf("bridge.Lookup(4242) = (%+v, %v, %v), want the seed bound to the gemini-cli session", entry, ok, err)
+	}
+	if entry.SessionID != "sess-gemini" {
+		t.Fatalf("bound session = %q, want sess-gemini", entry.SessionID)
+	}
+}
+
+// TestConsumeLaunchSeeds_FreshLaunchDoesNotCrossProjects pins the other half:
+// a FRESH launch (dir == "", which is every dashboard "New Terminal" launch)
+// must not bind to a same-tool session in a DIFFERENT project. The seed now
+// carries the launcher's own cwd as the discriminator.
+func TestConsumeLaunchSeeds_FreshLaunchDoesNotCrossProjects(t *testing.T) {
+	path, database, st, bridge := newLaunchSeedTestDB(t)
+	ctx := context.Background()
+	// The only recent opencode session belongs to a DIFFERENT project than the
+	// directory this launcher is running in.
+	mustLaunchSeedSession(t, database, st, "sess-other", "opencode", t.TempDir(), time.Now().UTC())
+
+	// Run the launcher from a directory that is not that project root.
+	wd := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	recordLaunchSeed(path, "opencode", "", 4343, nil)
+	consumeLaunchSeeds(ctx, st, bridge, nil)
+
+	if entry, ok, lerr := bridge.Lookup(ctx, 4343); lerr == nil && ok {
+		t.Fatalf("bridge.Lookup(4343) bound session %q — a fresh launch cross-attributed to another project's session", entry.SessionID)
 	}
 }

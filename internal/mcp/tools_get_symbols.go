@@ -183,8 +183,11 @@ type getSymbolsResult struct {
 	Truncated bool `json:"truncated,omitempty"`
 	// Warnings is the V7-17 closed-set tag slice. Empty (nil) →
 	// omitted. See internal/mcp/warnings.go for the tag constants.
-	Warnings []string             `json:"warnings,omitempty"`
-	Results  []getSymbolsResponse `json:"results"`
+	Warnings []string `json:"warnings,omitempty"`
+	// Note explains a degraded answer in operator terms — today only the
+	// corpus-archival case. The machine-readable half is `warnings`.
+	Note    string               `json:"note,omitempty"`
+	Results []getSymbolsResponse `json:"results"`
 }
 
 type getSymbolsResponse struct {
@@ -284,6 +287,15 @@ func (t *getSymbolsTool) Invoke(ctx context.Context, raw json.RawMessage) (any, 
 		out.Degraded = true
 		// V7-17: surface the same signal in-band as a closed-set tag.
 		out.Warnings = appendWarning(out.Warnings, WarningIndexUnavailable)
+	}
+	// Corpus archival P2.3: "no index" and "this project's index is in cold
+	// storage" are different situations with different fixes, and the regex
+	// fallback below answers both identically. One indexed marker lookup tells
+	// them apart, and only an actually-archived project gets the tag.
+	if note, archived := archivedNote(ctx, t.cg, args.ProjectRoot); archived {
+		out.Degraded = true
+		out.Warnings = appendWarning(out.Warnings, WarningProjectArchived)
+		out.Note = note
 	}
 
 	totalBodyBytes := 0

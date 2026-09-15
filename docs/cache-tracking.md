@@ -3,10 +3,20 @@
 Anthropic prompt-cache observation, attribution, and forecasting.
 Local, passive, network-free — observes the cache the provider already
 keeps, attributes hits and rewrites by cause, and surfaces the
-mispredict rate operators care about. Default-on per spec §11; the
-three cache tables (`cache_segments`, `cache_entries`, `cache_events`)
-are NODE-LOCAL and never enter the org-push wire path (pinned by
-`tests/invariant/privacy_test.go::TestSelectUnpushedSinceExcludesCacheTables`).
+mispredict rate operators care about. Default-on per spec §11.
+
+The three cache tables (`cache_segments`, `cache_entries`,
+`cache_events`) are NODE-LOCAL: their names may never appear in
+`internal/store/orgpush.go`, pinned by
+`tests/invariant/privacy_test.go::TestSelectUnpushedSinceExcludesCacheTables`.
+That is a module-boundary rule, not a data embargo - under the
+enterprise posture the per-event log DOES reach the org, composed
+through the seam file `internal/store/cacheeventorgrows.go` and gated on
+the node's own `shipsRawContent()` (`full_content` / `admin_managed`),
+landing in server table `session_cache_events` (migration 142). The
+engine's `detail` diagnostic JSON is excluded at every posture. The
+teams-tier `cache_detail` flag remains orthogonal: it gates only the
+content-free fleet day aggregate.
 
 For the full design, see
 [`docs/plans/cache-tracking-implementation-spec-2026-06-08.md`](plans/cache-tracking-implementation-spec-2026-06-08.md).
@@ -68,14 +78,17 @@ floor:
 
 | Model family | Min cacheable prefix |
 |---|---|
-| Claude Opus 5, Claude Fable 5, Claude Mythos 5 | **512** |
+| Claude Opus 5, Claude Fable 5 / 5.1, Claude Mythos 5 / 5.1 | **512** |
 | Claude Opus 4.8, Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.1, Opus 4 | 1,024 (the fall-through default) |
 | Claude Mythos Preview, **Claude Opus 4.7** | 2,048 |
 | Claude Haiku 3.5 | 2,048 |
 | Claude Opus 4.6, Claude Opus 4.5 | 4,096 |
 | Claude Haiku 4.5 | 4,096 |
 
-Verified 2026-07-25 against the vendor page —
+Verified 2026-07-25 (Fable 5.1 / Mythos 5.1 rows re-verified 2026-09-02;
+they resolve through the same `fable-5` / `mythos-5` substring rows in
+`minCacheableTable` — `"fable-5"` is a substring of `claude-fable-5-1` —
+so no new table entry was needed) against the vendor page —
 [Anthropic prompt caching → "Minimum cacheable prompt
 length"](https://platform.claude.com/docs/en/build-with-claude/prompt-caching),
 which states these minimums apply on every platform each model is
@@ -241,6 +254,85 @@ a *subset* count billed as disjoint; this is a genuinely disjoint one.
 **Capture is proxy-only.** Codex CLI **drops** `cache_write_tokens` (upstream
 bug openai/codex#32479 — its parser structs lack the field), so JSONL / rollout
 Tier-2 capture can never observe writes. Only the proxy lane sees them.
+
+### Provider cache-billing shapes (what a "cache write" costs)
+
+Cache **reads** are discounted everywhere. Cache **writes** are where the rate
+cards diverge, and the divergence is what the cost engine has to model. The
+table below is the grounding of record for `internal/intelligence/cost`:
+
+| Provider | Write (cache creation) | Read | Storage | Where the rate lives |
+|---|---|---|---|---|
+| Anthropic | **1.25 × input** (5m tier), **2 × input** (1h tier) | 0.10 × input | none | explicit `CacheCreation` / `CacheCreation1h` on the row |
+| OpenAI GPT-5.6+ | **1.25 × input** (explicit writes only) | 0.10 × input | none | explicit `CacheCreation` on the row |
+| OpenAI pre-5.6 | no write term (caching is automatic) | 0.10 × input | none | row leaves it blank → $0, correct |
+| **Google Gemini** | **1.00 × input** — a write *is* an ordinary input token | 0.10 × input | $1.00–$4.50 / 1M-tok / hour, **explicit caches only** | **derived** from the row's `Input` by `cacheWriteRules` |
+
+**Gemini, grounded 2026-09-03** against
+<https://ai.google.dev/gemini-api/docs/pricing> (paid/standard tier). Every
+Gemini row on that card has exactly four price lines — *Input*, *Output*,
+*Context caching*, *Context caching (storage)* — and the *Context caching* line
+is the **read** rate, uniformly 10% of input:
+
+| Model | Input | Output | Context caching (= read) | Storage |
+|---|---|---|---|---|
+| Gemini 2.5 Pro | $1.25 (≤200K) / $2.50 (>200K) | $10 / $15 | $0.125 / $0.25 | $4.50 /1M/hr |
+| Gemini 2.5 Flash | $0.30 | $2.50 | $0.03 | $1.00 /1M/hr |
+| Gemini 3.5 Flash | $1.50 | $9.00 | $0.15 | $1.00 /1M/hr |
+| Gemini 3.6 / 3.7 / 3.8 Flash | $0.75 (intro, → $1.50 on 2027-01-01) | $3.75 (→ $7.50) | $0.075 (→ $0.15) | $0.50 /1M/hr (→ $1.00) |
+
+There is **no cache-creation line anywhere on the card**, for implicit or
+explicit caching. Google's model is: you pay the standard input rate for the
+tokens the first time they go through (whether or not they land in a cache),
+you get the ~90% discount when they come back as a cache read, and an
+*explicit* cache additionally accrues an hourly storage fee for its TTL.
+
+**Why that mattered.** A blank `CacheCreation` means **$0** everywhere else in
+the table, which is the right answer for a provider that genuinely doesn't
+charge for writes (pre-5.6 OpenAI). For Gemini it was the *wrong* answer:
+Antigravity's usage submessage normalizes every provider onto an
+Anthropic-style split (field 1 = uncached suffix, field 2 = prefix newly
+written to cache, field 5 = prefix read from cache), so the **bulk of every
+Gemini prompt** lands in `cache_creation_tokens` — grounded 2026-09-03 on 20
+real generations, field 1 held constant at ~1,071–1,318 tokens/generation while
+field 2 accumulated 151,337 tokens over 10 generations. Pricing field 2 at $0
+understated Antigravity/Gemini cost by roughly the whole prompt.
+
+**How it's fixed (`internal/intelligence/cost/pricing.go`).** A per-provider
+rule table, `cacheWriteRules`, maps a provider family to a `cacheWritePolicy`:
+
+- `cacheWriteRowPriced` (default, every family with no rule row) — the write
+  price is not derivable from `Input`, so it must be on the row; blank stays $0.
+- `cacheWriteAtInputRate` (`gemini` today) — a blank `CacheCreation` is filled
+  from the row's own `Input`, and `LongContextCacheCreation` from
+  `LongContextInput` (Google reprices the *entire* request above 200K on the
+  Pro line, so the write follows the LC input rate the same way the read
+  follows `LongContextCacheRead`).
+
+`applyCacheWriteRule` runs in `Table.rate` — the single funnel every Lookup
+rung passes through with the resolved key in hand — so it covers baked rows,
+`config.toml` overrides, dated timelines and family-prefix fallbacks in one
+owner rather than restating the same fact on ~25 Gemini rows. It only ever
+fills a **zero** field, so an explicit rate always wins.
+
+**Storage is deliberately not modelled.** It is a time-integral over a cache
+handle's TTL and we hold no cache-handle lifetimes; more to the point it
+applies only to *explicit* caches, and the implicit caching that Antigravity
+and Gemini turns actually exercise carries no storage charge.
+
+### Per-model cache economics now also arrive with the pricing feed
+
+The per-model cache facts above - the caching regime (explicit vs implicit),
+how a cache write is billed, the TTLs and 1-hour tier, and the minimum
+cacheable prefix - live in CODE today (`cachetrack/tier.go::minCacheableTable`,
+`internal/cachewarm`, the provider-billing rule table). As of the 2026-09-11
+pricing-feed arc those same facts can ALSO travel as DATA, in the optional
+`economics` block of each signed pricing-feed row. In v1 the feed **carries,
+persists and displays** economics but does NOT yet drive the cachetrack or cost
+engines from it - the overlays here stay authoritative until a follow-up proves
+each fact against live traffic. See [`pricing.md`](pricing.md) "Where prices
+come from" for the economics field list and trust model; the tables in this doc
+are not restated there.
 
 ## Config
 
@@ -954,4 +1046,15 @@ each deferred to a named successor:
 - `internal/db/migrations/037_cache_events_message_id.sql` —
   cross-tier dedup column + index.
 - `tests/invariant/privacy_test.go::TestSelectUnpushedSinceExcludesCacheTables`
-  — privacy sentinel pinning cache_* tables NODE-LOCAL.
+  - privacy sentinel pinning the cache_* table NAMES out of
+  `internal/store/orgpush.go` (a module boundary; see the opening
+  section).
+- `internal/store/cacheeventorgrows.go` - the ONE seam that reads
+  `cache_events` for the org wire. Returns nothing unless the node's
+  share posture ships raw content; a 7-day trailing window, capped at
+  500 events per session in SQL (`ROW_NUMBER()`, most-recent-first);
+  the `detail` column and the node-local anchor ids are never in the
+  SELECT list.
+- `tests/invariant/privacy_test.go::TestSessionCacheEventsShipOnlyUnderRawContent`
+  - the wire-surface pin for that seam (present under
+  `full_content` / `admin_managed`, absent otherwise).

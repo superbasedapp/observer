@@ -129,14 +129,16 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		return adapter.ParseResult{NewOffset: fromOffset}, nil
 	}
 
-	projectRoot, gitRemote := a.resolveProjectRoot(path)
+	projectRoot, gitRemote, projectIdentity := a.resolveProjectRoot(path)
 	tools, tokens := a.parseTranscript(ctx, data, path, projectRoot, gitRemote)
 
-	return adapter.ParseResult{
+	res := adapter.ParseResult{
 		ToolEvents:  tools,
 		TokenEvents: tokens,
 		NewOffset:   int64(len(data)),
-	}, nil
+	}
+	adapter.ApplyProjectIdentity(&res, projectIdentity)
+	return res, nil
 }
 
 // resolveProjectRoot turns the transcript path into a stable project root.
@@ -146,21 +148,22 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 // repo doesn't misfile under the observer's own repo.
 // Returns (root, gitRemote); gitRemote is "" when the directory isn't
 // inside a git repo.
-func (a *Adapter) resolveProjectRoot(path string) (root, gitRemote string) {
+func (a *Adapter) resolveProjectRoot(path string) (root, gitRemote string, id git.Identity) {
 	dir := filepath.Dir(path)
 	if dir == "" || dir == "." || dir == string(filepath.Separator) {
-		return "[aider]", ""
+		return "[aider]", "", git.Identity{}
 	}
 	if translated := crossmount.TranslateForeignPath(dir); translated != dir {
 		if _, err := os.Stat(translated); err == nil {
 			dir = translated
 		}
 	}
-	info, err := git.Resolve(dir)
+	identity, err := git.ResolveIdentity(dir, git.IdentityOptions{})
 	if err != nil {
-		return dir, ""
+		return dir, "", git.Identity{}
 	}
-	return info.Root, git.NormalizeRemote(info.Remote)
+	// identity.Remote is already NormalizeRemote'd by ResolveIdentity.
+	return identity.Root, identity.Remote, identity
 }
 
 // scrub applies the plaintext scrubber, tolerating a nil scrubber.

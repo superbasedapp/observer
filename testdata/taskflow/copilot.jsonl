@@ -1,0 +1,2 @@
+{"tool":"copilot","raw_tool_name":"manage_todo_list","raw_tool_input":"{\"todoList\":[{\"id\":1,\"title\":\"Fix the login redirect bug\",\"status\":\"in-progress\"},{\"id\":2,\"title\":\"Draft the migration script\",\"status\":\"not-started\"}]}","raw_tool_output":""}
+{"tool":"copilot","raw_tool_name":"manage_todo_list","raw_tool_input":"{\"todoList\":[{\"id\":1,\"title\":\"Fix the login redirect bug\",\"status\":\"done\"},{\"id\":2,\"title\":\"Draft the migration script\",\"status\":\"in-progress\"}]}","raw_tool_output":""}

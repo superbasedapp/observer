@@ -25,21 +25,26 @@ const (
 	toolGoose           = "goose"
 	toolGrok            = "grok"
 	toolHermes          = "hermes"
+	toolJunie           = "junie"
 	toolKiloCode        = "kilo-code"
 	toolKiloCodeCLI     = "kilo-code-cli"
 	toolKimiCode        = "kimi-code"
 	toolKiroCLI         = "kiro-cli"
+	toolKiroCrew        = "kiro-crew"
 	toolMistralCode     = "mistral-code"
 	toolMuse            = "muse"
 	toolOpenClaw        = "openclaw"
 	toolOpenCode        = "opencode"
 	toolOpenInterpreter = "open-interpreter"
 	toolPi              = "pi"
+	toolPoolside        = "poolside"
 	toolPrimeAgent      = "prime-agent"
 	toolQoder           = "qoder"
 	toolQwenCode        = "qwen-code"
 	toolRooCode         = "roo-code"
 	toolZcode           = "zcode"
+	toolZed             = "zed"
+	toolZooCode         = "zoo-code"
 )
 
 // table is THE canonical taxonomy table: ordered, walked top-down by
@@ -76,6 +81,15 @@ var toolAliases = []toolAlias{
 		why: "roo-code is parsed by the Cline adapter — its actionMap " +
 			"comment is literally \"Cline/Roo tool names\" " +
 			"(internal/adapter/cline/adapter.go:112).",
+	},
+	{
+		alias: toolZooCode, source: toolCline,
+		why: "zoo-code (ZooCode, ZooCodeOrganization.zoo-code) is the " +
+			"community continuation of Roo Code and carries Roo's task " +
+			"layout, so it is parsed through the SAME cline adapter " +
+			"table as roo-code (internal/adapter/cline/roots.go " +
+			"clineExtensions), added 2026-09-03 (uncaptured-surfaces " +
+			"wiring plan, ticket U1).",
 	},
 	{
 		alias: toolKiloCode, source: toolCline,
@@ -156,8 +170,10 @@ var specificRows = concat(
 	kiloCodeCLIRows,
 	kimiCodeRows,
 	kiroCLIRows,
+	kiroCrewRows,
 	openClawRows,
 	piRows,
+	poolsideRows,
 	primeAgentRows,
 	qoderRows,
 	qwenCodeRows,
@@ -168,6 +184,8 @@ var specificRows = concat(
 	zcodeRows,
 	mistralCodeRows,
 	freebuffRows,
+	junieRows,
+	zedRows,
 )
 
 // --- claude-code -----------------------------------------------------
@@ -310,6 +328,7 @@ var coworkRows = concat(
 // the transcript switch has writefile/createfile but no bare `write`,
 // and no delete branch at all.
 var cursorRows = concat(
+	rows(toolCursor, SurfaceBuiltin, ActionTodoUpdate, "TodoWrite"),
 	rows(toolCursor, SurfaceBuiltin, ActionReadFile,
 		"read", "readfile", "cat", "readlints", "beforeReadFile"),
 	rows(toolCursor, SurfaceBuiltin, ActionWriteFile,
@@ -457,28 +476,39 @@ var copilotCLIRows = concat(
 )
 
 // --- antigravity (+ antigravity-cli alias) ---------------------------
-// code: internal/adapter/antigravity/classify.go:426-455 (mapToolName;
-// keys are lower-cased with `_`/`-` stripped).
+// code: internal/adapter/antigravity/classify.go (mapToolName; keys are
+// lower-cased with `_`/`-` stripped).
 // corpus: the `structured.*` synthetic names the structured-record
-// parser writes into raw_tool_name.
+// parser writes into raw_tool_name, plus the desktop IDE's native
+// tool_calls[].name spellings (`list_dir`, `view_file`, `run_command`,
+// `write_to_file`, `replace_file_content`, `find_by_name`) that
+// transcript.go writes verbatim into raw_tool_name — live-grounded
+// 2026-09-03 from brain/<uuid>/.system_generated/logs/transcript.jsonl.
+// The `transcript.*` synthetic names are the orphan-result fallback
+// (a typed result step with no preceding tool_calls entry).
 var antigravityRows = concat(
 	rows(toolAntigravity, SurfaceBuiltin, ActionReadFile,
-		"readfile", "read", "viewfile", "view", "cat", "structured.file_view"),
+		"readfile", "read", "viewfile", "view", "cat", "structured.file_view",
+		"transcript.view_file"),
 	rows(toolAntigravity, SurfaceBuiltin, ActionWriteFile,
-		"writefile", "write", "createfile", "create"),
+		"writefile", "write", "createfile", "create", "writetofile"),
 	rows(toolAntigravity, SurfaceBuiltin, ActionEditFile,
 		"replace", "edit", "editfile", "applypatch", "patch",
-		"structured.artifact_write"),
+		"replacefilecontent", "structured.artifact_write",
+		"transcript.code_action"),
 	rows(toolAntigravity, SurfaceBuiltin, ActionRunCommand,
 		"runshellcommand", "shell", "bash", "exec", "execute", "runcommand",
-		"run", "powershell", "pwsh", "cmd", "cmdexe", "structured.run_command"),
+		"run", "powershell", "pwsh", "cmd", "cmdexe", "structured.run_command",
+		"transcript.run_command"),
 	rows(toolAntigravity, SurfaceBuiltin, ActionWebSearch,
 		"googlewebsearch", "websearch", "search"),
 	rows(toolAntigravity, SurfaceBuiltin, ActionWebFetch,
 		"webfetch", "fetch", "fetchurl", "fetchwebpage"),
-	rows(toolAntigravity, SurfaceBuiltin, ActionSearchText, "grep", "searchtext", "findtext"),
+	rows(toolAntigravity, SurfaceBuiltin, ActionSearchText, "grep", "searchtext", "findtext",
+		"transcript.grep_search"),
 	rows(toolAntigravity, SurfaceBuiltin, ActionSearchFiles,
-		"glob", "findfiles", "filesearch", "ls", "listfiles"),
+		"glob", "findfiles", "filesearch", "ls", "listfiles", "listdir", "findbyname",
+		"transcript.list_directory"),
 )
 
 // --- gemini-cli ------------------------------------------------------
@@ -504,6 +534,24 @@ var geminiCLIRows = concat(
 	// savememory/memorize: "closest existing semantic; defer dedicated
 	// type" (parser.go:623-624). Kept as code has it.
 	rows(toolGeminiCLI, SurfaceBuiltin, ActionMCPCall, "savememory", "memorize"),
+	// write_todos: gemini-cli's real, shipped todo/plan tool (PR #8761,
+	// merged 2025-09-20, first release v0.8.0) — RETRACTED from a
+	// wrongly-recorded "no task tool" during the 2026-09-07 task-
+	// tracking capture audit round 2. Without this row every write_todos
+	// call normalized to `writetodos` and fell through to ActionUnknown
+	// for ~10 months. Schema: {todos:[{description,status}]}, 5-value
+	// status vocabulary (pending/in_progress/completed/cancelled/
+	// blocked), no item id — a Snapshot rewrite (internal/taskflow
+	// decodes it). Gated at the vendor to the Gemini-2 family since
+	// v0.21.1 (docs/audits/task-tracking-capture-audit-2026-09-07.md §2.6).
+	rows(toolGeminiCLI, SurfaceBuiltin, ActionTodoUpdate, "write_todos"),
+	// complete_task: sibling constant in the same vendor source block as
+	// write_todos (ENTER_PLAN_MODE_TOOL_NAME / EXIT_PLAN_MODE_TOOL_NAME /
+	// COMPLETE_TASK_TOOL_NAME) — an unmapped turn-terminus signal, the
+	// same family as cline's attempt_completion / codex's terminal
+	// event. Never observed live; added defensively alongside the
+	// write_todos fix per the audit's round-2 recommendation (§R2.8).
+	rows(toolGeminiCLI, SurfaceBuiltin, ActionTaskComplete, "complete_task"),
 	// updatetopic: DELIBERATE unknown, not a corpus gap the code failed
 	// to notice. Live args (2026-07-31, WP-T6 G1 follow-up) are
 	// {title, summary, strategic_intent} — a running conversation-topic
@@ -723,18 +771,67 @@ var kimiCodeRows = concat(
 )
 
 // --- kiro-cli --------------------------------------------------------
-// code: internal/adapter/kirocli/normalize.go:41-69. `fs_write`
-// dispatches on the sub-arg: command="str_replace" → edit_file, else
-// write_file. The table records the DEFAULT (write_file); the adapter
-// keeps the sub-arg branch (a shape tooltax deliberately does not model).
+// code: internal/adapter/kirocli/normalize.go (normalizeTool). ONE
+// classifier serves all three Kiro layouts, so this block carries BOTH
+// vocabularies: the CLI's (`fs_*`, `execute_bash`) and the Kiro IDE's
+// (`read_file`, `str_replace`, `execute_pwsh`, `delete_file`,
+// `list_directory`, `todo_list`), grounded on the operator's live Kiro
+// IDE 1.0.411 run 2026-09-03.
+//
+// `fs_write` dispatches on the sub-arg: command="str_replace" →
+// edit_file, else write_file. The table records the DEFAULT
+// (write_file); the adapter keeps the sub-arg branch (a shape tooltax
+// deliberately does not model).
+//
+// `delete_file` → edit_file follows the established precedent — no
+// canonical delete action type exists (see the cowork block's note),
+// and copilot `deletefile` / grok `deletefile` land the same way.
+//
 // corpus: `execute_cmd` (1 row `unknown`) is absent from the switch.
 var kiroCLIRows = concat(
-	rows(toolKiroCLI, SurfaceBuiltin, ActionReadFile, "fs_read"),
-	rows(toolKiroCLI, SurfaceBuiltin, ActionWriteFile, "fs_write"),
+	rows(toolKiroCLI, SurfaceBuiltin, ActionReadFile,
+		"fs_read",
+		"read_file", // Kiro IDE.
+		"read"),     // interactive flat stream (2026-09-03).
+	rows(toolKiroCLI, SurfaceBuiltin, ActionWriteFile,
+		"fs_write",
+		"write"), // interactive flat stream (2026-09-03).
+	rows(toolKiroCLI, SurfaceBuiltin, ActionEditFile,
+		"str_replace",  // Kiro IDE.
+		"delete_file"), // Kiro IDE; no canonical delete type.
 	rows(toolKiroCLI, SurfaceBuiltin, ActionRunCommand,
 		"execute_bash",
-		"execute_cmd"), // corpus.
+		"execute_pwsh", // Kiro IDE (shellType=powershell).
+		"execute_cmd",  // corpus.
+		"shell"),       // interactive flat stream (2026-09-03).
+	rows(toolKiroCLI, SurfaceBuiltin, ActionSearchFiles, "list_directory"), // Kiro IDE.
+	rows(toolKiroCLI, SurfaceBuiltin, ActionTodoUpdate, "todo_list"),       // Kiro IDE.
 	rows(toolKiroCLI, SurfaceBuiltin, ActionUnknown, "introspect"),
+)
+
+// --- kiro-crew -------------------------------------------------------
+// code: internal/adapter/kirocrew/parse.go (kindActions + resolveTool).
+//
+// Kiro Crew logs a tool call under its OWN normalized vocabulary in
+// `meta.kind`, not under the kiro-cli tool name it actually drove. The
+// vocabulary is deliberately tiny — three tokens, all grounded on the
+// live 2026-09-03 capture (9 tool calls: 1 read, 2 edit, 6 execute):
+//
+//	read     -> read_file    (kiro-cli `read`)
+//	edit     -> edit_file    (kiro-cli `write`, BOTH sub-modes)
+//	execute  -> run_command  (kiro-cli `shell`)
+//
+// `edit` is LOSSY: Crew labels a file CREATE and a str-replace with the
+// same token. The table records the default (edit_file) and the adapter
+// keeps the `command == "create"` sub-arg branch that recovers write_file
+// — exactly the split kiro-cli's own `fs_write` row documents above.
+//
+// No corpus rows: kiro-crew has never appeared in an action corpus (it is
+// registered by this commit). Nothing is listed that was not observed.
+var kiroCrewRows = concat(
+	rows(toolKiroCrew, SurfaceBuiltin, ActionReadFile, "read"),
+	rows(toolKiroCrew, SurfaceBuiltin, ActionEditFile, "edit"),
+	rows(toolKiroCrew, SurfaceBuiltin, ActionRunCommand, "execute"),
 )
 
 // --- openclaw --------------------------------------------------------
@@ -772,6 +869,30 @@ var piRows = concat(
 	rows(toolPi, SurfaceBuiltin, ActionWebFetch, "web_fetch", "fetch", "fetch_url"),
 )
 
+// --- poolside ----------------------------------------------------------
+// code: internal/adapter/poolside/records.go (actionMap).
+//
+// Every row is GROUNDED — the complete tool surface observed in a live
+// 2026-09-05 JetBrains ACP capture (22 calls, one prompt): read, write,
+// edit, shell, list_directory_tree, todo_action, and the harness-
+// injected synthetic completion tool `exit`. Unlike most adapters this
+// table carries NO defensive rows: the ACP session/new response's own
+// configOptions never enumerated a larger tool surface than what was
+// actually called, so there is no evidence to guess a longer vocabulary
+// from.
+var poolsideRows = concat(
+	rows(toolPoolside, SurfaceBuiltin, ActionReadFile, "read"),
+	rows(toolPoolside, SurfaceBuiltin, ActionWriteFile, "write"),
+	rows(toolPoolside, SurfaceBuiltin, ActionEditFile, "edit"),
+	rows(toolPoolside, SurfaceBuiltin, ActionRunCommand, "shell"),
+	rows(toolPoolside, SurfaceBuiltin, ActionSearchFiles, "list_directory_tree"),
+	rows(toolPoolside, SurfaceBuiltin, ActionTodoUpdate, "todo_action"),
+	// exit is the harness-injected, IsSynthetic completion signal (the
+	// model calls it on purpose, same family as cline's
+	// attempt_completion / cline-cli's submit_and_exit).
+	rows(toolPoolside, SurfaceMeta, ActionTaskComplete, "exit"),
+)
+
 // --- prime-agent -----------------------------------------------------
 // code: internal/adapter/primeagent/adapter.go (mapToolName).
 //
@@ -807,7 +928,12 @@ var primeAgentRows = concat(
 var qoderRows = concat(
 	rows(toolQoder, SurfaceBuiltin, ActionReadFile, "Read"),
 	rows(toolQoder, SurfaceBuiltin, ActionWriteFile, "Write"),
-	rows(toolQoder, SurfaceBuiltin, ActionEditFile, "Edit", "MultiEdit", "NotebookEdit"),
+	// SearchReplace: the Qoder IDE's own edit tool (grounded live 2026-09-03
+	// in projects/<slug>/transcript/*.session.execution.jsonl:
+	// {file_path, replacements[{original_text, new_text, replace_all}]}).
+	// The IDE's DeleteFile has no normalized delete action type and stays
+	// rowless (ActionUnknown with the raw name) rather than mislabelled.
+	rows(toolQoder, SurfaceBuiltin, ActionEditFile, "Edit", "MultiEdit", "NotebookEdit", "SearchReplace"),
 	rows(toolQoder, SurfaceBuiltin, ActionRunCommand,
 		"Bash", "PowerShell", "powershell", "pwsh", "cmd", "cmd.exe", "sh"),
 	rows(toolQoder, SurfaceBuiltin, ActionSearchText, "Grep"),
@@ -997,10 +1123,56 @@ var freebuffRows = concat(
 	rows(toolFreebuff, SurfaceBuiltin, ActionRunCommand,
 		"run_terminal_command", "run_command", "bash"),
 	rows(toolFreebuff, SurfaceBuiltin, ActionSearchText, "code_search", "grep"),
-	rows(toolFreebuff, SurfaceBuiltin, ActionSearchFiles, "find_files"),
+	// list_directory + glob: grounded live in the Freebuff DESKTOP store
+	// (desktop-v2.db parts_json, 2026-09-03); the remaining names below
+	// come from the CLI adapter's mapFreebuffTool table, which had drifted
+	// ahead of this registry. suggest_prompts / suggest_followups stay
+	// deliberately rowless (ActionUnknown — not a tool the model acts with).
+	rows(toolFreebuff, SurfaceBuiltin, ActionSearchFiles, "find_files", "glob", "list_directory"),
 	rows(toolFreebuff, SurfaceBuiltin, ActionWebSearch, "web_search"),
 	rows(toolFreebuff, SurfaceBuiltin, ActionWebFetch, "read_url", "web_fetch"),
 	rows(toolFreebuff, SurfaceOrchestration, ActionSpawnSubagent, "spawn_agents", "spawn_agent"),
+	rows(toolFreebuff, SurfaceBuiltin, ActionTodoUpdate, "write_todos"),
+	rows(toolFreebuff, SurfaceBuiltin, ActionAskUser, "ask_user"),
+	rows(toolFreebuff, SurfaceBuiltin, ActionSkillInvoke, "skill"),
+	rows(toolFreebuff, SurfaceBuiltin, ActionBrowserAction, "browser_use"),
+	rows(toolFreebuff, SurfaceBuiltin, ActionTaskComplete, "set_output"),
+)
+
+// --- junie -----------------------------------------------------------
+// code: internal/adapter/junie/mcpblocks.go (mcpToolRules).
+// Junie's own typed block kinds (Terminal / FileChanges / ViewFiles /
+// Result) are structural discriminators, not tool names, and stay
+// rowless. The rows here are the JetBrains AI Assistant's built-in
+// `idea` MCP server tools, which a Junie run hosted inside the IDE calls
+// through McpBlockUpdatedEvent (grounded live 2026-09-03: 4 of the
+// server's ~40 tools were exercised by the five-turn prompt kit; the
+// rest fall through to mcp_call with the verbatim name). Note that
+// tooltax.MCPIdentityFromTarget drops the `<server>/<tool>` form, so
+// these targets never parse as MCP identities in the guard layer — a
+// pre-existing, documented choice.
+var junieRows = concat(
+	rows(toolJunie, SurfaceMCP, ActionSearchFiles, "idea/list_directory_tree"),
+	rows(toolJunie, SurfaceMCP, ActionWriteFile, "idea/create_new_file"),
+	rows(toolJunie, SurfaceMCP, ActionRunCommand, "idea/execute_terminal_command"),
+	rows(toolJunie, SurfaceMCP, ActionEditFile, "idea/apply_patch"),
+)
+
+// --- zed ---------------------------------------------------------------
+// code: internal/adapter/zed/thread.go (mapZedTool). 7 grounded native
+// tool names — the COMPLETE surface a live multi-call session exercised
+// (list_directory / find_path / read_file / write_file / terminal /
+// edit_file / delete_path); no defensive rows.
+var zedRows = concat(
+	rows(toolZed, SurfaceBuiltin, ActionReadFile, "read_file"),
+	rows(toolZed, SurfaceBuiltin, ActionWriteFile, "write_file"),
+	rows(toolZed, SurfaceBuiltin, ActionEditFile, "edit_file",
+		// No canonical delete action type exists; edit_file is the
+		// established precedent (cursor `Delete`, copilot/grok
+		// `deletefile`/`removefile`).
+		"delete_path"),
+	rows(toolZed, SurfaceBuiltin, ActionRunCommand, "terminal"),
+	rows(toolZed, SurfaceBuiltin, ActionSearchFiles, "list_directory", "find_path"),
 )
 
 // toolGlobRows are the tool-specific PREFIX globs. They sort after every

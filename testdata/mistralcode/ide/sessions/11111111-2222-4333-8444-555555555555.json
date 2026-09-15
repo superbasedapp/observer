@@ -1,0 +1,144 @@
+{
+  "sessionId": "11111111-2222-4333-8444-555555555555",
+  "title": "Wire up the health endpoint",
+  "workspaceDirectory": "/home/dev/needlehaystack",
+  "mode": "agent",
+  "chatModelTitle": "codestral-latest",
+  "history": [
+    {
+      "message": {
+        "role": "user",
+        "content": "add a health endpoint to the server"
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": [{ "type": "text", "text": "Let me look at the server first." }],
+        "toolCalls": [
+          {
+            "id": "tc_read_1",
+            "type": "function",
+            "function": {
+              "name": "builtin_read_file",
+              "arguments": "{\"filepath\":\"server/main.go\"}"
+            }
+          },
+          {
+            "id": "tc_grep_1",
+            "type": "function",
+            "function": {
+              "name": "builtin_grep_search",
+              "arguments": "{\"query\":\"func registerRoutes\"}"
+            }
+          }
+        ],
+        "usage": {
+          "promptTokens": 14200,
+          "completionTokens": 310,
+          "promptTokensDetails": { "cachedTokens": 12000, "cacheWriteTokens": 900 },
+          "completionTokensDetails": { "reasoningTokens": 64 }
+        }
+      },
+      "contextItems": [],
+      "promptLogs": [{ "modelTitle": "mistral-medium-3.5", "modelProvider": "mistral" }],
+      "toolCallStates": [
+        {
+          "toolCallId": "tc_read_1",
+          "toolCall": {
+            "id": "tc_read_1",
+            "type": "function",
+            "function": {
+              "name": "builtin_read_file",
+              "arguments": "{\"filepath\":\"server/main.go\"}"
+            }
+          },
+          "status": "done",
+          "parsedArgs": { "filepath": "server/main.go" },
+          "output": [
+            {
+              "name": "server/main.go",
+              "description": "server/main.go",
+              "content": "package main\n\nfunc main() {}\n"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "message": {
+        "role": "tool",
+        "toolCallId": "tc_read_1",
+        "content": "package main\n\nfunc main() {}\n"
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "tool",
+        "toolCallId": "tc_grep_1",
+        "content": "Error: no matches for func registerRoutes"
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "toolCalls": [
+          {
+            "id": "tc_edit_1",
+            "type": "function",
+            "function": {
+              "name": "builtin_edit_existing_file",
+              "arguments": "{\"filepath\":\"server/main.go\",\"changes\":\"add /healthz\"}"
+            }
+          },
+          {
+            "id": "tc_term_1",
+            "type": "function",
+            "function": {
+              "name": "builtin_run_terminal_command",
+              "arguments": "{\"command\":\"go build ./...\"}"
+            }
+          },
+          {
+            "id": "tc_mcp_1",
+            "type": "function",
+            "function": {
+              "name": "mcp__linear__create_issue",
+              "arguments": "{\"name\":\"track the healthz rollout\"}"
+            }
+          },
+          {
+            "id": "tc_unknown_1",
+            "type": "function",
+            "function": {
+              "name": "some_future_tool",
+              "arguments": "{\"thing\":\"value\"}"
+            }
+          }
+        ],
+        "usage": {
+          "promptTokens": 15100,
+          "completionTokens": 205
+        }
+      },
+      "contextItems": [],
+      "promptLogs": [{ "modelTitle": "mistral-medium-3.5", "modelProvider": "mistral" }]
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "Added a /healthz handler and the build is clean.",
+        "usage": {
+          "promptTokens": 15800,
+          "completionTokens": 42,
+          "promptTokensDetails": { "cachedTokens": 15800 }
+        }
+      },
+      "contextItems": []
+    }
+  ]
+}

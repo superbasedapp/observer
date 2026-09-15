@@ -1,0 +1,49 @@
+# Multistage build for the SuperBased hosted Cloud Intelligence service
+# (cmd/observer-cloud). ONE image backs BOTH container apps:
+#   sbci-api    -> `serve`  (public /v1 API + embedded webcloud portal)
+#   sbci-worker -> `worker` (queue-leased inference worker skeleton)
+# The container-app deploy selects the subcommand via --args
+# (scripts/cloudintel/cloudintel-azure.sh); the default CMD is `serve`.
+#
+# The agent (cmd/observer) and the org server (cmd/observer-org) are NOT built
+# here. The React portal under webcloud/ is go:embed'd from its committed
+# webcloud/dist/ (webcloud/embed.go: `//go:embed all:dist`), so there is no npm
+# stage — the frontend must already be built and committed before this image is
+# built (mirrors Dockerfile.observer-org). If dist/ were absent the Go build
+# below would fail with "pattern dist: no matching files found", so a green
+# build is itself proof the portal was embedded.
+
+# ---- build stage ----------------------------------------------------------
+FROM golang:1.25 AS build
+
+WORKDIR /src
+
+# Cache module downloads across rebuilds.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=dev
+# CGO disabled: the hosted service uses pgx (pure-Go Postgres) and does not
+# compile in the agent's SQLite driver, so the binary is fully static and runs
+# on distroless/static.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+        -ldflags="-s -w -X main.version=${VERSION}" \
+        -o /out/observer-cloud ./cmd/observer-cloud
+
+# ---- runtime stage --------------------------------------------------------
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=build /out/observer-cloud /usr/local/bin/observer-cloud
+
+# Stateless: durable state lives in Postgres, Blob storage, and Key Vault —
+# there is no local database file, so no VOLUME is declared. `serve` binds
+# :8090 (SBCI_LISTEN, set by the container-app), which is > 1024 and therefore
+# bindable by the distroless nonroot user (uid/gid 65532).
+EXPOSE 8090
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/observer-cloud"]
+# sbci-api uses this default; sbci-worker overrides it with `--args worker`.
+CMD ["serve"]

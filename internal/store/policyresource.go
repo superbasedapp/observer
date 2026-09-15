@@ -322,7 +322,10 @@ var testHookKeyPinBeforeInsert func()
 // authoritative by construction (an authenticated enrolment response), not
 // trust-on-first-use, so a legitimate re-enrol can still record a rotated
 // key.
-func (s *Store) EstablishOrgPolicyKeyPin(ctx context.Context, pinPath, keyHash string) (pinned string, established bool, err error) {
+// The provenance is stamped into the row's version column so the trust-root
+// resolver (orgclient.enrolmentTrustFor) can tell a fetch-established pin
+// from one the enrolment channel wrote; the store does not interpret it.
+func (s *Store) EstablishOrgPolicyKeyPin(ctx context.Context, pinPath, keyHash, provenance string) (pinned string, established bool, err error) {
 	if pinPath == "" || keyHash == "" {
 		return "", false, errors.New("store.EstablishOrgPolicyKeyPin: pinPath and keyHash required")
 	}
@@ -359,9 +362,9 @@ func (s *Store) EstablishOrgPolicyKeyPin(ctx context.Context, pinPath, keyHash s
 
 	res, err := conn.ExecContext(ctx, `
 		INSERT INTO guard_policy_state (layer, path, version, content_hash, signature, loaded_at)
-		SELECT 'org', ?, '', ?, NULL, ?
+		SELECT 'org', ?, ?, ?, NULL, ?
 		WHERE NOT EXISTS (SELECT 1 FROM guard_policy_state WHERE layer = 'org' AND path = ?)`,
-		pinPath, keyHash, timestamp(time.Time{}), pinPath)
+		pinPath, provenance, keyHash, timestamp(time.Time{}), pinPath)
 	if err != nil {
 		return "", false, fmt.Errorf("store.EstablishOrgPolicyKeyPin: insert: %w", err)
 	}

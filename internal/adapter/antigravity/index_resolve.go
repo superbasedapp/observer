@@ -56,7 +56,12 @@ func ResolveIndexEntry(pbPath string) (IndexEntryResolved, bool) {
 		Created:   e.created,
 	}
 	if e.workspaceURI != "" {
-		out.ProjectRoot, out.GitRemote = decodeFileURIToRoot(e.workspaceURI)
+		// ResolveIndexEntry is the backfill re-attribution path (cmd/observer
+		// backfill.go's --antigravity-project-root), which re-resolves git
+		// identity itself via a direct git.Resolve call — the richer
+		// Project Identity Resolver v2 bundle is intentionally discarded
+		// here, matching that call site's existing Root/IsGit-only usage.
+		out.ProjectRoot, out.GitRemote, _ = decodeFileURIToRoot(e.workspaceURI)
 	}
 	return out, true
 }

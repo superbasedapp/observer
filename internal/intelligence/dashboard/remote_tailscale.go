@@ -133,7 +133,10 @@ func (s *Server) handleRemoteTailscaleOperatorGrant(w http.ResponseWriter, r *ht
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		http.Error(w, `{"error":"the in-dashboard terminal is not available on this platform — run the observer daemon under WSL/Linux, or run `+"`sudo tailscale set --operator=<you>`"+` manually"}`, http.StatusServiceUnavailable)
+		// Q16: the setup PTY here is exactly as ConPTY-capable as the New
+		// Terminal launch path since 2026-07-04 — reuse errTerminalUnavailable
+		// (audit DI-16) instead of the stale "run under WSL/Linux" claim.
+		http.Error(w, `{"error":"`+errTerminalUnavailable+`, or run `+"`sudo tailscale set --operator=<you>`"+` manually"}`, http.StatusServiceUnavailable)
 		return
 	}
 	user, isRoot, err := tailnet.CurrentDaemonUser()
@@ -181,7 +184,8 @@ func (s *Server) handleRemoteTailscaleLogin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		http.Error(w, `{"error":"the in-dashboard terminal is not available on this platform — run the observer daemon under WSL/Linux, or run `+"`tailscale up`"+` manually"}`, http.StatusServiceUnavailable)
+		// Q16: same reasoning as handleRemoteTailscaleOperatorGrant above.
+		http.Error(w, `{"error":"`+errTerminalUnavailable+`, or run `+"`tailscale up`"+` manually"}`, http.StatusServiceUnavailable)
 		return
 	}
 	_, isRoot, err := tailnet.CurrentDaemonUser()
@@ -232,7 +236,8 @@ func (s *Server) handleRemoteTailscaleInstall(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		http.Error(w, `{"error":"the in-dashboard terminal is not available on this platform — run the observer daemon under WSL/Linux, or install Tailscale manually"}`, http.StatusServiceUnavailable)
+		// Q16: same reasoning as handleRemoteTailscaleOperatorGrant above.
+		http.Error(w, `{"error":"`+errTerminalUnavailable+`, or install Tailscale manually"}`, http.StatusServiceUnavailable)
 		return
 	}
 	// Re-check presence at the FINAL spawn boundary (not just the early advisory

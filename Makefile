@@ -16,9 +16,11 @@ WEB_EMBED_DIST := internal/intelligence/dashboard/webapp/dist
         web-install web-dev web-build web-clean \
         plugins-build verify-plugins-build \
         taxonomy-build verify-taxonomy-build verify-taxonomy-ts \
+        config-schema-build verify-config-schema \
         taxonomy-migration-build verify-taxonomy-migration \
         assistant-migration-build verify-assistant-migration \
-        reasoning-migration-build verify-reasoning-migration
+        reasoning-migration-build verify-reasoning-migration \
+        verify-webcloud-dist
 
 # Targets whose INPUTS are private-only paths (cmd/observer-org*,
 # cmd/observer-edge, web2/, deploy/, docs/, website/, tools/toolcountgen)
@@ -127,13 +129,14 @@ clean:
 # committing.
 # ---------------------------------------------------------------
 web-install:
-	cd $(WEB_DIR) && npm ci
+	npm ci
 
 web-dev:
 	cd $(WEB_DIR) && npm run dev
 
 web-build:
-	cd $(WEB_DIR) && npm ci --silent && npm run build
+	npm ci --silent
+	cd $(WEB_DIR) && npm run build
 	@rm -rf $(WEB_EMBED_DIST)
 	@mkdir -p $(WEB_EMBED_DIST)
 	@cp -R $(WEB_DIST)/. $(WEB_EMBED_DIST)/
@@ -165,9 +168,9 @@ verify-plugins-build:
 	@scripts/verify-plugins-build.sh
 
 # ---------------------------------------------------------------
-# Dashboard action taxonomy (web/src/lib/actiontax.gen.*). web/taxgen
+# Dashboard action taxonomy (shared/lib/actiontax.gen.*). web/taxgen
 # mirrors internal/tooltax — the one owner of the cross-adapter tool/MCP
-# taxonomy — into the shape web/src/lib/actions.ts reads: the canonical
+# taxonomy — into the shape shared/lib/actions.ts reads: the canonical
 # category list, the action-type → {category, label} registry, and the
 # MCP name-parse rules (actiontax.gen.json), the ActionCategory literal
 # union (actiontax.gen.ts), and the parity vectors the TypeScript gate
@@ -187,7 +190,7 @@ taxonomy-build:
 verify-taxonomy-build:
 	@scripts/verify-taxonomy-build.sh
 
-# Cross-language parity gate: compiles the REAL web/src/lib/actions.ts
+# Cross-language parity gate: compiles the REAL shared/lib/actions.ts
 # (esbuild, from web/node_modules) and runs it against the generated
 # vectors, whose expectations come from tooltax.MCPIdentity. Separate
 # target from verify-taxonomy-build because it needs node + web deps,
@@ -195,6 +198,41 @@ verify-taxonomy-build:
 # taxonomy-build-drift job.
 verify-taxonomy-ts:
 	@scripts/verify-taxonomy-ts.sh
+
+# ---------------------------------------------------------------
+# Dashboard config schema (internal/config/schema/schema.gen.json +
+# web/src/lib/configschema.gen.ts). web/cfgschema serializes
+# internal/configschema — the one owner of config.Config's structure +
+# classification (tier / restart class / Settings section / prominence)
+# — plus every field's Go doc comment, into the artifact GET
+# /api/config/schema serves (go:embed'd, so it always describes THIS
+# daemon's build) and the ConfigKeyPath literal union that makes a
+# removed key a tsc error. Run after any change to a config struct or
+# to internal/configschema/annotations.go — see
+# docs/plans/dashboard-config-management-plan-2026-08-28.md §1.
+# ---------------------------------------------------------------
+config-schema-build:
+	$(GO) run ./web/cfgschema
+
+# Drift gate for the generated config schema: regenerates into a scratch
+# dir and byte-diffs both artifacts against the committed ones. Fails if
+# a config struct or the annotation table moved without a matching
+# `make config-schema-build` + commit. Never mutates the working tree.
+# Mirrors verify-taxonomy-build's build-into-temp pattern.
+verify-config-schema:
+	@scripts/verify-config-schema-build.sh
+
+# ---------------------------------------------------------------
+# webcloud portal dist drift gate (gap 3.7). cmd/observer-cloud go:embed's
+# the committed webcloud/dist (webcloud/embed.go: //go:embed all:dist) — a
+# src/ change that never got rebuilt would ship a stale portal silently.
+# Never mutates the working tree; builds into a scratch dir and diffs
+# against the committed dist. Needs webcloud/node_modules (npm workspace:
+# run `npm ci` from the repo root, or from webcloud/ — both resolve against
+# the root package-lock.json).
+# ---------------------------------------------------------------
+verify-webcloud-dist:
+	@scripts/verify-webcloud-dist.sh
 
 # ---------------------------------------------------------------
 # Historical-data repair for the same taxonomy (internal/db/migrations/

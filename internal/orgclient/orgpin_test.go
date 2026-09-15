@@ -51,10 +51,12 @@ func pinAnnouncementKey(t *testing.T, s *store.Store, pubB64 string) {
 // long since pinned — would trust ANY key on its first announcement
 // fetch, because that rail had never seen one.
 //
-// One org has ONE distribution signing identity (the server signs both
-// rails with routingpolicy.SigningKey), so a second key is never a
-// legitimate state: it is a substituted server or a MITM, and the node
-// already holds the evidence to say so.
+// One org has ONE distribution signing identity (since ruling R1 the
+// server signs every rail with routingpolicy.SigningKeyWith — the
+// configured file key when there is one, the database row otherwise), so
+// a second key is never a legitimate state unless the ENROLMENT channel
+// vouches for it: it is otherwise a substituted server or a MITM, and
+// the node already holds the evidence to say so.
 func TestFetchOrgAnnouncement_RefusesKeyPinnedByRoutingRail(t *testing.T) {
 	ctx := context.Background()
 	k1Pub, _, _ := ed25519.GenerateKey(rand.Reader)

@@ -40,6 +40,16 @@ const (
 	CategoryLimit Category = "limit"
 	// CategoryAnomaly covers statistical anomaly rules (§5.7, G12).
 	CategoryAnomaly Category = "anomaly"
+	// CategoryPII covers deterministic PII detected in the
+	// developer's OWN prompt text at submit-time — the prompt-submit
+	// intervention feature (docs/plans/
+	// prompt-submit-intervention-exploration-2026-09-07.md §5.6).
+	// Distinct from CategoryExfil, which secret-shaped content in a
+	// prompt or outbound request keeps (R-172, extended to
+	// KindUserPrompt) — R-190 below is PII-only so the two categories
+	// never collide on one rule ID (validateRules requires same-ID
+	// rows to agree on category).
+	CategoryPII Category = "pii"
 )
 
 // MatchContext is the per-evaluation working set, built ONCE by the

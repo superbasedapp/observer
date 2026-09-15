@@ -84,6 +84,21 @@ type ActionVerdict struct {
 	// algebra is untouched; only the persisted decision column knows
 	// "mask". Set exclusively by the proxy egress seam.
 	ProxyAction string
+	// SuppressAlert (FIX-3, phase-2 review) is true when the boundary
+	// that built this verdict already showed the developer an
+	// in-band, human-readable message for this exact outcome, so a
+	// desktop toast on top would be a duplicate notification rather
+	// than new information — e.g. the prompt-submit hook lane's
+	// routine ask-once interrupt (the wire reply itself IS the
+	// "reconsider once" message) or a warn/confirmed/approved
+	// outcome (forwarded, non-blocking). It does NOT suppress a
+	// genuine hard block/deny — see ActionVerdictFromPrompt's doc
+	// comment for why "R-172 is Critical severity" alone was not
+	// enough to make ask-once quiet (the original FIX-1 premise this
+	// corrects). Every non-prompt channel leaves this false (zero
+	// value) — MaybeAlert's existing severity-threshold behavior is
+	// unchanged for them.
+	SuppressAlert bool
 }
 
 // watcherCaps are the post-hoc channel capabilities (spec §3.3): the
@@ -164,7 +179,7 @@ func (g *Guard) EvaluateActions(inputs []ActionInput) []ActionVerdict {
 			// run length.
 			RepeatCount: g.repeats.Observe(in.SessionID, in.ActionType, in.Target),
 		}
-		g.stampBudget(&ev)
+		g.stampBudgetSnapshot(&ev, false, es.accountingContext(false))
 		verdict, guardErr := g.evaluateWith(es, ev)
 		verdict, approved := g.applyApprovals(verdict, &ev)
 		if isBudgetRuleID(verdict.RuleID) && guardErr == nil &&

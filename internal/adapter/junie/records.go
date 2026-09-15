@@ -13,12 +13,23 @@ const (
 	kindSessionA2ux       = "SessionA2uxEvent"
 	kindMessagesCommitted = "UserMessagesCommittedToHistory"
 	kindTaskState         = "TaskState"
+	// kindCostTrajectorySnapshot — the standalone CLI's own end-of-task
+	// cost breakdown, emitted once per completed task just before
+	// TaskState. Carries no normalized-action counterpart (its
+	// `snapshot` payload is a cost-attribution table, not an action);
+	// its sole use is as the CLI capture-surface discriminator (see
+	// surface.go). Never observed on either IDE-hosted fixture
+	// (2026-08-16 plain plugin, 2026-09-03 AI-Assistant/MCP), both of
+	// which completed (state.TaskState present) without emitting it.
+	kindCostTrajectorySnapshot = "SessionCostTrajectorySnapshotEvent"
 )
 
 // agentEvent.kind discriminators — the INNER kind nested two levels under a
 // SessionA2uxEvent envelope (envelope.event.agentEvent.kind). 13 distinct
-// values were observed in the Phase-0 capture; only the ones with a
-// normalized-action counterpart are named here. The remainder
+// values were observed in the Phase-0 capture and 3 more (McpBlock,
+// ViewFilesBlock, ToolBlock) in the 2026-09-03 IDE/MCP capture; only the
+// ones with a normalized-action counterpart are named here — the MCP-lane
+// three live in mcpblocks.go. The remainder
 // (AgentCurrentStatusUpdatedEvent, EnvironmentVariablesUpdatedEvent,
 // TipSuggestionCreatedEvent, AgentTaskNameUpdatedEvent,
 // ContextWindowReportEvent, AgentPatchCreatedEvent,
@@ -55,9 +66,13 @@ type rawRecord struct {
 	TimestampMs int64  `json:"timestampMs"`
 
 	// UserPromptEvent — RequestId is the record's own deterministic
-	// identity; Prompt is the operator's verbatim text.
-	RequestID string `json:"requestId"`
-	Prompt    string `json:"prompt"`
+	// identity; Prompt is the operator's verbatim text. ExtraAttachments
+	// is decoded down to each entry's `kind` plus its mcpServers[].env[]
+	// KEY NAMES ONLY (see extraAttachmentRaw / surface.go) — the auth
+	// token VALUE and every other mcpServers field stay undeclared.
+	RequestID        string               `json:"requestId"`
+	Prompt           string               `json:"prompt"`
+	ExtraAttachments []extraAttachmentRaw `json:"extraAttachments"`
 
 	// TaskStartedEvent / SessionA2uxEvent both carry the enclosing task's
 	// id. SessionA2uxEvent's copy is not currently consumed (the block's
@@ -130,6 +145,25 @@ type agentEventRaw struct {
 	// task made overall, not new ones.
 	Changes []fileChangeRaw `json:"changes"`
 
+	// McpBlockUpdatedEvent — the vendor MCP tool name ("idea/apply_patch")
+	// and the call's arguments, rendered as a pretty-printed JSON object
+	// with a leading newline. `details` (declared above) mirrors Input
+	// while the block is IN_PROGRESS and becomes the natural-language
+	// outcome summary once it reaches a terminal status. See mcpblocks.go.
+	ToolName string `json:"toolName"`
+	Input    string `json:"input"`
+
+	// McpBlockUpdatedEvent — the permission prompt the host raised
+	// before dispatching this call. Present on the FIRST call of a
+	// session only (the operator's answer then covers the rest).
+	// `cancelRequest` is deliberately NOT decoded: it is the UI's
+	// "cancel this running step" handle, present because the step is
+	// running, never a cancellation record.
+	ApprovalRequest *approvalRequestRaw `json:"approvalRequest"`
+
+	// ViewFilesBlockUpdatedEvent — the files the agent opened/inspected.
+	Files []viewFileRaw `json:"files"`
+
 	// ResultBlockUpdatedEvent. ErrorCode is deliberately NOT decoded here:
 	// "Submit" was observed on BOTH occurrences of an ordinary SUCCESSFUL
 	// completion in the Phase-0 capture, so it names how the result was
@@ -139,6 +173,30 @@ type agentEventRaw struct {
 	Cancelled bool   `json:"cancelled"`
 	Result    string `json:"result"`
 	Title     string `json:"title"`
+}
+
+// approvalRequestRaw is McpBlockUpdatedEvent.approvalRequest — the
+// host's permission prompt for one MCP call. Id is the prompt's own
+// identity (used for a deterministic SourceEventID); AllowListOptions
+// are the "always allow" patterns the prompt offered, carried onto the
+// emitted row's PrecedingReasoning so an analyst can see WHAT was
+// proposed as the resolution (the ActionPermissionRequest contract).
+type approvalRequestRaw struct {
+	ID               string             `json:"id"`
+	AllowListOptions []allowListOptions `json:"allowListOptions"`
+}
+
+// allowListOptions is one offered "always allow" choice.
+type allowListOptions struct {
+	Label         string   `json:"label"`
+	PatternsToAdd []string `json:"patternsToAdd"`
+}
+
+// viewFileRaw is one entry of ViewFilesBlockUpdatedEvent.files. Only the
+// path is carried — the block states no content, and Junie's own
+// project-relative spelling is preserved verbatim.
+type viewFileRaw struct {
+	RelativePath string `json:"relativePath"`
 }
 
 // modelUsageRaw is one entry of LlmResponseMetadataEvent.modelUsage.
@@ -198,6 +256,37 @@ type completionInfo struct {
 	StartedAtMs int64   `json:"startedAtMs"`
 	EndedAtMs   int64   `json:"endedAtMs"`
 	TaskCostUSD float64 `json:"taskCostUsd"`
+}
+
+// extraAttachmentRaw is one entry of UserPromptEvent.extraAttachments.
+// Kind plus the mcpServers env KEY NAMES are decoded — see surface.go,
+// which requires BOTH the "TaskRequestMcpServersAttachment" kind AND an
+// mcpServers[].env[] entry keyed "IJ_MCP_AUTH_TOKEN" as the IDE
+// capture-surface discriminator (a generic attachment-kind check alone
+// is too weak — the CLI lane also runs MCP clients when the operator
+// configures one). Every mcpServers FIELD OTHER than the env key names
+// (the command path, the token VALUE, args) is deliberately NOT
+// declared here, so no code path can decode, persist or emit it — the
+// same structural guarantee agentEventRaw uses to keep
+// EnvironmentVariablesUpdatedEvent's `env` off every code path.
+type extraAttachmentRaw struct {
+	Kind       string         `json:"kind"`
+	MCPServers []mcpServerRaw `json:"mcpServers"`
+}
+
+// mcpServerRaw is one entry of extraAttachmentRaw.mcpServers. Only Env
+// is decoded (key names only, via mcpEnvVarRaw) — see extraAttachmentRaw's
+// doc for why every other field (command, args, name) stays undeclared.
+type mcpServerRaw struct {
+	Env []mcpEnvVarRaw `json:"env"`
+}
+
+// mcpEnvVarRaw is one key of an mcpServers[].env[] entry. Value is
+// deliberately NOT declared: this adapter decodes env KEY NAMES only,
+// never values, the same rule the off-limits-files doc states for
+// EnvironmentVariablesUpdatedEvent.
+type mcpEnvVarRaw struct {
+	Key string `json:"key"`
 }
 
 // indexRow is one line of the sibling ~/.junie/sessions/index.jsonl — a

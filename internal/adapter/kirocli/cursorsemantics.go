@@ -15,7 +15,7 @@ func isFlatStateSidecar(path string) bool {
 }
 
 // CursorSemanticsFor implements adapter.CursorSemantics. kiro-cli's
-// mode-dependent dual store needs two answers:
+// multi-layout store needs three answers:
 //
 //   - The SQLite layout (`data.sqlite3` + sidecars) is scanned by a
 //     conversations_v2 watermark, not a byte offset.
@@ -23,6 +23,10 @@ func isFlatStateSidecar(path string) bool {
 //     state sidecar, but parseFlatBundle attributes every emitted event
 //     to the canonical `.jsonl` SourceFile. The `.json` cursor row can
 //     therefore never accumulate actions, however much content it has.
+//   - The Kiro IDE layout's `messages.jsonl` IS a plain append-only
+//     byte-offset log parsed by its own path, so the DEFAULT semantics
+//     are exactly right — the explicit case exists to say so rather
+//     than let it fall through the `default` arm by accident.
 func (a *Adapter) CursorSemanticsFor(path string) adapter.FileCursorSemantics {
 	if !a.IsSessionFile(path) {
 		return adapter.FileCursorSemantics{}
@@ -40,6 +44,9 @@ func (a *Adapter) CursorSemanticsFor(path string) adapter.FileCursorSemantics {
 				Detail: "kiro-cli .json bundle state is a sidecar; its events are emitted under the sibling .jsonl source file",
 			}
 		}
+		return adapter.FileCursorSemantics{}
+	case layoutIDE:
+		// Plain byte-offset JSONL tailing — the default kind.
 		return adapter.FileCursorSemantics{}
 	default:
 		return adapter.FileCursorSemantics{}

@@ -21,6 +21,9 @@ const (
 	BearerAuthScopes bearerAuthContextKey = "bearerAuth.Scopes"
 )
 
+// AgentTooOldBody defines model for AgentTooOldBody.
+type AgentTooOldBody = orgcontract.AgentTooOldBody
+
 // EnrollRequest defines model for EnrollRequest.
 type EnrollRequest = orgcontract.EnrollRequest
 
@@ -465,6 +468,7 @@ type PushBatchResponse struct {
 	HTTPResponse *http.Response
 	JSON200      *PushResponse
 	JSON401      *Error
+	JSON426      *AgentTooOldBody
 	JSON429      *Error
 }
 
@@ -627,6 +631,13 @@ func ParsePushBatchResponse(rsp *http.Response) (*PushBatchResponse, error) {
 			return nil, err
 		}
 		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 426:
+		var dest AgentTooOldBody
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON426 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
 		var dest Error

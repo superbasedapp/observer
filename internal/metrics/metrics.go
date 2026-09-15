@@ -270,6 +270,39 @@ func writeProcessHealthMetrics(out *buf, opts Options) {
 		"Age of the most recent process-observability health report, in seconds. Grows without bound if the daemon stops refreshing.",
 		h.Age(opts.Now()).Seconds())
 
+	// The capture-YIELD counters. They are the only scrape-side evidence that
+	// distinguishes an idle box from a daemon discarding every batch, and
+	// `reason` is a BOUNDED label (the processobs.DropReason vocabulary), so it
+	// is safe as a series dimension unlike the free-form *_info reasons below.
+	if drops := labeledCounts(h.Dropped, "reason"); len(drops) > 0 {
+		writeGaugeLabeled(out, "observer_process_dropped",
+			"Process runs/events the daemon discarded, by reason, cumulative since daemon start. `sink_retry_exhausted` is the loud one — capture that was buffered against a failing sink and then LOST when the retention overflowed; `flush_backlog` is its upstream twin — capture shed because the flusher fell so far behind that the rows were never offered to the sink at all. `sink_error` is a permanent sink failure; `unattributed` and `self_excluded` are ordinary policy drops, not faults. Absent when nothing has been dropped.",
+			drops)
+	}
+	writeGaugeLabeled(out, "observer_process_sink_retained",
+		"Process runs held back RIGHT NOW after a transient sink failure, waiting for the next flush. This is a gauge, not a counter, and a non-zero value is NOT loss — it is capture being buffered while the database is busy. Sustained non-zero is the early warning that precedes observer_process_dropped{reason=\"sink_retry_exhausted\"}.",
+		[]labeled{{labels: [][2]string{{"backend", backend}}, value: float64(h.SinkRetained)}})
+	writeGaugeLabeled(out, "observer_process_sink_flush_max_ms",
+		"Longest single sink flush the daemon has observed, in milliseconds (a watermark, not a sample). Seconds-scale values mean the database was contended. This is NO LONGER a capture blackout — the flush runs on its own goroutine — so read it beside observer_process_flush_backlog_hits, which is what says the contention reached capture at all.",
+		[]labeled{{labels: [][2]string{{"backend", backend}}, value: float64(h.SinkFlushMaxMs)}})
+	writeGaugeLabeled(out, "observer_process_flush_backlog_hits",
+		"Times the capture drain found the hand-off buffer to the flusher full, cumulative since daemon start. Non-zero alone is NOT loss — the drain holds the batch and retries, so this is capture being delayed by a slow sink. It becomes loss only alongside observer_process_dropped{reason=\"flush_backlog\"}.",
+		[]labeled{{labels: [][2]string{{"backend", backend}}, value: float64(h.FlushBacklogHits)}})
+	writeGaugeLabeled(out, "observer_process_handoff_depth_max",
+		"High-water mark of the drain-to-flusher hand-off buffer, in BATCHES. A value pinned at the buffer's capacity beside a large observer_process_sink_flush_max_ms means the sink was the bottleneck for a sustained period.",
+		[]labeled{{labels: [][2]string{{"backend", backend}}, value: float64(h.HandoffDepthMax)}})
+	writeGaugeLabeled(out, "observer_process_queue_depth_max",
+		"High-water mark of the process-observability event queue. Read beside observer_process_sink_flush_max_ms: a peak near the backend's channel capacity means the backend was blocked on send and stopped enumerating.",
+		[]labeled{{labels: [][2]string{{"backend", backend}}, value: float64(h.QueueDepthMax)}})
+	if attributed := labeledCounts(h.AttributedByTool, "tool"); len(attributed) > 0 {
+		writeGaugeLabeled(out, "observer_process_attributed",
+			"Process runs the daemon resolved to a session, by tool, cumulative since daemon start. The denominator the drop counters are read against.",
+			attributed)
+	}
+	writeGaugeLabeled(out, "observer_process_unattributed",
+		"Process runs the daemon could not resolve to any session, cumulative since daemon start. Normal in bulk on a shared box (every unrelated process); read it beside observer_process_attributed, not alone.",
+		[]labeled{{labels: [][2]string{{"backend", backend}}, value: float64(h.Unattributed)}})
+
 	// Enum-style state set: exactly one mode is 1. Emitting every mode
 	// (rather than only the active one) means an alert can be written as
 	// `observer_process_network_accounting{mode="unavailable"} == 1` without
@@ -572,6 +605,26 @@ func (b *buf) writeString(s string) { b.buf = append(b.buf, s...) }
 func (b *buf) writeByte(c byte)     { b.buf = append(b.buf, c) }
 
 // writeGauge emits HELP + TYPE + a single unlabeled sample.
+// labeledCounts turns a counter map into one labeled sample per non-zero
+// entry, under the given label name. Zero entries are skipped: a reason
+// recorded as zero is a series that will never be interesting and only widens
+// the cardinality. Nil/empty (or all-zero) yields nil, which writeGaugeLabeled
+// renders as absence — the same absent-is-not-zero rule the transport
+// counters follow.
+func labeledCounts(m map[string]int64, label string) []labeled {
+	out := make([]labeled, 0, len(m))
+	for k, v := range m {
+		if v == 0 || k == "" {
+			continue
+		}
+		out = append(out, labeled{labels: [][2]string{{label, k}}, value: float64(v)})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func writeGauge(w *buf, name, help string, value float64) {
 	writeHeader(w, name, help, "gauge")
 	w.writeString(name)

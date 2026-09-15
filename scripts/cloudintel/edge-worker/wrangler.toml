@@ -1,0 +1,55 @@
+name = "sbci-cloud-edge-staging"
+main = "src/index.js"
+compatibility_date = "2026-09-02"
+
+# Hostname move (runbook s14.1 step 6, 2026-09-14): staging answers ONLY on
+# its own hostname; cloud.superbased.app/* belongs to [env.prod] below.
+routes = [
+  { pattern = "staging-cloud.superbased.app/*", zone_name = "superbased.app" },
+]
+
+[vars]
+SBCI_ORIGIN_BASE_URL = "https://sbci-api.orangeforest-8b0ea924.eastus2.azurecontainerapps.io"
+# Second fence after the route: the exact public hostnames this Worker proxies
+# (comma-separated; src/index.js publicHostsFor). Unset = the historical
+# cloud/app default set.
+SBCI_PUBLIC_HOSTS = "staging-cloud.superbased.app"
+
+# ── Production environment (gap 3.2 / D2) ───────────────────────────────
+#
+# A named Wrangler environment, NOT a second top-level config — the default
+# (staging) block above is completely unaffected by anything below, and
+# `wrangler deploy` with no --env flag keeps deploying staging exactly as
+# before. Deploy prod explicitly with `wrangler deploy --env prod`; see
+# docs/cloud-intelligence-staging-launch-runbook.md §14 for the full sequence
+# (deploy -> secret put -> DNS cutover -> edge-check).
+#
+# The operator ruling is ONE host for production (cloud.superbased.app) — the
+# same public hostname staging currently answers on. The cutover therefore
+# MOVES that hostname's Worker route from the staging Worker
+# (sbci-cloud-edge-staging) to this one (sbci-cloud-edge-prod); it does not
+# add a second host. Before that cutover, give staging its OWN hostname (e.g.
+# staging-cloud.superbased.app) — an operator DNS/Worker-route step, not
+# something this file can do — so staging keeps working right up to the
+# production cutover instead of being torn down first.
+#
+# SBCI_ORIGIN_BASE_URL below is a PLACEHOLDER: the operator fills it in with
+# the production sbci-api Container Apps ingress FQDN once `cloudintel-azure.sh
+# up` (SBCI_ENV=prod) has provisioned it — the same "read it from `status`"
+# step the staging estate used (README "Install the Worker").
+[env.prod]
+name = "sbci-cloud-edge-prod"
+# No workers.dev preview hostname for production: the only public path to the
+# prod origin is the routed hostname (s14.1 step 6).
+workers_dev = false
+
+# The ONE production host (runbook s14.1 step 6, moved 2026-09-14): this
+# route was held empty until the cutover so a prod deploy could not claim
+# the hostname while staging still served it.
+routes = [
+  { pattern = "cloud.superbased.app/*", zone_name = "superbased.app" },
+]
+
+[env.prod.vars]
+SBCI_ORIGIN_BASE_URL = "https://sbci-api.greenforest-656cc573.eastus2.azurecontainerapps.io"
+SBCI_PUBLIC_HOSTS = "cloud.superbased.app"

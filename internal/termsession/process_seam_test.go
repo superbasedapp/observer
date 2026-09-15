@@ -232,6 +232,48 @@ func TestPIDForHandle(t *testing.T) {
 	}
 }
 
+// TestProcessAttributionForHandle pins the opposite contract from
+// PIDForHandle: a caller correlating a run's exit against an external
+// observation (the process-control policy-stop lookup) needs the pid to stay
+// resolvable AFTER the child has exited, for as long as the handle remains in
+// the manager's session map.
+func TestProcessAttributionForHandle(t *testing.T) {
+	sp := &pidSpawner{pids: []int{777, 0}}
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	m := newTestManager(t, sp, func() time.Time { return now })
+
+	handle, err := m.Create(validSpec())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if pid, launchedAt, ok := m.ProcessAttributionForHandle(handle); !ok || pid != 777 || !launchedAt.Equal(now) {
+		t.Fatalf("ProcessAttributionForHandle(live) = (%d,%v,%v), want (777,%v,true)", pid, launchedAt, ok, now)
+	}
+
+	// Unlike PIDForHandle, this stays populated once the child exits.
+	sp.lastPTY().exit(0)
+	waitFor(t, "session marked exited", func() bool {
+		_, ok := m.PIDForHandle(handle)
+		return !ok
+	})
+	if pid, launchedAt, ok := m.ProcessAttributionForHandle(handle); !ok || pid != 777 || !launchedAt.Equal(now) {
+		t.Fatalf("ProcessAttributionForHandle(exited) = (%d,%v,%v), want (777,%v,true)", pid, launchedAt, ok, now)
+	}
+
+	if _, _, ok := m.ProcessAttributionForHandle("no-such-handle"); ok {
+		t.Error("ProcessAttributionForHandle(unknown) reported ok=true")
+	}
+
+	// A backend that reports no pid never yields one either.
+	h2, err := m.Create(validSpec())
+	if err != nil {
+		t.Fatalf("Create #2: %v", err)
+	}
+	if pid, _, ok := m.ProcessAttributionForHandle(h2); ok {
+		t.Errorf("ProcessAttributionForHandle(no-pid backend) = (%d,true), want ok=false", pid)
+	}
+}
+
 // TestOnProcessEdgeOrdering pins that a Spawned edge is always delivered
 // before its own Exited edge even for an instantly-exiting child — the
 // ordering the pid-seed consumer's state machine depends on.

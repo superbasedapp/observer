@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
@@ -40,17 +41,58 @@ type GuardScanner interface {
 	InspectResponse(ctx context.Context, sessionID string, apiTurnID int64, tools []GuardToolUse)
 }
 
+// PromptPhaseScanner is the OPTIONAL two-phase request protocol (LIVE
+// CORRECTION 2026-09-07). A scanner that implements it gets its
+// prompt-submit lane run by the proxy on the ORIGINAL request body
+// BEFORE conversation compression (ScanPrompt), and then the rest of
+// the request scan on the final outbound body (ScanRequestAfterPrompt)
+// instead of ScanRequest. Why: the compression pipeline forward-scrubs
+// the outbound body, so a single post-compression ScanRequest sees
+// [REDACTED] where a pasted secret was and the prompt lane can never
+// ask-once/block it -- the developer gets no message and no guard event
+// while the model silently receives a redacted prompt. A scanner that
+// does not implement this keeps the single post-compression ScanRequest
+// call exactly as before. Ordering note: for a two-phase scanner the
+// prompt lane now runs BEFORE the budget check (which stays in phase 2
+// on the final body), so a request that is both over budget and carries
+// a pasted secret answers with the prompt-lane interrupt — the
+// actionable message — rather than the budget deny.
+type PromptPhaseScanner interface {
+	ScanPrompt(ctx context.Context, provider string, body []byte, sessionID string) GuardRequestResult
+	ScanRequestAfterPrompt(ctx context.Context, provider string, body []byte, sessionID string) GuardRequestResult
+}
+
 // GuardRequestResult is the §8.2 egress decision the proxy acts on.
 type GuardRequestResult struct {
 	// Action is "" or "allow" (forward unchanged), "mask" (forward
-	// Body instead), or "deny" (synthetic 403, §8.5).
+	// Body instead), "deny" (synthetic 403, §8.5), or "prompt_deny"
+	// (the prompt-submit intervention PROXY LANE's own deny — contract
+	// §3, docs/plans/prompt-submit-intervention-exploration-2026-09-07.md).
+	// "prompt_deny" is a DISTINCT action from "deny" so the two render
+	// through separate body-builders (guardDenyBody's agent-facing
+	// "[observer-guard %s] request blocked by Observer policy: %s"
+	// framing is wrong for a message written for the human who just
+	// typed the prompt) and, via Status below, a distinct HTTP status.
 	Action string
-	// Body is the masked body when Action == "mask".
+	// Body is the masked/redacted body when Action == "mask".
 	Body []byte
-	// RuleID / Reason feed the §8.5 provider-shaped error body on
-	// deny ("[observer-guard R-172] ...").
+	// RuleID / Reason feed the provider-shaped error body on "deny"
+	// ("[observer-guard R-172] ...") and "prompt_deny" (Reason is
+	// already the COMPLETE, house-styled developer-facing message —
+	// see guardPromptDenyBody's doc comment).
 	RuleID string
 	Reason string
+	// Status is the HTTP status to write for "deny"/"prompt_deny".
+	// Zero means "unspecified" — serveGuardDeny/serveGuardPromptDeny
+	// both default an unset Status to 403, so a caller that never sets
+	// this field (today's cmd/observer/guardwire.go adapter) keeps the
+	// EXACT status every "deny" response has always used. The
+	// prompt-submit contract's own status table (§3.3) is 400 for a
+	// fresh ask-once interrupt, 403 for an unconditional block. Some
+	// clients retry 400 automatically, so ask-once confirmation also
+	// relies on the guard's reconsider_min_delay floor; never use 429
+	// (retried) or a 5xx. Status only sharpens WHICH safe value renders.
+	Status int
 }
 
 // GuardToolUse is one tool_use block extracted from a response.
@@ -66,33 +108,130 @@ type GuardToolUse struct {
 // guardDenyBody renders the §8.5 provider-shaped error body: clients
 // surface it as a normal API error (never connection-drop — clients
 // retry-storm on those), with the rule ID and remediation inline so
-// the AGENT reads it and self-corrects.
-func guardDenyBody(provider, ruleID, reason string) []byte {
-	msg := fmt.Sprintf("[observer-guard %s] request blocked by the egress policy: %s", ruleID, reason)
+// the AGENT reads it and self-corrects. status is the SAME HTTP status
+// serveGuardDeny is about to write (today always 403 for this action —
+// see its own doc comment) — threaded through so the Gemini row's own
+// {"code",...} field never disagrees with the HTTP status line
+// actually sent (a NIT the phase-3b review flagged: geminiErrorBody
+// used to hardcode 400/INVALID_ARGUMENT regardless of the real status).
+func guardDenyBody(provider, ruleID, reason string, status int) []byte {
+	msg := fmt.Sprintf("[observer-guard %s] request blocked by Observer policy: %s", ruleID, reason)
 	type errObj struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	}
-	if provider == models.ProviderAnthropic {
+	switch provider {
+	case models.ProviderAnthropic:
 		body, _ := json.Marshal(struct {
 			Type  string `json:"type"`
 			Error errObj `json:"error"`
 		}{Type: "error", Error: errObj{Type: "invalid_request_error", Message: msg}})
 		return body
-	}
-	body, _ := json.Marshal(struct {
-		Error struct {
+	case models.ProviderGoogle:
+		// Prompt-submit intervention contract §3.1/§3.2 flagged this as
+		// a pre-existing gap: a Gemini request denied by R-172 (egress)
+		// previously fell through to the OpenAI shape below, which a
+		// Gemini client does not parse as an error at all.
+		return geminiErrorBody(msg, status)
+	default: // OpenAI Chat Completions + Responses API share one shape.
+		body, _ := json.Marshal(struct {
+			Error struct {
+				Message string  `json:"message"`
+				Type    string  `json:"type"`
+				Param   *string `json:"param"`
+				Code    string  `json:"code"`
+			} `json:"error"`
+		}{Error: struct {
 			Message string  `json:"message"`
 			Type    string  `json:"type"`
 			Param   *string `json:"param"`
 			Code    string  `json:"code"`
+		}{Message: msg, Type: "invalid_request_error", Code: "observer_guard_denied"}})
+		return body
+	}
+}
+
+// guardPromptDenyBody renders the prompt-submit intervention PROXY
+// LANE's provider-shaped error body (contract §3.2's error-body table,
+// docs/plans/prompt-submit-intervention-exploration-2026-09-07.md).
+// Unlike guardDenyBody — whose doc comment says the body is shaped "so
+// the AGENT reads it and self-corrects" — the audience here is the
+// DEVELOPER who just typed the prompt (contract §3.1): reason already
+// IS the complete, house-styled message
+// (guard.proxyPromptHouseMessage, e.g. "observer: <reason>. Send it
+// again unchanged to confirm..."), so this function only wraps it in
+// each provider's own error envelope — no extra "[observer-guard ...]
+// request blocked by Observer policy:" framing on top, since this
+// isn't the egress policy and the reason text already stands alone.
+// status is the ACTUAL HTTP status serveGuardPromptDeny is about to
+// write (400 for a fresh ask-once interrupt, 403 for an unconditional
+// block, per contract §3.3 and F8's clamp) — unlike guardDenyBody's
+// always-403 case, this status genuinely varies call to call, so the
+// Gemini row's own {"code",...} field must vary with it too.
+func guardPromptDenyBody(provider, reason string, status int) []byte {
+	type errObj struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	switch provider {
+	case models.ProviderAnthropic:
+		body, _ := json.Marshal(struct {
+			Type  string `json:"type"`
+			Error errObj `json:"error"`
+		}{Type: "error", Error: errObj{Type: "invalid_request_error", Message: reason}})
+		return body
+	case models.ProviderGoogle:
+		return geminiErrorBody(reason, status)
+	default: // OpenAI Chat Completions + Responses API share one shape.
+		body, _ := json.Marshal(struct {
+			Error struct {
+				Message string  `json:"message"`
+				Type    string  `json:"type"`
+				Param   *string `json:"param"`
+				Code    string  `json:"code"`
+			} `json:"error"`
+		}{Error: struct {
+			Message string  `json:"message"`
+			Type    string  `json:"type"`
+			Param   *string `json:"param"`
+			Code    string  `json:"code"`
+		}{Message: reason, Type: "invalid_request_error", Code: "observer_prompt_guard"}})
+		return body
+	}
+}
+
+// geminiErrorBody renders the Google/Gemini error envelope
+// (google.aip.dev/193): {"error":{"code","message","status"}} — the
+// shape contract §3.2 specifies for both guardDenyBody's Gemini row and
+// guardPromptDenyBody above. code carries the REAL HTTP status through
+// (a NIT the phase-3b review flagged: this previously hardcoded
+// 400/INVALID_ARGUMENT unconditionally, which disagreed with the
+// actual 403 HTTP status line on every plain "deny" response — the
+// only action guardDenyBody ever renders), mapped to the matching
+// canonical google.aip.dev/193 status string for the exact pair
+// contract §3.3 allows (400/403); any other value (defensive — should
+// be unreachable given serveGuardDeny's own 403 default and F8's
+// clamp on the prompt-deny path) falls back to UNKNOWN rather than
+// asserting a status string that doesn't match code.
+func geminiErrorBody(message string, status int) []byte {
+	statusStr := "UNKNOWN"
+	switch status {
+	case http.StatusBadRequest:
+		statusStr = "INVALID_ARGUMENT"
+	case http.StatusForbidden:
+		statusStr = "PERMISSION_DENIED"
+	}
+	body, _ := json.Marshal(struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Status  string `json:"status"`
 		} `json:"error"`
 	}{Error: struct {
-		Message string  `json:"message"`
-		Type    string  `json:"type"`
-		Param   *string `json:"param"`
-		Code    string  `json:"code"`
-	}{Message: msg, Type: "invalid_request_error", Code: "observer_guard_denied"}})
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Status  string `json:"status"`
+	}{Code: status, Message: message, Status: statusStr}})
 	return body
 }
 

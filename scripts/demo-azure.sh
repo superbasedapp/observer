@@ -5,6 +5,13 @@
 #   scripts/demo-azure.sh down     stop (deallocate) all four groups
 #   scripts/demo-azure.sh status   provisioning state + live health probes
 #
+# To UPDATE the org image after a code change (recreate sb-org on a new
+# observer-org tag), use scripts/roll-org.sh — NOT this script. Full lifecycle:
+# docs/hosted-surfaces-runbook.md.
+#
+# NOTE (2026-09-04): the "az is WINDOWS-ONLY" claim below is now STALE for this
+# RG — native Linux az handled the entire org roll. winaz is kept as a fallback.
+#
 # The estate (RG superbased-demo-rg, eastus — see
 # docs/demo-environment-playbook.md for the full map):
 #

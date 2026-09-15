@@ -104,6 +104,16 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		res.ToolEvents = append(res.ToolEvents, tools...)
 		res.TokenEvents = append(res.TokenEvents, tokens...)
 		res.Warnings = append(res.Warnings, warns...)
+		// Session-lane attribution (surface.go). Both writes are
+		// idempotent and preserving on the store side, so re-emitting
+		// them on every touched-session parse converges without
+		// watermark state of their own.
+		if surf, ok := surfaceForSession(s); ok {
+			res.SessionSurfaces = append(res.SessionSurfaces, surf)
+		}
+		if lin, ok := lineageForSession(s); ok {
+			res.SessionLineages = append(res.SessionLineages, lin)
+		}
 	}
 	return res, nil
 }
@@ -114,6 +124,16 @@ type sessionRow struct {
 	WorkingDir  string
 	Model       string
 	MainChainID sql.NullInt64
+	// Hidden is the sessions.hidden flag (store migration 15): Devin
+	// sets it on the sessions it spawns for ITSELF (the summary agent),
+	// which never appear in the session picker. Drives the sidecar
+	// lineage stamp — see lineageForSession.
+	Hidden bool
+	// Metadata is the raw sessions.metadata JSON (store migration 16).
+	// Carries the requesting client's `client_meta` bag, from which the
+	// capture surface is resolved — see surfaceForSession. Empty on
+	// stores predating the column.
+	Metadata string
 }
 
 // node is one decoded message_nodes row on a session's active chain.
@@ -189,7 +209,7 @@ func (a *Adapter) parseSession(ctx context.Context, db *sql.DB, sourceFile strin
 	if len(chain) == 0 {
 		return nil, nil, warns
 	}
-	projectRoot, gitRemote := a.resolveProjectRoot(s.WorkingDir)
+	projectRoot, gitRemote, projectIdentity := a.resolveProjectRoot(s.WorkingDir)
 
 	// First pass: collect tool-role results keyed by tool_call_id.
 	results := map[string]toolResult{}
@@ -229,7 +249,9 @@ func (a *Adapter) parseSession(ctx context.Context, db *sql.DB, sourceFile strin
 		}
 		// system + tool roles are consumed above / intentionally dropped.
 	}
-	return tools, tokens, warns
+	stamped := adapter.ParseResult{ToolEvents: tools, TokenEvents: tokens}
+	adapter.ApplyProjectIdentity(&stamped, projectIdentity)
+	return stamped.ToolEvents, stamped.TokenEvents, warns
 }
 
 func (a *Adapter) userPromptEvent(sourceFile, projectRoot, gitRemote string, s sessionRow, n node, cm *chatMessage) (models.ToolEvent, bool) {
@@ -374,17 +396,18 @@ func (a *Adapter) tokenEvent(sourceFile, projectRoot, gitRemote string, s sessio
 // /mnt/c equivalent BEFORE git.Resolve so a Windows-side project doesn't
 // misfile under the observer's own repo. Empty/unresolvable cwds fall back
 // to "[devin]" with no remote.
-func (a *Adapter) resolveProjectRoot(workingDir string) (root, remote string) {
+func (a *Adapter) resolveProjectRoot(workingDir string) (root, remote string, id git.Identity) {
 	wd := strings.TrimSpace(workingDir)
 	if wd == "" {
-		return "[devin]", ""
+		return "[devin]", "", git.Identity{}
 	}
 	wd = crossmount.TranslateForeignPath(wd)
-	info, err := git.Resolve(wd)
+	identity, err := git.ResolveIdentity(wd, git.IdentityOptions{})
 	if err != nil {
-		return wd, ""
+		return wd, "", git.Identity{}
 	}
-	return info.Root, git.NormalizeRemote(info.Remote)
+	// identity.Remote is already NormalizeRemote'd by ResolveIdentity.
+	return identity.Root, identity.Remote, identity
 }
 
 // mapTool resolves a Devin built-in tool name onto the normalized action

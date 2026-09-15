@@ -337,6 +337,49 @@ func TestBuildAndRunReporter(t *testing.T) {
 	}
 }
 
+// TestBuildPolicyStateReporter_ReportCarriesModeCapabilityToken pins that a
+// reporter built by buildPolicyStateReporter (the real construction path
+// start.go uses) posts PolicyStateReport.LiveCapabilities containing the
+// node's mode-capability token (orgcontract.ModeCapabilityToken via
+// nodeLiveCapabilities, mirroring policyresource_wire.go's
+// PolicyResourceOptions.LiveCapabilities so the two never drift) — even with
+// a nil admission handle, since the mode token is unconditional. This is the
+// server-side half of the loop: planebmode.RecordCapabilityAck can only
+// learn a node's mode schema version if the node's own policy-ack report
+// actually carries it.
+func TestBuildPolicyStateReporter_ReportCarriesModeCapabilityToken(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	conn, err := db.Open(ctx, db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	st := store.New(conn)
+
+	cfg := config.Default()
+	cfg.Observer.DBPath = dbPath
+	cfg.OrgClient.Share.PolicyState = true
+
+	fp := &fakePoster{}
+	rep := buildPolicyStateReporter(fp, nil, st, nil, nil, nil, nil, nil, cfg, "v", nil)
+	rep.report(ctx)
+
+	if fp.callCount() != 1 {
+		t.Fatalf("calls = %d, want 1", fp.callCount())
+	}
+	want := orgcontract.ModeCapabilityToken(providers.SupportedModeSchemaVersion)
+	var found bool
+	for _, c := range fp.last.LiveCapabilities {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("posted LiveCapabilities = %v, want to contain %q", fp.last.LiveCapabilities, want)
+	}
+}
+
 // TestReporter_CtxCancelStopsInflightSend (R2-S4) — report(ctx) hands ctx to
 // the poster, so cancelling ctx abandons the in-flight POST. A poster built
 // with context.Background() would ignore the cancel and hang.

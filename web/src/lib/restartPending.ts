@@ -1,13 +1,15 @@
-// restartPending — tiny localStorage store tracking config sections
-// saved with restart_required=true that the daemon hasn't picked up
-// yet (usability arc P1.9 / A7).
+// restartPending — tiny localStorage store tracking config saves the
+// daemon hasn't picked up yet (usability arc P1.9 / A7; key-level state
+// added by the dashboard-config-management arc, plan §3.3 item 1).
 //
-// Lifecycle: StructuredConfigSection (and the bespoke Intelligence
-// form) call markRestartPending(section) after a successful
-// restart-required save. RestartPendingBanner renders the pending set
-// and auto-clears it once /api/status reports a daemon started_at
-// NEWER than the latest save — i.e. the operator actually restarted.
-// Manual dismiss also clears (the operator saying "I know").
+// Lifecycle: StructuredConfigSection, SchemaSection and the bespoke forms
+// call markRestartPending(section, keys?) after a save whose response said
+// restart_required. RestartPendingBanner renders the pending set — naming
+// the KEYS when the save reported them, so "3 settings apply on restart:
+// dashboard.addr, proxy.port, …" — and auto-clears it once /api/status
+// reports a daemon started_at NEWER than the latest save, i.e. the operator
+// actually restarted. Manual dismiss also clears (the operator saying "I
+// know"). A `live` / `next_spawn` save never marks anything pending.
 
 const KEY = "sb_restart_pending";
 // Window event fired on every mutation so the banner re-renders
@@ -19,6 +21,9 @@ export type RestartPending = {
   at: string;
   // Distinct section ids saved since the last restart/dismiss.
   sections: string[];
+  // Distinct dotted config keys that bind at daemon start, when the save
+  // reported them (schema-driven saves do; older bespoke verbs may not).
+  keys?: string[];
 };
 
 export function getRestartPending(): RestartPending | null {
@@ -29,19 +34,23 @@ export function getRestartPending(): RestartPending | null {
     if (!parsed || typeof parsed.at !== "string" || !Array.isArray(parsed.sections)) {
       return null;
     }
+    if (parsed.keys != null && !Array.isArray(parsed.keys)) parsed.keys = undefined;
     return parsed;
   } catch {
     return null;
   }
 }
 
-export function markRestartPending(section: string): void {
+export function markRestartPending(section: string, keys?: string[]): void {
   const cur = getRestartPending();
   const sections = new Set(cur?.sections ?? []);
   sections.add(section);
+  const keySet = new Set(cur?.keys ?? []);
+  for (const k of keys ?? []) keySet.add(k);
   const next: RestartPending = {
     at: new Date().toISOString(),
     sections: [...sections].sort(),
+    keys: keySet.size > 0 ? [...keySet].sort() : undefined,
   };
   try {
     localStorage.setItem(KEY, JSON.stringify(next));

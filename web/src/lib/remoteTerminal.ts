@@ -27,7 +27,7 @@ export const REMOTE_TERMINAL_OFF_MSG =
 // honest-disabled-control convention. Distinct from REMOTE_TERMINAL_OFF_MSG,
 // which is correct only for the lowered fresh-launch route.
 export const RESUME_EXECUTE_REQUIRED_MSG =
-  "Resume needs execute access, which this paired remote device doesn't have. It's an execute-tier action, and “Allow terminal” on the Remote page doesn't lower it — resume from the owner's local dashboard instead, which always has execute access.";
+  "Resume needs execute access, which this paired remote device doesn't have. It's an execute-tier action, and “Allow terminal” on the Remote page doesn't lower it - resume from the owner's local dashboard instead, which always has execute access.";
 
 export type RemoteTerminalGate = {
   /** True when this page is served to a remote-paired device (non-loopback). */
@@ -92,7 +92,7 @@ export function isTerminalCapabilityError(e: unknown): boolean {
 // exact missing dependency and where to fix it, mirroring the honest-disabled
 // convention used for the remote-terminal gate above.
 export const PROJECT_ROOT_DENIED_MSG =
-  "That project root isn't allow-listed. Add it to [terminal.launch].allowed_project_roots (Terminals page → launch policy, on the owner's local dashboard), then restart SuperBased — or launch in the agent's default directory.";
+  "That project root isn't allow-listed. Add it to [terminal.launch].allowed_project_roots (Terminals page → launch policy, on the owner's local dashboard), then restart SuperBased - or launch in the agent's default directory.";
 
 // isProjectRootDeniedError reports whether an error thrown by the launch POST is
 // the [terminal.launch].allowed_project_roots gate ("project root not
@@ -134,13 +134,13 @@ export const STANDING_SECRET_LS_KEY = "sb_standing_terminal_secret";
 // STANDING_REMEMBER_RISK is the inline risk copy shown beside the "Remember on
 // this device" opt-in — it must spell out the localStorage exposure honestly.
 export const STANDING_REMEMBER_RISK =
-  "Stores the secret in THIS browser's localStorage so control survives refreshes. Anyone with access to this device + browser can then drive every terminal — including taking over an active local or remote writer when takeover is enabled — until the owner revokes the secret. Leave off to use it once without saving.";
+  "Stores the secret in THIS browser's localStorage so control survives refreshes. Anyone with access to this device + browser can then drive every terminal - including taking over an active local or remote writer when takeover is enabled - until the owner revokes the secret. Leave off to use it once without saving.";
 
 // STANDING_REVOKED_MSG is shown when a stored standing secret is rejected by the
 // server (revoked or rotated). The stored secret is cleared and the device falls
 // back to the normal single-use approval flow.
 export const STANDING_REVOKED_MSG =
-  "Standing access was revoked or rotated — the saved secret no longer works and has been cleared from this device. Ask the owner for a new standing secret, or use a one-time approval.";
+  "Standing access was revoked or rotated - the saved secret no longer works and has been cleared from this device. Ask the owner for a new standing secret, or use a one-time approval.";
 
 // TerminalControlDenialReason mirrors the websocket control_denied taxonomy.
 // Exactly two reasons are permanent verdicts on the credential: "auth" (it was
@@ -173,7 +173,7 @@ export function terminalControlDenialMessage(
     case "auth":
       return usedStanding
         ? STANDING_REVOKED_MSG
-        : "Control was denied — the capability or confirm code was wrong or already used. Ask the owner to Grant control again.";
+        : "Control was denied - the capability or confirm code was wrong or already used. Ask the owner to Grant control again.";
     case "auth_revoked":
       // The server proved there is no standing secret at rest: it was revoked
       // and never re-issued. Distinct copy from "auth" because nothing was
@@ -184,8 +184,8 @@ export function terminalControlDenialMessage(
         : "Standing terminal access has been revoked on this machine. Ask the owner for a one-time approval, or to mint a new standing secret.";
     case "auth_transient":
       return usedStanding
-        ? "Standing access is not available right now — it may be switched off, or too many attempts arrived at once. Your saved standing secret has NOT been cleared; it will be presented again automatically on the next connection."
-        : "Terminal control is not available right now — try again in a moment.";
+        ? "Standing access is not available right now - it may be switched off, or too many attempts arrived at once. Your saved standing secret has NOT been cleared; it will be presented again automatically on the next connection."
+        : "Terminal control is not available right now - try again in a moment.";
     case "held_locally":
     case "held_by_remote":
       return usedStanding

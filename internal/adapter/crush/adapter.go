@@ -101,7 +101,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	}
 	defer database.Close()
 
-	projectRoot, gitRemote := a.resolveProjectRoot(dbPath)
+	projectRoot, gitRemote, projectIdentity := a.resolveProjectRoot(dbPath)
 
 	tools, err := a.loadMessageEvents(ctx, database, dbPath, projectRoot, gitRemote, fromOffset)
 	if err != nil {
@@ -113,6 +113,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	}
 	res.ToolEvents = append(res.ToolEvents, tools...)
 	res.TokenEvents = append(res.TokenEvents, tokens...)
+	adapter.ApplyProjectIdentity(&res, projectIdentity)
 	return res, nil
 }
 
@@ -577,17 +578,18 @@ func mapTool(name string, input []byte) (actionType, target string) {
 // Windows-side project doesn't misfile under the observer's own repo.
 // Returns (root, gitRemote); gitRemote is "" when the project isn't
 // inside a git repo.
-func (a *Adapter) resolveProjectRoot(dbPath string) (root, gitRemote string) {
+func (a *Adapter) resolveProjectRoot(dbPath string) (root, gitRemote string, id git.Identity) {
 	proj := filepath.Dir(filepath.Dir(dbPath))
 	if proj == "" || proj == "." || proj == string(filepath.Separator) {
-		return "[crush]", ""
+		return "[crush]", "", git.Identity{}
 	}
 	proj = crossmount.TranslateForeignPath(proj)
-	info, err := git.Resolve(proj)
+	identity, err := git.ResolveIdentity(proj, git.IdentityOptions{})
 	if err != nil {
-		return proj, ""
+		return proj, "", git.Identity{}
 	}
-	return info.Root, git.NormalizeRemote(info.Remote)
+	// identity.Remote is already NormalizeRemote'd by ResolveIdentity.
+	return identity.Root, identity.Remote, identity
 }
 
 // scrub applies the plaintext scrubber, tolerating a nil scrubber.

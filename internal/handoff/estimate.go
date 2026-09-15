@@ -29,7 +29,13 @@ type EstimateInput struct {
 	ContextTokens int64
 	// ForkShare scales ContextTokens to the fork cut (ForkShare()).
 	ForkShare float64
-	Price     PriceFunc
+	// SourceHasFullReader is true when the source adapter implements the
+	// un-excerpted (FullTranscriptReader) read that the full_cache carry
+	// needs. When false, full_cache degrades to full (same excerpted bodies),
+	// so the full_cache row is priced identically to full and its note says
+	// so — otherwise the two rows read as a distinct option they are not.
+	SourceHasFullReader bool
+	Price               PriceFunc
 }
 
 // StayEstimate is the stay-option half of the plan §9 comparison: what
@@ -56,6 +62,13 @@ type EstimateResult struct {
 	TargetModel string
 	ForkShare   float64
 	Rows        []CarryEstimate
+	// SourceHasFullReader mirrors EstimateInput.SourceHasFullReader — whether
+	// the source adapter implements the un-excerpted (FullTranscriptReader)
+	// read the full_cache carry needs. Callers (the dashboard handoff API)
+	// use this to grey out the full_cache option honestly instead of letting
+	// it silently collapse to a full-cache row that is byte-identical to
+	// full (see the CarryFullCache note in Estimate below).
+	SourceHasFullReader bool
 	// Stay is the stay-option comparison; nil when the boundary had no
 	// grounded numbers for it.
 	Stay *StayEstimate
@@ -72,7 +85,7 @@ func Estimate(in EstimateInput) EstimateResult {
 	if price == nil {
 		price = func(string, int64) float64 { return 0 }
 	}
-	res := EstimateResult{TargetModel: in.TargetModel, ForkShare: in.ForkShare}
+	res := EstimateResult{TargetModel: in.TargetModel, ForkShare: in.ForkShare, SourceHasFullReader: in.SourceHasFullReader}
 
 	add := func(mode CarryMode, tokens int64, note string) {
 		res.Rows = append(res.Rows, CarryEstimate{
@@ -88,7 +101,11 @@ func Estimate(in EstimateInput) EstimateResult {
 	if in.ContextTokens > 0 {
 		full := int64(float64(in.ContextTokens) * in.ForkShare)
 		add(CarryFull, full, "whole context through the fork; the target pulls full bodies on demand via get_session_message")
-		add(CarryFullCache, full, "full read bodies inlined from the first prompt — replicates the source prompt cache; resent per turn until the target's cache warms")
+		cacheNote := "full read bodies inlined from the first prompt — replicates the source prompt cache; resent per turn until the target's cache warms"
+		if !in.SourceHasFullReader {
+			cacheNote = "= full: this source has no un-excerpted (full-body) reader, so full_cache carries the same excerpted bodies as full — no distinct read cache to inline"
+		}
+		add(CarryFullCache, full, cacheNote)
 	}
 	return res
 }

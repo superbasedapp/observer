@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/metrics"
 )
 
@@ -42,7 +42,7 @@ func newMetricsCmd() *cobra.Command {
 			server, err := metrics.New(metrics.Options{
 				DB:                database,
 				DBPath:            cfg.Observer.DBPath,
-				CostEngine:        cost.NewEngine(cfg.Intelligence),
+				CostEngine:        acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default()),
 				CostWindowMinutes: window,
 			})
 			if err != nil {

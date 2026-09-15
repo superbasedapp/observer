@@ -17,14 +17,23 @@ import (
 // the host's filesystem layout. Same shape as clinecli.allHomesFunc.
 var allHomesFunc = crossmount.AllHomes
 
-// flatSubpath is the flat-bundle session directory, identical on every
-// OS (Windows uses C:\Users\<u>\.kiro\sessions\cli — NOT %LOCALAPPDATA%).
-var flatSubpath = filepath.Join(".kiro", "sessions", "cli")
+// sessionsSubpath is the PARENT session directory shared by BOTH
+// file-backed layouts, identical on every OS (Windows uses
+// C:\Users\<u>\.kiro\sessions — NOT %LOCALAPPDATA%):
+//
+//	<home>/.kiro/sessions/cli/<uuid>.{json,jsonl}          CLI flat bundle
+//	<home>/.kiro/sessions/<bucket>/<sid>/messages.jsonl    Kiro IDE
+//
+// Watching the PARENT (not `.../sessions/cli`) is what brings the IDE
+// subtree in: adapter.UnderAnyWatchRoot is a path-PREFIX test, so the
+// flat bundles keep matching unchanged, and one root avoids the nested
+// duplicate-watch a `cli` + `sessions` pair would create.
+var sessionsSubpath = filepath.Join(".kiro", "sessions")
 
 // defaultRoots returns the two watch roots per cross-mount-resolved
-// home: the flat-bundle session dir (`<home>/.kiro/sessions/cli`,
-// identical on every OS) and the SQLite data dir, whose location is
-// OS-shaped:
+// home: the session dir (`<home>/.kiro/sessions`, identical on every
+// OS, covering both the CLI flat bundles and the Kiro IDE subtree) and
+// the SQLite data dir, whose location is OS-shaped:
 //
 //	linux/darwin home → <home>/.local/share/kiro-cli
 //	windows home      → <home>/AppData/Local/Kiro-Cli
@@ -53,7 +62,7 @@ func defaultRoots() []string {
 		if h.Path == "" {
 			continue
 		}
-		add(filepath.Join(h.Path, flatSubpath))
+		add(filepath.Join(h.Path, sessionsSubpath))
 		add(filepath.Join(append([]string{h.Path}, sqliteDataSubdir(h.OS)...)...))
 	}
 	return roots

@@ -11,6 +11,8 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/guard"
+	"github.com/marmutapp/superbased-observer/internal/orgclient"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -216,5 +218,199 @@ func TestGuardStatusCmd(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("status output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestGuardStatusPrintsTheOrgBudgetPosture is finding H5's pin.
+//
+// The developer whose proxied requests are being denied is the one reading
+// this screen, and before this the ONLY surface carrying `budget_required` was
+// the org admin's dashboard. They could see the deny verdicts and nothing that
+// said why; the one person who could see the reason was not the one hitting
+// it.
+//
+// The word `budget_required` is asserted literally, because it is the string
+// the developer will search the docs and the org dashboard for.
+func TestGuardStatusPrintsTheOrgBudgetPosture(t *testing.T) {
+	t.Parallel()
+	cfgPath, dbPath := writeGuardTestConfig(t)
+	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	if _, err := store.New(database).PersistGuardVerdicts(context.Background(), []guard.ActionVerdict{}); err != nil {
+		t.Fatalf("empty persist: %v", err)
+	}
+	_ = database.Close()
+
+	out, err := runGuardCmd(t, "status", "--config", cfgPath)
+	if err != nil {
+		t.Fatalf("guard status: %v (%s)", err, out)
+	}
+	// The line is present on EVERY node, including this ungoverned fixture:
+	// "you are not subject to an org budget" is an answer a developer needs
+	// as much as the blocking one, and a line that only appears when
+	// something is wrong teaches nobody where to look.
+	if !strings.Contains(out, "Org budget:") {
+		t.Fatalf("no org budget line:\n%s", out)
+	}
+	for _, want := range []string{"coverage=", "fetch_state=", "from_org=", "last_fetch_ok=", "budget_required="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the org budget line is missing %q:\n%s", want, out)
+		}
+	}
+	// An ungoverned node is not blocking, and must not say it is.
+	if strings.Contains(out, "budget_required=true") {
+		t.Errorf("an ungoverned node reported budget_required=true:\n%s", out)
+	}
+}
+
+// TestGuardBudgetPostureLineNamesTheBlock: when the node IS in the fail-closed
+// posture the line must say so in WORDS, not only as an enum value — the
+// developer reading it has just been denied and needs to know the denial is
+// the org's configuration, not their own machine misbehaving.
+func TestGuardBudgetPostureLineNamesTheBlock(t *testing.T) {
+	t.Parallel()
+
+	blocked := budgetPostureStatusLine(orgcontract.BudgetPostureRow{
+		Coverage:   orgcontract.BudgetCoverageBudgetRequired,
+		FetchState: orgcontract.BudgetFetchUnverified,
+		FromOrg:    true,
+	})
+	for _, want := range []string{
+		"budget_required=true",
+		"BLOCKS all proxied requests",
+		"fetch_state=" + orgcontract.BudgetFetchUnverified,
+	} {
+		if !strings.Contains(blocked, want) {
+			t.Errorf("the blocking line is missing %q: %s", want, blocked)
+		}
+	}
+
+	ordinary := budgetPostureStatusLine(orgcontract.BudgetPostureRow{
+		Coverage:   orgcontract.BudgetCoverageProxyOnly,
+		FetchState: orgcontract.BudgetFetchOK,
+		FromOrg:    true, LastFetchOK: true,
+	})
+	if strings.Contains(ordinary, "budget_required=true") || strings.Contains(ordinary, "BLOCKS") {
+		t.Errorf("an enforcing node was rendered as blocking: %s", ordinary)
+	}
+}
+
+// TestRewriteCachedBudgetFetchState is finding B's unit pin (2026-09-13
+// W7/W8 verification): a composed line's fetch_state=unreachable token must
+// become an honest "cached" rendering naming the cached version and
+// fetched_at. The cold process's last_fetch_ok=false must likewise become
+// unknown_to_cli because this command performed no fetch. A line carrying any
+// OTHER fetch_state must be left alone — this rewrite must never invent a
+// cache that was not there.
+func TestRewriteCachedBudgetFetchState(t *testing.T) {
+	t.Parallel()
+	fetchedAt := time.Date(2026, 9, 13, 6, 29, 22, 0, time.UTC)
+
+	got := rewriteCachedBudgetFetchState(
+		"coverage=proxy_only fetch_state=unreachable from_org=true last_fetch_ok=false budget_required=false",
+		store.OrgBudgetCache{Have: true, Version: 5, FetchedAt: fetchedAt},
+	)
+	if strings.Contains(got, "fetch_state=unreachable") {
+		t.Errorf("still says unreachable over a primed cache: %s", got)
+	}
+	for _, want := range []string{
+		"fetch_state=cached",
+		"CLI read verified body v5 persisted at 2026-09-13T06:29:22Z",
+		"daemon fetch state unavailable here",
+		"last_fetch_ok=unknown_to_cli",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rewritten line missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "last_fetch_ok=false") || strings.Contains(got, "last_fetch_ok=true") {
+		t.Errorf("cached CLI line claimed a fetch result: %s", got)
+	}
+	// Every other field on the line is the composer's own verdict and must
+	// survive untouched.
+	for _, want := range []string{"coverage=proxy_only", "from_org=true", "budget_required=false"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rewrite dropped %q: %s", want, got)
+		}
+	}
+
+	// A line with no unreachable token (e.g. a live ok fetch, or a node that
+	// never opted in) is returned unchanged — nothing to rewrite.
+	unchanged := "coverage=proxy_only fetch_state=ok from_org=true last_fetch_ok=true budget_required=false"
+	if got := rewriteCachedBudgetFetchState(unchanged, store.OrgBudgetCache{Have: true, Version: 5, FetchedAt: fetchedAt}); got != unchanged {
+		t.Errorf("rewrote a line that was not unreachable: %s", got)
+	}
+
+	// No FetchedAt on the cached row still renders honestly rather than a
+	// zero-value timestamp.
+	noTime := rewriteCachedBudgetFetchState(
+		"coverage=proxy_only fetch_state=unreachable from_org=true last_fetch_ok=false budget_required=false",
+		store.OrgBudgetCache{Have: true, Version: 3},
+	)
+	if !strings.Contains(noTime, "an unknown time") {
+		t.Errorf("missing honest time fallback: %s", noTime)
+	}
+}
+
+// TestGuardStatusOrgBudgetLineHonestAboutPrimedCache is finding B's
+// end-to-end pin: `observer guard status` on a node that has a verified org
+// budget PERSISTED in org_budget_cache — the CLI's only source of truth,
+// since it is a different process from the daemon and has made no live
+// fetch of its own — must never print the bare word "unreachable" on the
+// "Org budget:" line. Before this fix it did, on a demonstrably healthy
+// managed devbox, because the composed fetch_state for a primed cache and
+// for a genuine outage are the SAME wire value by construction. For the same
+// reason it must not print a boolean last_fetch_ok result that only a fetching
+// daemon could know.
+func TestGuardStatusOrgBudgetLineHonestAboutPrimedCache(t *testing.T) {
+	t.Parallel()
+	cfgPath, dbPath := writeGuardTestConfig(t)
+	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	doc := orgcontract.BudgetPolicyDoc{
+		BudgetPolicyBody: orgcontract.BudgetPolicyBody{
+			Version: 5, ResolvedScope: "member", Period: "monthly",
+			IssuedAt: time.Date(2026, 9, 13, 6, 29, 22, 0, time.UTC).Format(time.RFC3339),
+		},
+	}
+	st := store.New(database)
+	enrolment := store.Enrolment{
+		OrgID: "guard-status-org", OrgServerURL: "https://org.example.test",
+		UserID: "guard-status-member",
+	}
+	if err := st.WriteEnrolment(context.Background(), enrolment); err != nil {
+		t.Fatalf("seed enrolment: %v", err)
+	}
+	orgKey := orgclient.OrgKey(enrolment.OrgServerURL, enrolment.OrgID)
+	if _, err := st.BumpEnrolmentGeneration(context.Background(), orgKey, false); err != nil {
+		t.Fatalf("seed enrolment generation: %v", err)
+	}
+	identity, active, err := orgclient.CurrentBudgetIdentity(context.Background(), st)
+	if err != nil || !active {
+		t.Fatalf("current budget identity: active=%v err=%v", active, err)
+	}
+	if err := st.SaveOrgBudget(context.Background(), doc, `"etag-1"`, "fp-1", identity); err != nil {
+		t.Fatalf("seed org budget cache: %v", err)
+	}
+	_ = database.Close()
+
+	out, err := runGuardCmd(t, "status", "--config", cfgPath)
+	if err != nil {
+		t.Fatalf("guard status: %v (%s)", err, out)
+	}
+	if strings.Contains(out, "fetch_state=unreachable") {
+		t.Errorf("a primed cache was rendered as unreachable:\n%s", out)
+	}
+	for _, want := range []string{"Org budget:", "fetch_state=cached", "CLI read verified body v5", "last_fetch_ok=unknown_to_cli"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "last_fetch_ok=false") || strings.Contains(out, "last_fetch_ok=true") {
+		t.Errorf("cached CLI output claimed a fetch result:\n%s", out)
 	}
 }

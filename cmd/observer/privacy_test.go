@@ -256,20 +256,21 @@ func TestBuildPrivacyEgressDefault(t *testing.T) {
 	rows := buildPrivacyEgress(cfg)
 
 	wantActive := map[string]bool{
-		"proxy forwarding":                    true,
-		"Teams org push + policy poll":        false,
-		"dashboard update check":              false,
-		"observer summarize":                  false,
-		"aggregate-share rail":                false,
-		"OTel exporter":                       false,
-		"generalized observability (Plane A)": false,
-		"email / digest alerts":               false,
-		"remote-access notify":                false,
-		"TLS pre-warm":                        true,
-		"guard cloud webhooks":                false,
-		"guard cloud LLM judge":               false,
-		"guard cloud reputation lookup":       false,
-		"rolling conversation summarization":  false,
+		"proxy forwarding":                     true,
+		"Teams org push + policy poll":         false,
+		"dashboard update check":               false,
+		"org update manifest + artifact fetch": false,
+		"observer summarize":                   false,
+		"aggregate-share rail":                 false,
+		"OTel exporter":                        false,
+		"generalized observability (Plane A)":  false,
+		"email / digest alerts":                false,
+		"remote-access notify":                 false,
+		"TLS pre-warm":                         true,
+		"guard cloud webhooks":                 false,
+		"guard cloud LLM judge":                false,
+		"guard cloud reputation lookup":        false,
+		"rolling conversation summarization":   false,
 	}
 
 	if len(rows) != len(wantActive) {
@@ -550,9 +551,10 @@ func TestBuildPrivacyEgressRemoteNotifyGate(t *testing.T) {
 // (alongside the always-on proxy-forwarding + TLS-pre-warm rows).
 func TestBuildPrivacyEgressGatedRowsFlipActive(t *testing.T) {
 	tests := []struct {
-		name    string
-		mutate  func(*config.Config)
-		rowName string
+		name       string
+		mutate     func(*config.Config)
+		rowName    string
+		alsoActive []string
 	}{
 		{
 			name: "org client enabled",
@@ -561,6 +563,10 @@ func TestBuildPrivacyEgressGatedRowsFlipActive(t *testing.T) {
 				c.OrgClient.OrgServerURL = "https://org.example"
 			},
 			rowName: "Teams org push + policy poll",
+			// Enrolling arms TWO rails, not one: the push/poll above and the
+			// update manifest fetch, which rides the same connection to the
+			// same host and is gated on the same enrolment (ruling R8).
+			alsoActive: []string{"org update manifest + artifact fetch"},
 		},
 		{
 			name:    "aggregate share enabled",
@@ -600,8 +606,12 @@ func TestBuildPrivacyEgressGatedRowsFlipActive(t *testing.T) {
 			tt.mutate(&cfg)
 			rows := buildPrivacyEgress(cfg)
 
+			also := map[string]bool{}
+			for _, n := range tt.alsoActive {
+				also[n] = true
+			}
 			for _, r := range rows {
-				want := r.Name == tt.rowName || alwaysOn[r.Name]
+				want := r.Name == tt.rowName || alwaysOn[r.Name] || also[r.Name]
 				if r.Active != want {
 					t.Errorf("row %q active = %v, want %v (only %q plus the always-on rows should be active)", r.Name, r.Active, want, tt.rowName)
 				}
@@ -623,8 +633,8 @@ func TestBuildPrivacyReportSchemaAndDocsURL(t *testing.T) {
 	if len(report.Sockets) == 0 {
 		t.Errorf("Sockets is empty")
 	}
-	if len(report.Egress) != 14 {
-		t.Errorf("Egress len = %d, want 14", len(report.Egress))
+	if len(report.Egress) != 15 {
+		t.Errorf("Egress len = %d, want 15", len(report.Egress))
 	}
 }
 

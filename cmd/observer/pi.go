@@ -148,14 +148,15 @@ func newPiCmd() *cobra.Command {
 			// seeded prompt) follow (and may override --model / --api-key).
 			forwarded := append([]string{"--provider", piProviderName}, args...)
 			return runEnvLauncher(envLauncherSpec{
-				tool:     "pi",
-				bin:      bin,
-				args:     forwarded,
-				dir:      continueDir,
-				proxyURL: resolved,
-				env:      nil, // pi routes via models.json, not an env var
-				dbPath:   cfg.Observer.DBPath,
-				stderr:   os.Stderr,
+				tool:       "pi",
+				bin:        bin,
+				args:       forwarded,
+				configPath: configPath,
+				dir:        continueDir,
+				proxyURL:   resolved,
+				env:        nil, // pi routes via models.json, not an env var
+				dbPath:     cfg.Observer.DBPath,
+				stderr:     os.Stderr,
 			})
 		},
 	}

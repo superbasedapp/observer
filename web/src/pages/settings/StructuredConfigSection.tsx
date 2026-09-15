@@ -2,7 +2,28 @@ import { useEffect, useMemo, useState } from "react";
 import { ChartShell, Toggle } from "@/components/primitives";
 import type { ConfigResponse } from "@/lib/types";
 import { markRestartPending } from "@/lib/restartPending";
+import { useApi } from "@/lib/useApi";
 import type { FieldDef, SectionGroup, SectionSpec } from "./sectionSpecs";
+
+// GET /api/guard/prompt/detectors response shape (backend:
+// internal/intelligence/dashboard/guard_prompt.go's
+// handleGuardPromptDetectors/promptDetectorJSON) — the full detector
+// vocabulary scrub.DetectorNames() knows, each with its class, the
+// raw configured/default mode, the RESOLVED effective mode after the
+// stricter-wins-with-floor clamp, and whether an override is set.
+// Only `id` and `effective_mode` are consumed here; the rest is kept
+// on the type for completeness/future use.
+type PromptDetectorEntry = {
+  id: string;
+  class: string;
+  default_mode: string;
+  effective_mode: string;
+  overridden: boolean;
+};
+
+type PromptDetectorsResponse = {
+  detectors: PromptDetectorEntry[];
+};
 
 // StructuredConfigSection — per-section structured form. Edits live
 // in a local draft; clicking Save POSTs to
@@ -37,6 +58,28 @@ export function StructuredConfigSection({
     () => ({ profile_names: config?.profile_names }),
     [config],
   );
+
+  // Resolved effective-mode sidecar for the "prompt-detectors" GROUP
+  // ONLY (fields opted in via FieldDef.showEffectiveMode) — sourced
+  // from a SEPARATE fetch to GET /api/guard/prompt/detectors, not from
+  // the ConfigResponse prop `dynamicOptions` draws from. "guard" is a
+  // grouped section (see spec.groups below): "prompt-detectors" is one
+  // of ITS groups, not a top-level spec.id, so the gate checks the
+  // groups list rather than spec.id — this fetch never fires for any
+  // section/group other than that one.
+  const hasPromptDetectorsGroup = Boolean(
+    spec.groups?.some((g) => g.id === "prompt-detectors"),
+  );
+  const detectorsApi = useApi<PromptDetectorsResponse>(
+    hasPromptDetectorsGroup ? "/api/guard/prompt/detectors" : null,
+  );
+  const effectiveModes = useMemo<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    for (const d of detectorsApi.data?.detectors ?? []) {
+      out[d.id] = d.effective_mode;
+    }
+    return out;
+  }, [detectorsApi.data]);
   // The form payload mirrors the structure of the config section it
   // saves. For grouped sections (Compression has 7 sub-groups across
   // 3 levels of nesting) the draft is the full Compression object;
@@ -98,12 +141,18 @@ export function StructuredConfigSection({
       }
       const out = await res.json().catch(() => null as null | Record<string, unknown>);
       if (out && out.restart_required) {
+        const keys = Array.isArray(out.restart_required_keys)
+          ? (out.restart_required_keys as string[])
+          : undefined;
         setSavedMsg(
-          "Saved. Restart the observer daemon to pick up the change.",
+          keys && keys.length > 0
+            ? `Saved. Restart the observer daemon to apply ${keys.join(", ")}.`
+            : "Saved. Restart the observer daemon to pick up the change.",
         );
         // Feed the global restart-pending banner so the reminder
-        // survives navigating away from Settings (P1.9).
-        markRestartPending(spec.id);
+        // survives navigating away from Settings (P1.9) — with the KEYS
+        // the daemon classified as bind-at-start (plan §3.3 item 1).
+        markRestartPending(spec.id, keys);
       } else {
         setSavedMsg("Saved.");
       }
@@ -140,6 +189,7 @@ export function StructuredConfigSection({
                 value={pickField(draft, f.id)}
                 onChange={(v) => setAt([f.id], v)}
                 dynamicOptions={dynamicOptions}
+                effectiveModes={effectiveModes}
               />
             ))}
           </div>
@@ -165,13 +215,14 @@ export function StructuredConfigSection({
                   setAt([...rel, field], value)
                 }
                 dynamicOptions={dynamicOptions}
+                effectiveModes={effectiveModes}
               />
             );
           })}
         {!hasGroups && draft == null && (
           <p className="rounded-2 border border-dashed border-line-2 bg-bg-3/40 px-3 py-2 text-[11.5px] text-fg-3">
             Section not present in the running config. Backend may not have
-            initialized the defaults yet — restart the daemon.
+            initialized the defaults yet - restart the daemon.
           </p>
         )}
         <div className="flex flex-wrap items-center gap-3 border-t border-line-1 pt-3">
@@ -210,12 +261,14 @@ function GroupCard({
   relPath,
   onChange,
   dynamicOptions,
+  effectiveModes,
 }: {
   group: SectionGroup;
   draft: Record<string, unknown> | null;
   relPath: string[];
   onChange: (field: string, value: unknown) => void;
   dynamicOptions?: Record<string, string[] | undefined>;
+  effectiveModes?: Record<string, string>;
 }) {
   const groupData = useMemo(
     () => resolveSub(draft, relPath),
@@ -241,6 +294,7 @@ function GroupCard({
             value={pickField(groupData, f.id)}
             onChange={(v) => onChange(f.id, v)}
             dynamicOptions={dynamicOptions}
+            effectiveModes={effectiveModes}
           />
         ))}
       </div>
@@ -253,11 +307,13 @@ function FieldRow({
   value,
   onChange,
   dynamicOptions,
+  effectiveModes,
 }: {
   field: FieldDef;
   value: unknown;
   onChange: (v: unknown) => void;
   dynamicOptions?: Record<string, string[] | undefined>;
+  effectiveModes?: Record<string, string>;
 }) {
   return (
     <div className="grid grid-cols-1 gap-1.5 lg:grid-cols-[180px_minmax(0,1fr)] lg:items-start lg:gap-4">
@@ -276,6 +332,7 @@ function FieldRow({
         value={value}
         onChange={onChange}
         dynamicOptions={dynamicOptions}
+        effectiveModes={effectiveModes}
       />
     </div>
   );
@@ -286,11 +343,13 @@ function FieldInput({
   value,
   onChange,
   dynamicOptions,
+  effectiveModes,
 }: {
   field: FieldDef;
   value: unknown;
   onChange: (v: unknown) => void;
   dynamicOptions?: Record<string, string[] | undefined>;
+  effectiveModes?: Record<string, string>;
 }) {
   const common =
     "w-full rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1.5 font-mono text-[12px] text-fg-1 placeholder:text-fg-4 focus:border-accent focus:outline-none";
@@ -314,18 +373,41 @@ function FieldInput({
       : undefined;
     const options =
       dynamic && dynamic.length > 0 ? dynamic : field.options ?? [];
+    // Resolved effective mode (post floor-clamp/off-exemption), shown
+    // beside the raw configured value for a "prompt-detectors" field —
+    // see FieldDef.showEffectiveMode's doc comment. Absent (undefined)
+    // until the /api/guard/prompt/detectors fetch resolves, so nothing
+    // renders on first paint or on a daemon too old to serve it.
+    const effectiveMode = field.showEffectiveMode
+      ? effectiveModes?.[field.id]
+      : undefined;
+    const rawValue = String(value ?? "");
+    const differs = effectiveMode != null && effectiveMode !== rawValue;
     return (
-      <select
-        className={common}
-        value={String(value ?? "")}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
+      <div>
+        <select
+          className={common}
+          value={rawValue}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          {options.map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </select>
+        {effectiveMode != null && (
+          <div
+            className={
+              "mt-1 text-[11px] leading-snug " +
+              (differs ? "text-warn" : "text-fg-3")
+            }
+          >
+            effective: {effectiveMode}
+            {differs && " (clamped/overridden by the global mode)"}
+          </div>
+        )}
+      </div>
     );
   }
 

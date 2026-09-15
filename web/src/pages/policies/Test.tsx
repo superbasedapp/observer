@@ -48,7 +48,7 @@ export function TestTab() {
         <h3 className="text-[13px] font-semibold text-fg-0">Test a request</h3>
         <p className="mb-3 mt-0.5 max-w-3xl text-[11.5px] leading-snug text-fg-3">
           Runs one message through the live admission policy and shows which layer fired. It records
-          nothing — but it does call the judge for a judged criterion (spending judge tokens) and previews
+          nothing - but it does call the judge for a judged criterion (spending judge tokens) and previews
           the enforce-mode decision even while the node is in observe.
         </p>
 
@@ -122,7 +122,7 @@ function VerdictCard({ v }: { v: Verdict }) {
           v={
             <span className="inline-flex items-center gap-1.5">
               <Pill variant={decisionVariant(v.enforce_decision)}>{v.enforce_decision}</Pill>
-              {v.mode !== "enforce" && <span className="text-[11px] text-fg-3">(preview — node is in {v.mode})</span>}
+              {v.mode !== "enforce" && <span className="text-[11px] text-fg-3">(preview - node is in {v.mode})</span>}
             </span>
           }
         />

@@ -3,7 +3,7 @@ import { HeroStat, PageHeader, Pill, SegmentedControl, TabStrip, type TabDef } f
 import { ShieldIcon, CompassIcon, CoinsIcon, SparklesIcon } from "@/components/icons";
 import { useApi } from "@/lib/useApi";
 import { ApiError, fetchJSON } from "@/lib/api";
-import { fmtUSD } from "@/lib/format";
+import { fmtShortId, fmtUSD } from "@/lib/format";
 import { pushToast } from "@/components/Toast";
 import { markRestartPending } from "@/lib/restartPending";
 import { ActivityTab } from "./policies/Activity";
@@ -93,7 +93,7 @@ export function PoliciesPage() {
     <div className="space-y-4 p-5">
       <PageHeader
         title="Policies"
-        sub="Author the Plane-A input-admission guardrails and egress routing policy for a hosted app's end-user traffic — the write counterpart to the read-only Egress and admission views. Node-local: policy is never pushed from an org server."
+        sub="Author the Plane-A input-admission guardrails and egress routing policy for a hosted app's end-user traffic - the write counterpart to the read-only Egress and admission views. Node-local: policy is never pushed from an org server."
       />
 
       {obsOff ? (
@@ -240,7 +240,7 @@ function OverviewTab({
           icon={<ShieldIcon />}
           loading={loading}
           variant={admission?.mode === "enforce" ? "warn" : "accent"}
-          value={admission ? admission.mode : "—"}
+          value={admission ? admission.mode : "-"}
           sub={
             admission?.enabled
               ? `${admission.criteria_count} criteria · ${admDecisions} decisions/24h`
@@ -252,7 +252,7 @@ function OverviewTab({
           icon={<CompassIcon />}
           loading={loading}
           variant={egress?.mode === "enforce" ? "warn" : "accent"}
-          value={egress ? egress.mode : "—"}
+          value={egress ? egress.mode : "-"}
           sub={
             egress?.enabled
               ? `${egress.rules?.length ?? 0} rules · ${egDecisions} decisions/24h`
@@ -264,7 +264,7 @@ function OverviewTab({
           icon={<SparklesIcon />}
           loading={loading}
           variant="accent"
-          value={admission ? admission.judge_hosting : "—"}
+          value={admission ? admission.judge_hosting : "-"}
           sub={judgeHostingNote(admission?.judge_hosting)}
         />
         <HeroStat
@@ -305,7 +305,7 @@ function OverviewTab({
               <Row k="24h decisions" v={<DecisionBreakdown d={admission.decisions_24h} />} />
               <Row k="Audit chain" v={<Pill variant={admission.chain.ok ? "success" : "danger"}>{admission.chain.ok ? "ok" : "broken"} · {admission.chain.rows} rows</Pill>} />
               {admission.policy_hash && (
-                <Row k="Policy" v={<span className="font-mono text-[11px] text-fg-3">{admission.policy_hash.slice(0, 16)}</span>} />
+                <Row k="Policy" v={<span className="font-mono text-[11px] text-fg-3" title={admission.policy_hash}>{fmtShortId(admission.policy_hash, 16)}</span>} />
               )}
             </dl>
           ) : (
@@ -336,7 +336,7 @@ function OverviewTab({
               <Row k="24h decisions" v={String(egDecisions)} />
               <Row k="Audit chain" v={<Pill variant={egress.chain.ok ? "success" : "danger"}>{egress.chain.ok ? "ok" : "broken"} · {egress.chain.rows} rows</Pill>} />
               {egress.policy_hash && (
-                <Row k="Policy" v={<span className="font-mono text-[11px] text-fg-3">{egress.policy_hash.slice(0, 16)}</span>} />
+                <Row k="Policy" v={<span className="font-mono text-[11px] text-fg-3" title={egress.policy_hash}>{fmtShortId(egress.policy_hash, 16)}</span>} />
               )}
             </dl>
           ) : (
@@ -357,7 +357,7 @@ function ShadowNudge({ admission, egress }: { admission?: AdmissionStatus | null
   if (!enforcing) return null;
   return (
     <div className="rounded-3 border border-warn/30 bg-warn-soft p-3 text-[11.5px] leading-relaxed text-warn">
-      A policy is in <b>enforce</b> mode — it actively blocks or reroutes end-user
+      A policy is in <b>enforce</b> mode - it actively blocks or reroutes end-user
       traffic. Confirm the shadow (observe/advise) verdicts looked right before
       enforcing, and keep an eye on the audit timeline.
     </div>

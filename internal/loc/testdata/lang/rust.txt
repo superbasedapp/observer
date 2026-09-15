@@ -1,0 +1,8 @@
+//! Module doc
+use std::fmt;
+
+/// Doc comment
+fn main() {
+    let s = "https://example.com";
+    /* inline */ println!("{}{:?}", s, fmt::Error);
+}

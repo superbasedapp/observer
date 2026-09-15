@@ -278,3 +278,136 @@ func TestSummarizeSecretFindings(t *testing.T) {
 		t.Fatalf("SummarizeSecretFindings = %q, want %q", got, want)
 	}
 }
+
+// TestR190PromptFindingsRow pins the prompt-submit-intervention PII
+// half (docs/plans/prompt-submit-intervention-exploration-2026-09-07.md
+// §5.6): Event.PIIFindings on a KindUserPrompt event produce the R-190
+// verdict; an event without findings stays allow; the detail is the
+// content-free type×count summary, never a value.
+func TestR190PromptFindingsRow(t *testing.T) {
+	t.Parallel()
+	eng := testEngine(t, ModeObserve)
+	enforce := testEngine(t, ModeEnforce)
+
+	ev := Event{
+		Kind:      KindUserPrompt,
+		SessionID: "s1",
+		PIIFindings: []PIIFinding{
+			{Type: "credit_card", Class: "pii", SpanLen: 16, Hash: "deadbeef"},
+			{Type: "credit_card", Class: "pii", SpanLen: 16, Hash: "cafef00d"},
+			{Type: "us_ssn", Class: "pii", SpanLen: 11, Hash: "abad1dea"},
+		},
+	}
+	v := eng.Evaluate(ev)
+	if v.RuleID != "R-190" || v.Decision != DecisionFlag {
+		t.Fatalf("observe verdict = %s/%v, want R-190/flag", v.RuleID, v.Decision)
+	}
+	// Verdict carries no Category (that's ActionVerdict's field, resolved
+	// by the guard layer's categoryWith from RuleID) — R-190's category is
+	// pinned structurally instead: rules_exfil.go declares it CategoryPII,
+	// and validateRules (engine construction) would already have failed
+	// loudly had any R-190 row disagreed.
+	if !strings.Contains(v.Reason, "credit_card×2") || !strings.Contains(v.Reason, "us_ssn") {
+		t.Errorf("reason %q missing the type×count summary", v.Reason)
+	}
+	if strings.Contains(v.Reason, "deadbeef") || strings.Contains(v.Reason, "cafef00d") {
+		t.Errorf("reason %q leaks a finding hash", v.Reason)
+	}
+
+	if v := enforce.Evaluate(ev); v.Decision != DecisionDeny {
+		t.Errorf("enforce decision = %v, want deny", v.Decision)
+	}
+
+	clean := Event{Kind: KindUserPrompt, SessionID: "s1"}
+	if v := eng.Evaluate(clean); v.RuleID != "" {
+		t.Errorf("clean user_prompt hit %s, want allow", v.RuleID)
+	}
+}
+
+// TestR172CoversUserPromptSecrets pins the reuse decision (contract
+// §9 Phase 1): a secret typed into the developer's own prompt text
+// (KindUserPrompt, Event.Secrets) fires the SAME R-172 row the
+// api_request half uses — no duplicate rule, no double-report against
+// R-190 (which only reads PIIFindings).
+func TestR172CoversUserPromptSecrets(t *testing.T) {
+	t.Parallel()
+	eng := testEngine(t, ModeObserve)
+
+	ev := Event{
+		Kind:      KindUserPrompt,
+		SessionID: "s1",
+		Secrets:   []SecretFinding{{Type: "github_pat", Certain: true}},
+	}
+	v := eng.Evaluate(ev)
+	if v.RuleID != "R-172" {
+		t.Fatalf("verdict rule = %s, want R-172", v.RuleID)
+	}
+
+	// A prompt carrying BOTH a secret and PII must not have R-190
+	// silently swallowed by R-172 winning the tie: R-172 is
+	// CategoryExfil/SeverityCritical, R-190 is CategoryPII/SeverityWarn
+	// (round-2 review F2), so R-172 wins on severity, not on table-order
+	// tie-break — either way this test documents that R-172 wins rather
+	// than asserting the winner is the ONLY interesting outcome, since
+	// the win is a reporting nicety, not a policy gap (both rules still
+	// evaluate; a caller wanting BOTH verdicts calls Evaluate
+	// per-kind-of-finding, which the guard layer's prompt-reconsider
+	// engine does).
+	both := Event{
+		Kind:      KindUserPrompt,
+		SessionID: "s1",
+		Secrets:   []SecretFinding{{Type: "github_pat", Certain: true}},
+		PIIFindings: []PIIFinding{
+			{Type: "credit_card", Class: "pii", SpanLen: 16, Hash: "deadbeef"},
+		},
+	}
+	if v := eng.Evaluate(both); v.RuleID == "" {
+		t.Fatalf("expected a hit when both a secret and PII finding are present")
+	}
+}
+
+// TestR172MessageIsSurfaceAware pins FIX-6 (phase-2 review):
+// matchSecretsOnAPIRequest's runtime reason text must not always say
+// "outbound request body" — that phrasing is accurate for the proxy
+// egress seam (KindAPIRequest) but nonsensical for a developer who
+// just typed a prompt into their coding-agent CLI, where nothing has
+// gone "outbound" yet. The two AppliesTo kinds this row covers must
+// render DIFFERENT, surface-appropriate text.
+func TestR172MessageIsSurfaceAware(t *testing.T) {
+	t.Parallel()
+	eng := testEngine(t, ModeObserve)
+	secrets := []SecretFinding{{Type: "github_pat", Certain: true}}
+
+	promptVerdict := eng.Evaluate(Event{Kind: KindUserPrompt, SessionID: "s1", Secrets: secrets})
+	if promptVerdict.RuleID != "R-172" {
+		t.Fatalf("prompt event: verdict rule = %s, want R-172", promptVerdict.RuleID)
+	}
+	if !strings.Contains(promptVerdict.Reason, "in the prompt text") {
+		t.Errorf("prompt event reason = %q, want it to name the prompt surface", promptVerdict.Reason)
+	}
+	if strings.Contains(promptVerdict.Reason, "outbound request body") {
+		t.Errorf("prompt event reason = %q, must NOT leak proxy vocabulary", promptVerdict.Reason)
+	}
+
+	apiVerdict := eng.Evaluate(Event{Kind: KindAPIRequest, SessionID: "s1", Secrets: secrets})
+	if apiVerdict.RuleID != "R-172" {
+		t.Fatalf("api-request event: verdict rule = %s, want R-172", apiVerdict.RuleID)
+	}
+	if !strings.Contains(apiVerdict.Reason, "outbound request body") {
+		t.Errorf("api-request event reason = %q, want it to keep the proxy-surface phrasing (unchanged behavior)", apiVerdict.Reason)
+	}
+}
+
+// TestSummarizePIIFindings pins the summary renderer (mirrors
+// TestSummarizeSecretFindings — the guard layer's dedup/fingerprint
+// signature depends on byte-stable output).
+func TestSummarizePIIFindings(t *testing.T) {
+	t.Parallel()
+	got := SummarizePIIFindings([]PIIFinding{
+		{Type: "credit_card"}, {Type: "us_ssn"}, {Type: "credit_card"},
+	})
+	want := "credit_card×2, us_ssn"
+	if got != want {
+		t.Fatalf("SummarizePIIFindings = %q, want %q", got, want)
+	}
+}

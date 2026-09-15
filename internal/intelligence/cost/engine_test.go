@@ -45,6 +45,53 @@ func TestEngine_Compute_UnknownModel(t *testing.T) {
 	}
 }
 
+// TestEngine_CursorGrokAliasCost pins the live Cursor hook model shape
+// (cursor-grok-4.6-medium). The alias must produce a known, non-zero cost
+// from representative token counts, retain Cursor's standard cache card
+// without direct-xAI long-context pricing, and still obey ordinary exact-
+// override precedence for that captured id.
+func TestEngine_CursorGrokAliasCost(t *testing.T) {
+	e := NewEngine(config.IntelligenceConfig{})
+	b := TokenBundle{Input: 12_000, Output: 400, CacheRead: 50_000}
+	cost, ok := e.Compute("cursor-grok-4.6-medium", b)
+	if !ok {
+		t.Fatal("cursor-grok-4.6-medium should be priced")
+	}
+	const want = 0.0514 // 12000*2 + 400*6 + 50000*0.5, per 1M tokens
+	if diff := cost - want; diff > 1e-12 || diff < -1e-12 {
+		t.Fatalf("cost=%0.9f want %0.9f", cost, want)
+	}
+
+	p, src, ok := e.LookupWithSource("cursor-grok-4.6-medium")
+	if !ok || src != PricingSourceExact {
+		t.Fatalf("lookup = (%+v, %q, %v), want exact hit", p, src, ok)
+	}
+	if p.CacheRead != 0.50 || p.LongContextThreshold != 0 {
+		t.Fatalf("Cursor standard Grok card lost through alias: %+v", p)
+	}
+	longCost, ok := e.Compute("cursor-grok-4.6-medium", TokenBundle{Input: 200_001})
+	if !ok {
+		t.Fatalf("long-context lookup ok=%v want true", ok)
+	}
+	if diff := longCost - 0.400002; diff > 1e-12 || diff < -1e-12 {
+		t.Fatalf("long-context cost=%0.9f ok=%v want 0.400002", longCost, ok)
+	}
+
+	override := config.IntelligenceConfig{
+		Pricing: config.PricingConfig{Models: map[string]config.ModelPricing{
+			"cursor-grok-4.6-medium": {Input: 9, Output: 10, CacheRead: 1},
+		}},
+	}
+	oe := NewEngine(override)
+	op, osrc, ook := oe.LookupWithSource("cursor-grok-4.6-medium")
+	// A node-config override is provenance PricingSourceLocal ("a developer
+	// typed this"), distinct from a shipped PricingSourceExact table hit —
+	// see sourceFor / orgprice_test.go.
+	if !ook || osrc != PricingSourceLocal || op.Input != 9 || op.Output != 10 || op.CacheRead != 1 {
+		t.Fatalf("Cursor override = (%+v, %q, %v), want 9/10/1 local", op, osrc, ook)
+	}
+}
+
 func TestTokenBundle_Add(t *testing.T) {
 	a := TokenBundle{Input: 1, Output: 2, CacheRead: 3, CacheCreation: 4, CacheCreation1h: 1}
 	b := TokenBundle{Input: 10, Output: 20, CacheRead: 30, CacheCreation: 40, CacheCreation1h: 5}
@@ -615,8 +662,13 @@ func TestTable_LongContextDefaults(t *testing.T) {
 		// the board, over-billing every LC turn by 33%.
 		{"gpt-5.4", 272_000, 5, 22.50, 0.50, 0, 0},
 		{"gpt-5.5", 272_000, 10, 45, 1, 0, 0},
-		{"gemini-2.5-pro", 200_000, 2.50, 15, 0.25, 0, 0},
-		{"gemini-3.1-pro-preview", 200_000, 4, 18, 0.40, 0, 0},
+		// Gemini's LC cache-write rates are DERIVED, not baked: Google
+		// publishes no cache-write line (a write is an ordinary input
+		// token), so cacheWriteRules fills LongContextCacheCreation
+		// (+1h) from LongContextInput at lookup time. Expecting 0 here
+		// would be expecting the pre-2026-09-03 $0 under-bill.
+		{"gemini-2.5-pro", 200_000, 2.50, 15, 0.25, 2.50, 2.50},
+		{"gemini-3.1-pro-preview", 200_000, 4, 18, 0.40, 4, 4},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
 			p, ok := tb.Lookup(tc.model)

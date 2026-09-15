@@ -143,6 +143,22 @@ func TestBootstrapEnvelopeKeysNotPinnable(t *testing.T) {
 // TestAdminManagedNotRemotelySettable: admin_managed flips content-sharing
 // defaults raw. It is excluded from EVERY remote vocabulary, and a body
 // naming it fails Compile on both the publish and the accept path.
+//
+// This is a TEAMS-posture-and-common statement about the nodegov governance
+// vocabulary (the same signed-directive compiler both postures share): under
+// EITHER posture, admin_managed itself is never a governance-body key,
+// because it is not how enterprise posture authorizes raw content either.
+// The Plane B dual-mode gateway / RBAC-IA design's enterprise posture
+// (2026-08-29 §5.3 item 2) makes admin_managed IRRELEVANT rather than
+// remotely-settable — a managed node's own enrolment grant satisfying
+// govern.Effective.GrantsEnterpriseContent() sets store.ShareOptions
+// .EnterpriseGranted through a structurally distinct, non-governance-body
+// channel (see TestOrgPushUnchangedByGovernance in
+// tests/invariant/governance_phase1b_test.go and the "enterprise_granted"
+// subtest of TestPushPayloadCarriesContentWhenOptedIn in
+// tests/invariant/privacy_test.go). So this test's assertions hold
+// byte-identically under both postures for the reason stated here, not
+// because enterprise posture was overlooked.
 func TestAdminManagedNotRemotelySettable(t *testing.T) {
 	if nodegov.IsPinnableKey("org_client.share.admin_managed") {
 		t.Fatal("admin_managed is pinnable")

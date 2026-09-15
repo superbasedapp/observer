@@ -12,10 +12,12 @@ import { RestartOverlay } from "@/components/RestartOverlay";
 import { useApi } from "@/lib/useApi";
 import { useDaemonRestart } from "@/lib/useDaemonRestart";
 import { isUpdateAvailable, useUpdateCheck } from "@/lib/version";
+import { fmtDateTime } from "@/lib/format";
 import type {
   DoctorReport,
   HealthFailuresResponse,
   StatusSnapshot,
+  UpdateStatusResponse,
 } from "@/lib/types";
 
 // HealthSection — the `observer doctor` checks in the dashboard
@@ -57,7 +59,7 @@ function DaemonCard() {
   return (
     <ChartShell
       title="Daemon"
-      sub="Restart the running daemon to load a freshly-built binary or apply saved config — without dropping to the CLI."
+      sub="Restart the running daemon to load a freshly-built binary or apply saved config - without dropping to the CLI."
     >
       <div className="flex flex-wrap items-center gap-3">
         <button
@@ -79,8 +81,8 @@ function DaemonCard() {
       {error && (
         <p className="mt-2 text-[11.5px] text-danger">
           {/http|501|not\s|unavailable/i.test(error)
-            ? "Restart isn’t available on this dashboard — it needs the full daemon started with `observer start` (the standalone `observer dashboard` can’t re-exec itself)."
-            : `Restart failed — ${error}`}
+            ? "Restart isn’t available on this dashboard - it needs the full daemon started with `observer start` (the standalone `observer dashboard` can’t re-exec itself)."
+            : `Restart failed - ${error}`}
         </p>
       )}
     </ChartShell>
@@ -101,7 +103,7 @@ function UpdateCard() {
   return (
     <ChartShell
       title="Updates"
-      sub="Checks npmjs.org only when you click below — never automatically, never in the background. No other page or timer triggers this request."
+      sub="Checks npmjs.org only when you click below - never automatically, never in the background. No other page or timer triggers this request."
     >
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-[11.5px] text-fg-3">
@@ -120,13 +122,13 @@ function UpdateCard() {
         </button>
         {lastCheckedAt && !checking && (
           <span className="text-[11px] text-fg-4">
-            last checked {new Date(lastCheckedAt).toLocaleString()}
+            last checked {fmtDateTime(new Date(lastCheckedAt).toISOString())}
           </span>
         )}
       </div>
       {error && (
         <p className="mt-2 text-[11.5px] text-danger">
-          Couldn’t reach registry.npmjs.org — check your network and try
+          Couldn’t reach registry.npmjs.org - check your network and try
           again.
         </p>
       )}
@@ -134,7 +136,7 @@ function UpdateCard() {
         <p className="mt-2 text-[11.5px]">
           {updateAvailable ? (
             <>
-              <span className="text-accent">v{latest} is available</span> —
+              <span className="text-accent">v{latest} is available</span> -
               update with <kbd>npm i -g @superbased/observer</kbd> or{" "}
               <kbd>pipx upgrade superbased-observer</kbd>, or read the{" "}
               <a
@@ -154,7 +156,92 @@ function UpdateCard() {
           )}
         </p>
       )}
+      <OrgUpdatePosture />
     </ChartShell>
+  );
+}
+
+// OrgUpdatePosture renders the ORG-SERVED half of the update answer, beside
+// the click-gated npm probe above (enterprise update management §3.10, W5).
+//
+// The two answers are different questions and the card shows both rather than
+// picking one: npm says what the public registry has published, the org says
+// what THIS fleet is allowed to run and how far this node has got. On an
+// enrolled node the org answer is the one that decides.
+//
+// It reads GET /api/update/status, a LOOPBACK read of state the daemon already
+// holds from the push cycle - it adds no outbound request and no timer.
+function OrgUpdatePosture() {
+  const st = useApi<UpdateStatusResponse>("/api/update/status");
+  const d = st.data;
+  if (!d) return null;
+  if (!d.enabled) {
+    return (
+      <p className="mt-3 border-t border-line-1 pt-3 text-[11.5px] text-fg-3">
+        Org-managed updates are turned off on this node ([update].enabled =
+        false), so nothing here is checked against an org server. The npm check
+        above is the only update signal.
+      </p>
+    );
+  }
+  const refusal = d.org_refusal;
+  return (
+    <div className="mt-3 border-t border-line-1 pt-3 text-[11.5px]">
+      {refusal && (
+        <p className="mb-2 rounded-2 border border-danger/30 bg-danger-soft px-2 py-1.5 text-danger">
+          Your org is not accepting this node's data:{" "}
+          {refusal.message}
+          {refusal.min_version ? (
+            <>
+              {" "}
+              Update to{" "}
+              <span className="font-mono">v{refusal.min_version.replace(/^v/, "")}</span>{" "}
+              or newer to start sharing again.
+            </>
+          ) : null}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-fg-3">
+        <span>
+          Org update state{" "}
+          <span className="font-mono text-fg-1">
+            {d.state === "unknown" || !d.state ? "not reported" : d.state}
+          </span>
+        </span>
+        {d.channel && (
+          <span>
+            channel <span className="font-mono text-fg-1">{d.channel}</span>
+          </span>
+        )}
+        {d.target_version && (
+          <span>
+            target <span className="font-mono text-fg-1">{d.target_version}</span>
+          </span>
+        )}
+        {d.install_method && (
+          <span>
+            installed via{" "}
+            <span className="font-mono text-fg-1">{d.install_method}</span>
+          </span>
+        )}
+        <span>auto-apply {d.auto_apply ? "on" : "off"}</span>
+        {d.window && <span>window {d.window}</span>}
+      </div>
+      {d.auto_apply_reason && (
+        <p className="mt-1 text-fg-4">{d.auto_apply_reason}</p>
+      )}
+      {!d.self_apply && d.advice && (
+        <p className="mt-1 text-warn">
+          This node cannot replace its own binary. {d.advice}
+        </p>
+      )}
+      {d.error_class && (
+        <p className="mt-1 text-danger">
+          Last update attempt failed at the {d.error_class} step. Run{" "}
+          <kbd>observer update history</kbd> for the local ledger.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -260,9 +347,9 @@ function RedactionNotice() {
       <Info className="mt-[2px] h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <p>
         This device is connected remotely, so machine-specific paths and user
-        names appear as placeholders — <code className={ph}>~</code>,{" "}
+        names appear as placeholders - <code className={ph}>~</code>,{" "}
         <code className={ph}>&lt;config&gt;</code>,{" "}
-        <code className={ph}>&lt;other-home&gt;</code> — standing in for real
+        <code className={ph}>&lt;other-home&gt;</code> - standing in for real
         locations on the host, and some machine detail can still come through.
         The checks and their results are unchanged; for the unredacted report,
         open this dashboard locally on the host or run{" "}
@@ -336,7 +423,7 @@ function FailuresCard() {
                   {g.project ? (
                     <TruncatedPath value={g.project} className="text-[11px]" />
                   ) : (
-                    "—"
+                    "-"
                   )}
                 </td>
                 <td className="py-1.5">

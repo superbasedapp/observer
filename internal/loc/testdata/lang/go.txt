@@ -1,0 +1,13 @@
+package main
+
+// A line comment.
+/* A block
+   comment. */
+import "fmt"
+
+func main() {
+	fmt.Println("// not a comment")
+	u := "https://example.com" // trailing comment
+	s := `raw string with // inside`
+	fmt.Println(u, s)
+}

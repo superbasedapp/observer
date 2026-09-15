@@ -128,16 +128,17 @@ func TestToolIDValuesMatchModels(t *testing.T) {
 		models.ToolDevin: true,
 		models.ToolDroid: true, models.ToolGeminiCLI: true,
 		models.ToolGoose: true, models.ToolGrok: true,
-		models.ToolHermes: true, models.ToolKiloCode: true,
+		models.ToolHermes: true, models.ToolJunie: true, models.ToolKiloCode: true,
 		models.ToolKiloCodeCLI: true, models.ToolKimiCode: true,
-		models.ToolKiroCLI: true, models.ToolMuse: true,
+		models.ToolKiroCLI: true, models.ToolKiroCrew: true, models.ToolMuse: true,
 		models.ToolOpenClaw: true,
 		models.ToolOpenCode: true, models.ToolOpenInterpreter: true,
-		models.ToolPi: true, models.ToolPrimeAgent: true,
+		models.ToolPi: true, models.ToolPoolside: true, models.ToolPrimeAgent: true,
 		models.ToolQoder:    true,
 		models.ToolQwenCode: true, models.ToolRooCode: true,
 		models.ToolZcode: true, models.ToolMistralCode: true,
-		models.ToolFreebuff: true,
+		models.ToolFreebuff: true, models.ToolZooCode: true,
+		models.ToolZed: true,
 	}
 	for _, tool := range tooltax.Tools() {
 		if !known[tool] {

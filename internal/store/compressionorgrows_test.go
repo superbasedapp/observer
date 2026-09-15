@@ -40,7 +40,13 @@ func seedCompressionEvent(t *testing.T, s *Store, ts time.Time, mechanism string
 func TestSelectCompressionStatRows_AggregatesByDayMechanism(t *testing.T) {
 	t.Parallel()
 	s, _ := newTestStore(t)
-	now := time.Now().UTC()
+	// Anchor to TODAY's midday UTC (not raw time.Now) so the sub-hour
+	// relative offsets below never straddle UTC midnight — the documented
+	// "pin a midday anchor" fix for the UTC-midnight test class. Still a real
+	// today so the 7-day recompute-window filter keeps the recent events and
+	// excludes the -30-day one.
+	n := time.Now().UTC()
+	now := time.Date(n.Year(), n.Month(), n.Day(), 12, 0, 0, 0, time.UTC)
 
 	// Two "json" events same day — must collapse into one bucket with
 	// Events=2 and summed bytes.

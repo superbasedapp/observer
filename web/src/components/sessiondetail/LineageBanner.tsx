@@ -13,6 +13,7 @@ import { fmtCompact, fmtUSD } from "@/lib/format";
 // shortSid is the panel's short-session-id convention (mirrors the
 // header's `id.slice(0, 8)`), used for the lineage badge labels.
 function shortSid(id: string): string {
+  id = id.split(":agent:").at(-1) ?? id;
   return id.length > 8 ? id.slice(0, 8) : id;
 }
 
@@ -56,7 +57,7 @@ export function LineageBanner({
           Contains{" "}
           <span className="font-semibold text-fg-1">{sidechainCount}</span>{" "}
           sidechain action{sidechainCount === 1 ? "" : "s"} from inline
-          sub-agents — see the System tab for the per-sub-agent breakdown.
+          sub-agents - see the System tab for the per-sub-agent breakdown.
         </div>
       )}
       {hasParent && (
@@ -72,7 +73,7 @@ export function LineageBanner({
                 ? "Parent session not in this database"
                 : !onOpenSession
                   ? "Session navigation unavailable here"
-                  : `Open parent session ${shortSid(parentId)}`
+                  : `Open parent session ${parentId}`
             }
             className={clsx(
               lineagePillCls,
@@ -120,7 +121,7 @@ export function LineageBanner({
                       }
                       title={
                         openable
-                          ? `Open session ${shortSid(c.id)}`
+                          ? `Open session ${c.id}`
                           : "Session navigation unavailable here"
                       }
                       className={clsx(

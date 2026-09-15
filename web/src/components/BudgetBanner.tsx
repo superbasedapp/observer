@@ -84,9 +84,9 @@ export function BudgetBanner() {
         {label} is at {fmtUSD(firing.mtd_usd)} of its{" "}
         {fmtUSD(firing.budget_usd)} monthly budget
         {firing.forecast_usd > firing.budget_usd
-          ? ` — on pace for ${fmtUSD(firing.forecast_usd)} by month end`
+          ? ` - on pace for ${fmtUSD(firing.forecast_usd)} by month end`
           : ""}
-        . Advisory only — nothing is blocked.
+        . Advisory only - nothing is blocked.
       </span>
       <div className="flex-1" />
       <Link

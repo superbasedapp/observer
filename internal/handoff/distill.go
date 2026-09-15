@@ -176,7 +176,16 @@ func forkNote(ex Extract, res ForkResolution) string {
 
 const missionCap = 600
 
-func buildMission(ex Extract, _ ForkResolution, _ Options) (Section, bool) {
+func buildMission(ex Extract, _ ForkResolution, opts Options) (Section, bool) {
+	// The mission quote is the distilled-carry addition OVER metadata, which
+	// is "action-derived facts only" (files/commands/errors, no transcript
+	// prose). Gating it here on the carry mode is what makes the metadata and
+	// distilled docs actually distinct — without this gate buildMission fires
+	// for CarryMetadata too whenever the transcript is readable, so the two
+	// modes render byte-identical (and price identically in the §9 table).
+	if opts.Carry == CarryMetadata {
+		return Section{}, false
+	}
 	for _, m := range ex.Transcript {
 		if m.Role != models.TranscriptUser || strings.TrimSpace(m.Text) == "" {
 			continue

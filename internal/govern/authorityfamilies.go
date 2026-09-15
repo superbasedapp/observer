@@ -40,15 +40,48 @@ type authorityFamilyRow struct {
 //     (internal/policyfam/nodegov compiles all of them; resolve.go's
 //     "sections" / "pinned" / "share" / "features" rows are the four
 //     directive classes that family carries).
+//
 //   - enforce.admission lifts the §R23 structural-ignore for the
 //     admission.input family (internal/obs/admission).
+//
 //   - enforce.egress lifts it for the egress.routing_guardrail family
 //     (internal/guard's egress policy).
+//
 //   - enforce.routing lifts it for the gateway.providers family (the
 //     Phase 3 dashboard-managed proxy lane table). Model-routing
 //     enforcement is delivered through the [routing] org policy fragment,
 //     which rides the gateway.providers family compiler, not a routing-
 //     specific one.
+//
+//   - enforce.budget maps to node.governance, which is the org-budget plan
+//     §3.3's DECLARED FALLBACK rather than its first choice. The plan wanted a
+//     dedicated `budget.spend` family (review finding F8: every other
+//     enforce.* token has one) and named the forcing condition exactly:
+//     "should families.go's CompileBody switch require every family to carry
+//     an org_policy_resources compiler ... map to node.governance instead".
+//     It does, and the coupling reaches further than that one switch — the
+//     family enum is CLOSED and load-bearing in four more places:
+//     policyfam.SupportedFamilies is pinned element-for-element by
+//     policyfam/families_test.go's TestSupportedFamiliesDriveDispatch (every
+//     entry must compile a minimal body) and by internal/config's
+//     policyfam_sync_test.go against config.policyResourceSupportedFamilies,
+//     which config.Validate enforces on [org_client.policy].accept_families —
+//     and cmd/observer's managedPolicyFamiliesToWrite writes exactly
+//     GovernedFamilies(grant.Authority) into that key at enrolment. A family
+//     with no resource body would therefore either fail the registry contract
+//     test or, worse, be written into a managed node's config and make
+//     config.Load REJECT it. The budget body is delivered by
+//     GET /api/agent/budget, not by the resource rail, so it has no compiler
+//     and cannot be a resource family.
+//
+//     node.governance is the honest home rather than a shrug: the budget
+//     POSTURE is literally a pair of node.governance pins
+//     (guard.budget.hard / guard.budget.from_org, nodegov.PinnableKeys), so a
+//     grant carrying enforce.budget genuinely governs that family. Widening
+//     the family does NOT widen the semantics — resolve.go gates each
+//     DIRECTIVE CLASS on its own authority (settings.pin for `pinned`,
+//     capture.pin/extract.* for `share`, feature.lock for `features`), so
+//     enforce.budget alone still unlocks no directive class.
 var authorityFamilyTable = []authorityFamilyRow{
 	{AuthorityDashboardVisibility, []string{familyNodeGovernance}},
 	{AuthoritySettingsPin, []string{familyNodeGovernance}},
@@ -58,15 +91,22 @@ var authorityFamilyTable = []authorityFamilyRow{
 	{AuthorityExtractCodeintel, []string{familyNodeGovernance}},
 	{AuthorityExtractProcess, []string{familyNodeGovernance}},
 	{AuthorityExtractTerminal, []string{familyNodeGovernance}},
+	{AuthorityExtractTasks, []string{familyNodeGovernance}},
+	{AuthorityExtractToolAccounts, []string{familyNodeGovernance}},
 	{AuthorityExtractToolBodies, []string{familyNodeGovernance}},
 	{AuthorityExtractFolders, []string{familyNodeGovernance}},
 	{AuthorityExtractTraces, []string{familyNodeGovernance}},
 	{AuthorityExtractCache, []string{familyNodeGovernance}},
 	{AuthorityExtractRouting, []string{familyNodeGovernance}},
 	{AuthorityExtractPredictions, []string{familyNodeGovernance}},
+	{AuthorityExtractTargetActions, []string{familyNodeGovernance}},
+	{AuthorityExtractScope, []string{familyNodeGovernance}},
+	{AuthorityExtractPolicyState, []string{familyNodeGovernance}},
+	{AuthorityExtractObsEgress, []string{familyNodeGovernance}},
 	{AuthorityEnforceAdmission, []string{familyAdmissionInput}},
 	{AuthorityEnforceEgress, []string{familyEgressGuardrail}},
 	{AuthorityEnforceRouting, []string{familyGatewayProviders}},
+	{AuthorityEnforceBudget, []string{familyNodeGovernance}},
 }
 
 // exemptFromFamilyMapping is the CONSCIOUS exemption list this package's own

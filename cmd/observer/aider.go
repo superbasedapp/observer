@@ -52,13 +52,14 @@ func newAiderCmd() *cobra.Command {
 			}
 			resolved := resolveProxyURL(cfg.Proxy.Port, "")
 			return runEnvLauncher(envLauncherSpec{
-				tool:     "aider",
-				bin:      bin,
-				args:     args,
-				proxyURL: resolved,
-				env:      map[string]string{"OPENAI_API_BASE": resolved + "/v1"},
-				dbPath:   cfg.Observer.DBPath,
-				stderr:   cmd.ErrOrStderr(),
+				tool:       "aider",
+				bin:        bin,
+				args:       args,
+				configPath: configPath,
+				proxyURL:   resolved,
+				env:        map[string]string{"OPENAI_API_BASE": resolved + "/v1"},
+				dbPath:     cfg.Observer.DBPath,
+				stderr:     cmd.ErrOrStderr(),
 			})
 		},
 	}

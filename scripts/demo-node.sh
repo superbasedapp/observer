@@ -43,7 +43,7 @@ set -u
 RG="${RG:-superbased-demo-rg}"
 NODE="${NODE:-sb-testnode}"
 ACR="${ACR:-sbdemoacr35022.azurecr.io}"
-IMAGE="${IMAGE:-$ACR/observer-node:v4}"
+IMAGE="${IMAGE:-$ACR/observer-node:v5}"
 STORAGE="${STORAGE:-sbdemostor35022}"
 SHARE="${SHARE:-sb-testnode-data}"
 ORG_URL="${ORG_URL:-http://sborg35022.eastus.azurecontainer.io:9443}"
@@ -66,9 +66,51 @@ PROXY_BASE="${PROXY_BASE:-http://127.0.0.1:8820/up/openrouter/v1}"
 # model 404s and OpenCode fails with an opaque UnknownError BEFORE any model
 # call). VERIFY the model is live before create/recreate (curl its
 # /chat/completions). openai/gpt-oss-20b:free died between 2026-08-20 and -23;
-# stealth/ox-alpha was live as of 2026-08-23.
-DRIVE_MODEL="${DRIVE_MODEL:-openrouter/stealth/ox-alpha}"
+# openai/gpt-oss-20b:free died 2026-08-20→08-23; stealth/ox-alpha died
+# 08-23→08-27 (OpenRouter now 404s it with "This model was ZAI's GLM-5.3
+# Flash"). Current default verified live 2026-08-27, 4/4 tool-calling probes;
+# same-day alternates, also 4/4: minimax/minimax-m3:free,
+# nvidia/nemotron-3-super-120b-a12b:free, inclusionai/ling-3.0-flash-fin:free.
+# OPERATOR-CANONICAL free-slug rotation (2026-08-28, all probed LIVE that
+# day; free slugs rotate BOTH ways - nemotron-3.5-lightning:free 404'd
+# 08-27 and was back 08-28 - so on failure walk this list in order):
+#   poolside/laguna-s-2.1:free / thinkingmachines/inkling:free /
+#   nvidia/nemotron-3-ultra-550b-a55b:free / nvidia/nemotron-3.5-lightning:free /
+#   minimax/minimax-m3:free / z-ai/glm-5.2:free /
+#   inclusionai/ling-3.0-flash-fin:free / google/gemma-4-31b-it:free /
+#   google/gemma-4-26b-a4b-it:free
+DRIVE_MODEL="${DRIVE_MODEL:-openrouter/cohere/north-mini-code:free}"
 DRIVE_PROMPT="${DRIVE_PROMPT:-List the files here and summarize the project.}"
+
+# Secret-echo redaction: winaz/winps embed retrieved secrets (ACR password,
+# storage account key, the OpenRouter key) straight into the az command
+# string they run (e.g. `--registry-password $ACR_PASS`), so a failed call's
+# diagnostic echo of that same string would otherwise leak the value into
+# the caller's transcript/log. register_secret records each value as it's
+# obtained; redact() scrubs every registered value out of a string before
+# it's ever printed, replacing it with the variable NAME and LENGTH only —
+# never the content.
+declare -a REDACT_NAMES=()
+declare -a REDACT_VALUES=()
+
+register_secret() { # register_secret <name> <value>
+    local name="$1" val="$2"
+    [ -n "$val" ] || return 0
+    REDACT_NAMES+=("$name")
+    REDACT_VALUES+=("$val")
+}
+
+redact() { # redact <string> -> string, every registered secret value
+    # replaced by [REDACTED:<name> len=<N>].
+    local s="$1" i v n
+    for i in "${!REDACT_VALUES[@]}"; do
+        v="${REDACT_VALUES[$i]}"
+        n="${REDACT_NAMES[$i]}"
+        [ -n "$v" ] || continue
+        s="${s//"$v"/[REDACTED:${n} len=${#v}]}"
+    done
+    printf '%s' "$s"
+}
 
 # Run one az command via Windows cmd.exe, retrying through interop flakes.
 winaz() {
@@ -78,7 +120,7 @@ winaz() {
         if [ -n "$out" ]; then printf '%s\n' "$out"; return 0; fi
         sleep 5
     done
-    echo "winaz: FAILED after 10 tries: $1" >&2
+    echo "winaz: FAILED after 10 tries: $(redact "$1")" >&2
     return 1
 }
 
@@ -94,7 +136,7 @@ winps() {
         if [ -n "$out" ]; then printf '%s\n' "$out"; return 0; fi
         sleep 5
     done
-    echo "winps: FAILED after 10 tries: $1" >&2
+    echo "winps: FAILED after 10 tries: $(redact "$1")" >&2
     return 1
 }
 
@@ -117,6 +159,7 @@ load_key() {
     printf -v "$KVAR" '%s' "$raw"
     export "${KVAR?}"
     [ -n "${!KVAR:-}" ] || { echo "demo-node: $KVAR empty after parse" >&2; return 1; }
+    register_secret "$KVAR" "${!KVAR}"
 }
 
 case "${1:-}" in
@@ -126,7 +169,9 @@ create)
     # ACR admin creds (Windows-side); the node image must already be pushed.
     ACR_USER=$(winaz "az acr credential show -n ${ACR%%.*} --query username -o tsv") || exit 1
     ACR_PASS=$(winaz "az acr credential show -n ${ACR%%.*} --query passwords[0].value -o tsv") || exit 1
+    register_secret ACR_PASS "$ACR_PASS"
     STOR_KEY=$(winaz "az storage account keys list -g $RG -n $STORAGE --query [0].value -o tsv") || exit 1
+    register_secret STOR_KEY "$STOR_KEY"
     # Single mount + secure env (the key) → plain flags suffice (a YAML --file
     # is only needed for the two-mount sb-org/sb-gateway groups).
     # NOTE: no `local` here — this case body runs at top level, not in a
@@ -137,7 +182,13 @@ create)
     keyassign="$(printf '%s=%s' "$KVAR" "${!KVAR}")"
     baseassign="$(printf 'PROXY_OPENROUTER_BASE=%s' "$PROXY_BASE")"
     modelassign="$(printf 'OPENCODE_MODEL=%s' "$DRIVE_MODEL")"
-    winaz "az container create -g $RG -n $NODE --image $IMAGE \
+    # `call` is MANDATORY here (live-caught 2026-08-27): `az` on Windows is
+    # az.cmd, and `cmd /c "az.cmd … && echo X"` transfers control to the batch
+    # and never returns, so the `&& echo` sentinel never fires. winaz then sees
+    # empty output, declares failure, and RETRIES the create 10 times — while
+    # the create itself may well have succeeded. `call az …` returns control so
+    # the sentinel prints.
+    winaz "call az container create -g $RG -n $NODE --image $IMAGE \
         --registry-login-server $ACR --registry-username $ACR_USER --registry-password $ACR_PASS \
         --restart-policy Always --cpu 1 --memory 1.5 \
         --azure-file-volume-account-name $STORAGE --azure-file-volume-account-key $STOR_KEY \
@@ -146,6 +197,10 @@ create)
         --secure-environment-variables $keyassign \
         -o none && echo CREATED-$NODE" | tail -1
     echo "next: scripts/demo-node.sh enroll   (then 'up')"
+    echo "NOTE: a recreate MINTS A NEW MACHINE IDENTITY (ACI has no"
+    echo "      /etc/machine-id; the hostname fallback is per-sandbox), and"
+    echo "      BindMachine runs only inside 'observer enroll'. Skip the enroll"
+    echo "      and managed-integrity 409s every ~60s forever."
     ;;
 enroll)
     # Enroll the RUNNING container into sb-org. Get a fresh enrol link from the

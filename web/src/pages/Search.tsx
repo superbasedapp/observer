@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { PageHeader, Pill, ToolBadge, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { useApi } from "@/lib/useApi";
-import { fmtDuration, fmtInt } from "@/lib/format";
+import { fmtDateTime, fmtDuration, fmtInt } from "@/lib/format";
 import type { SearchResponse } from "@/lib/types";
 
 // Global search (P6.2): the FTS5 index behind the MCP
@@ -42,7 +42,7 @@ export function SearchPage() {
     <div className="space-y-6 p-6">
       <PageHeader
         title="Search"
-        sub="Full-text search over everything the observer captured — command outputs, test failures, error messages. The same index your AI tool queries through MCP's search_past_outputs."
+        sub="Full-text search over everything the observer captured - command outputs, test failures, error messages. The same index your AI tool queries through MCP's search_past_outputs."
         helpId="tab.search"
       />
       <input
@@ -50,7 +50,7 @@ export function SearchPage() {
         type="search"
         value={input}
         onChange={(e) => setInput(e.target.value)}
-        placeholder='Search past outputs — try an error message, a file name, or FTS5 syntax like "app.set" OR "app.use"'
+        placeholder='Search past outputs - try an error message, a file name, or FTS5 syntax like "app.set" OR "app.use"'
         className="w-full rounded-3 border border-line-2 bg-bg-2 px-4 py-2.5 text-[13px] text-fg-1 outline-none placeholder:text-fg-3 focus:border-accent/60 focus:ring-2 focus:ring-[var(--accent-ring)]"
       />
       {!urlQ ? (
@@ -61,7 +61,7 @@ export function SearchPage() {
           <p className="mx-auto mt-2 max-w-lg text-[12px] leading-relaxed text-fg-3">
             Results come from the FTS5 excerpt index, filled as sessions are
             captured. If searches come back empty on a fresh install, the
-            index may still be growing — it fills as new tool outputs land.
+            index may still be growing - it fills as new tool outputs land.
           </p>
         </div>
       ) : (
@@ -106,7 +106,7 @@ function SearchHitRow({ h }: { h: SearchResponse["hits"][number] }) {
           {h.target}
         </span>
         {h.timestamp && (
-          <Tooltip content={h.timestamp}>
+          <Tooltip content={fmtDateTime(h.timestamp)}>
             <span
               tabIndex={0}
               className="shrink-0 cursor-help text-[10.5px] tabular-nums text-fg-3 focus:outline-none"
@@ -172,7 +172,7 @@ function renderSnippet(snippet?: string): ReactNode {
 
 function relTime(iso: string): string {
   const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "—";
+  if (!Number.isFinite(t)) return "-";
   const diff = Date.now() - t;
   if (diff < 0) return "now";
   return `${fmtDuration(diff)} ago`;

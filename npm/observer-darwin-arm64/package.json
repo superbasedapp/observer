@@ -1,6 +1,6 @@
 {
   "name": "@superbased/observer-darwin-arm64",
-  "version": "1.32.0",
+  "version": "1.33.0",
   "description": "macOS Apple Silicon (arm64) binary for @superbased/observer.",
   "homepage": "https://superbased.app/",
   "repository": {

@@ -132,3 +132,75 @@ func TestRecentSessionRefsForLaunchMatch(t *testing.T) {
 		t.Fatalf("refs = %+v, want sess-launch-1 present", refs)
 	}
 }
+
+// TestLaunchSeed_RunIDRoundtrip pins that migration 091's column survives the
+// write/read cycle in BOTH shapes — the dashboard launch that carries a run and
+// the bare-shell launch that honestly carries none.
+func TestLaunchSeed_RunIDRoundtrip(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.InsertLaunchSeed(ctx, processobs.LaunchSeed{PID: 11, Tool: "opencode", CWD: "/a", RunID: "run-A"}); err != nil {
+		t.Fatalf("InsertLaunchSeed(with run): %v", err)
+	}
+	if err := s.InsertLaunchSeed(ctx, processobs.LaunchSeed{PID: 22, Tool: "opencode", CWD: "/b"}); err != nil {
+		t.Fatalf("InsertLaunchSeed(bare shell): %v", err)
+	}
+	pending, err := s.PendingLaunchSeeds(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("PendingLaunchSeeds: %v", err)
+	}
+	byPID := map[int]processobs.LaunchSeed{}
+	for _, p := range pending {
+		byPID[p.PID] = p
+	}
+	if got := byPID[11].RunID; got != "run-A" {
+		t.Errorf("pid 11 RunID = %q, want run-A", got)
+	}
+	if got := byPID[22].RunID; got != "" {
+		t.Errorf("pid 22 RunID = %q, want \"\" — a launch with no run must not acquire one", got)
+	}
+}
+
+// TestLaunchSeedRunSessions covers the boundary rules the pure matcher relies
+// on and deliberately does NOT re-check: the confidence gate and one-session-
+// per-run resolution.
+func TestLaunchSeedRunSessions(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	at := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
+
+	// run-strong: two correlations; the stronger one must win.
+	mustCorrelate(t, s, TerminalCorrelation{RunID: "run-strong", SessionID: "sess-weak", Confidence: 0.55, Source: "marker", ObservedAt: at})
+	mustCorrelate(t, s, TerminalCorrelation{RunID: "run-strong", SessionID: "sess-oob", Confidence: 0.95, Source: "oob", ObservedAt: at.Add(time.Minute)})
+	// run-weak: only a below-gate heuristic correlation — must contribute nothing.
+	mustCorrelate(t, s, TerminalCorrelation{RunID: "run-weak", SessionID: "sess-guess", Confidence: 0.40, Source: "heuristic", ObservedAt: at})
+
+	got, err := s.LaunchSeedRunSessions(ctx, []string{"run-strong", "run-weak", "run-absent", ""}, 0.50)
+	if err != nil {
+		t.Fatalf("LaunchSeedRunSessions: %v", err)
+	}
+	if got["run-strong"] != "sess-oob" {
+		t.Errorf("run-strong = %q, want sess-oob (strongest correlation wins)", got["run-strong"])
+	}
+	if _, ok := got["run-weak"]; ok {
+		t.Errorf("run-weak = %q, want ABSENT: a below-gate guess must never become HIGH-confidence identity", got["run-weak"])
+	}
+	if _, ok := got["run-absent"]; ok {
+		t.Error("run-absent must contribute nothing")
+	}
+
+	empty, err := s.LaunchSeedRunSessions(ctx, nil, 0.50)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("LaunchSeedRunSessions(nil) = (%v, %v), want empty and no error", empty, err)
+	}
+}
+
+func mustCorrelate(t *testing.T, s *Store, c TerminalCorrelation) {
+	t.Helper()
+	if err := s.UpsertCorrelation(context.Background(), c); err != nil {
+		t.Fatalf("UpsertCorrelation(%s→%s): %v", c.RunID, c.SessionID, err)
+	}
+}

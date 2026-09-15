@@ -179,8 +179,16 @@ type codexLauncherOptions struct {
 	noAttach         bool
 	noProxy          bool
 	noProxyRoute     bool
-	resume           string
-	stderr           interface{ Write([]byte) (int, error) }
+	// routeSkipReason records WHY this launch skips codex's `-c openai_base_url`
+	// override, so the ONE notice printed for it says the true thing.
+	// noProxyRoute alone cannot answer that: the launcher SETS it on the
+	// proxy-down neutralize path, which used to make codexLaunchArgs claim
+	// "--no-proxy-route set" for a launch that passed no such flag — two
+	// contradictory notices for one outcome (Q1 probe, P2). Meaningful only when
+	// noProxyRoute is true; see codexRouteSkipNotice.
+	routeSkipReason proxyFallbackReason
+	resume          string
+	stderr          interface{ Write([]byte) (int, error) }
 }
 
 // runCodexLauncher resolves the proxy URL, prepares the child argv with
@@ -203,6 +211,12 @@ func runCodexLauncher(ctx context.Context, opts codexLauncherOptions) error {
 	cfg, err := config.Load(config.LoadOptions{GlobalPath: opts.configPath})
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	// P6 item 5: refuse a bare launch of an org-disallowed tool (node.features
+	// tools.disallow). "codex" is codex's integration-registry key.
+	if err := refuseIfToolDisallowedCfg(cfg, "codex", opts.stderr); err != nil {
+		return err
 	}
 
 	// Attach mode (session-attach design Phase 1 + resilient-attach WP-C): hand
@@ -416,15 +430,13 @@ func runCodexLauncher(ctx context.Context, opts codexLauncherOptions) error {
 		// Bypass the proxy: make codexLaunchArgs skip the `-c openai_base_url`
 		// override so codex reaches its own default provider (which works even
 		// with our proxy down). opts is a by-value copy, so flipping noProxyRoute
-		// here is launch-local. reasonNoProxyRouteClean already had noProxyRoute
-		// set; the reasonProxyDownClean case adds the honest "why" notice
-		// (codexLaunchArgs prints the mechanics line).
-		if fb.reason == reasonProxyDownClean {
-			fmt.Fprintf(opts.stderr,
-				"observer codex: proxy unreachable at %s — launching codex WITHOUT proxy routing for this run (turns are NOT captured until the daemon is back — start it with `observer start`).\n",
-				proxyURL)
-		}
+		// here is launch-local. The REASON travels with it so exactly ONE notice
+		// is printed for this outcome, by codexLaunchArgs, naming the true cause
+		// (P2: this branch used to print its own "proxy unreachable" line and
+		// then codexLaunchArgs printed a second, contradictory "--no-proxy-route
+		// set" line for the same skipped route).
 		opts.noProxyRoute = true
+		opts.routeSkipReason = fb.reason
 	}
 	// proxyRouteProceed → the routed launch below injects `-c openai_base_url`.
 
@@ -461,9 +473,26 @@ func runCodexChild(ctx context.Context, opts codexLauncherOptions, proxyURL stri
 	}
 
 	args := codexLaunchArgs(opts, codexArgs, proxyURL)
+	evidence := budgetLaunchEvidence{Route: budgetLaunchRouteUnknown}
+	switch {
+	case opts.noProxyRoute:
+		evidence.Route = budgetLaunchRouteDirect
+	case !hasUserCodexConfigOverride(codexArgs):
+		evidence = budgetLaunchEvidence{Route: budgetLaunchRouteObserverProxy, ProxyURL: proxyURL}
+	}
+	evidence.Executable = bin
+	evidence.Arguments = args
+	if err := enforceBudgetControlledLaunch(ctx, opts.configPath, "codex", evidence); err != nil {
+		return err
+	}
 
 	child := exec.Command(bin, args...)
-	child.Env = os.Environ()
+	// Never leak the trusted OOB channel's env into the untrusted tool child.
+	//
+	// DI-04b: a node-shim codex (npm channel, #!/usr/bin/env node) needs node
+	// on the CHILD's PATH; widen it with the shim's own dir + the login-only
+	// dirs the resolver saw (additive; the daemon PATH survives in order).
+	child.Env = applyChildPATH(scrubOOBEnv(os.Environ()), daemonLoginPathDirs(), bin)
 	child.Dir = continueDir // "" inherits the caller's cwd; set by --continue-from to the source project root
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
@@ -479,7 +508,7 @@ func runCodexChild(ctx context.Context, opts codexLauncherOptions, proxyURL stri
 	// rollouts are snapshotted BEFORE the child starts so the child's own new
 	// file is detectable; the watch itself runs on a goroutine after Start so it
 	// never delays the child's startup or I/O.
-	discoverSession := oobChannelActive() && opts.resume == "" && opts.continueFrom == ""
+	discoverSession := oobChannelActive() && opts.resume == "" && opts.continueFrom == "" && !terminalNativeDiscoveryAvailable(genericAdapterRegistry().Get("codex"))
 	var (
 		discoverRoots       []string
 		discoverPreexisting map[string]struct{}
@@ -579,8 +608,8 @@ func codexLaunchArgs(opts codexLauncherOptions, codexArgs []string, proxyURL str
 		// earlier and FAILS CLOSED (codexNoProxyRouteConflict, B3-1), so by the
 		// time we get here no config re-routes us: launch codex untouched.
 		args := append([]string{}, codexArgs...)
-		fmt.Fprintf(opts.stderr,
-			"observer codex: --no-proxy-route set — launching codex WITHOUT the -c openai_base_url proxy override (turns are NOT captured).\n")
+		fmt.Fprintln(opts.stderr,
+			codexRouteSkipNotice(opts.routeSkipReason, proxyURL, runningAsDaemonChild()))
 		return args
 	}
 	args, info := prepareCodexArgs(codexArgs, proxyURL)
@@ -593,6 +622,44 @@ func codexLaunchArgs(opts codexLauncherOptions, codexArgs []string, proxyURL str
 			proxyURL)
 	}
 	return args
+}
+
+// codexRouteSkipNotices maps the decideProxyFallback REASON that made a launch
+// skip codex's `-c openai_base_url` override onto the ONE notice printed for it.
+// A data table, not an if-ladder (CLAUDE.md #5), with exactly one row per
+// outcome — which is the whole point: before it, a proxy-down neutralize printed
+// its own "proxy unreachable … WITHOUT proxy routing" line at the decision site
+// AND, because it expressed itself by flipping opts.noProxyRoute, a second
+// "--no-proxy-route set" line at the argv site, claiming a flag the caller (a
+// dashboard launch) never passed. Two stated reasons, one skipped route.
+//
+// Only the two NEUTRALIZE reasons have rows; the fail-closed and routed reasons
+// never reach the skip branch. Each row takes the same injected facts so the
+// table stays uniform: the resolved proxy URL and whether this process is a
+// daemon-spawned child (which decides the honest advice clause — see
+// proxyDownAdvice).
+var codexRouteSkipNotices = map[proxyFallbackReason]func(proxyURL string, daemonChild bool) string{
+	reasonNoProxyRouteClean: func(string, bool) string {
+		return "observer codex: --no-proxy-route set — launching codex WITHOUT the -c openai_base_url proxy override (turns are NOT captured)."
+	},
+	reasonProxyDownClean: func(proxyURL string, daemonChild bool) string {
+		return fmt.Sprintf(
+			"observer codex: proxy not reachable at %s — launching codex WITHOUT the -c openai_base_url proxy override (turns are NOT captured for this run; %s).",
+			proxyURL, proxyDownAdvice(daemonChild))
+	},
+}
+
+// codexRouteSkipNotice resolves the single notice for a skipped proxy route.
+// An unlisted reason falls back to the operator-flag row: opts.noProxyRoute is
+// literally "the operator asked for no routing", so that is the honest reading
+// of a skip whose reason never travelled (a caller that sets the flag without
+// walking decideProxyFallback). Pure — the daemon-child fact is injected.
+func codexRouteSkipNotice(reason proxyFallbackReason, proxyURL string, daemonChild bool) string {
+	row, ok := codexRouteSkipNotices[reason]
+	if !ok {
+		row = codexRouteSkipNotices[reasonNoProxyRouteClean]
+	}
+	return row(proxyURL, daemonChild)
 }
 
 // runCodexConfigPreflight runs the V6-2 $CODEX_HOME/config.toml base-URL

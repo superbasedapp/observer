@@ -1,0 +1,11 @@
+<?php
+
+// Line comment
+# Hash comment
+/* Block
+   comment */
+$s = "no // comment";
+$t = <<<EOT
+raw # text
+EOT;
+echo $s . $t;

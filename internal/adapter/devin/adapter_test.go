@@ -287,11 +287,11 @@ func TestResolveProjectRoot_ForeignWindows(t *testing.T) {
 	// resolved against the observer's own repo. On a host with no
 	// Windows mount it degrades to the translated/native string, never
 	// to the observer's git root — assert it still reflects the input.
-	got, _ := a.resolveProjectRoot(`C:\Users\dev\project`)
+	got, _, _ := a.resolveProjectRoot(`C:\Users\dev\project`)
 	if strings.Contains(got, "superbased-observer") {
 		t.Errorf("foreign windows cwd misfiled under observer repo: %q", got)
 	}
-	if root, _ := a.resolveProjectRoot(""); root != "[devin]" {
+	if root, _, _ := a.resolveProjectRoot(""); root != "[devin]" {
 		t.Errorf("empty cwd should fall back to [devin]")
 	}
 }

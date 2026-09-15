@@ -181,6 +181,83 @@ func TestTerminalDecision(t *testing.T) {
 	}
 }
 
+func TestToolDecision(t *testing.T) {
+	cases := []struct {
+		name        string
+		spec        *PolicySpec
+		tool        string
+		wantAllowed bool
+	}{
+		{"no policy at all — fail open", nil, "codex", true},
+		{"ungoverned tools stanza — fail open", &PolicySpec{}, "codex", true},
+		{
+			"governed, empty disallow list — allow",
+			&PolicySpec{Tools: ToolsRule{Governed: true, Disallow: map[string]bool{}}},
+			"codex", true,
+		},
+		{
+			"governed, tool on the disallow list — deny",
+			&PolicySpec{Tools: ToolsRule{Governed: true, Disallow: map[string]bool{"codex": true}}},
+			"codex", false,
+		},
+		{
+			"governed, disallow match is case/whitespace insensitive — deny",
+			&PolicySpec{Tools: ToolsRule{Governed: true, Disallow: map[string]bool{"codex": true}}},
+			" CoDeX ", false,
+		},
+		{
+			"governed, tool not on the disallow list — allow",
+			&PolicySpec{Tools: ToolsRule{Governed: true, Disallow: map[string]bool{"codex": true}}},
+			"opencode", true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := ToolDecision(tc.spec, tc.tool)
+			if d.Allowed != tc.wantAllowed {
+				t.Fatalf("Allowed = %v, want %v (reason=%q)", d.Allowed, tc.wantAllowed, d.Reason)
+			}
+			if !d.Allowed && d.Reason == "" {
+				t.Fatalf("a denied Decision must carry a Reason")
+			}
+		})
+	}
+}
+
+func TestCompileBody_Tools(t *testing.T) {
+	spec, canon, err := CompileBody([]byte(`{"tools":{"disallow":["Codex"," opencode ","","codex"]}}`), 1<<16)
+	if err != nil {
+		t.Fatalf("CompileBody: %v", err)
+	}
+	if !spec.Tools.Governed {
+		t.Fatalf("expected Tools to be governed when the stanza is present")
+	}
+	if len(spec.Tools.Disallow) != 2 || !spec.Tools.Disallow["codex"] || !spec.Tools.Disallow["opencode"] {
+		t.Fatalf("expected normalized disallow set {codex, opencode}, got %+v", spec.Tools.Disallow)
+	}
+	if len(canon) == 0 {
+		t.Fatalf("expected non-empty canonical body")
+	}
+
+	// An absent tools stanza stays ungoverned (fail-open), and an empty
+	// disallow list is a distinct, governed "allow everything" state.
+	spec2, _, err := CompileBody([]byte(`{}`), 1<<16)
+	if err != nil {
+		t.Fatalf("CompileBody: %v", err)
+	}
+	if spec2.Tools.Governed {
+		t.Fatalf("expected Tools to be ungoverned when the stanza is absent")
+	}
+
+	spec3, _, err := CompileBody([]byte(`{"tools":{}}`), 1<<16)
+	if err != nil {
+		t.Fatalf("CompileBody: %v", err)
+	}
+	if !spec3.Tools.Governed || len(spec3.Tools.Disallow) != 0 {
+		t.Fatalf("expected governed-but-empty disallow list, got %+v", spec3.Tools)
+	}
+}
+
 func TestCompile_DirectBodyV1(t *testing.T) {
 	spec, err := Compile(BodyV1{
 		Terminals: &TerminalsBodyV1{Enabled: boolPtr(true), MaxConcurrent: intPtr(3), SandboxRequired: boolPtr(true)},

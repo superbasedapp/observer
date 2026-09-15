@@ -8,6 +8,10 @@
 import { markRemoteAuthLost } from "@/lib/authLoss";
 import { getRemoteCSRF, isRemoteView, setRemoteCSRF } from "@/lib/remote";
 import type {
+  InstanceInfo,
+  InstanceTestResult,
+  LOCSummaryResponse,
+  SessionLOCResponse,
   SessionTagsRequest,
   SessionTagsResponse,
   TagManageRequest,
@@ -200,9 +204,10 @@ export function fetchTagRollup(signal?: AbortSignal): Promise<TagRollupResponse>
   return fetchJSON<TagRollupResponse>("/api/sessions/tags", undefined, { signal });
 }
 
-// postSessionTags mutates one session's tags/favorite/note and returns the
-// server's post-mutation truth. `favorite`/`note` default to null =
-// "unchanged"; pass a value only when the mutation actually touches them.
+// postSessionTags mutates one session's tags/favorite/note/rating/title and
+// returns the server's post-mutation truth. `favorite`/`note`/`rating`/
+// `title` default to null = "unchanged"; pass a value only when the mutation
+// actually touches them (an empty string clears the note/title).
 export function postSessionTags(
   sessionId: string,
   patch: Partial<SessionTagsRequest>,
@@ -213,6 +218,7 @@ export function postSessionTags(
     favorite: patch.favorite ?? null,
     note: patch.note ?? null,
     rating: patch.rating ?? null,
+    title: patch.title ?? null,
   };
   return fetchJSON<SessionTagsResponse>(
     `/api/session/${encodeURIComponent(sessionId)}/tags`,
@@ -230,4 +236,147 @@ export function manageTags(req: TagManageRequest): Promise<TagManageResponse> {
     undefined,
     jsonPost(req),
   );
+}
+
+// ---------- custom tag definitions ----------
+
+export interface TagDefinitionEntry {
+  definition: string;
+  category?: string;
+}
+export interface TagDefinitionsResponse {
+  definitions: Record<string, TagDefinitionEntry>;
+}
+
+// fetchTagDefinitions returns the user's CUSTOM tag definitions. Standard tag
+// definitions live in the in-code taxonomy (web/src/lib/tagTaxonomy.ts), not
+// here — this is only the glossary a user authored for their own tags.
+export function fetchTagDefinitions(
+  signal?: AbortSignal,
+): Promise<TagDefinitionsResponse> {
+  return fetchJSON<TagDefinitionsResponse>("/api/tags/definitions", undefined, {
+    signal,
+  });
+}
+
+// postTagDefinition upserts a custom tag's definition; an empty definition
+// clears the stored row.
+export function postTagDefinition(
+  tag: string,
+  definition: string,
+  category?: string,
+): Promise<{ ok: boolean }> {
+  return fetchJSON<{ ok: boolean }>(
+    "/api/tags/definitions",
+    undefined,
+    jsonPost({ tag, definition, category: category ?? "" }),
+  );
+}
+
+// ---------- instance switcher (remote Observer installs) ----------
+//
+// Thin typed wrappers over fetchJSON, matching the tag helpers above so every
+// caller inherits the remote CSRF + auth-recovery handling.
+//
+// Both verbs are NAME-ONLY: the profile name travels in the PATH and the body
+// is empty, because the daemon resolves the host, the key, the jump host and
+// the remote dashboard port from its own operator-authored config. There is
+// deliberately no shape here for a caller to pass a host or a port — see
+// docs/ssh-terminals.md "Instance switcher".
+
+// connectInstance opens (or re-uses) the SSH local port forward for a named
+// instance and returns the resulting row, including the loopback port to open.
+export function connectInstance(name: string): Promise<InstanceInfo> {
+  return fetchJSON<InstanceInfo>(
+    `/api/instances/${encodeURIComponent(name)}/connect`,
+    undefined,
+    { method: "POST" },
+  );
+}
+
+// disconnectInstance closes the forward. Idempotent server-side, so a stale UI
+// cannot produce a spurious failure.
+export function disconnectInstance(name: string): Promise<InstanceInfo> {
+  return fetchJSON<InstanceInfo>(
+    `/api/instances/${encodeURIComponent(name)}/disconnect`,
+    undefined,
+    { method: "POST" },
+  );
+}
+
+// testInstance runs the bounded, non-interactive connectivity probe
+// (known_hosts + auth) for a named instance without opening a forward. Same
+// name-only-in-path shape as connect/disconnect.
+export function testInstance(name: string): Promise<InstanceTestResult> {
+  return fetchJSON<InstanceTestResult>(
+    `/api/instances/${encodeURIComponent(name)}/test`,
+    undefined,
+    { method: "POST" },
+  );
+}
+
+// ---------- lines-of-code authorship ----------
+//
+// docs/plans/lines-of-code-tracking-plan-2026-09-07.md §3.2. Both endpoints
+// are plain reads over node-local `file_changes`; the components normally
+// reach them through useApi (which owns abort + polling), and these helpers
+// exist for the imperative call sites and to keep the paths in one place.
+
+// sessionLOCPath is the per-session authorship read. Exported so useApi
+// callers build the same URL the helper does.
+export function sessionLOCPath(sessionId: string): string {
+  return `/api/session/${encodeURIComponent(sessionId)}/loc`;
+}
+
+// sessionOrgIntelPath is the per-session org-served Cloud Intelligence read —
+// the result this node last pulled back from the org server, cached locally.
+export function sessionOrgIntelPath(sessionId: string): string {
+  return `/api/session/${encodeURIComponent(sessionId)}/org-intel`;
+}
+
+// fetchSessionLOC returns one session's line-authorship buckets.
+export function fetchSessionLOC(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<SessionLOCResponse> {
+  return fetchJSON<SessionLOCResponse>(sessionLOCPath(sessionId), undefined, {
+    signal,
+  });
+}
+
+// LOC_SUMMARY_PATH is the window rollup. `days` is the only window knob the
+// endpoint takes (no hours, no custom range) and `project` wants a NUMERIC
+// project id, which the dashboard's project filter (a root path) cannot
+// supply - so callers scope by days and say so rather than passing a filter
+// the server would silently drop.
+export const LOC_SUMMARY_PATH = "/api/loc/summary";
+
+// fetchLOCSummary returns the window rollup. `projectID` is optional and is
+// the numeric project id, never a project root path.
+export function fetchLOCSummary(
+  days: number,
+  projectID?: number,
+  signal?: AbortSignal,
+): Promise<LOCSummaryResponse> {
+  return fetchJSON<LOCSummaryResponse>(
+    LOC_SUMMARY_PATH,
+    { days, project: projectID },
+    { signal },
+  );
+}
+
+// apiReason extracts the SERVER's own message from an ApiError so the UI can
+// show the honest, actionable reason (notably the known_hosts guidance) rather
+// than a generic "request failed". Falls back to the raw error text.
+export function apiReason(e: unknown): string {
+  if (e instanceof ApiError) {
+    const marker = `${e.path}: `;
+    const at = e.message.indexOf(marker);
+    if (at >= 0) {
+      const body = e.message.slice(at + marker.length).trim();
+      if (body) return body;
+    }
+    return e.message;
+  }
+  return e instanceof Error ? e.message : String(e);
 }

@@ -1,13 +1,15 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import clsx from "clsx";
-import { ChartShell, PageHeader, Pill, SlideOver, StatCard, Tooltip } from "@/components/primitives";
+import { ChartShell, PageHeader, Pill, SlideOver, Tooltip } from "@/components/primitives";
 import { HelpInd } from "@/components/HelpInd";
-import { BUILTIN_PROFILE_NAMES, SECTION_SPECS } from "./settings/sectionSpecs";
+import { BUILTIN_PROFILE_NAMES, SECTION_SPECS, type SectionSpec } from "./settings/sectionSpecs";
 import { StructuredConfigSection } from "./settings/StructuredConfigSection";
+import { SchemaSection } from "./settings/SchemaSection";
 import { AntigravityHelperCard } from "./settings/AntigravityHelperCard";
 import { ETWCapturerCard } from "./settings/ETWCapturerCard";
 import { ConnectedToolsSection } from "./settings/ConnectedToolsSection";
+import { CloudIntelligenceSection } from "./settings/CloudIntelligenceSection";
 import { EnrolmentSection } from "./settings/EnrolmentSection";
 import { HealthSection } from "./settings/HealthSection";
 import { StorageSection } from "./settings/StorageSection";
@@ -25,28 +27,24 @@ import {
   EyeIcon,
   LayersIcon,
   LightningIcon,
+  ListIcon,
   SearchIcon,
   ShieldIcon,
   SparklesIcon,
   WrenchIcon,
 } from "@/components/icons";
 
-// TomlView is only used by the read-only config viewers below.
-// Lazy-import so the hand-rolled lexer + serializer ships in its
-// own chunk and Settings's first paint stays slim.
-const TomlView = lazy(() =>
-  import("@/components/TomlView").then((m) => ({ default: m.TomlView })),
-);
 import { fetchJSON } from "@/lib/api";
 import { markRestartPending } from "@/lib/restartPending";
 import { useApi } from "@/lib/useApi";
+import { useConfigSchema, type ConfigSchemaDescriptor } from "@/lib/configSchema";
 import {
   isSettingsHidden,
   isSettingsReadOnly,
   useGovernance,
   type Governance,
 } from "@/lib/governance";
-import { fmtInt, fmtUSD } from "@/lib/format";
+import { fmtDateTime, fmtInt, fmtUSD } from "@/lib/format";
 import type {
   BackfillJob,
   BackfillJobsListResponse,
@@ -70,6 +68,7 @@ type SectionId =
   | "health"
   | "storage"
   | "enrolment"
+  | "cloud"
   | "observer"
   | "watcher"
   | "freshness"
@@ -82,6 +81,7 @@ type SectionId =
   | "intelligence"
   | "advisor"
   | "cachetrack"
+  | "tasks"
   | "observability"
   | "secrets"
   | "mcp"
@@ -133,9 +133,9 @@ const SECTIONS: SectionDef[] = [
       summary:
         "Per-model pricing overrides. The cost engine ships with baked-in defaults for every common Anthropic / OpenAI / xAI model; overrides let you correct a contract rate or add a new SKU before observer's defaults catch up.",
       whenModified:
-        "Custom contract rates, or a new SKU lands before observer's defaults catch up. Hot-reloaded — no restart needed.",
+        "Custom contract rates, or a new SKU lands before observer's defaults catch up. Hot-reloaded - no restart needed.",
       behavior:
-        "Save writes ~/.observer/config.toml + a .bak of the prior version. The cost engine swaps the active pricing table atomically on save — no restart, no daemon bounce.",
+        "Save writes ~/.observer/config.toml + a .bak of the prior version. The cost engine swaps the active pricing table atomically on save - no restart, no daemon bounce.",
     },
   },
   {
@@ -161,7 +161,7 @@ const SECTIONS: SectionDef[] = [
     icon: <CompassIcon size={13} />,
     about: {
       summary:
-        "Per-tool integration matrix: every AI tool observer supports, with live detected / capturing / hooks / MCP / proxied state. All probes are read-only — nothing on this panel writes AI-client config.",
+        "Per-tool integration matrix: every AI tool observer supports, with live detected / capturing / hooks / MCP / proxied state. All probes are read-only - nothing on this panel writes AI-client config.",
       whenModified:
         "Checking why a tool isn't showing data, after installing a new AI tool, or before/after running `observer init`.",
       behavior:
@@ -176,11 +176,11 @@ const SECTIONS: SectionDef[] = [
     icon: <BoltIcon size={13} />,
     about: {
       summary:
-        "The `observer doctor` checks in the dashboard — database integrity, hook checksums and binary paths, MCP registrations, pidbridge, concurrent daemons, codex hook trust, proxy routing gap, org enrolment — plus the recent-failures card (failed commands grouped, recovered vs not, session deep-links).",
+        "The `observer doctor` checks in the dashboard - database integrity, hook checksums and binary paths, MCP registrations, pidbridge, concurrent daemons, codex hook trust, proxy routing gap, org enrolment - plus the recent-failures card (failed commands grouped, recovered vs not, session deep-links).",
       whenModified:
-        "Something looks off — missing capture, a tool that stopped reporting, a command that keeps failing, after an upgrade or a machine migration.",
+        "Something looks off - missing capture, a tool that stopped reporting, a command that keeps failing, after an upgrade or a machine migration.",
       behavior:
-        "Read-only. Checks run when the section opens and on Re-run — not on a poll loop (the DB integrity check is not free on a large database). The failures card reads the local failure_context table.",
+        "Read-only. Checks run when the section opens and on Re-run - not on a poll loop (the DB integrity check is not free on a large database). The failures card reads the local failure_context table.",
     },
   },
   {
@@ -191,11 +191,11 @@ const SECTIONS: SectionDef[] = [
     icon: <DatabaseIcon size={13} />,
     about: {
       summary:
-        "Where the database's bytes live: per-table size breakdown (indexes and FTS shadow tables folded into their owners), vacuum, and one-click backup with restore instructions. Backups are consistent snapshots written next to the live DB via VACUUM INTO — capture keeps running while one is taken.",
+        "Where the database's bytes live: per-table size breakdown (indexes and FTS shadow tables folded into their owners), vacuum, and one-click backup with restore instructions. Backups are consistent snapshots written next to the live DB via VACUUM INTO - capture keeps running while one is taken.",
       whenModified:
         "The DB feels large and you want to see why; before an upgrade or machine move (take a backup); after a big retention prune (vacuum returns the freed pages to the OS).",
       behavior:
-        "The size report walks every page on demand — opened or refreshed explicitly, never polled. Vacuum and backup run as `observer db vacuum` / `observer db backup` subprocesses through the shared job runner with streamed output; the CLI commands are the identical code path.",
+        "The size report walks every page on demand - opened or refreshed explicitly, never polled. Vacuum and backup run as `observer db vacuum` / `observer db backup` subprocesses through the shared job runner with streamed output; the CLI commands are the identical code path.",
     },
   },
   {
@@ -206,11 +206,26 @@ const SECTIONS: SectionDef[] = [
     icon: <OrgSectionIcon />,
     about: {
       summary:
-        "Teams & Org Visibility. When enrolled, this agent shares content-free activity rollups (counts, costs, timings, paths — never prompt text or tool output) with your organisation's SuperBased server. View exactly what was last shared, or unenrol.",
+        "Teams & Org Visibility. When enrolled, this agent shares content-free activity rollups (counts, costs, timings, paths - never prompt text or tool output) with your organisation's SuperBased server. View exactly what was last shared, or unenrol.",
       whenModified:
         "Joining or leaving an organisation. Enrol with `observer enroll <org-url> <token>`; unenrol from here or with `observer unenroll`.",
       behavior:
         "Unenrol deletes the local enrolment + keychain credentials immediately; a running daemon's push loop stops within one interval. Nothing already shared with the server is deleted.",
+    },
+  },
+  {
+    id: "cloud",
+    label: "Cloud Intelligence",
+    group: "edit",
+    status: "soft",
+    icon: <SparklesIcon size={13} />,
+    about: {
+      summary:
+        "Optional signed-in personal enrichment (Signed-in Free). The Cloud account card at the top is where you sign in and out - the daemon itself never touches the network: Sign in runs the same consent-gated `observer cloud login` you would type, as a subprocess, and the credential stays in the local keychain. The card also carries the two egress preferences (auto-sync, auto-enrich). Below it: consent receipts, the send outbox by state, and any synced enrichment results. Deployment knobs (client id, base URL, callback port) live under an Advanced fold - most people never touch them.",
+      whenModified:
+        "Signing in for the first time, turning auto-sync or auto-enrich on, checking what's queued for the next `observer cloud sync`, why a job is awaiting reconfirmation, or whether results have been pulled. The Advanced fold is only for staging or self-hosting - pointing the node at a different hosted base URL or WorkOS client.",
+      behavior:
+        "Every local Observer feature works fully without this. Nothing is wired into the watcher or proxy - only an `observer cloud` command touches the network - typed, launched by a button here (Sign in, Sync now, Grant, Revoke, Delete account) or on a session card (Preview, Confirm and enrich, Sync now), or the scheduled `cloud sync` when you turn auto-sync on. Settings edits take effect on the next cloud command; turning auto-sync on/off needs a daemon restart to change the schedule.",
     },
   },
   {
@@ -235,9 +250,9 @@ const SECTIONS: SectionDef[] = [
     status: "restart",
     icon: <EyeIcon size={13} />,
     about: {
-      summary: "Top-level observer settings: watch paths, freshness, retention, hooks, antigravity. Read-only view; edit the source TOML to change.",
+      summary: "Top-level observer settings (db path, log level) plus every [observer] key the sub-sections do not own, rendered from the config schema.",
       whenModified: "Adding/removing a watched root, tweaking retention, etc.",
-      behavior: "Restart required — consumers bind at startup.",
+      behavior: "Restart required - consumers bind at startup.",
     },
   },
   {
@@ -247,7 +262,7 @@ const SECTIONS: SectionDef[] = [
     status: "restart",
     icon: <SearchIcon size={13} />,
     about: {
-      summary: "Filesystem watcher — watch_paths, ignore_globs. Defines what observer scans for new session files.",
+      summary: "Filesystem watcher - watch_paths, ignore_globs. Defines what observer scans for new session files.",
       whenModified: "Onboarding a new AI client, or moving session files to a non-default location.",
       behavior: "Restart required.",
     },
@@ -259,7 +274,7 @@ const SECTIONS: SectionDef[] = [
     status: "restart",
     icon: <ClockIcon size={13} />,
     about: {
-      summary: "Freshness classifier — how observer scores whether a file read is stale vs fresh.",
+      summary: "Freshness classifier - how observer scores whether a file read is stale vs fresh.",
       whenModified: "Tuning the staleness threshold or hashing rules.",
       behavior: "Restart required.",
     },
@@ -297,7 +312,7 @@ const SECTIONS: SectionDef[] = [
     about: {
       summary: "API proxy port + compression knobs.",
       whenModified: "Changing the proxy port or compression toggles.",
-      behavior: "Restart required — proxy is bound at startup.",
+      behavior: "Restart required - proxy is bound at startup.",
     },
   },
   {
@@ -310,7 +325,7 @@ const SECTIONS: SectionDef[] = [
       summary: "Durable dashboard listen address.",
       whenModified: "Setting a fixed host:port for the dashboard listener.",
       behavior:
-        "Restart required — the dashboard listener binds at daemon start. Precedence: --dashboard-addr flag > OBSERVER_DASHBOARD_ADDR env > this config value > default 127.0.0.1:8081.",
+        "Restart required - the dashboard listener binds at daemon start. Precedence: --dashboard-addr flag > OBSERVER_DASHBOARD_ADDR env > this config value > default 127.0.0.1:8081.",
     },
   },
   {
@@ -320,7 +335,7 @@ const SECTIONS: SectionDef[] = [
     status: "restart",
     icon: <CompressIcon size={13} />,
     about: {
-      summary: "Per-mechanism compression configuration — drop / dedup / stash thresholds.",
+      summary: "Per-mechanism compression configuration - drop / dedup / stash thresholds.",
       whenModified: "Tuning the compression pipeline.",
       behavior: "Restart required.",
     },
@@ -333,11 +348,11 @@ const SECTIONS: SectionDef[] = [
     icon: <WrenchIcon size={13} />,
     about: {
       summary:
-        "Which compression profile each traffic class runs. Profiles are named parameter sets (the embedded recipes + `default` = master config) resolved per request at the proxy, so Claude Code and codex each get their tuned parameters from one daemon. The master compression switch stays the only on/off gate — profiles never enable compression.",
+        "Which compression profile each traffic class runs. Profiles are named parameter sets (the embedded recipes + `default` = master config) resolved per request at the proxy, so Claude Code and codex each get their tuned parameters from one daemon. The master compression switch stays the only on/off gate - profiles never enable compression.",
       whenModified:
         "Pointing OpenAI traffic at codex-variant for a *-codex reasoning model, trying a different tuning, or pinning everything to your master parameters.",
       behavior:
-        "Hot for new sessions: saving re-points the proxy's profile router immediately — the next session resolves the new assignment. Sessions already in flight keep the parameters they started with (deliberate: mid-session parameter flips would break rolling summaries and cache alignment). No restart, no banner.",
+        "Hot for new sessions: saving re-points the proxy's profile router immediately - the next session resolves the new assignment. Sessions already in flight keep the parameters they started with (deliberate: mid-session parameter flips would break rolling summaries and cache alignment). No restart, no banner.",
     },
   },
   {
@@ -348,11 +363,11 @@ const SECTIONS: SectionDef[] = [
     icon: <EyeIcon size={13} />,
     about: {
       summary:
-        "What this node shares with an org server when enrolled: share mode (metadata-only by default — hashes and counts, never raw content), per-action target exceptions, project scope lists, push cadence. All of it is node-side opt-in; the org admin cannot flip any of it remotely.",
+        "What this node shares with an org server when enrolled: share mode (metadata-only by default - hashes and counts, never raw content), per-action target exceptions, project scope lists, push cadence. Raw-content sharing (full_content/admin_managed) is node opt-in only, never server-forced; the reporting-tier shares (e.g. routing_summary, obs_summary) are node opt-in, or can be raised by the org on a managed node via node governance policy.",
       whenModified:
         "Opting into (or out of) full-content sharing, scoping which projects push, or tuning push cadence. Enrolment itself stays with `observer enroll` / the Enrolment section.",
       behavior:
-        "Saves write this node's config.toml only — the enrolment identity (server URL, keychain) is deliberately untouchable from here. The push loop binds config at daemon start: restart to apply.",
+        "Saves write this node's config.toml only - the enrolment identity (server URL, keychain) is deliberately untouchable from here. The push loop binds config at daemon start: restart to apply.",
     },
   },
   {
@@ -363,11 +378,11 @@ const SECTIONS: SectionDef[] = [
     icon: <ShieldIcon size={13} />,
     about: {
       summary:
-        "The security guard layer — posture (enabled / observe vs enforce / strict), rule disables, boundary allowlists, taint tracking, proxy egress + response scans, MCP pinning, budget limits, alerts, and native-dialect compilation. Cloud features ([guard.cloud] — LLM judge, reputation, webhooks) are deliberately NOT editable here: network egress stays a hand-written config decision.",
+        "The security guard layer - posture (enabled / observe vs enforce / strict), rule disables, boundary allowlists, taint tracking, proxy egress + response scans, MCP pinning, budget limits, alerts, and native-dialect compilation. Cloud features ([guard.cloud] - LLM judge, reputation, webhooks) are deliberately NOT editable here: network egress stays a hand-written config decision.",
       whenModified:
         "Silencing a noisy rule (rules.disable), tuning the egress action, moving observe → enforce (the Security page's mode control shows the evidence first), or setting session/daily budget limits.",
       behavior:
-        "Restart required — the policy engine and proxy seams bind config at startup. Saves write config.toml + .bak; the boundary allowlists treat an empty list as 'keep engine defaults' (explicit 'none' is a config-file edit).",
+        "Restart required - the policy engine and proxy seams bind config at startup. Saves write config.toml + .bak; the boundary allowlists treat an empty list as 'keep engine defaults' (explicit 'none' is a config-file edit).",
     },
   },
   {
@@ -378,11 +393,11 @@ const SECTIONS: SectionDef[] = [
     icon: <CompassIcon size={13} />,
     about: {
       summary:
-        "Model routing — the opt-in layer that picks (advise) or rewrites (enforce) the model per turn based on a policy template, with session stickiness, outcome calibration, and subscription-window headroom. Custom [[routing.rules]], tier overrides, budget scopes, privacy rules, key pools, and local upstreams are deliberately NOT editable here: complex shapes and secrets stay hand-written config decisions, preserved on every save.",
+        "Model routing - the opt-in layer that picks (advise) or rewrites (enforce) the model per turn based on a policy template, with session stickiness, outcome calibration, and subscription-window headroom. Custom [[routing.rules]], tier overrides, budget scopes, privacy rules, key pools, and local upstreams are deliberately NOT editable here: complex shapes and secrets stay hand-written config decisions, preserved on every save.",
       whenModified:
         "Enabling routing for the first time (the Routing page's preview shows the value first), switching policy templates, tuning switch stickiness, or moving advise → enforce (the Shadow card's promote control shows the readiness evidence first).",
       behavior:
-        "Restart required — the proxy's router binds config at startup. Saves write config.toml + .bak. Mode and policy validate at save against the closed vocabularies, so a bad value can never reach the file.",
+        "Restart required - the proxy's router binds config at startup. Saves write config.toml + .bak. Mode and policy validate at save against the closed vocabularies, so a bad value can never reach the file.",
     },
   },
   {
@@ -393,7 +408,7 @@ const SECTIONS: SectionDef[] = [
     icon: <LightningIcon size={13} />,
     about: {
       summary:
-        "Agent-side OpenTelemetry exporter — one gen_ai.client span per proxied API turn to your own OTLP/HTTP collector. Disabled by default; prompt content and user email are separate, off-by-default opt-ins.",
+        "Agent-side OpenTelemetry exporter - one gen_ai.client span per proxied API turn to your own OTLP/HTTP collector. Disabled by default; prompt content and user email are separate, off-by-default opt-ins.",
       whenModified:
         "Wiring observer spans into an existing observability stack (Grafana, Honeycomb, Jaeger…).",
       behavior:
@@ -408,11 +423,11 @@ const SECTIONS: SectionDef[] = [
     icon: <SearchIcon size={13} />,
     about: {
       summary:
-        "The on-demand MCP retrieval tools (get_file / get_symbols / get_relations / retrieve_stashed), their shared audit log, and the value meter — what the tools actually got called vs their ~1,900-token-per-turn schema overhead.",
+        "The on-demand MCP retrieval tools (get_file / get_symbols / get_relations / retrieve_stashed), their shared audit log, and the value meter - what the tools actually got called vs their ~1,900-token-per-turn schema overhead.",
       whenModified:
         "Tightening the file-retrieval allow/deny lists, disabling individual tools, or deciding whether MCP registration is worth the per-turn tax (the meter below answers that with your own numbers).",
       behavior:
-        "Soft: each AI session spawns a fresh observer MCP server that reads config at start, so saves bind on the next session — no daemon restart, no banner. Running MCP sessions keep the config they spawned with.",
+        "Soft: each AI session spawns a fresh observer MCP server that reads config at start, so saves bind on the next session - no daemon restart, no banner. Running MCP sessions keep the config they spawned with.",
     },
   },
   {
@@ -423,11 +438,11 @@ const SECTIONS: SectionDef[] = [
     icon: <LightningIcon size={13} />,
     about: {
       summary:
-        "The suggestions engine — evidence window, confidence/savings visibility floors, and the opt-in session-start digest that injects top advisories into Claude Code.",
+        "The suggestions engine - evidence window, confidence/savings visibility floors, and the opt-in session-start digest that injects top advisories into Claude Code.",
       whenModified:
         "Tuning how chatty the Suggestions tab is, or enabling the session-start digest (default off).",
       behavior:
-        "Restart required — the daemon's digest refresher and the /api/suggestions floors bind at startup.",
+        "Restart required - the daemon's digest refresher and the /api/suggestions floors bind at startup.",
     },
   },
   {
@@ -438,11 +453,26 @@ const SECTIONS: SectionDef[] = [
     icon: <LayersIcon size={13} />,
     about: {
       summary:
-        "Anthropic prompt-cache observation + forecasting — the Cache tab's data source. Hash-only and node-local; cache rows never leave this machine.",
+        "Anthropic prompt-cache observation + forecasting - the Cache tab's data source. Hash-only and node-local; cache rows never leave this machine.",
       whenModified:
         "Disabling the engine, bounding tracked sessions, tuning cache-row retention, or enabling the calibrate-log diagnostic sidecar.",
       behavior:
-        "Restart required — the proxy constructs the engine at startup. Retrofit historical sessions with Backfill → cache-rescan.",
+        "Restart required - the proxy constructs the engine at startup. Retrofit historical sessions with Backfill → cache-rescan.",
+    },
+  },
+  {
+    id: "tasks",
+    label: "Task tracking",
+    group: "config",
+    status: "restart",
+    icon: <ListIcon size={13} />,
+    about: {
+      summary:
+        "Session-level todo/plan checklist tracking — decodes TaskCreate/TodoWrite/update_plan/manage_todo_list and similar tool calls already captured into a per-task lifecycle + cost report (the session detail Tasks tab, and Analysis's Tasks section).",
+      whenModified:
+        "Disabling the engine, switching how whole-list-rewrite tools are matched across snapshots, changing how concurrent in-progress tasks are attributed, folding sub-agent usage into the parent's open task, backfilling on start, or bounding retention.",
+      behavior:
+        "Restart required — SetTasksEnabled/SetTasksOptions bind once at daemon startup, same as every section except pricing/profiles. Retrofit historical sessions with `observer backfill --tasks` (also in the Backfill panel below).",
     },
   },
   {
@@ -454,11 +484,11 @@ const SECTIONS: SectionDef[] = [
     icon: <EyeIcon size={13} />,
     about: {
       summary:
-        "Generalized observability (admin plane) — the OTLP /v1/traces receiver, trajectory capture, and the eval plane for an admin/org-hosted LLM app whose END-USER requests route through SuperBased. This is NOT your own coding-agent usage (every other section is); the captured traces + evals are viewed on the admin/org dashboard, not this node dashboard. Opt-in and node-local: trace data never leaves this machine unless you opt into an obs share tier under Org sharing.",
+        "Generalized observability (admin plane) - the OTLP /v1/traces receiver, trajectory capture, and the eval plane for an admin/org-hosted LLM app whose END-USER requests route through SuperBased. This is NOT your own coding-agent usage (every other section is); the captured traces + evals are viewed on the admin/org dashboard, not this node dashboard. Opt-in and node-local: trace data never leaves this machine unless you opt into an obs share tier under Org sharing.",
       whenModified:
         "Turning the subsystem on or off. The judge model + online-sampling eval knobs ([observability.eval]) stay hand-edited config decisions.",
       behavior:
-        "Restart required — the OTLP receiver and obs_* schema bind at `observer start`. The receiver is SHARED: it also binds whenever [ingest.otel] is enabled (for logs), so turning this toggle off does not stop the receiver if [ingest.otel] is on. Saves write config.toml + .bak.",
+        "Restart required - the OTLP receiver and obs_* schema bind at `observer start`. The receiver is SHARED: it also binds whenever [ingest.otel] is enabled (for logs), so turning this toggle off does not stop the receiver if [ingest.otel] is on. Saves write config.toml + .bak.",
     },
   },
   {
@@ -472,7 +502,7 @@ const SECTIONS: SectionDef[] = [
         "Regex scrubbing applied to captured tool output before anything is stored. Built-in patterns cover common API-key and token shapes; extra patterns append your own.",
       whenModified:
         "Adding org-specific credential shapes (internal token prefixes, hostnames) to the redaction set.",
-      behavior: "Restart required — the scrubber is built at daemon startup.",
+      behavior: "Restart required - the scrubber is built at daemon startup.",
     },
   },
   {
@@ -482,7 +512,7 @@ const SECTIONS: SectionDef[] = [
     status: "restart",
     icon: <AntigravitySectionIcon />,
     about: {
-      summary: "Antigravity (Google) adapter config — bridge ports, decrypt keys, etc.",
+      summary: "Antigravity (Google) adapter config - bridge ports, decrypt keys, etc.",
       whenModified: "Onboarding the Antigravity adapter.",
       behavior: "Restart required.",
     },
@@ -495,10 +525,10 @@ const SECTIONS: SectionDef[] = [
     icon: <LayersIcon size={13} />,
     about: {
       summary:
-        "OS-level process observability — capture toggle, backend, and the poll rate that controls how often the process table is sampled.",
+        "OS-level process observability - capture toggle, backend, and the poll rate that controls how often the process table is sampled.",
       whenModified:
         "Turning process capture on/off, or tuning the poll rate (lower = fresher capture + more CPU; higher = cheaper but misses short-lived commands).",
-      behavior: "Restart required — the backend binds at daemon startup.",
+      behavior: "Restart required - the backend binds at daemon startup.",
     },
   },
   {
@@ -509,11 +539,11 @@ const SECTIONS: SectionDef[] = [
     icon: <EyeIcon size={13} />,
     about: {
       summary:
-        "Browser-chat capture granularity ceiling — the daemon-side clamp on how much of a captured ChatGPT/Claude.ai/Perplexity/Gemini/Copilot web turn is stored (usage_only / redacted / full).",
+        "Browser-chat capture granularity ceiling - the daemon-side clamp on how much of a captured ChatGPT/Claude.ai/Perplexity/Gemini/Copilot web turn is stored (usage_only / redacted / full).",
       whenModified:
         "Tightening what browser-captured chats store: drop to usage_only to keep prompt/response text out of the DB while still tracking tokens and cost, or raise to full to keep the on-screen text.",
       behavior:
-        "Restart required — the granularity ceiling is read when the browser-ingest listener starts. The extension must also be set at or above the level you want (effective = min(extension, ceiling)).",
+        "Restart required - the granularity ceiling is read when the browser-ingest listener starts. The extension must also be set at or above the level you want (effective = min(extension, ceiling)).",
     },
   },
   {
@@ -524,7 +554,7 @@ const SECTIONS: SectionDef[] = [
     icon: <LayersIcon size={13} />,
     about: {
       summary:
-        "Session attach ([terminal.attach]) — serve the owner-only attach socket so `observer <tool> --attach` sessions become joinable from the dashboard, route attach sessions through the observer proxy, and control whether the launchers attach by default.",
+        "Session attach ([terminal.attach]) - serve the owner-only attach socket so `observer <tool> --attach` sessions become joinable from the dashboard, route attach sessions through the observer proxy, and control whether the launchers attach by default.",
       whenModified:
         "Turning the attach socket on/off, changing whether attach sessions route through the proxy by default, or toggling whether `observer claude`/`observer codex` attach by default (opt out per-launch with --no-attach).",
       behavior:
@@ -616,6 +646,9 @@ export function SettingsPage() {
   };
   const [helpOpen, setHelpOpen] = useState(true);
   const config = useApi<ConfigResponse>("/api/config");
+  // The daemon's config schema drives every schema-rendered section
+  // (owner-local route; null on a remote view, which the renderer says).
+  const schema = useConfigSchema();
   const def = sectionAt(active);
   const readOnly = isSettingsReadOnly(gov.data, active);
 
@@ -655,7 +688,7 @@ export function SettingsPage() {
                   tabIndex={config.data.config_path ? 0 : undefined}
                   className="cursor-help break-all font-mono text-fg-2 focus:outline-none"
                 >
-                  {config.data.config_path || "(no file — ephemeral)"}
+                  {config.data.config_path || "(no file - ephemeral)"}
                 </div>
               </Tooltip>
               <RestoreBackupControl onRestored={config.reload} />
@@ -679,6 +712,7 @@ export function SettingsPage() {
           {active === "health" && <HealthSection />}
           {active === "storage" && <StorageSection />}
           {active === "enrolment" && <EnrolmentSection />}
+          {active === "cloud" && <CloudIntelligenceSection />}
           {active === "intelligence" && (
             <IntelligenceSection
               config={config.data}
@@ -694,12 +728,12 @@ export function SettingsPage() {
             active !== "health" &&
             active !== "storage" &&
             active !== "enrolment" &&
+            active !== "cloud" &&
             active !== "intelligence" && (
               <SectionView
                 section={active}
                 config={config.data}
-                loading={config.loading}
-                error={config.error}
+                schema={schema.data}
                 onReload={config.reload}
                 readOnly={readOnly}
               />
@@ -729,13 +763,11 @@ function SettingsHeader({
         sub={
           <>
             View and edit the live <code className="font-mono text-fg-2">config.toml</code>.
-            Pricing hot-reloads (cost engine swaps in place) and Profiles
-            apply to new sessions on save. Every other section saves the
-            file (prior version preserved
-            at <code className="font-mono text-fg-2">.bak</code>) and
-            surfaces a "restart daemon" banner — consumers bind at
-            startup so the new value takes effect on the next
-            <code className="font-mono text-fg-2"> observer start</code>.
+            Every key is editable here (except credentials, which stay
+            file-only). Each key says whether it applies now, to new
+            sessions, or on the next daemon restart; scalar edits keep your
+            comments, and the prior file is preserved
+            at <code className="font-mono text-fg-2">.bak</code>.
             {configPath && (
               <>
                 {" · "}
@@ -779,7 +811,7 @@ function AboutSectionRail({ def }: { def: SectionDef }) {
         </span>
         {def.plane === "admin" && (
           <Tooltip
-            content="Plane A — governs an admin/org-hosted app's end-users, not this node's own coding-agent. See docs/deployment-models.md."
+            content="Plane A - governs an admin/org-hosted app's end-users, not this node's own coding-agent. See docs/deployment-models.md."
             maxWidth={340}
           >
             <span
@@ -836,7 +868,7 @@ function SectionNav({
     },
     {
       id: "config",
-      label: "Config (read-only)",
+      label: "Config",
       items: list.filter(
         (s) => s.group === "config" && s.plane !== "admin",
       ),
@@ -1028,7 +1060,7 @@ function PricingSection({
   return (
     <ChartShell
       title="Pricing overrides"
-      sub="Per-million-token rates that shadow the baked-in defaults. Save triggers an in-place cost engine reload — Cost / Analysis / Session-detail pages reflect the new rates on next query (no daemon restart)."
+      sub="Per-million-token rates that shadow the baked-in defaults. Save triggers an in-place cost engine reload - Cost / Analysis / Session-detail pages reflect the new rates on next query (no daemon restart)."
       right={
         <div className="flex items-center gap-2 text-[11px]">
           {save.state === "ok" && (
@@ -1148,7 +1180,7 @@ function PricingWarningsBanner({ warnings }: { warnings: string[] }) {
         <b className="text-fg-1">
           Saved, but the dated-rate table has {warnings.length === 1 ? "a problem" : `${warnings.length} problems`}.
         </b>{" "}
-        Historical costs may be right while today&apos;s are wrong — check{" "}
+        Historical costs may be right while today&apos;s are wrong - check{" "}
         <code className="rounded-1 border border-line-3 bg-bg-3 px-1.5 py-0.5 font-mono text-[11px] text-fg-1">
           [intelligence.pricing.dated]
         </code>{" "}
@@ -1380,7 +1412,7 @@ function RateHistoryBadge({ periods }: { periods: DatedCostPricing[] }) {
     <Tooltip content={content} maxWidth={320}>
       <span
         tabIndex={0}
-        aria-label={`Rate history — ${sorted.length} period${sorted.length === 1 ? "" : "s"}`}
+        aria-label={`Rate history - ${sorted.length} period${sorted.length === 1 ? "" : "s"}`}
         className="inline-grid h-4 w-4 shrink-0 cursor-help place-items-center rounded-full border border-line-3 text-fg-3 hover:border-accent/50 hover:text-accent focus:outline-none"
       >
         <ClockIcon size={9} />
@@ -1608,7 +1640,7 @@ function BackfillSection() {
           <span className="font-semibold text-fg-1">Full rescan</span>
           <span className="text-fg-3">
             re-walks session files from offset 0 (idempotent; the recovery
-            path for watcher gaps) —
+            path for watcher gaps) -
           </span>
           <select
             value={scanAdapter}
@@ -1759,7 +1791,7 @@ function BackfillTrackerDialog({
           {failedCount > 0 && (
             <span className="text-danger">{failedCount} failed</span>
           )}
-          {jobs.length === 0 && "no jobs yet — click Run to kick one off"}
+          {jobs.length === 0 && "no jobs yet - click Run to kick one off"}
         </span>
       }
       width={720}
@@ -1931,7 +1963,7 @@ function IntelligenceSection({
   return (
     <ChartShell
       title="Intelligence"
-      sub="Summary model + monthly budget + code-graph toggle. Saving writes config.toml and surfaces a Restart-required banner — these consumers bind config at startup, unlike pricing."
+      sub="Summary model + monthly budget + code-graph toggle. Saving writes config.toml and surfaces a Restart-required banner - these consumers bind config at startup, unlike pricing."
       right={
         <div className="flex items-center gap-2 text-[11px]">
           {save.state === "ok" && (
@@ -2038,21 +2070,23 @@ function Field({
 // ============================================================ SectionView
 //
 // Per-section router. Sections with a registered structured spec
-// (`./settings/sectionSpecs`) render as a form (legacy parity);
-// everything else falls back to the read-only TOML viewer.
+// (`./settings/sectionSpecs`) render that hand-written form first, then a
+// schema-driven "More settings" card for every key of the section the spec
+// does not cover; every other section renders entirely from the schema
+// (dashboard-config-management plan P1-7). Nothing is read-only any more
+// except what the schema says is: secrets, owner-elsewhere keys and
+// deprecated aliases.
 
 function SectionView({
   section,
   config,
-  loading,
-  error,
+  schema,
   onReload,
   readOnly,
 }: {
   section: SectionId;
   config: ConfigResponse | null;
-  loading: boolean;
-  error: Error | null;
+  schema: ConfigSchemaDescriptor | null;
   onReload: () => void;
   readOnly?: boolean;
 }) {
@@ -2064,34 +2098,60 @@ function SectionView({
         config={config}
         readOnly={readOnly}
         footer={
-          section === "antigravity" ? (
-            <AntigravityHelperCard />
-          ) : section === "process" ? (
-            <ETWCapturerCard />
-          ) : section === "retention" ? (
-            <PruneNowCard />
-          ) : section === "profiles" ? (
-            <>
-              <CustomProfilesCard config={config} onChanged={onReload} />
-              <ProfilesReferenceCard />
-            </>
-          ) : section === "mcp" ? (
-            <MCPValueMeterCard />
-          ) : section === "routing" ? (
-            <RoutingRulesEditorCard readOnly={readOnly} />
-          ) : undefined
+          <>
+            {section === "antigravity" ? (
+              <AntigravityHelperCard />
+            ) : section === "process" ? (
+              <ETWCapturerCard />
+            ) : section === "retention" ? (
+              <PruneNowCard />
+            ) : section === "profiles" ? (
+              <>
+                <CustomProfilesCard config={config} onChanged={onReload} />
+                <ProfilesReferenceCard />
+              </>
+            ) : section === "mcp" ? (
+              <MCPValueMeterCard />
+            ) : section === "routing" ? (
+              <RoutingRulesEditorCard readOnly={readOnly} />
+            ) : null}
+            <div className="mt-4">
+              <SchemaSection
+                section={section}
+                config={config}
+                schema={schema}
+                readOnly={readOnly}
+                excludeFieldPaths={specFieldPaths(spec)}
+                onSaved={onReload}
+                compact
+              />
+            </div>
+          </>
         }
       />
     );
   }
   return (
-    <ConfigViewerSection
+    <SchemaSection
       section={section}
+      title={SECTIONS.find((s) => s.id === section)?.label ?? section}
       config={config}
-      loading={loading}
-      error={error}
+      schema={schema}
+      readOnly={readOnly}
+      onSaved={onReload}
     />
   );
+}
+
+// specFieldPaths lists the JSON field paths a hand-written spec already
+// edits, so the schema card below it never renders the same key twice.
+function specFieldPaths(spec: SectionSpec): Set<string> {
+  const out = new Set<string>();
+  for (const f of spec.fields ?? []) out.add([...spec.path, f.id].join("."));
+  for (const g of spec.groups ?? []) {
+    for (const f of g.fields) out.add([...g.path, f.id].join("."));
+  }
+  return out;
 }
 
 // RoutingRulesEditorCard — the R2.2 [[routing.rules]] fragment editor
@@ -2126,7 +2186,7 @@ type RoutingRulesLintResult = {
   rules: number;
 };
 
-const ROUTING_RULES_PLACEHOLDER = `# No custom rules yet. Example — route read-only turns to haiku-class:
+const ROUTING_RULES_PLACEHOLDER = `# No custom rules yet. Example - route read-only turns to haiku-class:
 #
 # [[routing.rules]]
 # name = "cheap-reads"
@@ -2193,12 +2253,12 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
   return (
     <div className="mt-4 rounded-3 border border-line-2 bg-bg-2 p-4 text-[11.5px]">
       <div className="text-[12px] font-semibold text-fg-1">
-        Custom rules — [[routing.rules]]
+        Custom rules - [[routing.rules]]
         <HelpInd id="card.settings_routing_rules" />
       </div>
       <p className="m-0 mt-0.5 text-fg-3">
         Custom rows append AFTER the template's rules and are walked top-down, first match wins. Saving replaces ALL
-        custom rules (an empty editor clears them); the save is lint-gated — a fragment that would fail the next
+        custom rules (an empty editor clears them); the save is lint-gated - a fragment that would fail the next
         daemon start is refused with the file untouched. Worked examples:{" "}
         <code className="rounded-1 bg-bg-1 px-1 font-mono text-[10.5px]">docs/model-routing.md</code> (recipe
         gallery). Tiers, budgets, privacy rules, key pools and local upstreams stay config-file-only.
@@ -2218,7 +2278,7 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
       />
       {lint && lint.ok && (
         <div className="mt-2 text-success">
-          Lints clean — {lint.rules} rule(s).
+          Lints clean - {lint.rules} rule(s).
           {findings.length > 0 && " Warnings below (non-blocking):"}
         </div>
       )}
@@ -2258,7 +2318,7 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
         >
           Save rules
         </button>
-        {saved && <Pill variant="warn">saved — restart the daemon to apply</Pill>}
+        {saved && <Pill variant="warn">saved - restart the daemon to apply</Pill>}
         {policy.data && !saved && (
           <span className="text-fg-3">
             {policy.data.rules} rule(s) on disk · policy {policy.data.policy} @{" "}
@@ -2270,7 +2330,7 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
   );
 }
 
-// MCPValueMeterCard — the P4.10 value meter under the MCP section:
+// MCPValueMeterCard - the P4.10 value meter under the MCP section:
 // what the retrieval tools actually got called vs the per-turn schema
 // overhead MCP registration costs. Same numbers as the advisor's
 // mcp_overhead detector, standing instead of one-off. Honesty rules:
@@ -2315,7 +2375,7 @@ function MCPValueMeterCard() {
                   </>
                 ) : m.verdict === "no_data" && !m.audit_enabled ? (
                   <>
-                    The MCP audit log is disabled — usage is invisible, so
+                    The MCP audit log is disabled - usage is invisible, so
                     this meter can't judge. Re-enable it above to measure.
                   </>
                 ) : m.verdict === "no_data" ? (
@@ -2332,7 +2392,7 @@ function MCPValueMeterCard() {
               <p className="text-fg-3">
                 Registration overhead: every turn of an MCP-registered tool
                 carries ~{fmtInt(m.schema_tokens_per_turn)} tokens of tool
-                schemas — roughly{" "}
+                schemas - roughly{" "}
                 <strong className="font-semibold text-fg-2">
                   {fmtInt(m.overhead_tokens_estimate)} tokens
                 </strong>{" "}
@@ -2365,7 +2425,7 @@ function MCPValueMeterCard() {
             {m.denied_calls > 0 && (
               <p className="text-fg-3">
                 {fmtInt(m.denied_calls)} call(s) were denied by the
-                allow/deny rules above — denials are audit rows too.
+                allow/deny rules above - denials are audit rows too.
               </p>
             )}
           </div>
@@ -2637,7 +2697,7 @@ function ProfileEditor({ name }: { name: string }) {
           body: JSON.stringify({ key, value: draft[key] }),
         });
       }
-      setSavedMsg("Applied — new sessions pick this up automatically.");
+      setSavedMsg("Applied - new sessions pick this up automatically.");
       await load();
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -2767,7 +2827,7 @@ function ProfilesReferenceCard() {
       <p className="mt-2 text-[11px] leading-snug text-fg-3">
         Full resolved parameters: <code className="font-mono text-fg-2">observer profile show &lt;name&gt;</code>.
         Assignments apply to new sessions immediately; the wrong pairing can
-        break provider caching — the per-provider defaults are the measured
+        break provider caching - the per-provider defaults are the measured
         safe choices.
       </p>
     </div>
@@ -2819,7 +2879,7 @@ function RestoreBackupControl({ onRestored }: { onRestored: () => void }) {
           <p className="m-0 text-fg-3">
             Swap config.toml with the backup
             {backup.data.modified_at
-              ? ` from ${new Date(backup.data.modified_at).toLocaleString()}`
+              ? ` from ${fmtDateTime(backup.data.modified_at)}`
               : ""}
             ? Restoring again undoes this.
           </p>
@@ -2893,7 +2953,7 @@ function PruneNowCard() {
         <div className="min-w-0 flex-1">
           <div className="text-[12px] font-semibold text-fg-1">Run retention now</div>
           <p className="m-0 mt-0.5 text-fg-3">
-            Sweep old rows immediately using the thresholds above — the
+            Sweep old rows immediately using the thresholds above - the
             same pass the daemon runs on its schedule. Deletion is
             permanent; the thresholds decide what counts as old.
           </p>
@@ -2922,99 +2982,3 @@ function PruneNowCard() {
   );
 }
 
-// ============================================================ Read-only
-
-function ConfigViewerSection({
-  section,
-  config,
-  loading,
-  error,
-}: {
-  section: SectionId;
-  config: ConfigResponse | null;
-  loading: boolean;
-  error: Error | null;
-}) {
-  const data = sectionData(section, config?.config);
-
-  return (
-    <ChartShell
-      title={SECTIONS.find((s) => s.id === section)?.label ?? section}
-      sub="Read-only view of the running config. Edit the source TOML at the path on the left, then restart the daemon — or wire a save endpoint here in a future phase."
-    >
-      <ChartState
-        loading={loading && !config}
-        error={error}
-        empty={!data}
-        emptyHint="Section not present in config."
-        height={160}
-      >
-        {data != null ? (
-          <div className="space-y-3">
-            <StatCard
-              label="Keys"
-              value={fmtInt(countKeys(data))}
-              sub="Rendered as TOML; the running daemon binds at startup"
-            />
-            <Suspense
-              fallback={
-                <pre className="m-0 max-h-[440px] overflow-auto whitespace-pre rounded-2 border border-line-1 bg-bg-1 px-3 py-2 font-mono text-[11.5px] text-fg-3">
-                  loading…
-                </pre>
-              }
-            >
-              <TomlView data={data} />
-            </Suspense>
-          </div>
-        ) : null}
-      </ChartState>
-    </ChartShell>
-  );
-}
-
-function sectionData(section: SectionId, cfg?: unknown): unknown {
-  if (!cfg || typeof cfg !== "object") return null;
-  const c = cfg as Record<string, unknown>;
-  switch (section) {
-    case "observer":
-      return slim(c.Observer, ["Watch", "Freshness", "Retention", "Hooks", "Antigravity"]);
-    case "watcher":
-      return readSub(c.Observer, "Watch");
-    case "freshness":
-      return readSub(c.Observer, "Freshness");
-    case "retention":
-      return readSub(c.Observer, "Retention");
-    case "hooks":
-      return readSub(c.Observer, "Hooks");
-    case "antigravity":
-      return readSub(c.Observer, "Antigravity");
-    case "proxy":
-      return c.Proxy ?? null;
-    case "compression":
-      return c.Compression ?? null;
-    default:
-      return null;
-  }
-}
-
-function slim(obj: unknown, exclude: string[]): unknown {
-  if (!obj || typeof obj !== "object") return obj;
-  const o = obj as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const k of Object.keys(o)) {
-    if (!exclude.includes(k)) out[k] = o[k];
-  }
-  return out;
-}
-
-function readSub(parent: unknown, key: string): unknown {
-  if (!parent || typeof parent !== "object") return null;
-  const p = parent as Record<string, unknown>;
-  return p[key] ?? null;
-}
-
-function countKeys(v: unknown): number {
-  if (v == null || typeof v !== "object") return 0;
-  if (Array.isArray(v)) return v.length;
-  return Object.keys(v as Record<string, unknown>).length;
-}

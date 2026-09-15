@@ -73,8 +73,12 @@ type terminalRunResolver interface {
 	// KindForHandle returns the run kind + CANONICAL tool name for a handle
 	// (the launcher verb alone is not the tool the pidbridge keys on).
 	KindForHandle(handle string) (termrun.Kind, string, bool)
-	// ProjectRoot returns the validated launch directory for a handle.
-	ProjectRoot(handle string) (string, bool)
+	// SpawnDir returns the directory the run's child process actually runs in:
+	// the validated launch root when the launch carried one, otherwise the
+	// daemon's cwd the child inherits. It is deliberately NOT ProjectRoot, whose
+	// empty answer for a launch with no authorized project root would record a
+	// pid-bridge row with no working directory at all.
+	SpawnDir(handle string) (string, bool)
 }
 
 // pidSeedWriteTimeout bounds every DB call the seeder makes. The retract path
@@ -207,8 +211,8 @@ func (s *terminalPidSeeder) OnRunCorrelated(ctx context.Context, runID string, r
 		tool = canonical
 	}
 	cwd := dir
-	if root, rok := res.ProjectRoot(handle); rok && root != "" {
-		cwd = root
+	if spawnDir, sok := res.SpawnDir(handle); sok && spawnDir != "" {
+		cwd = spawnDir
 	}
 	if tool == "" {
 		return // pidbridge.Write requires a tool; never write a half-identity

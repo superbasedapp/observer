@@ -3,7 +3,7 @@ import { HeroStat, PageHeader, Pill } from "@/components/primitives";
 import { CompassIcon } from "@/components/icons";
 import { useApi } from "@/lib/useApi";
 import { ApiError } from "@/lib/api";
-import { fmtInt } from "@/lib/format";
+import { fmtClock, fmtInt, fmtShortId } from "@/lib/format";
 
 // Egress page (G22 Plane-A policy egress routing): the read-only node surface
 // over the installed [observability.egress] policy and the NODE-LOCAL
@@ -119,7 +119,7 @@ export function EgressPage() {
     <div className="space-y-4 p-5">
       <PageHeader
         title="Egress"
-        sub="Plane-A policy egress routing: route a hosted app's end-user requests to another resource by admission verdict, end-user budget, or cohort. This audit log is node-local — it never rides the org push — so this page (and observer obs egress) is its only view. Read-only; policy is authored in config.toml."
+        sub="Plane-A policy egress routing: route a hosted app's end-user requests to another resource by admission verdict, end-user budget, or cohort. This audit log is node-local - it never rides the org push - so this page (and observer obs egress) is its only view. Read-only; policy is authored in config.toml."
       />
       {obsOff ? (
         <ObsDisabled />
@@ -133,11 +133,11 @@ export function EgressPage() {
               icon={<CompassIcon />}
               loading={status.loading}
               variant={st?.mode === "enforce" ? "warn" : "accent"}
-              value={st ? st.mode : "—"}
+              value={st ? st.mode : "-"}
               sub={
                 st?.enabled
                   ? st.policy_hash
-                    ? `policy ${st.policy_hash.slice(0, 12)}`
+                    ? <span title={st.policy_hash}>{`policy ${fmtShortId(st.policy_hash, 12)}`}</span>
                     : "policy installed"
                   : "no egress policy installed"
               }
@@ -145,20 +145,20 @@ export function EgressPage() {
             <HeroStat
               label="Rules / targets"
               loading={status.loading}
-              value={st ? `${(st.rules ?? []).length} / ${(st.targets ?? []).length}` : "—"}
+              value={st ? `${(st.rules ?? []).length} / ${(st.targets ?? []).length}` : "-"}
               sub="first-match-wins · typed targets"
             />
             <HeroStat
               label="Decisions"
               loading={status.loading}
-              value={st ? fmtInt(totalDecisions) : "—"}
+              value={st ? fmtInt(totalDecisions) : "-"}
               sub={st ? `${fmtInt(st.decisions_24h)} in the last 24h` : ""}
             />
             <HeroStat
               label="Audit chain"
               loading={status.loading}
               variant={st && !st.chain.ok ? "danger" : "accent"}
-              value={st ? (st.chain.ok ? "intact" : "BROKEN") : "—"}
+              value={st ? (st.chain.ok ? "intact" : "BROKEN") : "-"}
               sub={
                 st
                   ? st.chain.ok
@@ -174,7 +174,7 @@ export function EgressPage() {
           {st && st.enabled && (
             <Section
               title="Policy"
-              sub="The installed (compiled) policy — authored node-side in [observability.egress]; there is no dashboard write path."
+              sub="The installed (compiled) policy - authored node-side in [observability.egress]; there is no dashboard write path."
             >
               <PolicyTables rules={st.rules ?? []} targets={st.targets ?? []} />
             </Section>
@@ -205,7 +205,7 @@ function PolicyTables({ rules, targets }: { rules: EgressRule[]; targets: Egress
     <div className="space-y-4">
       {rules.length === 0 ? (
         <p className="py-2 text-[12px] text-fg-3">
-          No rules — add <code className="rounded-1 bg-bg-2 px-1 font-mono">[[observability.egress.rules]]</code>{" "}
+          No rules - add <code className="rounded-1 bg-bg-2 px-1 font-mono">[[observability.egress.rules]]</code>{" "}
           entries to config.toml.
         </p>
       ) : (
@@ -225,7 +225,7 @@ function PolicyTables({ rules, targets }: { rules: EgressRule[]; targets: Egress
                 <tr key={r.name} className="border-b border-line-1/60">
                   <td className="py-1.5 pr-3 font-semibold text-fg-1">{r.name}</td>
                   <td className="py-1.5 pr-3 font-mono text-[11px] text-fg-2">{r.action}</td>
-                  <td className="py-1.5 pr-3 font-mono text-[11px] text-fg-2">{r.target || "—"}</td>
+                  <td className="py-1.5 pr-3 font-mono text-[11px] text-fg-2">{r.target || "-"}</td>
                   <td className="py-1.5 pr-3">
                     <Pill variant={r.on_unavailable === "deny" ? "danger" : "neutral"}>
                       {r.on_unavailable}
@@ -295,7 +295,7 @@ function DecisionsTable({ rows }: { rows: EgressDecision[] }) {
           {rows.map((d) => (
             <tr key={d.id} className="border-b border-line-1/60">
               <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">
-                {new Date(d.ts).toLocaleString()}
+                {fmtClock(d.ts)}
               </td>
               <td className="py-1.5 pr-3">
                 <Pill variant={d.mode === "enforce" ? "warn" : "neutral"}>{d.mode}</Pill>
@@ -319,16 +319,16 @@ function DecisionsTable({ rows }: { rows: EgressDecision[] }) {
                 {d.verdict_decision ? (
                   <Pill variant={verdictVariant(d.verdict_decision)}>{d.verdict_decision}</Pill>
                 ) : (
-                  <span className="text-fg-3">—</span>
+                  <span className="text-fg-3">-</span>
                 )}
               </td>
               <td className="py-1.5 pr-3">
                 <RealizedCell d={d} />
               </td>
-              <td className="py-1.5 pr-3 font-mono text-[10px] text-fg-3">
-                {d.request_id ? d.request_id.slice(0, 12) : "—"}
+              <td className="py-1.5 pr-3 font-mono text-[10px] text-fg-3" title={d.request_id || undefined}>
+                {d.request_id ? fmtShortId(d.request_id, 12) : "-"}
               </td>
-              <td className="py-1.5 font-mono text-[11px] text-fg-3">{d.user || "—"}</td>
+              <td className="py-1.5 font-mono text-[11px] text-fg-3">{d.user || "-"}</td>
             </tr>
           ))}
         </tbody>
@@ -351,8 +351,8 @@ function actionDetail(d: EgressDecision): string {
 function RealizedCell({ d }: { d: EgressDecision }) {
   if (!d.realized_outcome) {
     return (
-      <span className="text-fg-3" title="No realized outcome reported — advise-mode decisions are recorded but never routed, so the proxy reports nothing back.">
-        —
+      <span className="text-fg-3" title="No realized outcome reported - advise-mode decisions are recorded but never routed, so the proxy reports nothing back.">
+        -
       </span>
     );
   }
@@ -397,7 +397,7 @@ function EgressDisabled() {
         <code className="rounded-1 bg-bg-2 px-1 font-mono">[observability.egress] enabled = true</code>{" "}
         plus at least one rule, and{" "}
         <code className="rounded-1 bg-bg-2 px-1 font-mono">[observability.admission] enabled = true</code>{" "}
-        — egress composes on the admission verdict. A policy that fails to compile is also reported
+        - egress composes on the admission verdict. A policy that fails to compile is also reported
         here as not installed (the daemon logs the compile error and keeps admission running).
       </p>
       <p className="mt-2">
@@ -414,7 +414,7 @@ function DecisionsEmpty({ enabled, mode }: { enabled: boolean; mode: string }) {
       {enabled ? (
         <p className="mt-1">
           The policy is installed in <b>{mode}</b> mode. A row appears when an admission-judged
-          request matches a rule — {mode === "advise" ? "advise records the directive without applying it" : "enforce applies it on the proxy path and reports the realized outcome back"}.
+          request matches a rule - {mode === "advise" ? "advise records the directive without applying it" : "enforce applies it on the proxy path and reports the realized outcome back"}.
         </p>
       ) : (
         <p className="mt-1">Decisions are recorded only while an egress policy is installed.</p>

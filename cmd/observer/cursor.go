@@ -3,7 +3,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -19,24 +18,67 @@ import (
 // two-prompt collision check does not misread `cursor-agent status` (and
 // friends) as a forwarded positional prompt.
 var cursorSubcommands = map[string]bool{
+	"acp":                         true,
+	"automations":                 true,
+	"bedrock":                     true,
+	"cleanup-install-versions":    true,
+	"cloud":                       true,
+	"dev":                         true,
+	"dev-login":                   true,
+	"env":                         true,
+	"get-channel":                 true,
 	"install-shell-integration":   true,
+	"install":                     true,
+	"local-worker":                true,
 	"uninstall-shell-integration": true,
 	"login":                       true,
 	"logout":                      true,
 	"mcp":                         true,
+	"plugin":                      true,
+	"record":                      true,
+	"repaint-debug":               true,
+	"repo":                        true,
+	"sandbox":                     true,
+	"set-channel":                 true,
+	"shell-integration":           true,
 	"worker":                      true,
+	"worker-server":               true,
 	"status":                      true,
 	"whoami":                      true,
 	"models":                      true,
 	"about":                       true,
 	"update":                      true,
+	"upgrade":                     true,
 	"create-chat":                 true,
 	"generate-rule":               true,
 	"rule":                        true,
 	"agent":                       true,
+	"gpt-5":                       true,
+	"gpt5":                        true,
+	"opus":                        true,
+	"sonnet":                      true,
 	"ls":                          true,
 	"resume":                      true,
 	"help":                        true,
+}
+
+// cursorBudgetMaintenanceSubcommands and cursorBudgetMaintenanceFlags are the
+// grounded cursor-agent verbs and flags that do not submit a model request.
+// They are DERIVED from the cursor intervention registry row
+// (integration.NonBillableLeadingArguments) so this launch gate and the node
+// process controller classify one invocation identically. Chat execution,
+// resume, worker, rule generation, and agent verbs remain controlled because
+// their selected backend cannot pass through Observer's proxy.
+var cursorBudgetMaintenanceSubcommands, cursorBudgetMaintenanceFlags = registryMaintenanceVocabulary("cursor")
+
+func cursorBudgetLaunchEvidence(args []string) budgetLaunchEvidence {
+	if len(args) == 1 && cursorBudgetMaintenanceFlags[args[0]] {
+		return budgetLaunchEvidence{Route: budgetLaunchRouteMaintenance}
+	}
+	if len(args) > 0 && cursorBudgetMaintenanceSubcommands[args[0]] {
+		return budgetLaunchEvidence{Route: budgetLaunchRouteMaintenance}
+	}
+	return budgetLaunchEvidence{Route: budgetLaunchRouteDirect}
 }
 
 // newCursorCmd implements `observer cursor` — a PURE SEEDING wrapper around
@@ -157,18 +199,44 @@ func newCursorCmd() *cobra.Command {
 				args = seeded
 				continueDir = cwd
 			}
+			// The maintenance classification above decides WHETHER the gate
+			// runs; the executable and argv decide whether a controlled
+			// launch can be recovered when it does. cursor-agent has no
+			// provable proxy route, so the daemon's attested cutoff over this
+			// exact installed surface is its only admission path.
+			cursorEvidence := cursorBudgetLaunchEvidence(args)
+			cursorEvidence.Executable, cursorEvidence.Arguments = bin, args
+			if err := enforceBudgetControlledLaunch(cmd.Context(), configPath, "cursor",
+				cursorEvidence); err != nil {
+				return err
+			}
+
+			allocatedSessionID := ""
+			if !continueFamilyEngaged(continueFrom, carry, fromMessage, fromTime) {
+				var allocationErr error
+				args, allocatedSessionID, allocationErr = allocateCursorFreshSession(
+					cmd.Context(), bin, continueDir, args,
+				)
+				if allocationErr != nil {
+					return fmt.Errorf("observer cursor: %w", allocationErr)
+				}
+			}
 
 			child := exec.Command(bin, args...)
 			// PURE SEEDING WRAPPER: no proxy env injection. cursor uses its
 			// own backend, so the child inherits the ambient environment
 			// unchanged.
-			child.Env = os.Environ()
-			child.Dir = continueDir // "" inherits the caller's cwd; set by --continue-from to the source project root
+			child.Env = scrubOOBEnv(os.Environ()) // strip the trusted OOB channel env
+			child.Dir = continueDir               // "" inherits the caller's cwd; set by --continue-from to the source project root
 			child.Stdin = os.Stdin
 			child.Stdout = os.Stdout
 			child.Stderr = os.Stderr
+			discovery := prepareGenericDiscovery(cmd.Context(), "cursor", continueDir)
 			if startErr := child.Start(); startErr != nil {
 				return fmt.Errorf("exec cursor-agent: %w", startErr)
+			}
+			if allocatedSessionID != "" {
+				announceOOBSession(allocatedSessionID)
 			}
 			// Direct process attribution (migration 086): record the child pid
 			// now that Start has made it knowable; retract the seed when the
@@ -185,7 +253,7 @@ func newCursorCmd() *cobra.Command {
 			// Cancel the instant the child exits so a window cut short by exit
 			// never announces a candidate that only looked unique because the
 			// scan stopped early.
-			discoverCancel := maybeStartGenericDiscovery(context.Background(), "cursor", continueDir)
+			discoverCancel := discovery.start()
 			if discoverCancel != nil {
 				defer discoverCancel()
 			}

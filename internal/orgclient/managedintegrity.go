@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,6 +12,16 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/machineid"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 )
+
+// ErrManagedIntegrityUnbound mirrors ErrManagedBindRefused's precedent: the
+// server's ownership guard (managed_integrity.go::ManagedIntegrity, the
+// `!bound || binding.UserID != userID` branch) returns 409 whenever this
+// managed node's one-time P6a BindMachine step never completed or no longer
+// matches. It is a firm, already-audited server-side notice (the server
+// writes a managed_node_collision audit row on every occurrence), not a
+// transient failure — so the caller should treat it as expected and not
+// re-log it every push cycle until an admin re-binds the machine.
+var ErrManagedIntegrityUnbound = errors.New("managed integrity report refused: machine is not bound to this node")
 
 // ReportIntegrity performs the Arc 4 P6b managed-integrity probe report (plan
 // §9): it presents this host's org-salted machine fingerprint plus coarse
@@ -25,8 +36,10 @@ import (
 //
 // Best-effort by design: a host with no stable machine source (empty
 // fingerprint) skips the call (nothing to correlate); an older server without
-// the route (404) is a no-op. Neither is an error the caller must act on.
-func (c *Client) ReportIntegrity(ctx context.Context, siblingLabels, driftedTools []string) (orgcontract.ManagedIntegrityResponse, error) {
+// the route (404) is a no-op; an unbound managed node (409) returns the named
+// ErrManagedIntegrityUnbound sentinel rather than a generic error. None of
+// these are failures the caller must act on beyond deciding how to log them.
+func (c *Client) ReportIntegrity(ctx context.Context, report orgcontract.ManagedIntegrityReport) (orgcontract.ManagedIntegrityResponse, error) {
 	enr, err := c.store.LoadEnrolment(ctx)
 	if err != nil {
 		return orgcontract.ManagedIntegrityResponse{}, fmt.Errorf("orgclient.ReportIntegrity: enrolment: %w", err)
@@ -44,12 +57,13 @@ func (c *Client) ReportIntegrity(ctx context.Context, siblingLabels, driftedTool
 		return orgcontract.ManagedIntegrityResponse{}, nil
 	}
 
-	report := orgcontract.ManagedIntegrityReport{
-		MachineIdentity:  mid,
-		SiblingObservers: len(siblingLabels),
-		SiblingDetail:    siblingLabels,
-		RouteDrift:       len(driftedTools),
-		DriftedTools:     driftedTools,
+	report.MachineIdentity = mid
+	report = report.NormalizeLabels()
+	if report.SiblingObservers < 0 {
+		report.SiblingObservers = 0
+	}
+	if report.RouteDrift < 0 {
+		report.RouteDrift = 0
 	}
 	body, err := json.Marshal(report)
 	if err != nil {
@@ -85,6 +99,10 @@ func (c *Client) ReportIntegrity(ctx context.Context, siblingLabels, driftedTool
 	case http.StatusNotFound:
 		// Older server without the route — treat as a no-op.
 		return orgcontract.ManagedIntegrityResponse{}, nil
+	case http.StatusConflict:
+		// Not bound — a firm, already-audited notice, not a transient
+		// failure. See ErrManagedIntegrityUnbound.
+		return orgcontract.ManagedIntegrityResponse{}, ErrManagedIntegrityUnbound
 	default:
 		return orgcontract.ManagedIntegrityResponse{}, fmt.Errorf("orgclient.ReportIntegrity: server returned %d", resp.StatusCode)
 	}

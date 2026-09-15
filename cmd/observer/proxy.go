@@ -90,11 +90,20 @@ func newProxyStartCmd() *cobra.Command {
 			if ocErr == nil && ocEnabled && oc != nil {
 				if pcfg, pdb, pcleanup, perr := loadConfigAndDB(ctx, configPath); perr == nil {
 					bootstrapUpstreams, bootstrapAutoLane := pcfg.Proxy.Upstreams, pcfg.Proxy.AutoDefaultLane
+					bootstrapOrgRoute := pcfg.Proxy.OrgRoute
 					gw := newGatewayProvidersHandle(
 						p.SetLaneTable,
-						func() { _ = p.SetLaneTable(bootstrapUpstreams, bootstrapAutoLane) },
+						func() {
+							_ = p.SetRoutingSnapshotWithFallback(bootstrapUpstreams, bootstrapAutoLane,
+								bootstrapOrgRoute.Mode, bootstrapOrgRoute.Primary, bootstrapOrgRoute.Fallbacks,
+								bootstrapOrgRoute.TerminalPolicy, bootstrapOrgRoute.DirectFallbackCustodyAck)
+						},
 						p.LaneTable,
 					)
+					// Bind the atomic lanes+org-route+fallback setter (Sol S7 /
+					// Luna L16) so a gateway.providers MODE body flips the mode
+					// and installs the fallback terminal rung in one generation.
+					gw.SetRouteApply(p.SetRoutingSnapshotWithFallback)
 					// node.governance (admin-controlled Plane B) and
 					// node.features (org-parity W5.1) are both passed nil
 					// here on purpose: `observer proxy start` runs no
@@ -225,7 +234,7 @@ func buildProxy(ctx context.Context, configPath, recipeName string, portOverride
 		Sink:              s,
 		ObserverLog:       s,
 		SessionResolver:   resolver,
-		CostComputer:      costEngineAdapter{e: cost.NewEngine(cfg.Intelligence)},
+		CostComputer:      costEngineAdapter{e: acquireProcessCostEngine(ctx, cfg, database, logger)},
 		Logger:            logger,
 		CompressTypes:     cfg.Compression.Conversation.CompressTypes,
 	}
@@ -324,12 +333,28 @@ func buildProxy(ctx context.Context, configPath, recipeName string, portOverride
 	// left it unset.
 	wireObsProxyTurns(ctx, cfg, database, &opts, logger)
 
+	// Plane B AI Gateway virtual-key source (P5a Sol S2). Lazy: no keychain
+	// probe until a gateway-routed request first needs the key, so solo
+	// installs are unaffected. internal/proxy never imports internal/orgclient
+	// — the adapter is bound here, the CostComputer/Admitter seam pattern.
+	opts.VirtualKeySource = newVirtualKeySource(cfg, filepath.Dir(cfg.Observer.DBPath), logger)
+	// The node's bounded-drain seam (enterprise-update-management plan §3.7
+	// step 4a, rulings R9/R13). Always wired: the gate ADMITS everything
+	// until an apply closes it, so a daemon that never updates behaves
+	// exactly as before. internal/proxy never imports internal/quiesce — the
+	// concrete gate is bound here, the Sink/Admitter/CostComputer pattern.
+	opts.DrainGate = updateDrainGate()
+
 	p, err := proxy.New(opts)
 	if err != nil {
 		selfObsCleanup()
 		_ = database.Close()
 		return nil, nil, "", nil, nil, nil, nil, err
 	}
+	// Install the node-local [proxy.org_route] bootstrap onto the routing
+	// snapshot (SetOrgGatewayRoute). Inert when no section is configured; an
+	// org-published mode body supersedes it hot via the same one-snapshot seam.
+	applyOrgRouteBootstrap(p, cfg, logger)
 	// §R12.3 optional active prober — OFF by default (no gratuitous
 	// network). When enabled it re-fires the prewarm HEADs on the
 	// configured cadence: connectivity failures surface in the daemon
@@ -368,15 +393,11 @@ func buildProxy(ctx context.Context, configPath, recipeName string, portOverride
 // shared one (guardwire.go) — in the `observer start` assembly buildProxy
 // runs FIRST, so the instance acquired here is the same one wireGuard hands
 // the watcher store, making taint state daemon-wide (the cachetrack
-// single-engine precedent). No-op when guard is disabled/off or every
-// [guard.proxy] + [guard.mcp] feature is off: opts.Guard stays nil and the
-// proxy is byte-identical to the pre-guard baseline. Extracted from
+// single-engine precedent). No-op only when guard is disabled/off. The Guard
+// stays attached when the egress/response/MCP scan toggles are all off because
+// the budget rule is another independent request-path consumer. Extracted from
 // buildProxy to keep its cyclomatic complexity in check.
 func wireGuardProxy(ctx context.Context, cfg config.Config, s *store.Store, opts *proxy.Options, logger *slog.Logger) {
-	if !(cfg.Guard.Proxy.EgressScan || cfg.Guard.Proxy.ResponseScan || cfg.Guard.Proxy.InjectionHeuristics ||
-		cfg.Guard.MCP.Pinning || cfg.Guard.MCP.PoisoningHeuristics) {
-		return
-	}
 	g := acquireProcessGuard(ctx, cfg, s, logger)
 	if g == nil {
 		return
@@ -517,7 +538,7 @@ func wireRouting(ctx context.Context, cfg config.Config, s *store.Store, opts *p
 		opts.KeyPools = cfg.Routing.KeyPool
 		logger.Info("routing: key pools wired", "providers", len(cfg.Routing.KeyPool))
 	}
-	refresher := store.NewRoutingRefresher(s, policy, resolver, routingPriceFn(cost.NewEngine(cfg.Intelligence)))
+	refresher := store.NewRoutingRefresher(s, policy, resolver, routingPriceFn(acquireProcessCostEngine(ctx, cfg, nil, logger)))
 	go refresher.Run(ctx)
 	lr := newLiveRouter(policy, cfg.Routing.Mode, refresher, s, logger)
 	// Seed the composed org body mode so the managed-enforce lift (once

@@ -11,7 +11,9 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/guard/notify"
+	"github.com/marmutapp/superbased-observer/internal/orgbudget"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
+	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/proxy"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -55,6 +57,27 @@ func acquireProcessGuard(ctx context.Context, cfg config.Config, st *store.Store
 		processGuards.m[key] = g
 	}
 	return g
+}
+
+// budgetWindowStarts computes both units over the calendars sealed into the
+// same immutable guard snapshot as the numeric cap.
+func budgetWindowStarts(now time.Time, calendars guard.BudgetCalendars) (dayStart, weekStart, monthStart time.Time) {
+	return orgbudget.CalendarWindowStarts(now, orgbudget.Zone(calendars.DailyTimezone), orgbudget.Zone(calendars.MonthlyTimezone))
+}
+
+// lookupProcessGuard returns the already-constructed per-(process, db-path)
+// Guard WITHOUT building one, or nil when none exists (the guard is off, or
+// no composition site has asked yet).
+//
+// It exists so a later wiring step — the org budget boundary, which runs after
+// buildProxy has already composed the shared Guard — can reach that ONE
+// instance without opening a second Store handle just to satisfy
+// acquireProcessGuard's constructor. Constructing here instead would create
+// exactly the second guard the processGuards map exists to prevent.
+func lookupProcessGuard(dbPath string) *guard.Guard {
+	processGuards.mu.Lock()
+	defer processGuards.mu.Unlock()
+	return processGuards.m[dbPath]
 }
 
 // buildGuardForStore constructs the guard composition layer wired to
@@ -129,24 +152,112 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 	// ok=false (rules fail toward silence, never a spurious breach).
 	// Wired whenever the guard runs — user cost-matcher rules work
 	// even with no [guard.budget] thresholds set.
-	g.SetBudgetLookup(func(sessionID string) (guard.BudgetSnapshot, bool) {
+	g.SetBudgetAccountingLookup(func(sessionID string, accounting guard.BudgetAccountingContext) (guard.BudgetSnapshot, bool) {
 		lctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		now := time.Now().UTC()
-		dayStart := now.Truncate(24 * time.Hour)
-		// Rolling 7-day window (§1.3); calendar-month start in UTC.
-		weekStart := now.Add(-7 * 24 * time.Hour)
-		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-		spend, err := st.GuardBudgetSpend(lctx, sessionID, dayStart, weekStart, monthStart)
+		// Calendar day / calendar month in the ORG BUDGET's own timezone when
+		// one governs those windows, UTC otherwise; rolling 7 days for the
+		// weekly window (§1.3), which has no calendar and therefore no zone.
+		// The boundaries are caller-supplied precisely so the day-boundary
+		// policy can vary (store/guard.go), and the node must bucket the same
+		// calendar day the dashboard percentage and the alert ladder do.
+		dayStart, weekStart, monthStart := budgetWindowStarts(now, accounting.Calendars)
+		// The process engine is composed by buildProxy before this guard is
+		// assembled. Look it up without acquiring or constructing one here:
+		// acquireProcessGuard holds processGuards.mu while composing the guard,
+		// and a nested engine construction would create a second pricing truth.
+		engine := lookupProcessCostEngine(cfg.Observer.DBPath)
+		table := engine.Table()
+		pricer := guardBudgetTablePricer(table)
+		if accounting.Managed {
+			identity, active, err := orgclient.CurrentBudgetIdentity(lctx, st)
+			if err != nil || !active || accounting.BudgetBinding == "" || identity.Binding != accounting.BudgetBinding {
+				return guard.BudgetSnapshot{}, false
+			}
+			pricer = managedBudgetTablePricer(table, accounting.BudgetBinding)
+		}
+		spend, err := st.GuardBudgetSpendPriced(
+			lctx, sessionID, dayStart, weekStart, monthStart, pricer,
+			store.GuardBudgetReadOptions{Managed: accounting.Managed},
+		)
 		if err != nil {
 			logger.Warn("guard: budget spend lookup failed", "err", err)
 			return guard.BudgetSnapshot{}, false
 		}
+		if spend.UnpricedRows > 0 {
+			logger.Debug("guard: budget spend has unpriced usage",
+				"rows", spend.UnpricedRows, "tokens", spend.UnpricedTokens,
+				"unpriced_windows", spend.UnpricedWindows,
+				"unpriced_tools", spend.UnpricedTools,
+				"fallback_models", spend.FallbackModels,
+				"unpriced_models", spend.UnpricedModels,
+				"pricing_sources", spend.PricingSources)
+		}
+		if accounting.Managed {
+			// Report, never deny (ruling A3): the coverage this read observed
+			// is what the node's budget posture carries to the org and what
+			// `observer guard status` prints. Recorded here because this is
+			// the one read that priced the cap's own windows - computing it a
+			// second time elsewhere would be a second accounting truth.
+			recordBudgetPricingCoverage(cfg.Observer.DBPath, budgetPricingCoverageOf(spend))
+		}
 		snap := guard.BudgetSnapshot{
-			SessionUSD: spend.SessionUSD,
-			DailyUSD:   spend.DailyUSD,
-			WeeklyUSD:  spend.WeeklyUSD,
-			MonthlyUSD: spend.MonthlyUSD,
+			WeeklyUSDExpiresAt: spend.WeeklyExpiresAt,
+			SessionUSD:         spend.SessionUSD,
+			DailyUSD:           spend.DailyUSD,
+			WeeklyUSD:          spend.WeeklyUSD,
+			MonthlyUSD:         spend.MonthlyUSD,
+			// UNPRICED ROWS NO LONGER CLOSE A WINDOW (ruling A2, 2026-09-15).
+			// They are priced by the fallback ladder and counted; what is left
+			// unavailable here is only what the price table itself could not
+			// establish, set below when the witness or the enrollment binding
+			// fails.
+		}
+		priceWitness := table.PricingDocumentWitness()
+		snap.PricingDocumentWitness = guard.BudgetDocumentWitness{
+			Known: priceWitness.Known, Present: priceWitness.Present, SHA256: priceWitness.SHA256,
+		}
+		if accounting.Managed && (!priceWitness.Valid() || table.EnrollmentBinding() != accounting.BudgetBinding) {
+			// An unverified cold-start table cannot establish measured org spend.
+			// Even an explicit-empty document must belong to this enrollment.
+			// Classify that as unavailable accounting here so the hard policy can
+			// refuse work; a measured denial with no durable witness would only
+			// fail the later signal fence and leave the process running.
+			snap.USDUnavailable = policy.BudgetUnavailableWindows{
+				Session: true, Daily: true, Weekly: true, Monthly: true,
+			}
+		}
+		if engine != nil && table != nil {
+			snap.AccountingEvidence = &guard.BudgetAccountingEvidence{Fence: func(ctx context.Context, action func() error) error {
+				return engine.WithPricingTable(ctx, table, action)
+			}}
+		}
+		// TOKEN windows for the B-621..B-624 rows (org-budget plan §3.3c).
+		// Read in the SAME lookup, over the SAME window boundaries, so a
+		// token budget and a dollar budget can never disagree about which
+		// turns they counted. A token read error marks those windows unavailable
+		// so a configured hard token cap cannot admit on a fabricated zero.
+		if tok, terr := st.GuardBudgetTokens(lctx, sessionID, dayStart, weekStart, monthStart, store.GuardBudgetReadOptions{Managed: accounting.Managed}); terr != nil {
+			logger.Warn("guard: budget token lookup failed", "err", terr)
+			snap.TokensUnavailable = policy.BudgetUnavailableWindows{
+				Session: true,
+				Daily:   true,
+				Weekly:  true,
+				Monthly: true,
+			}
+		} else {
+			snap.TokensUnavailable = policy.BudgetUnavailableWindows{
+				Session: tok.Unavailable.Session,
+				Daily:   tok.Unavailable.Daily,
+				Weekly:  tok.Unavailable.Weekly,
+				Monthly: tok.Unavailable.Monthly,
+			}
+			snap.SessionTokens = tok.SessionTokens
+			snap.DailyTokens = tok.DailyTokens
+			snap.WeeklyTokens = tok.WeeklyTokens
+			snap.WeeklyTokensExpiresAt = tok.WeeklyExpiresAt
+			snap.MonthlyTokens = tok.MonthlyTokens
 		}
 		// Provider usage-window utilization (B-610..B-613). Advisory-
 		// grade and node-wide; a missing window leaves the fields 0
@@ -168,6 +279,42 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 		defer cancel()
 		ok, err := st.GuardMCPServerApproved(lctx, server)
 		return err == nil && ok
+	})
+	// Prompt-submit reconsider-once persistence (Group 3, phase-3a
+	// review — the proxy-lane follow-up docs/guard-prompt.md's "Two
+	// follow-ups" section names). Mirrors cmd/observer/hook.go:836's
+	// wiring almost verbatim, except this Guard is daemon-shared and
+	// already holds a long-lived `st *store.Store` handle (unlike the
+	// hook process's short-lived per-call db.Open/Close), so it calls
+	// st directly — the same simplification SetApprovalLookup and
+	// SetBudgetLookup above already make. Until this was wired, every
+	// proxy-lane ask-once/redact finding hit
+	// !g.promptReconsiderWired() and degraded to an unconditional
+	// block (DegradedFrom:"store_unwired") — safe (nothing forwards
+	// unconfirmed), but not the designed "block once, then allow an
+	// identical resend" UX, and not the cross-lane confirm
+	// (docs/guard-prompt.md "Cross-lane confirm") either, since there
+	// was no shared store state to confirm against.
+	g.SetPromptReconsiderStore(guard.PromptReconsiderFuncs{
+		Lookup: func(fp string, now time.Time) (time.Time, bool, error) {
+			lctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			row, ok, err := st.LookupPromptReconsider(lctx, fp, now)
+			return row.WarnedAt, ok, err
+		},
+		Record: func(fp, sessionID, tool, detectors string, warnedAt, expiresAt time.Time) error {
+			rctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			return st.RecordPromptWarned(rctx, store.PromptReconsiderRow{
+				Fingerprint: fp, SessionID: sessionID, Tool: tool, Detectors: detectors,
+				WarnedAt: warnedAt, ExpiresAt: expiresAt,
+			})
+		},
+		Confirm: func(fp string, now time.Time) (bool, error) {
+			cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			return st.ConfirmPromptReconsider(cctx, fp, now)
+		},
 	})
 	// §9.2 config-change re-scan: a watcher-ingested write to a
 	// locate-table MCP registry file re-runs the config scan
@@ -215,7 +362,26 @@ type guardScannerAdapter struct {
 // reads + writes the DB, and the request must not wait on it — the
 // declarations describe config state, not this request's content.
 func (a guardScannerAdapter) ScanRequest(_ context.Context, provider string, body []byte, sessionID string) proxy.GuardRequestResult {
-	res := a.g.ScanProxyRequest(provider, body, sessionID, time.Now().UTC())
+	return a.finishScan(a.g.ScanProxyRequest(provider, body, sessionID, time.Now().UTC()))
+}
+
+// ScanPrompt / ScanRequestAfterPrompt implement proxy.PromptPhaseScanner
+// (LIVE CORRECTION 2026-09-07): the proxy runs the prompt lane on the
+// pre-compression body and the remaining scans on the final body -- see
+// the interface's doc comment for why one post-compression scan cannot
+// see a pasted secret (the pipeline forward-scrubs it first).
+func (a guardScannerAdapter) ScanPrompt(_ context.Context, provider string, body []byte, sessionID string) proxy.GuardRequestResult {
+	return a.finishScan(a.g.ScanProxyPrompt(provider, body, sessionID, time.Now().UTC()))
+}
+
+func (a guardScannerAdapter) ScanRequestAfterPrompt(_ context.Context, provider string, body []byte, sessionID string) proxy.GuardRequestResult {
+	return a.finishScan(a.g.ScanProxyRequestAfterPrompt(provider, body, sessionID, time.Now().UTC()))
+}
+
+// finishScan persists/alerts the verdicts, hands MCP declarations to
+// the off-path runner, and maps the guard result onto the proxy's
+// action vocabulary -- shared by all three scan entry points.
+func (a guardScannerAdapter) finishScan(res guard.ProxyRequestResult) proxy.GuardRequestResult {
 	a.persistAndAlert(res.Verdicts)
 	if len(res.MCPDecls) > 0 && a.mcp != nil {
 		decls := res.MCPDecls
@@ -227,6 +393,21 @@ func (a guardScannerAdapter) ScanRequest(_ context.Context, provider string, bod
 	}
 	var out proxy.GuardRequestResult
 	switch {
+	// Group 3 (phase-3a review, docs/guard-prompt.md "Two follow-ups"
+	// item 2): a prompt-lane block sets PromptDeny/PromptStatus/
+	// PromptRuleID/PromptReason ALONGSIDE the generic Deny/DenyRuleID/
+	// DenyReason fields (scanPrompt never sets Deny alone for a
+	// prompt-lane block — see ProxyRequestResult's own doc comment),
+	// so this case MUST be checked before the plain res.Deny case
+	// below or a prompt-submit interrupt would render through the
+	// wrong (egress-worded, always-403) body builder. Switches a
+	// proxy-lane deny to the intended 400-for-ask-once/403-for-block
+	// developer-facing wording (guardPromptDenyBody).
+	case res.PromptDeny:
+		out.Action = "prompt_deny"
+		out.RuleID = res.PromptRuleID
+		out.Reason = res.PromptReason
+		out.Status = res.PromptStatus
 	case res.Deny:
 		out.Action = "deny"
 		out.RuleID = res.DenyRuleID

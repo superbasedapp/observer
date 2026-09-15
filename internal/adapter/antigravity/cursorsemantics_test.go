@@ -25,7 +25,11 @@ func TestCursorSemanticsFor(t *testing.T) {
 	}{
 		{"desktop .pb is encrypted", NewWithOptions(nil, desktop), filepath.Join(desktop, "a.pb"), adapter.CursorEncrypted},
 		{"cli .pb is encrypted", cliAdapterRooted(cli), filepath.Join(cli, "b.pb"), adapter.CursorEncrypted},
-		{"cli .db is plaintext byte offset", cliAdapterRooted(cli), filepath.Join(cli, "c.db"), adapter.CursorByteOffset},
+		// WAL-mode SQLite: a turn lands in the -wal without growing the
+		// main file, so the cursor is a max-mtime watermark (M5).
+		{"cli .db is a watermark", cliAdapterRooted(cli), filepath.Join(cli, "c.db"), adapter.CursorWatermark},
+		{"cli .db-wal is a watermark", cliAdapterRooted(cli), filepath.Join(cli, "c.db-wal"), adapter.CursorWatermark},
+		{"desktop .db (VS Code extension) is a watermark", NewWithOptions(nil, desktop), filepath.Join(desktop, "d.db"), adapter.CursorWatermark},
 		// Decoy: an unclaimed shape gets no declaration.
 		{"unclaimed", NewWithOptions(nil, desktop), filepath.Join(desktop, "notes.txt"), adapter.CursorByteOffset},
 	}

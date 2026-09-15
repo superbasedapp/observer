@@ -3,6 +3,8 @@ package cost
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +18,15 @@ import (
 // pricing as of 2026-04.
 const DefaultBlendedInputRate = 3.0
 
+// ErrPricingTableChanged means an enforcement callback was given a table
+// snapshot that is no longer the engine's published table.
+var ErrPricingTableChanged = errors.New("cost: pricing table changed")
+
+// ErrPricingTableDeadlineRequired means a pricing-table fence was requested
+// without a bounded context. Holding the publication lock across an
+// unbounded callback could indefinitely delay a table refresh.
+var ErrPricingTableDeadlineRequired = errors.New("cost: pricing table fence requires a deadline")
+
 // Engine computes costs from tokens using a Pricing Table plus the spec §24
 // reliability matrix. The table is held behind atomic.Pointer so the
 // dashboard's Settings page can hot-reload pricing edits without
@@ -24,12 +35,46 @@ const DefaultBlendedInputRate = 3.0
 type Engine struct {
 	table    atomic.Pointer[Table]
 	warnings atomic.Pointer[[]string]
+	// rebuildMu serializes config/org input changes with table publication. A
+	// single publisher cannot replace a newer org document with an older table
+	// built concurrently by a config reload.
+	rebuildMu sync.Mutex
+	// cfg is the LAST config the table was built from. It is held so
+	// SetOrgRows can re-compose without a caller having to hand back a config
+	// it may not have: the org push loop knows about rates, not about
+	// [intelligence.pricing]. See orgprice.go for the whole rationale.
+	cfg atomic.Pointer[config.IntelligenceConfig]
+	// orgRows is the org's applied pricing document, an INPUT to every
+	// rebuild rather than a patch on one built table (ruling R13 / F3).
+	orgRows atomic.Pointer[OrgRows]
+	// orgLoader is WithOrgRows' one-shot loader, consulted at construction.
+	// Set before the first build and never afterwards, so it needs no atomic.
+	orgLoader func() (OrgRows, bool)
+	// now is the clock the effective_from resolution reads. nil means
+	// time.Now; only this package's tests replace it.
+	now func() time.Time
 }
 
 // NewEngine returns an engine seeded with baked-in defaults + user pricing
-// overrides from cfg. Safe to call with a zero config (no overrides).
-func NewEngine(cfg config.IntelligenceConfig) *Engine {
+// overrides from cfg, plus any options. Safe to call with a zero config (no
+// overrides) and no options.
+//
+// The variadic options are what make ONE price table reachable from 38
+// constructors: a CLI command passes WithOrgRows(store.LoadOrgPricing) and
+// prices exactly the way the daemon does, without either of them having to
+// know about the other.
+func NewEngine(cfg config.IntelligenceConfig, opts ...Option) *Engine {
 	e := &Engine{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(e)
+		}
+	}
+	if e.orgLoader != nil {
+		if rows, ok := e.orgLoader(); ok {
+			e.orgRows.Store(&rows)
+		}
+	}
 	e.Reload(cfg)
 	return e
 }
@@ -38,15 +83,59 @@ func NewEngine(cfg config.IntelligenceConfig) *Engine {
 // by the Settings page after a PUT /api/config/pricing save and by tests.
 // Reads against the engine remain valid throughout — atomic.Pointer
 // guarantees readers see either the old or new table, never a torn state.
+//
+// It re-composes the ORG's rates along with the config's (F3): before this
+// arc Reload rebuilt from the seed, so a config save would silently revert a
+// fleet to list prices — and there is no retroactive re-pricing to undo the
+// turns captured in between.
 func (e *Engine) Reload(cfg config.IntelligenceConfig) {
-	t := NewTable()
-	if cfg.Pricing.Models != nil {
-		overrides := map[string]Pricing{}
-		for id, mp := range cfg.Pricing.Models {
-			overrides[id] = pricingFromConfig(mp)
-		}
-		t.Merge(overrides)
+	e.rebuildMu.Lock()
+	defer e.rebuildMu.Unlock()
+	e.cfg.Store(&cfg)
+	e.rebuild()
+}
+
+// rebuild composes seed + local + org into a fresh table and publishes it.
+//
+// ONE builder for both entry points ([Reload] on a config change, [SetOrgRows]
+// on a rail delivery) so the two can never compose in a different order — the
+// bug class that made F3 worth a ruling.
+func (e *Engine) rebuild() {
+	var cfg config.IntelligenceConfig
+	if c := e.cfg.Load(); c != nil {
+		cfg = *c
 	}
+	doc := e.orgRows.Load()
+	authoritative := doc != nil && doc.Authoritative
+
+	t := NewTable()
+
+	// The local explicit overrides, resolved once so the org composition can
+	// see which keys the developer authored.
+	local := map[string]Pricing{}
+	for id, mp := range cfg.Pricing.Models {
+		local[id] = pricingFromConfig(mp)
+	}
+	localKeys := make(map[string]bool, len(local))
+	for id := range local {
+		localKeys[id] = true
+	}
+
+	// THE LADDER (ruling R3). On a managed authoritative node the org lands
+	// LAST and wins; on an individual node the developer's own override does.
+	// Both orders are expressed here, in one place, rather than as a flag
+	// consulted at lookup time — a table that had to remember whose rate it
+	// held would be a second owner of the precedence rule.
+	var orgOwned map[string]bool
+	var orgWarnings []string
+	if authoritative {
+		t.Merge(local)
+		orgOwned, orgWarnings = composeOrgRows(t, doc, localKeys, e.clock())
+	} else {
+		orgOwned, orgWarnings = composeOrgRows(t, doc, localKeys, e.clock())
+		t.Merge(local)
+	}
+
 	// Dated overrides land AFTER the flat overrides so MergeDated's
 	// "seed the flat entry from the newest dated entry when the key has
 	// no flat entry" rule can see an operator's flat override too. Zero
@@ -54,9 +143,44 @@ func (e *Engine) Reload(cfg config.IntelligenceConfig) {
 	// stays on the pre-dated code path.
 	dated, warnings := DatedFromConfig(cfg.Pricing)
 	t.MergeDated(dated)
+
+	// An org-owned key keeps NO dated timeline. The org authored ONE rate for
+	// that model; a leftover seed or config timeline would answer LookupAt
+	// with a different number than Lookup answers for the same id, so the
+	// session-detail view and the proxy's capture-time stamp would disagree
+	// about the same model on the same day. Dropping the timeline is the only
+	// answer that keeps them consistent, and it is honest: the org's document
+	// carries its own effective_from, already resolved.
+	t.markOrg(orgOwned)
+	// LOCAL provenance, resolved the same way: a key the developer authored
+	// owns its rate unless the org took it (which only happens on an
+	// authoritative node, where orgOwned already contains it and markOrg ran
+	// first). Marking both is what lets one surface answer "seed, mine, or
+	// the org's" without re-reading the config.
+	localOwned := map[string]bool{}
+	for id := range local {
+		if !orgOwned[id] {
+			localOwned[id] = true
+		}
+	}
+	t.markLocal(localOwned)
+
+	warnings = append(warnings, orgWarnings...)
 	warnings = append(warnings, t.ValidateDated()...)
+	if doc != nil {
+		t.enrollmentBinding = doc.Binding
+		t.pricingDocumentWitness = doc.Witness
+	}
 	e.table.Store(t)
 	e.warnings.Store(&warnings)
+}
+
+// clock returns the engine's notion of now.
+func (e *Engine) clock() time.Time {
+	if e.now != nil {
+		return e.now()
+	}
+	return time.Now().UTC()
 }
 
 // PricingWarnings returns advisory problems found while building the
@@ -91,6 +215,45 @@ func (e *Engine) Table() *Table {
 		return nil
 	}
 	return e.table.Load()
+}
+
+// WithPricingTable runs fn while the expected immutable pricing table is
+// pinned against concurrent Reload and SetOrgRows publication. The callback
+// should contain only the bounded enforcement operation; it must not call
+// Reload, SetOrgRows, or WithPricingTable recursively. A canceled context
+// stops waiting for a publisher without blocking the caller on a mutex.
+//
+// The table pointer is the snapshot: its rates and EnrollmentBinding are
+// paired, and the identity check is repeated while the publication lock is
+// held immediately before fn runs. This lets a caller use one table for a
+// managed accounting query and then reject a signal if pricing changed before
+// the enforcement action. The lock acquisition is deliberately immediate;
+// callers already hold the bounded SQLite/policy fence and must retry or fail
+// rather than introduce a lock-order wait.
+func (e *Engine) WithPricingTable(ctx context.Context, expected *Table, fn func() error) error {
+	if ctx == nil {
+		return ErrPricingTableDeadlineRequired
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		return ErrPricingTableDeadlineRequired
+	}
+	if e == nil || expected == nil || fn == nil {
+		return ErrPricingTableChanged
+	}
+	if !e.rebuildMu.TryLock() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return ErrPricingTableChanged
+	}
+	defer e.rebuildMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if e.table.Load() != expected {
+		return ErrPricingTableChanged
+	}
+	return fn()
 }
 
 // Lookup is a convenience wrapper that snapshots the active table and

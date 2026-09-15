@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify-taxonomy-build.sh — assert the committed web/src/lib/actiontax.gen.*
+# verify-taxonomy-build.sh — assert the committed shared/lib/actiontax.gen.*
 # artifacts match a fresh run of web/taxgen.
 #
 # web/taxgen is the SOLE writer of those files: it mirrors internal/tooltax
@@ -26,7 +26,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-COMMITTED_DIR="web/src/lib"
+COMMITTED_DIR="shared/lib"
 # Every artifact taxgen writes. A file added here without being added to
 # taxgen (or vice versa) fails loudly below rather than going unchecked.
 ARTIFACTS=(actiontax.gen.json actiontax.gen.ts actiontax.vectors.gen.json)

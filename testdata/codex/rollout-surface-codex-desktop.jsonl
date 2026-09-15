@@ -1,0 +1,4 @@
+{"timestamp":"2026-09-06T09:12:03.196Z","ordinal":0,"type":"session_meta","payload":{"session_id":"surface-desktop-001","id":"surface-desktop-001","timestamp":"2026-09-06T09:12:02.744Z","cwd":"/w","originator":"Codex Desktop","cli_version":"0.153.1","source":"vscode","model_provider":"custom-gateway","history_mode":"default","context_window":272000,"base_instructions":{"text":"You are Codex, an agent based on GPT-5.\n[truncated for fixture]"}}}
+{"timestamp":"2026-09-06T09:12:03.400Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-desktop-A","model_context_window":272000}}
+{"timestamp":"2026-09-06T09:12:04.000Z","type":"event_msg","payload":{"type":"user_message","message":"hello from the standalone Codex desktop app"}}
+{"timestamp":"2026-09-06T09:12:05.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-desktop-A","last_agent_message":"done","completed_at":1788685925,"duration_ms":1200}}

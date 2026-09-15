@@ -84,10 +84,14 @@ type searchSymbolsArgs struct {
 }
 
 type searchSymbolsResult struct {
-	OK       bool              `json:"ok"`
-	Degraded bool              `json:"degraded,omitempty"`
-	Warnings []string          `json:"warnings,omitempty"`
-	Results  []searchSymbolHit `json:"results"`
+	OK       bool     `json:"ok"`
+	Degraded bool     `json:"degraded,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+	// Note carries an operator-facing explanation for a degraded or empty
+	// answer — today only the corpus-archival case (P2.3). Free text by
+	// design: the machine-readable half is the closed-set `warnings` tag.
+	Note    string            `json:"note,omitempty"`
+	Results []searchSymbolHit `json:"results"`
 }
 
 type searchSymbolHit struct {
@@ -118,12 +122,11 @@ func (t *searchSymbolsTool) Invoke(ctx context.Context, raw json.RawMessage) (an
 	}
 
 	out := searchSymbolsResult{OK: true, Results: []searchSymbolHit{}}
-	if !t.cg.Available() {
-		out.Degraded = true
-		out.Warnings = appendWarning(out.Warnings, WarningIndexUnavailable)
-		return out, nil
-	}
 
+	// The project key is resolved BEFORE the availability short-circuit,
+	// because "no index at all" is exactly the state an operator lands in
+	// when the only project they had was archived — the branch that most
+	// needs the honest answer is the one that used to return earliest.
 	project := args.ProjectRoot
 	if project != "" {
 		if abs, err := filepath.Abs(project); err == nil {
@@ -131,12 +134,26 @@ func (t *searchSymbolsTool) Invoke(ctx context.Context, raw json.RawMessage) (an
 		}
 	}
 
+	if !t.cg.Available() {
+		out.Degraded = true
+		out.Warnings = appendWarning(out.Warnings, WarningIndexUnavailable)
+		t.noteIfArchived(ctx, &out, project)
+		return out, nil
+	}
+
 	matches, err := t.cg.Search(ctx, project, args.Query, limit)
 	if err != nil {
 		// Provider methods fail open (nil-on-error), but defend in depth.
 		out.Degraded = true
 		out.Warnings = appendWarning(out.Warnings, WarningIndexUnavailable)
+		t.noteIfArchived(ctx, &out, project)
 		return out, nil
+	}
+	if len(matches) == 0 {
+		// A hot project with genuinely no match stays a plain empty result;
+		// only an ARCHIVED project gets the tag, so "no hits" keeps meaning
+		// "no hits".
+		t.noteIfArchived(ctx, &out, project)
 	}
 	for _, m := range matches {
 		hit := searchSymbolHit{
@@ -156,4 +173,17 @@ func (t *searchSymbolsTool) Invoke(ctx context.Context, raw json.RawMessage) (an
 		out.Results = append(out.Results, hit)
 	}
 	return out, nil
+}
+
+// noteIfArchived attaches the honest "archived, last indexed <date>" note and
+// tag when an empty or degraded answer is explained by cold storage. A no-op
+// otherwise, including on any lookup error.
+func (t *searchSymbolsTool) noteIfArchived(ctx context.Context, out *searchSymbolsResult, project string) {
+	note, archived := archivedNote(ctx, t.cg, project)
+	if !archived {
+		return
+	}
+	out.Degraded = true
+	out.Warnings = appendWarning(out.Warnings, WarningProjectArchived)
+	out.Note = note
 }

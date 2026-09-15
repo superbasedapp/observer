@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"text/tabwriter"
 
@@ -51,7 +52,7 @@ func newCostCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			engine := cost.NewEngine(cfg.Intelligence)
+			engine := acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default())
 			summary, err := engine.Summary(cmd.Context(), database, cost.Options{
 				Days:        days,
 				GroupBy:     groupBy,

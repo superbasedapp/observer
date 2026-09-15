@@ -7,6 +7,7 @@ import { ShieldIcon } from "@/components/icons";
 import { useApi, type ApiState } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
 import { markRestartPending } from "@/lib/restartPending";
+import { fmtClock, fmtDateTime, fmtShortId } from "@/lib/format";
 
 // Security page (guard spec §11.2, G7): guard posture header, the
 // verdict timeline with severity/decision filters, the §6.5
@@ -260,7 +261,7 @@ export function SecurityPage() {
           helpId="tile.security.posture"
           icon={<ShieldIcon />}
           loading={summary.loading}
-          value={sum ? (sum.enabled ? sum.mode : "disabled") : "—"}
+          value={sum ? (sum.enabled ? sum.mode : "disabled") : "-"}
           sub={
             sum
               ? sum.strict
@@ -271,18 +272,18 @@ export function SecurityPage() {
           variant={sum && sum.enabled && sum.mode === "enforce" ? "danger" : "accent"}
         />
         <HeroStat
-          label="Verdicts — last 24h"
+          label="Verdicts - last 24h"
           helpId="tile.security.verdicts"
           loading={summary.loading}
-          value={sum ? String(sum.counts_24h.total) : "—"}
+          value={sum ? String(sum.counts_24h.total) : "-"}
           sub={sum ? `${sum.counts_24h.enforced} enforced (blocked or deferred)` : undefined}
           variant={sum && sum.counts_24h.total > 0 ? "warn" : "accent"}
         />
         <HeroStat
-          label="Verdicts — last 7d"
+          label="Verdicts - last 7d"
           helpId="tile.security.verdicts"
           loading={summary.loading}
-          value={sum ? String(sum.counts_7d.total) : "—"}
+          value={sum ? String(sum.counts_7d.total) : "-"}
           sub={sum ? severitySub(sum.counts_7d) : undefined}
           variant="accent"
         />
@@ -290,12 +291,12 @@ export function SecurityPage() {
           label="Audit chain"
           helpId="tile.security.audit_chain"
           loading={summary.loading}
-          value={sum ? (sum.chain.ok ? "intact" : "BROKEN") : "—"}
+          value={sum ? (sum.chain.ok ? "intact" : "BROKEN") : "-"}
           sub={
             sum
               ? sum.chain.ok
                 ? `${sum.chain.checked} rows verified (tamper-evident, SHA-256 chained)`
-                : `first divergence at id ${sum.chain.divergence_id} — run observer guard verify-audit`
+                : `first divergence at id ${sum.chain.divergence_id} - run observer guard verify-audit`
               : undefined
           }
           variant={sum && !sum.chain.ok ? "danger" : "accent"}
@@ -319,6 +320,8 @@ export function SecurityPage() {
       />
 
       <GuardBudgetCard />
+
+      <PromptGuardCard />
 
       <section className="rounded-3 border border-line-1 bg-bg-1 p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -376,9 +379,9 @@ export function SecurityPage() {
                 type="button"
                 className="rounded-2 border border-accent/40 bg-bg-2 px-2 py-0.5 font-mono text-accent hover:border-accent"
                 onClick={() => setSessionFilter("")}
-                title="Clear the session filter"
+                title={`Clear the session filter (${sessionFilter})`}
               >
-                session {sessionFilter.slice(0, 8)}… ×
+                session {fmtShortId(sessionFilter, 8)} ×
               </button>
             )}
           </div>
@@ -403,7 +406,7 @@ export function SecurityPage() {
           <div className="py-8 text-center text-[12px] text-fg-3">Loading…</div>
         ) : rows.length === 0 ? (
           <div className="py-8 text-center text-[12px] text-fg-3">
-            No guard verdicts in this window — the rules stayed quiet. Try{" "}
+            No guard verdicts in this window - the rules stayed quiet. Try{" "}
             <code className="rounded-1 bg-bg-2 px-1">observer guard test "git push --force origin main"</code>{" "}
             to see a verdict end to end.
           </div>
@@ -426,7 +429,7 @@ export function SecurityPage() {
                 {rows.map((ev) => (
                   <tr key={ev.id} className="border-b border-line-1/60 align-top">
                     <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">
-                      {new Date(ev.ts).toLocaleString()}
+                      {fmtClock(ev.ts)}
                     </td>
                     <td className="py-1.5 pr-3">
                       <RuleCell id={ev.rule_id} category={ev.category} defs={ruleDefs.get(ev.rule_id)} />
@@ -440,7 +443,7 @@ export function SecurityPage() {
                         <Pill
                           variant="neutral"
                           className="ml-1"
-                          title={`The verdict wanted ${ev.degraded_from} but this channel cannot express it (§6.2 degradation — recorded, never silent).`}
+                          title={`The verdict wanted ${ev.degraded_from} but this channel cannot express it (§6.2 degradation - recorded, never silent).`}
                         >
                           from {ev.degraded_from}
                         </Pill>
@@ -451,9 +454,9 @@ export function SecurityPage() {
                         {ev.severity}
                       </Pill>
                     </td>
-                    <td className="whitespace-nowrap py-1.5 pr-3 text-fg-2">{ev.tool || "—"}</td>
+                    <td className="whitespace-nowrap py-1.5 pr-3 text-fg-2">{ev.tool || "-"}</td>
                     <td className="max-w-[260px] truncate py-1.5 pr-3 font-mono text-[11px] text-fg-2" title={ev.target_excerpt}>
-                      {ev.target_excerpt || "—"}
+                      {ev.target_excerpt || "-"}
                     </td>
                     <td className="max-w-[420px] py-1.5 pr-3 text-fg-2">
                       {ev.reason}
@@ -470,7 +473,7 @@ export function SecurityPage() {
                               className="font-mono text-[10.5px] text-accent underline decoration-dotted decoration-accent/50 underline-offset-[3px] hover:decoration-accent"
                               title={ev.session_id}
                             >
-                              {ev.session_id.slice(0, 8)}…
+                              {fmtShortId(ev.session_id, 8)}
                             </Link>
                           </CopyOnClick>
                           <button
@@ -493,7 +496,7 @@ export function SecurityPage() {
                           </button>
                         </span>
                       ) : (
-                        <span className="text-fg-3">—</span>
+                        <span className="text-fg-3">-</span>
                       )}
                     </td>
                   </tr>
@@ -508,7 +511,7 @@ export function SecurityPage() {
         <h2 className="mb-1 text-[13px] font-semibold text-fg-0">Enforcement coverage<HelpInd id="chart.security_coverage" /></h2>
         <p className="mb-3 max-w-3xl text-[11.5px] leading-snug text-fg-3">
           Which channels can actually block before execution vs flag after the fact. Hooks see
-          declared tool calls; the watcher sees results — {watcherCount} adapters are covered
+          declared tool calls; the watcher sees results - {watcherCount} adapters are covered
           post-hoc, and that asymmetry is structural, not a configuration gap.
         </p>
         {conformance.loading ? (
@@ -629,7 +632,7 @@ function EvidenceCard() {
       <p className="mb-3 max-w-3xl text-[11.5px] leading-snug text-fg-3">
         The auditor-shaped outputs: the §14.4 evidence pack (policy state, change log, verdict
         stats, chain verification, exception register), a SIEM export of the audit rows, and the
-        full tamper-evidence chain walk. File-based and pull-based — nothing leaves this machine.
+        full tamper-evidence chain walk. File-based and pull-based - nothing leaves this machine.
       </p>
       <div className="flex flex-wrap items-center gap-2 text-[11.5px]">
         <span className="text-fg-3">Window:</span>
@@ -706,7 +709,7 @@ function EvidenceCard() {
             <div className="mt-1.5 text-danger">
               {job.error}
               {job.mode === "guard:verify-audit"
-                ? " — a non-zero exit from verify-audit means the chain walk found a divergence; the output below is the evidence."
+                ? " - a non-zero exit from verify-audit means the chain walk found a divergence; the output below is the evidence."
                 : ""}
             </div>
           )}
@@ -764,7 +767,7 @@ function MCPPinsCard() {
         <div className="py-6 text-center text-[12px] text-fg-3">Loading…</div>
       ) : servers.length === 0 ? (
         <div className="py-4 text-[11.5px] text-fg-3">
-          No MCP servers found in any supported client config — nothing to pin.
+          No MCP servers found in any supported client config - nothing to pin.
         </div>
       ) : (
         <div className="overflow-x-auto">
@@ -802,7 +805,7 @@ function MCPPinsCard() {
                     </Pill>
                   </td>
                   <td className="max-w-[340px] truncate py-1.5 pr-3 font-mono text-[10.5px] text-fg-3" title={sv.command}>
-                    {sv.command || "—"}
+                    {sv.command || "-"}
                   </td>
                   <td className="py-1.5 text-right">
                     {sv.status !== "approved" && sv.present && (
@@ -1000,7 +1003,7 @@ function GuardModeCard({ sum, loading }: { sum: GuardSummary | null; loading: bo
               {current}
             </Pill>
             {savedAs && savedAs !== current && (
-              <Pill variant="warn">saved: {savedAs} — restart the daemon to apply</Pill>
+              <Pill variant="warn">saved: {savedAs} - restart the daemon to apply</Pill>
             )}
             <span className="ml-auto">
               <SegmentedControl<GuardMode>
@@ -1028,7 +1031,7 @@ function GuardModeCard({ sum, loading }: { sum: GuardSummary | null; loading: bo
                         blocked or deferred {evidence.would_block}
                       </strong>{" "}
                       of {evidence.scanned.toLocaleString()} captured actions
-                      {evidence.capped ? " (50k replay cap hit — partial window)" : ""}.
+                      {evidence.capped ? " (50k replay cap hit - partial window)" : ""}.
                     </div>
                     {topEvidence.length > 0 && (
                       <div className="text-fg-3">
@@ -1048,7 +1051,7 @@ function GuardModeCard({ sum, loading }: { sum: GuardSummary | null; loading: bo
                     </div>
                   </div>
                 ) : (
-                  <div className="text-fg-3">Evidence unavailable{error ? `: ${error}` : ""} — you can still proceed.</div>
+                  <div className="text-fg-3">Evidence unavailable{error ? `: ${error}` : ""} - you can still proceed.</div>
                 )
               ) : target === "observe" ? (
                 <div className="text-fg-3">
@@ -1082,7 +1085,7 @@ function GuardModeCard({ sum, loading }: { sum: GuardSummary | null; loading: bo
   );
 }
 
-// EnforceReadinessCard — the G2.1 observe→enforce migration evidence,
+// EnforceReadinessCard - the G2.1 observe→enforce migration evidence,
 // the dashboard face of docs/guard-enforce-runbook.md. Click-to-run
 // (a 50k-row replay is too heavy to fire on every page view): replays
 // the chosen window against today's on-disk policy under the enforce
@@ -1158,14 +1161,14 @@ function EnforceReadinessCard({
       </div>
       <p className="mb-3 max-w-3xl text-[11.5px] leading-snug text-fg-3">
         {enforceLive
-          ? "Enforce is live — this replay shows what today's on-disk policy blocks; useful after a policy edit, before the restart."
-          : "The observe → enforce migration in one place: replay your real history against today's rules, review what would block, tune the noise, then flip the Mode card. Dry run — nothing persists, the live guard is untouched."}{" "}
+          ? "Enforce is live - this replay shows what today's on-disk policy blocks; useful after a policy edit, before the restart."
+          : "The observe → enforce migration in one place: replay your real history against today's rules, review what would block, tune the noise, then flip the Mode card. Dry run - nothing persists, the live guard is untouched."}{" "}
         CLI parity: <code className="rounded-1 bg-bg-2 px-1">observer guard simulate --since 168h --enforce</code>.
       </p>
       {!result && !busy && !error && (
         <div className="py-3 text-[11.5px] text-fg-3">
           Nothing replayed yet. The check answers "what would enforce have blocked over my last{" "}
-          {hours === "168" ? "7" : "30"} days?" from history the observer already captured — the question to settle
+          {hours === "168" ? "7" : "30"} days?" from history the observer already captured - the question to settle
           before promoting. Full migration path: the guard enforce runbook (
           <code className="rounded-1 bg-bg-2 px-1">docs/guard-enforce-runbook.md</code>).
         </div>
@@ -1178,7 +1181,7 @@ function EnforceReadinessCard({
             <strong className="font-semibold">
               blocked or deferred {result.would_block.toLocaleString()}
             </strong>{" "}
-            of {result.scanned.toLocaleString()} captured actions (~{(result.would_block / days).toFixed(1)}/day —{" "}
+            of {result.scanned.toLocaleString()} captured actions (~{(result.would_block / days).toFixed(1)}/day -{" "}
             {denies.toLocaleString()} deny, {asks.toLocaleString()} ask)
             {result.capped ? " · 50k replay cap hit, the window's oldest actions weren't replayed" : ""}.
           </div>
@@ -1188,9 +1191,9 @@ function EnforceReadinessCard({
                 {result.scanned > 0 ? "✓" : "✗"}
               </span>
               <span className="text-fg-2">
-                History to judge — {result.scanned.toLocaleString()} captured actions in the window
+                History to judge - {result.scanned.toLocaleString()} captured actions in the window
                 {result.scanned === 0 && (
-                  <span className="text-fg-3"> — let the observer run, or widen the window</span>
+                  <span className="text-fg-3"> - let the observer run, or widen the window</span>
                 )}
               </span>
             </li>
@@ -1200,12 +1203,12 @@ function EnforceReadinessCard({
               </span>
               <span className="text-fg-2">
                 {result.would_block === 0
-                  ? "Nothing would block in this window — flipping enforce is low-risk here, and also changes nothing until a rule trips"
-                  : `Noise concentration — ${topBlocking[0]?.[0]} alone carries ${Math.round(topShare * 100)}% of the would-blocks`}
+                  ? "Nothing would block in this window - flipping enforce is low-risk here, and also changes nothing until a rule trips"
+                  : `Noise concentration - ${topBlocking[0]?.[0]} alone carries ${Math.round(topShare * 100)}% of the would-blocks`}
                 {result.would_block > 0 && topShare >= 0.5 && (
                   <span className="text-fg-3">
                     {" "}
-                    — tune it before enforce, strictest first: approve a scope, override its decision, exempt paths,
+                    - tune it before enforce, strictest first: approve a scope, override its decision, exempt paths,
                     or disable the ID
                   </span>
                 )}
@@ -1230,7 +1233,7 @@ function EnforceReadinessCard({
                     </td>
                     <td className="py-1.5 pr-3 text-right tabular-nums text-fg-1">{n.toLocaleString()}</td>
                     <td className="py-1.5 pr-3 text-right tabular-nums text-fg-3">
-                      {result.would_block > 0 ? `${Math.round((n / result.would_block) * 100)}%` : "—"}
+                      {result.would_block > 0 ? `${Math.round((n / result.would_block) * 100)}%` : "-"}
                     </td>
                     <td className="py-1.5 text-right">
                       <span className="inline-flex items-center gap-1">
@@ -1259,7 +1262,7 @@ function EnforceReadinessCard({
           )}
           <div className="space-y-1 text-[11px] leading-snug text-fg-3">
             <div>
-              This replay does not consult the Approvals register — active grants downgrade matching blocks in live
+              This replay does not consult the Approvals register - active grants downgrade matching blocks in live
               enforce, so the real count is at most what's shown. Ask-class verdicts prompt on clients with a native
               ask and deny-with-reason elsewhere.
             </div>
@@ -1267,7 +1270,7 @@ function EnforceReadinessCard({
               Not ready to flip everything? Ramp per rule:{" "}
               <code className="rounded-1 bg-bg-2 px-1">[[override]] rule = "R-xxx" / enforce = true</code> in{" "}
               <code className="rounded-1 bg-bg-2 px-1">~/.observer/guard-policy.toml</code> blocks just that rule
-              while the mode stays observe. When the list above reads as intended blocks, promote in the Mode card —
+              while the mode stays observe. When the list above reads as intended blocks, promote in the Mode card -
               the same evidence is shown at its consent step.
             </div>
           </div>
@@ -1363,12 +1366,12 @@ function GuardBudgetCard() {
         <h2 className="text-[13px] font-semibold text-fg-0">
           Budget guardrails<HelpInd id="card.security_budget" />
         </h2>
-        {saved && <Pill variant="warn">saved: {saved} — restart the daemon to apply</Pill>}
+        {saved && <Pill variant="warn">saved: {saved} - restart the daemon to apply</Pill>}
       </div>
       <p className="mb-3 max-w-3xl text-[11.5px] leading-snug text-fg-3">
         Spend tripwires on the guard's own substrate: soft budgets flag (B-601/B-602), hard
-        budgets deny at the proxy — clients not routed through the proxy can't be hard-stopped.
-        0 = off. (Monthly advisory budgets — never a gate — live on the Cost page.)
+        budgets deny at the proxy - clients not routed through the proxy can't be hard-stopped.
+        0 = off. (Monthly advisory budgets - never a gate - live on the Cost page.)
       </p>
       {api.loading ? (
         <div className="py-4 text-center text-[12px] text-fg-3">Loading…</div>
@@ -1379,7 +1382,7 @@ function GuardBudgetCard() {
               <div className="mb-1 flex items-baseline justify-between">
                 <span className="text-fg-2">
                   Today: <strong className="font-semibold text-fg-0">{usd(b.spend_today_usd)}</strong> of{" "}
-                  {usd(b.daily_usd)} daily budget{b.hard ? " (hard — breach denies at the proxy)" : " (soft — breach flags)"}
+                  {usd(b.daily_usd)} daily budget{b.hard ? " (hard - breach denies at the proxy)" : " (soft - breach flags)"}
                 </span>
                 <span className={pct >= 100 ? "font-semibold text-danger" : pct >= 75 ? "text-warn" : "text-fg-3"}>
                   {Math.round(pct)}%
@@ -1394,7 +1397,7 @@ function GuardBudgetCard() {
             </div>
           ) : (
             <div className="text-fg-3">
-              No daily budget set — today's spend is {usd(b.spend_today_usd)} on the substrate a budget would
+              No daily budget set - today's spend is {usd(b.spend_today_usd)} on the substrate a budget would
               meter.
             </div>
           )}
@@ -1416,13 +1419,13 @@ function GuardBudgetCard() {
                   {b.session_usd > 0 ? usd(b.session_usd) : "off"}
                 </td>
                 <td className="py-1.5 pr-3 text-right tabular-nums text-fg-2">
-                  {b.sessions > 0 ? `${usd(b.session_p95_usd)} (n=${b.sessions})` : "—"}
+                  {b.sessions > 0 ? `${usd(b.session_p95_usd)} (n=${b.sessions})` : "-"}
                 </td>
                 <td className="py-1.5 pr-3 text-right tabular-nums text-fg-3">
-                  {b.sessions > 0 ? usd(b.session_max_usd) : "—"}
+                  {b.sessions > 0 ? usd(b.session_max_usd) : "-"}
                 </td>
                 <td className="py-1.5 pr-3 text-right tabular-nums text-fg-1">
-                  {suggestSession > 0 ? usd(suggestSession) : "—"}
+                  {suggestSession > 0 ? usd(suggestSession) : "-"}
                 </td>
                 <td className="py-1.5 text-right">
                   {suggestSession > 0 && suggestSession !== b.session_usd && (
@@ -1443,13 +1446,13 @@ function GuardBudgetCard() {
                   {b.daily_usd > 0 ? usd(b.daily_usd) : "off"}
                 </td>
                 <td className="py-1.5 pr-3 text-right tabular-nums text-fg-2">
-                  {b.days > 0 ? `${usd(b.daily_p95_usd)} (n=${b.days})` : "—"}
+                  {b.days > 0 ? `${usd(b.daily_p95_usd)} (n=${b.days})` : "-"}
                 </td>
                 <td className="py-1.5 pr-3 text-right tabular-nums text-fg-3">
-                  {b.days > 0 ? usd(b.daily_max_usd) : "—"}
+                  {b.days > 0 ? usd(b.daily_max_usd) : "-"}
                 </td>
                 <td className="py-1.5 pr-3 text-right tabular-nums text-fg-1">
-                  {suggestDaily > 0 ? usd(suggestDaily) : "—"}
+                  {suggestDaily > 0 ? usd(suggestDaily) : "-"}
                 </td>
                 <td className="py-1.5 text-right">
                   {suggestDaily > 0 && suggestDaily !== b.daily_usd && (
@@ -1469,11 +1472,11 @@ function GuardBudgetCard() {
           {b.sessions < 5 && b.days < 5 && (
             <div className="text-[11px] text-fg-3">
               Not enough observed spend to suggest values yet ({b.sessions} session(s) / {b.days} day(s) with
-              cost in the last {b.window_days} days) — suggestions appear at 5 samples.
+              cost in the last {b.window_days} days) - suggestions appear at 5 samples.
             </div>
           )}
           <div className="text-[11px] leading-snug text-fg-3">
-            Suggested = observed p95 + 25% headroom, rounded — a tripwire above your normal use, not a cost
+            Suggested = observed p95 + 25% headroom, rounded - a tripwire above your normal use, not a cost
             target. Spend is measured as the larger of proxy ground truth and watcher estimates per session,
             the same substrate the budget rules compare against. Tune precisely in Settings → Guard → budget.
           </div>
@@ -1482,7 +1485,7 @@ function GuardBudgetCard() {
               <p className="text-fg-2">
                 Set <code className="rounded-1 bg-bg-1 px-1 font-mono text-[10.5px]">[guard.budget] {confirm.which === "session" ? "session_usd" : "daily_usd"} = {confirm.value}</code>
                 ? Saved through the config seam; binds at the next daemon restart. Breach behavior stays{" "}
-                {b.hard ? "hard (deny at the proxy)" : "soft (flag)"} — the `hard` switch is in Settings → Guard.
+                {b.hard ? "hard (deny at the proxy)" : "soft (flag)"} - the `hard` switch is in Settings → Guard.
               </p>
               <div className="mt-2 flex items-center gap-2">
                 <button type="button" className={actionBtn} disabled={busy} onClick={apply}>
@@ -1502,8 +1505,8 @@ function GuardBudgetCard() {
 }
 
 // POLICY_PLACEHOLDER seeds an empty editor with the two §4.4 shapes
-// (shown as a placeholder only — saving stays an explicit act).
-const POLICY_PLACEHOLDER = `# ~/.observer/guard-policy.toml — your user policy layer.
+// (shown as a placeholder only - saving stays an explicit act).
+const POLICY_PLACEHOLDER = `# ~/.observer/guard-policy.toml - your user policy layer.
 # Reference: docs/guard-policy-authoring.md
 
 # [[rule]]
@@ -1517,10 +1520,10 @@ const POLICY_PLACEHOLDER = `# ~/.observer/guard-policy.toml — your user policy
 # rule    = "R-110"
 # enforce = true`;
 
-// PolicyLayersCard — the G2.2 policy surface (operator checkpoint Q3:
+// PolicyLayersCard - the G2.2 policy surface (operator checkpoint Q3:
 // FULL editor). The layers table shows every policy source in effect
 // (org bundle, user file, per-project files) with counts + lint
-// findings; the editor edits the USER layer only — project files
+// findings; the editor edits the USER layer only - project files
 // belong to their repos (least-trusted; agent edits are R-161) and
 // the org bundle arrives signed. Saves are lint-gated (the same
 // strict parse `observer guard lint` runs; the server refuses a
@@ -1574,7 +1577,7 @@ function PolicyLayersCard() {
     setProblems([]);
     try {
       // Lint first so problems render in full (the PUT still gates
-      // server-side — a malformed body is refused 422 regardless).
+      // server-side - a malformed body is refused 422 regardless).
       const l = await runLint(text);
       setLint(l);
       if (!l.ok) {
@@ -1621,7 +1624,7 @@ function PolicyLayersCard() {
           Policy layers<HelpInd id="card.security_policy_editor" />
         </h2>
         <div className="flex items-center gap-2">
-          {saved && <Pill variant="warn">saved — restart the daemon to apply</Pill>}
+          {saved && <Pill variant="warn">saved - restart the daemon to apply</Pill>}
           {view?.user.writable && !editing && (
             <button type="button" className={actionBtn} onClick={startEdit}>
               {view.user.exists ? "Edit user policy…" : "Create user policy…"}
@@ -1641,7 +1644,7 @@ function PolicyLayersCard() {
         </div>
       </div>
       <p className="mb-3 max-w-3xl text-[11.5px] leading-snug text-fg-3">
-        Effective policy = merge(org bundle, your user file, project files, built-ins) — strictness
+        Effective policy = merge(org bundle, your user file, project files, built-ins) - strictness
         is one-way; a lower layer can escalate but never relax. Only the user layer is editable
         here: project files belong to their repos, the org bundle arrives signed.
       </p>
@@ -1691,14 +1694,14 @@ function PolicyLayersCard() {
                     )}
                   </td>
                   <td className="py-1.5 pr-3 text-right tabular-nums text-fg-1">
-                    {l.counts_known ? l.rules : "—"}
+                    {l.counts_known ? l.rules : "-"}
                   </td>
                   <td className="py-1.5 pr-3 text-right tabular-nums text-fg-1">
-                    {l.counts_known ? l.overrides : "—"}
+                    {l.counts_known ? l.overrides : "-"}
                   </td>
                   <td className="py-1.5">
                     {!l.exists ? (
-                      <span className="text-fg-3">not present{l.editable ? " — create it with the editor" : ""}</span>
+                      <span className="text-fg-3">not present{l.editable ? " - create it with the editor" : ""}</span>
                     ) : (l.problems ?? []).length > 0 ? (
                       <Pill variant="danger">{(l.problems ?? []).length} lint problem(s)</Pill>
                     ) : (
@@ -1727,7 +1730,7 @@ function PolicyLayersCard() {
       {editing && (
         <div className="mt-3 space-y-2 rounded-2 border border-line-1 bg-bg-2 p-3">
           <div className="text-[11px] text-fg-3">
-            Editing <code className="rounded-1 bg-bg-1 px-1 font-mono text-[10.5px]">{view?.user.path}</code> — saves
+            Editing <code className="rounded-1 bg-bg-1 px-1 font-mono text-[10.5px]">{view?.user.path}</code> - saves
             are lint-gated (a malformed file is refused) and keep the prior version at .bak. Syntax:{" "}
             <code className="rounded-1 bg-bg-1 px-1 font-mono text-[10.5px]">docs/guard-policy-authoring.md</code>.
           </div>
@@ -1744,7 +1747,7 @@ function PolicyLayersCard() {
           />
           {lint && lint.ok && (
             <div className="text-[11.5px] text-success">
-              Lints clean — {lint.rules} rule(s), {lint.overrides} override(s).
+              Lints clean - {lint.rules} rule(s), {lint.overrides} override(s).
             </div>
           )}
           {(problems.length > 0 || (lint && !lint.ok)) && (
@@ -1864,7 +1867,7 @@ function ApprovalsCard({
       </div>
       <p className="mb-3 max-w-xl text-[11.5px] leading-snug text-fg-3">
         Scoped exceptions: a matching blocking verdict downgrades to a flag. Auditable, expiring,
-        revocable — prefer these over disabling a rule outright.
+        revocable - prefer these over disabling a rule outright.
       </p>
       {formOpen && (
         <div className="mb-3 space-y-2 rounded-2 border border-line-1 bg-bg-2 p-3 text-[11.5px]">
@@ -1913,7 +1916,7 @@ function ApprovalsCard({
           )}
           {scope === "project" && (
             <div className="text-[10.5px] text-fg-3">
-              Project scope anchors to this session's project root as a hash — other checkouts of
+              Project scope anchors to this session's project root as a hash - other checkouts of
               the same repo at different paths won't match.
             </div>
           )}
@@ -1953,15 +1956,18 @@ function ApprovalsCard({
               <tr key={a.id} className="border-b border-line-1/60">
                 <td className="py-1.5 pr-3 font-mono text-fg-1">{a.rule_id}</td>
                 <td className="py-1.5 pr-3 text-fg-2">{a.scope}</td>
-                <td className="max-w-[180px] truncate py-1.5 pr-3 font-mono text-[10.5px] text-fg-3">
+                <td
+                  className="max-w-[180px] truncate py-1.5 pr-3 font-mono text-[10.5px] text-fg-3"
+                  title={a.scope === "project" ? a.project_root_hash : undefined}
+                >
                   {a.scope === "session"
                     ? a.session_id
                     : a.scope === "project"
-                      ? `${(a.project_root_hash ?? "").slice(0, 12)}…`
+                      ? fmtShortId(a.project_root_hash, 12)
                       : "everywhere"}
                 </td>
                 <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">
-                  {a.expires_at ? new Date(a.expires_at).toLocaleString() : "never"}
+                  {a.expires_at ? fmtDateTime(a.expires_at) : "never"}
                 </td>
                 <td className="py-1.5 text-right">
                   <button
@@ -1980,5 +1986,463 @@ function ApprovalsCard({
         </table>
       )}
     </section>
+  );
+}
+
+// ---- Prompt guard card (PHASE-3b-DASHBOARD) ----
+//
+// Prompt-submit intervention (docs/guard-prompt.md): warn/ask-once/
+// block/redact when the DEVELOPER'S OWN prompt carries an API token or
+// deterministic PII, before it reaches the model. Distinct from the
+// verdict timeline above (which covers every guard rule) — this card
+// scopes to R-172/R-190 hits on KindUserPrompt events specifically, via
+// the feature's own /api/guard/prompt/* endpoints (never reusing
+// /api/guard/events' generic rule_id filter, since matching R-172 alone
+// would ALSO catch this rule's other surfaces — shell args, proxy
+// egress on a non-prompt request).
+//
+// PRIVACY: nothing rendered here is ever a matched value or prompt
+// span — see internal/intelligence/dashboard/guard_prompt.go's package
+// doc comment for the upstream invariant this card's data depends on.
+// "Fingerprint" below is an opaque sha256 hex digest, safe to show and
+// copy (it's the audit anchor `clear` looks up by), never the secret.
+
+type PromptStatusConfig = {
+  enabled: boolean;
+  mode: string;
+  hook_lane: boolean;
+  proxy_lane: boolean;
+  reconsider_ttl: string;
+  reconsider_min_delay?: string;
+  suppress_in_code: boolean;
+  max_findings: number;
+  enforce_independent: boolean;
+  allow_pattern_count: number;
+  effective_hook_lane_state: "off" | "observe_only" | "active" | string;
+};
+
+type PromptClient = {
+  tool: string;
+  prompt_lane: string;
+  mechanism?: string;
+  auto_wired: boolean;
+  wire_state: "auto_wired" | "documented_only" | string;
+};
+
+type PromptReconsiderRow = {
+  fingerprint: string;
+  session_id?: string;
+  tool?: string;
+  detectors?: string;
+  warned_at: string;
+  confirmed_at?: string;
+  expires_at: string;
+  expired: boolean;
+};
+
+type PromptStatus = {
+  guard_enabled: boolean;
+  guard_mode: string;
+  config: PromptStatusConfig;
+  effective_modes: Record<string, string>;
+  clients: PromptClient[] | null;
+  reconsider_total: number;
+  reconsider_expired: number;
+  pending: PromptReconsiderRow[] | null;
+  approvals: GuardApproval[] | null;
+};
+
+type PromptEvent = {
+  id: number;
+  ts: string;
+  session_id?: string;
+  tool?: string;
+  lane: "hook" | "proxy" | string;
+  rule_id: string;
+  category?: string;
+  severity?: string;
+  decision?: string;
+  outcome?: string;
+  enforced: boolean;
+  detectors?: string[] | null;
+  fingerprint?: string;
+};
+
+type PromptEventsResponse = { events: PromptEvent[] | null; count: number };
+
+type PromptProbeCheck = { name: string; status: string; message: string; details?: string[] | null };
+
+const OUTCOME_VARIANT: Record<string, "neutral" | "warn" | "danger" | "info" | "accent"> = {
+  blocked: "danger",
+  confirmed: "info",
+  warned: "warn",
+  redacted: "accent",
+  allowed: "neutral",
+};
+
+function outcomeVariant(outcome: string): "neutral" | "warn" | "danger" | "info" | "accent" {
+  if (outcome.startsWith("degraded:")) return "warn";
+  return OUTCOME_VARIANT[outcome] ?? "neutral";
+}
+
+function PromptGuardCard() {
+  const status = useApi<PromptStatus>("/api/guard/prompt/status");
+  const events = useApi<PromptEventsResponse>("/api/guard/prompt/events", { since: "168h", limit: 300 });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [probeChecks, setProbeChecks] = useState<PromptProbeCheck[] | null>(null);
+  const [probing, setProbing] = useState(false);
+
+  const reload = () => {
+    status.reload();
+    events.reload();
+  };
+
+  const clearFingerprint = async (fingerprint: string) => {
+    setBusy(true);
+    setErr("");
+    try {
+      await fetchJSON("/api/guard/prompt/clear", undefined, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fingerprint }),
+      });
+      reload();
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revokeApproval = async (id: number) => {
+    setBusy(true);
+    setErr("");
+    try {
+      await fetchJSON(`/api/guard/prompt/allow/${id}`, undefined, { method: "DELETE" });
+      reload();
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const probeHooks = async (tool?: string) => {
+    setProbing(true);
+    setErr("");
+    setProbeChecks(null);
+    try {
+      const res = await fetchJSON<{ checks: PromptProbeCheck[] | null }>(
+        "/api/guard/prompt/probe",
+        undefined,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(tool ? { tool } : {}),
+        },
+      );
+      setProbeChecks(res.checks ?? []);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const rows = events.data?.events ?? [];
+  const now = Date.now();
+  const counts = useMemo(() => {
+    const byOutcome24 = new Map<string, number>();
+    const byOutcome7d = new Map<string, number>();
+    const byDetector7d = new Map<string, number>();
+    for (const ev of rows) {
+      const outcome = ev.outcome || "unknown";
+      byOutcome7d.set(outcome, (byOutcome7d.get(outcome) ?? 0) + 1);
+      if (now - new Date(ev.ts).getTime() <= 24 * 3600 * 1000) {
+        byOutcome24.set(outcome, (byOutcome24.get(outcome) ?? 0) + 1);
+      }
+      for (const d of ev.detectors ?? []) {
+        byDetector7d.set(d, (byDetector7d.get(d) ?? 0) + 1);
+      }
+    }
+    return { byOutcome24, byOutcome7d, byDetector7d };
+  }, [rows, now]);
+
+  const cfg = status.data?.config;
+  const pending = status.data?.pending ?? [];
+  const approvals = status.data?.approvals ?? [];
+  const clients = status.data?.clients ?? [];
+  const wiredCount = clients.filter((c) => c.wire_state === "auto_wired").length;
+
+  return (
+    <section className="rounded-3 border border-line-1 bg-bg-1 p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-[13px] font-semibold text-fg-0">
+          Prompt guard<HelpInd id="card.security_prompt_guard" />
+        </h2>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/settings?section=guard"
+            className="text-[11px] text-fg-3 underline decoration-dotted underline-offset-[3px] hover:text-fg-1"
+          >
+            Configure…
+          </Link>
+          <button
+            type="button"
+            className={actionBtn}
+            disabled={probing}
+            onClick={() => probeHooks()}
+            title="Fire a synthetic, obviously-fake secret through every registered prompt-submit hook and report whether it actually blocked (observer doctor --probe-hook)"
+          >
+            {probing ? "Probing…" : "Probe hooks"}
+          </button>
+        </div>
+      </div>
+      <p className="mb-3 max-w-2xl text-[11.5px] leading-snug text-fg-3">
+        Warn/ask-once/block/redact when a prompt you type into a coding agent carries an API token
+        or deterministic PII (R-172/R-190) — before it reaches the model. Hook lane (native
+        per-client) and/or proxy lane (the latest turn on outbound requests). Never shows a matched
+        value or prompt text — only detector types, counts, and an opaque fingerprint.
+      </p>
+
+      {status.loading ? (
+        <div className="py-3 text-[12px] text-fg-3">Loading…</div>
+      ) : cfg ? (
+        <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <StatusTile
+            label="Effective state"
+            value={cfg.effective_hook_lane_state.replace("_", " ")}
+            variant={cfg.effective_hook_lane_state === "active" ? "danger" : cfg.effective_hook_lane_state === "off" ? "neutral" : "warn"}
+          />
+          <StatusTile label="Global mode" value={cfg.enabled ? cfg.mode : "disabled"} variant="accent" />
+          <StatusTile
+            label="Lanes"
+            value={[cfg.hook_lane ? "hook" : null, cfg.proxy_lane ? "proxy" : null].filter(Boolean).join(" + ") || "none"}
+            variant="neutral"
+          />
+          <StatusTile
+            label="Clients wired"
+            value={`${wiredCount} / ${clients.length}`}
+            sub="init/auto-register can write this tool's hook config; the rest are documented-only or need a probe"
+            variant="neutral"
+          />
+        </div>
+      ) : null}
+
+      {err && <div className="mb-3 text-[11.5px] text-danger">{err}</div>}
+
+      {probeChecks && (
+        <div className="mb-4 rounded-2 border border-line-1 bg-bg-2 p-3">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-2">
+            Probe results
+          </div>
+          {probeChecks.length === 0 ? (
+            <div className="text-[11.5px] text-fg-3">No probe-capable clients registered.</div>
+          ) : (
+            <ul className="space-y-1 text-[11.5px]">
+              {probeChecks.map((c) => (
+                <li key={c.name} className="flex items-start gap-2">
+                  <Pill variant={c.status === "ok" ? "neutral" : c.status === "warn" ? "warn" : "danger"}>
+                    {c.status}
+                  </Pill>
+                  <span className="text-fg-2">{c.message}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {pending.length > 0 && (
+        <div className="mb-4">
+          <div className="mb-1.5 flex items-center justify-between">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-2">
+              Pending reconsider-once grants ({status.data?.reconsider_total ?? 0} total,{" "}
+              {status.data?.reconsider_expired ?? 0} expired)
+            </div>
+          </div>
+          <table className="w-full text-left text-[11.5px]">
+            <thead>
+              <tr className="border-b border-line-1 text-[10.5px] uppercase tracking-[0.06em] text-fg-3">
+                <th className="py-1 pr-3 font-semibold">Detectors</th>
+                <th className="py-1 pr-3 font-semibold">Session</th>
+                <th className="py-1 pr-3 font-semibold">Warned</th>
+                <th className="py-1 pr-3 font-semibold">Expires</th>
+                <th className="py-1 font-semibold"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {pending.map((p) => (
+                <tr key={p.fingerprint} className="border-b border-line-1/60">
+                  <td className="py-1.5 pr-3 font-mono text-fg-1">{p.detectors || "—"}</td>
+                  <td className="max-w-[160px] truncate py-1.5 pr-3 font-mono text-[10.5px] text-fg-3" title={p.session_id}>
+                    {p.session_id ? fmtShortId(p.session_id, 8) : "—"}
+                  </td>
+                  <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">{fmtDateTime(p.warned_at)}</td>
+                  <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">
+                    {p.expired ? <Pill variant="warn">expired</Pill> : fmtDateTime(p.expires_at)}
+                  </td>
+                  <td className="py-1.5 text-right">
+                    <button
+                      type="button"
+                      className={actionBtn}
+                      disabled={busy}
+                      onClick={() => clearFingerprint(p.fingerprint)}
+                      title="Force a fresh ask-once interrupt on the next identical resend (observer guard prompt clear)"
+                    >
+                      Clear
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {approvals.length > 0 && (
+        <div className="mb-4">
+          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-2">
+            Active R-172/R-190 grants
+          </div>
+          <table className="w-full text-left text-[11.5px]">
+            <thead>
+              <tr className="border-b border-line-1 text-[10.5px] uppercase tracking-[0.06em] text-fg-3">
+                <th className="py-1 pr-3 font-semibold">Rule</th>
+                <th className="py-1 pr-3 font-semibold">Scope</th>
+                <th className="py-1 pr-3 font-semibold">Expires</th>
+                <th className="py-1 font-semibold"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {approvals.map((a) => (
+                <tr key={a.id} className="border-b border-line-1/60">
+                  <td className="py-1.5 pr-3 font-mono text-fg-1">{a.rule_id}</td>
+                  <td className="py-1.5 pr-3 text-fg-2">
+                    {a.scope}
+                    {a.scope === "global" && !a.expires_at && (
+                      <Pill variant="danger" className="ml-1.5" title="Exempts every detector in this rule class, everywhere on this node, forever">
+                        global · never expires
+                      </Pill>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">
+                    {a.expires_at ? fmtDateTime(a.expires_at) : "never"}
+                  </td>
+                  <td className="py-1.5 text-right">
+                    <button
+                      type="button"
+                      className={actionBtn}
+                      disabled={busy}
+                      onClick={() => revokeApproval(a.id)}
+                      title="Withdraw this exception"
+                    >
+                      Revoke
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="mb-2 flex flex-wrap items-center gap-3 text-[11px] text-fg-3">
+        <span className="font-semibold uppercase tracking-[0.06em] text-fg-2">Last 7d by outcome:</span>
+        {[...counts.byOutcome7d.entries()].map(([o, n]) => (
+          <Pill key={o} variant={outcomeVariant(o)}>
+            {o} × {n}
+          </Pill>
+        ))}
+        {counts.byOutcome7d.size === 0 && <span>none</span>}
+      </div>
+      <div className="mb-3 flex flex-wrap items-center gap-3 text-[11px] text-fg-3">
+        <span className="font-semibold uppercase tracking-[0.06em] text-fg-2">Last 24h by outcome:</span>
+        {[...counts.byOutcome24.entries()].map(([o, n]) => (
+          <Pill key={o} variant={outcomeVariant(o)}>
+            {o} × {n}
+          </Pill>
+        ))}
+        {counts.byOutcome24.size === 0 && <span>none</span>}
+      </div>
+
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-2">
+        Events (last 7d)
+      </div>
+      {events.loading ? (
+        <div className="py-3 text-[12px] text-fg-3">Loading…</div>
+      ) : rows.length === 0 ? (
+        <div className="py-3 text-[11.5px] text-fg-3">No prompt-submit guard events in this window.</div>
+      ) : (
+        <div className="max-h-[320px] overflow-y-auto">
+          <table className="w-full text-left text-[11.5px]">
+            <thead className="sticky top-0 bg-bg-1">
+              <tr className="border-b border-line-1 text-[10.5px] uppercase tracking-[0.06em] text-fg-3">
+                <th className="py-1 pr-3 font-semibold">Time</th>
+                <th className="py-1 pr-3 font-semibold">Tool</th>
+                <th className="py-1 pr-3 font-semibold">Lane</th>
+                <th className="py-1 pr-3 font-semibold">Rule</th>
+                <th className="py-1 pr-3 font-semibold">Detectors</th>
+                <th className="py-1 pr-3 font-semibold">Outcome</th>
+                <th className="py-1 font-semibold">Session</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 100).map((ev) => (
+                <tr key={ev.id} className="border-b border-line-1/60">
+                  <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">{fmtClock(ev.ts)}</td>
+                  <td className="whitespace-nowrap py-1.5 pr-3 text-fg-2">{ev.tool || "—"}</td>
+                  <td className="py-1.5 pr-3 text-fg-2">{ev.lane}</td>
+                  <td className="py-1.5 pr-3 font-mono text-fg-1">{ev.rule_id}</td>
+                  <td className="py-1.5 pr-3 font-mono text-[10.5px] text-fg-2">
+                    {(ev.detectors ?? []).join(", ") || "—"}
+                  </td>
+                  <td className="py-1.5 pr-3">
+                    <Pill variant={outcomeVariant(ev.outcome ?? "")}>{ev.outcome || "—"}</Pill>
+                  </td>
+                  <td className="whitespace-nowrap py-1.5">
+                    {ev.session_id ? (
+                      <Link
+                        to={`/sessions?session=${encodeURIComponent(ev.session_id)}`}
+                        className="font-mono text-[10.5px] text-accent underline decoration-dotted decoration-accent/50 underline-offset-[3px] hover:decoration-accent"
+                        title={ev.session_id}
+                      >
+                        {fmtShortId(ev.session_id, 8)}
+                      </Link>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// StatusTile — a compact stat cell for the Prompt guard card's status
+// header. Lighter-weight than HeroStat (no icon, denser grid).
+function StatusTile({
+  label,
+  value,
+  sub,
+  variant,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  variant: "neutral" | "warn" | "danger" | "accent";
+}) {
+  const border =
+    variant === "danger" ? "border-danger/40" : variant === "warn" ? "border-warn/40" : variant === "accent" ? "border-accent/40" : "border-line-1";
+  return (
+    <div className={`rounded-2 border ${border} bg-bg-2 px-2.5 py-2`} title={sub}>
+      <div className="text-[10px] uppercase tracking-[0.06em] text-fg-3">{label}</div>
+      <div className="mt-0.5 text-[13px] font-semibold text-fg-0">{value}</div>
+    </div>
   );
 }

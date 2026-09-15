@@ -981,3 +981,68 @@ func TestLoadCacheHealthSummary_ImplicitCache(t *testing.T) {
 		t.Errorf("BucketMispredicts = %d, want 0 — implicit predicted_kind mismatches MUST NOT count against the Anthropic G2 gate", summary.BucketMispredicts)
 	}
 }
+
+// TestLoadSessionCacheEvents_ZeroUsageAndCostDelta pins two things the
+// per-event loader is responsible for at the DB boundary: the ZeroUsage flag
+// is cachetrack.IsZeroUsage (a mispredict with a zero token pair — a 0/0 hit
+// is NOT vacant), and the nullable cost_delta_usd is carried through as a
+// pointer (nil when the column is NULL, the value when set).
+func TestLoadSessionCacheEvents_ZeroUsageAndCostDelta(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database, err := openTestDB(ctx, db.Options{Path: filepath.Join(t.TempDir(), "cache.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	// A 0/0 hit (NULL cost delta), a 0/0 mispredict (NULL cost delta), and a
+	// write carrying a real cost delta.
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO cache_events (session_id, tier, timestamp, model, kind, cause, tokens_read, tokens_written)
+		 VALUES ('s1', 'proxy', '2026-06-09T00:00:00Z', 'm', 'hit', 'suffix_growth', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO cache_events (session_id, tier, timestamp, model, kind, cause, tokens_read, tokens_written)
+		 VALUES ('s1', 'proxy', '2026-06-09T00:00:10Z', 'm', 'mispredict', 'unknown', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO cache_events (session_id, tier, timestamp, model, kind, cause, tokens_read, tokens_written, cost_delta_usd)
+		 VALUES ('s1', 'proxy', '2026-06-09T00:00:20Z', 'm', 'invalidation_rewrite', 'system_changed', 0, 8000, 0.15)`); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := loadSessionCacheEvents(ctx, database, "s1")
+	if err != nil {
+		t.Fatalf("loadSessionCacheEvents: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3", len(events))
+	}
+	// [0] hit 0/0 — NOT vacant, NULL cost delta.
+	if events[0].Kind != "hit" || events[0].ZeroUsage {
+		t.Errorf("event[0] = %+v, want a hit with ZeroUsage=false (a 0/0 hit is a real event)", events[0])
+	}
+	if events[0].CostDeltaUSD != nil {
+		t.Errorf("event[0].CostDeltaUSD = %v, want nil (NULL column)", *events[0].CostDeltaUSD)
+	}
+	// [1] mispredict 0/0 — vacant.
+	if events[1].Kind != "mispredict" || !events[1].ZeroUsage {
+		t.Errorf("event[1] = %+v, want a mispredict with ZeroUsage=true", events[1])
+	}
+	// [2] rewrite with a real cost delta — carried through as a non-nil 0.15.
+	if events[2].CostDeltaUSD == nil || *events[2].CostDeltaUSD < 0.15-1e-9 || *events[2].CostDeltaUSD > 0.15+1e-9 {
+		t.Errorf("event[2].CostDeltaUSD = %v, want a non-nil 0.15", events[2].CostDeltaUSD)
+	}
+	if events[2].ZeroUsage {
+		t.Errorf("event[2] rewrite must not be ZeroUsage")
+	}
+
+	// The efficiency tile folds the non-baseline positive delta.
+	eff := buildCacheEfficiency(events)
+	if eff.AvoidableUSD < 0.15-1e-9 || eff.AvoidableUSD > 0.15+1e-9 {
+		t.Errorf("AvoidableUSD = %v, want 0.15 (the rewrite's delta; the hit/mispredict carry none)", eff.AvoidableUSD)
+	}
+}

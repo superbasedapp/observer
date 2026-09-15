@@ -872,6 +872,7 @@ func buildTranscriptToolEvents(
 	sc *scrub.Scrubber,
 ) []models.ToolEvent {
 	var out []models.ToolEvent
+	var todoStoreChecked, todoStoreExists bool
 	for _, line := range turn.Assistant {
 		reasoning := ""
 		for partIdx, part := range line.Parts {
@@ -914,6 +915,15 @@ func buildTranscriptToolEvents(
 					})
 				}
 			case "tool_use":
+				if strings.EqualFold(part.Name, "TodoWrite") {
+					if !todoStoreChecked {
+						todoStoreExists = cursorTodoStoreExists(sourceFile, sessionID)
+						todoStoreChecked = true
+					}
+					if todoStoreExists {
+						continue
+					}
+				}
 				rawInput := string(part.Input)
 				if sc != nil {
 					rawInput = sc.RawJSON(part.Input)
@@ -1065,6 +1075,8 @@ func cursorTranscriptActionType(name string) string {
 		// Cursor's semantic codebase search; conceptually grep over an
 		// embedding index, fold into ActionSearchText.
 		return models.ActionSearchText
+	case "todowrite":
+		return models.ActionTodoUpdate
 	case "applypatch", "editfile", "strreplace":
 		// strreplace is the cursor in-place string-edit primitive
 		// (analogue of claudecode's Edit tool).

@@ -1,0 +1,40 @@
+-- 094_org_enrolment_grant_replacement.sql — Plane B dual-mode gateway/RBAC/IA
+-- design (docs/plans/plane-b-dual-mode-gateway-rbac-ia-design-2026-08-29.md
+-- §5.3 item 5, Sol S4), GRANT REPLACEMENT.
+--
+-- Grant replacement is an OUT-OF-BAND authority change: the org server can
+-- push a freshly-signed EnrolmentGrant-shaped message to an already-enrolled
+-- node without going through re-enrolment. internal/orgclient's accept path
+-- needs a monotonic ordering fence so a replayed or out-of-order replacement
+-- can be REJECTED (keep the last-good grant) rather than silently applied.
+--
+-- WHY A NEW COLUMN INSTEAD OF REUSING `generation`:
+-- `generation` is the Plane-A P0-5 enrolment-IDENTITY fence (migration 081's
+-- org_enrolment_generation, durably bumped by store.BumpEnrolmentGeneration
+-- on enrol/re-enrol/unenrol — NOT by anything in this migration). It is the
+-- value `observer org grant show` (cmd/observer/orggrant.go) compares against
+-- the live identity generation to decide whether a stored grant is STALE
+-- ("grant recorded for enrolment N, this machine is on M — the grant is NOT
+-- being honoured"). A grant replacement supersedes AUTHORITY within the SAME
+-- enrolment epoch; it must never touch `generation`, or a legitimately
+-- freshly-replaced grant would spuriously read as belonging to a stale
+-- enrolment. replacement_generation is therefore a wholly separate counter:
+-- it orders REPLACEMENTS against each other, never epochs against each
+-- other, and store.ReplaceEnrolmentGrant leaves the existing `generation`
+-- column untouched on every accepted replacement.
+--
+-- NODE-LOCAL control-plane state, same as the rest of this table.
+-- org_enrolment_grant is already in tests/invariant/privacy_test.go's
+-- forbiddenCacheTables (added by migration 082) via the TABLE NAME sentinel,
+-- so no privacy-test edit is needed for an additive column here — same
+-- reasoning as migration 083.
+--
+-- Additive with a default, and LoadEnrolmentGrant/WriteEnrolmentGrant list
+-- explicit columns, so a pre-094 binary reading a 094+ database, or a 094+
+-- binary reading a pre-094 database, both work unchanged. A backfilled 0
+-- means "no replacement has ever been accepted for this row", which is the
+-- correct starting value: the first replacement (any Generation >= 1) is
+-- always strictly greater and always applies. No down-migration is needed or
+-- provided.
+
+ALTER TABLE org_enrolment_grant ADD COLUMN replacement_generation INTEGER NOT NULL DEFAULT 0;

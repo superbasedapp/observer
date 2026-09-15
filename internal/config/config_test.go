@@ -284,6 +284,87 @@ func TestValidateProxyAutoDefaultLaneMustNameConfiguredLane(t *testing.T) {
 	})
 }
 
+// TestValidateProxyOrgRoute pins the P5a node-local bootstrap shape for
+// Proxy.SetOrgGatewayRoute (docs/plans/plane-b-dual-mode-gateway-rbac-ia-
+// design-2026-08-29.md Sol S7/S8): the zero value ([proxy.org_route] absent)
+// is always valid and inert, mode is restricted to the exact wire vocabulary
+// ("" / "gateway" — no "node" synonym), gateway mode requires a parseable
+// primary URL, and node mode must not carry dead primary/fallback values.
+func TestValidateProxyOrgRoute(t *testing.T) {
+	t.Parallel()
+
+	t.Run("zero value (no [proxy.org_route] section) is accepted", func(t *testing.T) {
+		c := Default()
+		if err := Validate(c); err != nil {
+			t.Fatalf("zero-value proxy.org_route should validate: %v", err)
+		}
+	})
+
+	t.Run("gateway mode requires a non-empty primary", func(t *testing.T) {
+		c := Default()
+		c.Proxy.OrgRoute = ProxyOrgRouteConfig{Mode: "gateway"}
+		if err := Validate(c); err == nil {
+			t.Fatal("expected error for mode=gateway with empty primary")
+		}
+	})
+
+	t.Run("gateway mode with a malformed primary URL is rejected", func(t *testing.T) {
+		c := Default()
+		c.Proxy.OrgRoute = ProxyOrgRouteConfig{Mode: "gateway", Primary: "://not-a-url"}
+		if err := Validate(c); err == nil {
+			t.Fatal("expected error for mode=gateway with a malformed primary URL")
+		}
+	})
+
+	t.Run("gateway mode with a malformed fallback URL is rejected", func(t *testing.T) {
+		c := Default()
+		c.Proxy.OrgRoute = ProxyOrgRouteConfig{
+			Mode:      "gateway",
+			Primary:   "https://gateway.example.com",
+			Fallbacks: []string{"https://ok.example.com", "://also-not-a-url"},
+		}
+		if err := Validate(c); err == nil {
+			t.Fatal("expected error for mode=gateway with a malformed fallback URL")
+		}
+	})
+
+	t.Run("gateway mode with valid primary and fallbacks is accepted", func(t *testing.T) {
+		c := Default()
+		c.Proxy.OrgRoute = ProxyOrgRouteConfig{
+			Mode:      "gateway",
+			Primary:   "https://gateway.example.com",
+			Fallbacks: []string{"https://openrouter.ai/api", "https://api.anthropic.com"},
+		}
+		if err := Validate(c); err != nil {
+			t.Fatalf("mode=gateway with valid primary/fallbacks should validate: %v", err)
+		}
+	})
+
+	t.Run(`"node" is not a recognized synonym for the empty string`, func(t *testing.T) {
+		c := Default()
+		c.Proxy.OrgRoute = ProxyOrgRouteConfig{Mode: "node"}
+		if err := Validate(c); err == nil {
+			t.Fatal(`expected error for mode="node" — the wire vocabulary is "" or "gateway", never "node"`)
+		}
+	})
+
+	t.Run("node mode (empty) rejects a leftover primary", func(t *testing.T) {
+		c := Default()
+		c.Proxy.OrgRoute = ProxyOrgRouteConfig{Primary: "https://gateway.example.com"}
+		if err := Validate(c); err == nil {
+			t.Fatal("expected error for mode=\"\" carrying a dead primary value")
+		}
+	})
+
+	t.Run("node mode (empty) rejects leftover fallbacks", func(t *testing.T) {
+		c := Default()
+		c.Proxy.OrgRoute = ProxyOrgRouteConfig{Fallbacks: []string{"https://openrouter.ai/api"}}
+		if err := Validate(c); err == nil {
+			t.Fatal("expected error for mode=\"\" carrying dead fallback values")
+		}
+	})
+}
+
 // TestValidateJudgeUseOrgRelayAmbiguousTransport pins the C1 judge relay spec
 // §3 validation rule: use_org_relay=true combined with a non-empty base_url
 // OR api_key_env on the SAME resolved judge block is a config error (the
@@ -997,6 +1078,143 @@ func TestGuardDefaults(t *testing.T) {
 	}
 }
 
+// TestGuardPromptDefaults pins [guard.prompt] (prompt-submit intervention
+// build contract §8.1): the seeded defaults, the partial-merge invariant
+// (including the map field — a config file that omits
+// [guard.prompt.detectors] entirely must NOT nil out the seeded
+// Detectors map, since some TOML decoders replace a whole map whenever
+// any table under it is touched), and the validator's enum/pattern/TTL
+// checks.
+func TestGuardPromptDefaults(t *testing.T) {
+	t.Parallel()
+	p := Default().Guard.Prompt
+	if !p.Enabled || p.Mode != "ask-once" {
+		t.Errorf("guard.prompt defaults = enabled=%v mode=%q, want true/ask-once", p.Enabled, p.Mode)
+	}
+	if !p.HookLane || !p.ProxyLane {
+		t.Errorf("guard.prompt hook_lane/proxy_lane must default true: %+v", p)
+	}
+	// FIX-8 (phase-2 review): the prompt lane must act on its own mode
+	// out of the box, independent of [guard].mode's own "observe"
+	// default — otherwise the ask-once defaults above would be
+	// silently inert on a fresh install.
+	if !p.EnforceIndependent {
+		t.Error("guard.prompt.enforce_independent must default true")
+	}
+	if p.ReconsiderTTL != "30m" {
+		t.Errorf("guard.prompt.reconsider_ttl = %q, want 30m", p.ReconsiderTTL)
+	}
+	if d, err := p.ReconsiderTTLDuration(); err != nil || d != 30*time.Minute {
+		t.Errorf("ReconsiderTTLDuration() = %v, %v; want 30m, nil", d, err)
+	}
+	if !p.SuppressInCode {
+		t.Error("guard.prompt.suppress_in_code must default true")
+	}
+	if p.MaxFindings != 64 {
+		t.Errorf("guard.prompt.max_findings = %d, want 64", p.MaxFindings)
+	}
+	wantDetectors := map[string]string{
+		"credit_card": "ask-once",
+		"iban":        "ask-once",
+		"us_ssn":      "ask-once",
+		"uk_nino":     "ask-once",
+		"in_aadhaar":  "ask-once",
+		"in_pan":      "ask-once",
+		"email":       "off",
+		"phone_e164":  "off",
+		"phone_nanp":  "off",
+		"github_pat":  "block",
+	}
+	if len(p.Detectors) != len(wantDetectors) {
+		t.Fatalf("guard.prompt.detectors = %+v, want %+v", p.Detectors, wantDetectors)
+	}
+	for id, mode := range wantDetectors {
+		if p.Detectors[id] != mode {
+			t.Errorf("guard.prompt.detectors[%q] = %q, want %q", id, p.Detectors[id], mode)
+		}
+	}
+
+	// Partial-merge: a [guard.prompt] section setting ONLY mode keeps
+	// every other default, INCLUDING the seeded Detectors map — the file
+	// doesn't mention [guard.prompt.detectors] at all.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[guard.prompt]\nmode = \"block\"\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(LoadOptions{GlobalPath: cfgPath})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Guard.Prompt
+	if got.Mode != "block" {
+		t.Errorf("mode = %q, want block", got.Mode)
+	}
+	if !got.Enabled || !got.HookLane || !got.ProxyLane || got.MaxFindings != 64 {
+		t.Errorf("partial [guard.prompt] section lost scalar defaults: %+v", got)
+	}
+	if len(got.Detectors) != len(wantDetectors) {
+		t.Errorf("partial [guard.prompt] section nil'd/shrank the seeded detectors map: %+v", got.Detectors)
+	}
+	for id, mode := range wantDetectors {
+		if got.Detectors[id] != mode {
+			t.Errorf("detectors[%q] = %q, want %q (seeded default must survive)", id, got.Detectors[id], mode)
+		}
+	}
+
+	// A file that DOES set [guard.prompt.detectors] overrides that
+	// table's contents (expected — the table was present in the file).
+	cfgPath2 := filepath.Join(dir, "config2.toml")
+	seed := "[guard.prompt.detectors]\nemail = \"warn\"\n"
+	if err := os.WriteFile(cfgPath2, []byte(seed), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg2, err := Load(LoadOptions{GlobalPath: cfgPath2})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg2.Guard.Prompt.Detectors["email"] != "warn" {
+		t.Errorf("explicit [guard.prompt.detectors] override lost: %+v", cfg2.Guard.Prompt.Detectors)
+	}
+
+	// Validate rejects the known-bad shapes loudly.
+	bad := Default()
+	bad.Guard.Prompt.Mode = "bogus"
+	if err := Validate(bad); err == nil {
+		t.Error("Validate accepted guard.prompt.mode=bogus")
+	}
+	bad = Default()
+	bad.Guard.Prompt.Detectors = map[string]string{"not_a_real_detector": "block"}
+	if err := Validate(bad); err == nil {
+		t.Error("Validate accepted an unknown guard.prompt.detectors key")
+	}
+	bad = Default()
+	bad.Guard.Prompt.Detectors = map[string]string{"credit_card": "bogus"}
+	if err := Validate(bad); err == nil {
+		t.Error("Validate accepted an unknown guard.prompt.detectors mode value")
+	}
+	bad = Default()
+	bad.Guard.Prompt.Allow = []string{"("}
+	if err := Validate(bad); err == nil {
+		t.Error("Validate accepted an invalid guard.prompt.allow regex")
+	}
+	bad = Default()
+	bad.Guard.Prompt.ReconsiderTTL = "not-a-duration"
+	if err := Validate(bad); err == nil {
+		t.Error("Validate accepted an unparseable guard.prompt.reconsider_ttl")
+	}
+	bad = Default()
+	bad.Guard.Prompt.ReconsiderTTL = "0s"
+	if err := Validate(bad); err == nil {
+		t.Error("Validate accepted a zero guard.prompt.reconsider_ttl")
+	}
+	bad = Default()
+	bad.Guard.Prompt.MaxFindings = -1
+	if err := Validate(bad); err == nil {
+		t.Error("Validate accepted a negative guard.prompt.max_findings")
+	}
+}
+
 // TestPredictDefaults pins the [predict] partial-merge invariant
 // (docs/cost-predictor.md): default-ON with the tuning defaults, and a
 // PARTIAL [predict] section keeps every unset field (the cachetrack
@@ -1027,6 +1245,208 @@ func TestPredictDefaults(t *testing.T) {
 	}
 	if cfg.Predict.YoungSessionMessages != 3 || cfg.Predict.DefaultTurnsPerMessage != 12 {
 		t.Errorf("partial [predict] lost tuning defaults: %+v", cfg.Predict)
+	}
+}
+
+// TestLocDefaults pins the [loc] partial-merge invariant
+// (docs/loc-tracking.md): a config file with NO [loc] section gets the
+// generated-token path and required=false, and a partial section that sets
+// only one key keeps the other at its default. Getting this wrong is the
+// cachetrack live-daemon-captures-nothing bug class in a new place — a
+// zero-valued EditorTokenFile would make the daemon generate no token at
+// all and silently drop the endpoint back to loopback-only.
+func TestLocDefaults(t *testing.T) {
+	t.Parallel()
+	l := Default().Loc
+	if l.EditorTokenFile != DefaultLocEditorTokenFile {
+		t.Errorf("loc.editor_token_file default = %q, want %q", l.EditorTokenFile, DefaultLocEditorTokenFile)
+	}
+	if l.EditorTokenRequired {
+		t.Error("loc.editor_token_required must default false this release (older extensions send no token)")
+	}
+
+	dir := t.TempDir()
+
+	// No [loc] section at all: the seed survives, with "~/" expanded the
+	// same way observer.db_path is.
+	noSection := filepath.Join(dir, "none.toml")
+	if err := os.WriteFile(noSection, []byte("[observer]\ndb_path = \"/tmp/x.db\"\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(LoadOptions{GlobalPath: noSection})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Loc.EditorTokenFile == "" {
+		t.Error("a config with no [loc] section must still resolve an editor token file")
+	}
+	if strings.HasPrefix(cfg.Loc.EditorTokenFile, "~/") {
+		t.Errorf("loc.editor_token_file was not home-expanded: %q", cfg.Loc.EditorTokenFile)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(cfg.Loc.EditorTokenFile), "/.observer/loc-editor-token") {
+		t.Errorf("loc.editor_token_file = %q, want the observer home default", cfg.Loc.EditorTokenFile)
+	}
+
+	// Partial: only required=true. The path default must survive.
+	partial := filepath.Join(dir, "partial.toml")
+	if err := os.WriteFile(partial, []byte("[loc]\neditor_token_required = true\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err = Load(LoadOptions{GlobalPath: partial})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Loc.EditorTokenRequired {
+		t.Error("editor_token_required = true should override")
+	}
+	if cfg.Loc.EditorTokenFile == "" {
+		t.Error("partial [loc] lost the editor_token_file default")
+	}
+
+	// Partial the other way: only the path. required must stay false.
+	pathOnly := filepath.Join(dir, "path.toml")
+	body := "[loc]\neditor_token_file = \"" + filepath.ToSlash(filepath.Join(dir, "tok")) + "\"\n"
+	if err := os.WriteFile(pathOnly, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err = Load(LoadOptions{GlobalPath: pathOnly})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Loc.EditorTokenRequired {
+		t.Error("partial [loc] must not flip editor_token_required")
+	}
+	if filepath.ToSlash(cfg.Loc.EditorTokenFile) != filepath.ToSlash(filepath.Join(dir, "tok")) {
+		t.Errorf("editor_token_file override lost: %q", cfg.Loc.EditorTokenFile)
+	}
+}
+
+// TestCloudDefaults pins D15: an install with no [cloud] section leaves
+// BaseURL/LoginPort/AutoSync at their zero values — identical to the
+// pre-D15 behaviour where the CLI had no config-file layer at all.
+func TestCloudDefaults(t *testing.T) {
+	t.Parallel()
+	c := Default().Cloud
+	if c.BaseURL != "" || c.LoginPort != 0 || c.AutoSync {
+		t.Errorf("cloud defaults = %+v, want zero value", c)
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[cloud]\nbase_url = \"https://cloud.example.com\"\nlogin_port = 9800\nauto_sync = true\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(LoadOptions{GlobalPath: cfgPath})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Cloud.BaseURL != "https://cloud.example.com" {
+		t.Errorf("base_url = %q, want https://cloud.example.com", cfg.Cloud.BaseURL)
+	}
+	if cfg.Cloud.LoginPort != 9800 {
+		t.Errorf("login_port = %d, want 9800", cfg.Cloud.LoginPort)
+	}
+	if !cfg.Cloud.AutoSync {
+		t.Error("auto_sync = false, want true")
+	}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("populated [cloud] should validate: %v", err)
+	}
+}
+
+// TestCloudValidate pins the D15 validation rules: an out-of-range
+// login_port or a non-http(s) base_url is a loud config error, while the
+// zero value (no [cloud] section) always passes.
+func TestCloudValidate(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		cloud   CloudConfig
+		wantErr bool
+	}{
+		{"zero value", CloudConfig{}, false},
+		{"valid https", CloudConfig{BaseURL: "https://cloud.example.com"}, false},
+		{"valid http", CloudConfig{BaseURL: "http://127.0.0.1:9000"}, false},
+		{"valid port", CloudConfig{LoginPort: 9797}, false},
+		{"port too low", CloudConfig{LoginPort: -1}, true},
+		{"port too high", CloudConfig{LoginPort: 70000}, true},
+		{"non-url base_url", CloudConfig{BaseURL: "not a url"}, true},
+		{"non-http(s) scheme", CloudConfig{BaseURL: "ftp://cloud.example.com"}, true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Default()
+			cfg.Cloud = tc.cloud
+			err := Validate(cfg)
+			if tc.wantErr && err == nil {
+				t.Errorf("Validate() with cloud=%+v: want error, got nil", tc.cloud)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate() with cloud=%+v: unexpected error: %v", tc.cloud, err)
+			}
+		})
+	}
+}
+
+// TestTasksDefaults pins the [tasks] partial-merge invariant
+// (docs/task-tracking.md): default-ON with the documented tuning
+// defaults, and a PARTIAL [tasks] section keeps every unset field (the
+// cachetrack live-daemon-captures-nothing bug class).
+func TestTasksDefaults(t *testing.T) {
+	t.Parallel()
+	tc := Default().Tasks
+	if !tc.Enabled {
+		t.Error("tasks must default enabled=true")
+	}
+	if tc.MatchMode != "exact" || tc.ConcurrentAttribution != "shared" {
+		t.Errorf("tasks defaults = %+v, want match_mode=exact concurrent_attribution=shared", tc)
+	}
+	if tc.IncludeSidechains || tc.BackfillOnStart {
+		t.Errorf("tasks defaults = %+v, want include_sidechains=false backfill_on_start=false", tc)
+	}
+
+	// Partial-merge: a [tasks] section setting ONLY enabled=false keeps
+	// the other tuning defaults.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[tasks]\nenabled = false\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(LoadOptions{GlobalPath: cfgPath})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Tasks.Enabled {
+		t.Error("enabled=false should override")
+	}
+	if cfg.Tasks.MatchMode != "exact" || cfg.Tasks.ConcurrentAttribution != "shared" {
+		t.Errorf("partial [tasks] lost tuning defaults: %+v", cfg.Tasks)
+	}
+}
+
+// TestTasksValidate pins the enum guards on tasks.match_mode and
+// tasks.concurrent_attribution — deliberately NOT including a "split"
+// option (§R2.3.2: bucketing, never splitting, an ambiguous
+// concurrent-task attribution).
+func TestTasksValidate(t *testing.T) {
+	t.Parallel()
+	good := Default()
+	if err := Validate(good); err != nil {
+		t.Fatalf("default config should validate: %v", err)
+	}
+
+	bad := Default()
+	bad.Tasks.MatchMode = "fuzzy"
+	if err := Validate(bad); err == nil {
+		t.Error("Validate accepted tasks.match_mode=fuzzy")
+	}
+
+	bad = Default()
+	bad.Tasks.ConcurrentAttribution = "split"
+	if err := Validate(bad); err == nil {
+		t.Error("Validate accepted tasks.concurrent_attribution=split")
 	}
 }
 

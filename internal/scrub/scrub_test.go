@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestScrubString(t *testing.T) {
@@ -16,6 +17,7 @@ func TestScrubString(t *testing.T) {
 		want []string // substrings that MUST NOT appear in the scrubbed output.
 	}{
 		{"bearer", "curl -H 'Authorization: Bearer sk-ant-abc123def456ghi789'", []string{"sk-ant-abc123def456ghi789"}},
+		{"anthropic api key with hyphenated body", "export ANTHROPIC_API_KEY=sk-ant-api03-Vq7wXy2Zab3Cd4Ef5Gh6Ij7Kl8Mn9Op0-qRsTuV", []string{"sk-ant-api03-"}},
 		{"aws", "export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE", []string{"AKIAIOSFODNN7EXAMPLE"}},
 		{"github_token", "export GITHUB_TOKEN=ghp_aaaabbbbccccddddeeeeffffgggghhhhiiii", []string{"ghp_aaaabbbbccccddddeeeeffffgggghhhhiiii"}},
 		{"password_kv", "password=hunter2", []string{"hunter2"}},
@@ -270,6 +272,109 @@ func TestTruncate(t *testing.T) {
 	short := "abc"
 	if Truncate(short) != short {
 		t.Errorf("short string was modified")
+	}
+}
+
+// TestTruncateN is table-driven over the cap/marker/rune-boundary contract
+// TruncateN adds for otel_content (a caller-supplied cap, unlike Truncate's
+// fixed MaxRawInputBytes).
+func TestTruncateN(t *testing.T) {
+	t.Parallel()
+	multiByteRune := "é" // 2 bytes, U+00E9
+
+	cases := []struct {
+		name     string
+		v        string
+		maxBytes int
+		want     string
+	}{
+		{
+			name:     "under cap is untouched",
+			v:        "hello",
+			maxBytes: 32 << 10,
+			want:     "hello",
+		},
+		{
+			name:     "exactly at cap is untouched",
+			v:        "abcde",
+			maxBytes: 5,
+			want:     "abcde",
+		},
+		{
+			name:     "over cap gets the marker and stays within cap",
+			v:        strings.Repeat("x", 100),
+			maxBytes: 20,
+			want:     strings.Repeat("x", 20-len("…[truncated]")) + "…[truncated]",
+		},
+		{
+			// Byte 11 (the naive cut point: maxBytes(25) - len(marker)(14))
+			// lands on the second (continuation) byte of the 2-byte rune at
+			// offsets 10-11, so the cut must back up to offset 10.
+			name:     "cut point backs up off a multi-byte rune boundary",
+			v:        strings.Repeat("a", 10) + multiByteRune + strings.Repeat("b", 30),
+			maxBytes: 25,
+			want:     strings.Repeat("a", 10) + "…[truncated]",
+		},
+		{
+			name:     "maxBytes<=0 with non-empty input yields empty",
+			v:        "abc",
+			maxBytes: 0,
+			want:     "",
+		},
+		{
+			name:     "maxBytes<=0 with empty input yields empty",
+			v:        "",
+			maxBytes: 0,
+			want:     "",
+		},
+		{
+			name:     "empty input under a positive cap is untouched",
+			v:        "",
+			maxBytes: 10,
+			want:     "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := TruncateN(tc.v, tc.maxBytes)
+			if got != tc.want {
+				t.Fatalf("TruncateN(%q, %d) = %q, want %q", tc.v, tc.maxBytes, got, tc.want)
+			}
+			if tc.maxBytes > 0 && len(got) > tc.maxBytes {
+				t.Fatalf("TruncateN(%q, %d) exceeded cap: len=%d", tc.v, tc.maxBytes, len(got))
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("TruncateN(%q, %d) produced invalid UTF-8: %q", tc.v, tc.maxBytes, got)
+			}
+		})
+	}
+}
+
+// TestTruncateN_MutationProof demonstrates the cap actually bites: with the
+// guard bypassed (simulating the pre-fix otel_content path that stored
+// scrubber.String(r.Content) uncapped), an oversized body is NOT bounded —
+// proving the assertion below is a real regression detector, not a vacuous
+// one, and that TruncateN is what makes it pass.
+func TestTruncateN_MutationProof(t *testing.T) {
+	t.Parallel()
+	const capBytes = 32 << 10 // matches DefaultIngestOTelContentMaxBytes
+	oversized := strings.Repeat("y", capBytes*4)
+
+	// Mutation: the un-capped path (what ingestOTelContent did before G2).
+	uncapped := oversized
+	if len(uncapped) <= capBytes {
+		t.Fatalf("test fixture too small to prove anything: len=%d", len(uncapped))
+	}
+
+	// Fix: TruncateN enforces the cap.
+	capped := TruncateN(oversized, capBytes)
+	if len(capped) > capBytes {
+		t.Fatalf("TruncateN did not bound content: len=%d want<=%d", len(capped), capBytes)
+	}
+	if !strings.HasSuffix(capped, "…[truncated]") {
+		t.Fatalf("TruncateN did not mark truncation: tail=%q", capped[len(capped)-20:])
 	}
 }
 

@@ -150,3 +150,29 @@ func sumInt64Map(m map[string]int64) int64 {
 	}
 	return total
 }
+
+// probeSessionVerbositySubstrate is the Track R2 change-detection probe for the
+// session_verbosity wire. It lives here — with the wire's own SQL — so
+// orgsnapgate.go and orgpush.go stay free of the table names.
+//
+// PROBE: the pair (MAX(sessions.rowid), MAX(actions.id)) — two index-endpoint
+// seeks, O(1).
+//
+// WHY THAT REFLECTS MUTATION: this wire has TWO substrates, and both must be in
+// the probe. The windowed `sessions` scan chooses WHICH sessions ship, while the
+// per-session byte math (LoadSessionVerbosity + AuthoredCaptureStats) is derived
+// entirely from `actions` rows. A session whose transcript keeps growing gains
+// new action ids even though no new session row appears, so an actions-blind
+// probe would freeze a live session's composition panel.
+//
+// RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: an in-place UPDATE of an existing
+// action's body columns (the ingest MAX-upgrade path) does not move either
+// maximum; snapGate's maxSkipAge recomputes within the hour. The window slide
+// itself is not a correctness concern — the server upserts by (org_id,
+// session_id) and never deletes, so a session ageing out of the node's window
+// simply stops being refreshed.
+func (s *Store) probeSessionVerbositySubstrate(ctx context.Context) (string, error) {
+	return s.snapProbeScalar(ctx, `
+		SELECT 's' || (SELECT COALESCE(MAX(rowid), 0) FROM sessions) ||
+		       ':a' || (SELECT COALESCE(MAX(id), 0) FROM actions)`)
+}

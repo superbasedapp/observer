@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/sshprofile"
 	"github.com/marmutapp/superbased-observer/internal/termfeed"
 	"github.com/marmutapp/superbased-observer/internal/termrun"
 )
@@ -32,6 +35,10 @@ var (
 	ErrAttachSubcommandRequired = errors.New("termsvc: attach launch requires a subcommand")
 	// ErrAttachDirNotAbsolute — LaunchAttachable was given a non-absolute Dir.
 	ErrAttachDirNotAbsolute = errors.New("termsvc: attach launch dir must be absolute")
+	// ErrResumeSessionRequired — LaunchResume was given no native session id.
+	ErrResumeSessionRequired = errors.New("termsvc: native resume requires a source session id")
+	// ErrResumeArgsMismatch — LaunchResume's argv does not resume its declared session.
+	ErrResumeArgsMismatch = errors.New("termsvc: native resume args must exactly match --resume <source session id>")
 	// ErrSandboxUnavailable is returned when a caller requests a sandboxed
 	// fresh launch (FreshRequest.Sandbox) but the Service was constructed
 	// without a Sandboxer (B9 plan §7/§12 amendment A5). A nil Sandboxer means
@@ -39,6 +46,20 @@ var (
 	// silently degrading to an unsandboxed launch. Returned BEFORE a run is
 	// minted, so no orphan terminal_runs row is created.
 	ErrSandboxUnavailable = errors.New("termsvc: sandboxed launch requested but no sandbox seam is configured")
+	// ErrSSHLaunchDisabled — [terminal.ssh].enabled is false. An SSH shell runs
+	// arbitrary commands on ANOTHER machine, so it has its own master opt-in
+	// rather than riding on AllowShell (which grants only a LOCAL shell).
+	ErrSSHLaunchDisabled = errors.New("termsvc: SSH remote-system launch is disabled (set [terminal.ssh].enabled)")
+	// ErrSSHProfileUnknown — the requested profile name is not in the
+	// operator-authored [[terminal.ssh.profiles]] list. This is THE gate that
+	// makes the client's only input (a name) safe: a name the operator never
+	// wrote can never become a connection.
+	ErrSSHProfileUnknown = errors.New("termsvc: no such SSH profile")
+	// ErrSSHProfileInvalid — the named profile failed re-validation at launch
+	// (bad field, or a key_path that no longer resolves to a regular file).
+	// Re-validating here rather than trusting the load-time check mirrors the
+	// ValidateProjectRoot-immediately-before-spawn discipline.
+	ErrSSHProfileInvalid = errors.New("termsvc: SSH profile is not valid")
 	// ErrWorkspacePrepFailed wraps a Sandboxer.Prepare error (workspace
 	// creation / git clone / bwrap-plan failure). Returned before a run is
 	// minted, same fail-closed posture as ErrSandboxUnavailable. The dashboard
@@ -62,6 +83,20 @@ type Policy struct {
 	// shell is not a member of the tool allow-list and is authorized by this
 	// flag alone.
 	AllowShell bool
+	// AllowSSH is the master opt-in for an OUTBOUND SSH remote-system shell
+	// ([terminal.ssh].enabled). Deliberately independent of AllowShell: a local
+	// shell and a shell on someone else's production box are different grants.
+	AllowSSH bool
+	// SSHProfiles is the OPERATOR-AUTHORED allow-list of remote systems, read
+	// from [[terminal.ssh.profiles]]. It is the whole authorization model for
+	// this feature: the client sends a profile NAME, LaunchSSH resolves it
+	// HERE, and a name that is not in this slice is refused. Empty = deny-all,
+	// even when AllowSSH is true.
+	SSHProfiles []sshprofile.Profile
+	// SSHOptions carries the connection-tuning knobs ([terminal.ssh]
+	// connect_timeout_seconds / keepalive_seconds). Its zero value resolves to
+	// the sshprofile defaults.
+	SSHOptions sshprofile.Options
 }
 
 // toolAllowed reports whether tool is in the fresh-launch allow-list.
@@ -96,6 +131,14 @@ type RunRecorder interface {
 	EndRun(ctx context.Context, runID string, endedAt time.Time, exitCode int, reason string) error
 	// RecordCorrelation upserts a scored run→session correlation (MAX-upgrade).
 	RecordCorrelation(ctx context.Context, c termrun.Correlation) error
+	// RecordGUISpawn stamps a GUI run's POST-SPAWN facts — the detached child's
+	// pid and the honest wrap verdict (termrun.Run PID / WrapApplied /
+	// WrapNote, migration 108). It is a SECOND write on the same row rather
+	// than part of RecordRun because none of the three exists until the child
+	// does, while the row itself must be written BEFORE the spawn (a recorder
+	// failure must never leave a process nothing knows about). It is called
+	// only for termrun.KindGUI; every other kind carries the honest zeroes.
+	RecordGUISpawn(ctx context.Context, run termrun.Run) error
 }
 
 // LaunchRequest is the fully server-derived spawn request the Service hands the
@@ -112,8 +155,8 @@ type LaunchRequest struct {
 	Kind termrun.Kind
 	// Dir is the canonical project root for a fresh launch ("" = default cwd).
 	Dir string
-	// SessionID / Carry / FromMessage are the handoff continuation params
-	// (unset for a fresh launch).
+	// SessionID identifies the handoff source or native-resume target. Carry /
+	// FromMessage are handoff-only continuation params (all unset for fresh).
 	SessionID   string
 	Carry       string
 	FromMessage int
@@ -143,6 +186,12 @@ type LaunchRequest struct {
 	// child's $SHELL (falling back to /bin/bash / /bin/sh) instead of the
 	// usual `observer <Subcommand>` argv.
 	IsShell bool
+	// SSHArgv is the fully composed, server-derived OpenSSH client argv for a
+	// KindSSH launch (internal/sshprofile.Argv over an operator-authored
+	// profile). Non-empty ONLY for an SSH launch; the Launcher spawns it
+	// verbatim instead of the usual `observer <Subcommand>` argv, and never
+	// wraps it in an isolation prefix.
+	SSHArgv []string
 	// WrapArgv is an optional isolation-wrapper argv prefix (B9) resolved by
 	// the Sandboxer seam and threaded through to termsession.Spec.WrapArgv —
 	// the bwrap invocation wraps the WHOLE inner `observer <verb>` argv
@@ -153,6 +202,23 @@ type LaunchRequest struct {
 	// (B9). Carried alongside WrapArgv so the Launcher/recorder can label the
 	// run without re-deriving it from WrapArgv's mere presence.
 	Sandboxed bool
+	// LoginPathDirs are the login-shell-only PATH dirs the Launcher prepends to
+	// the child's PATH (audit DI-04b). They are populated from the tool
+	// resolution taken at the launch decision point (toolresolve.Resolution.
+	// LoginOnlyDirs), so the PATH the child EXECUTES with is the same merged
+	// PATH the daemon RESOLVED the binary on. termsvc neither computes nor
+	// interprets them — they are opaque strings it carries to the Launcher
+	// (CLAUDE.md #2). Empty means "the Launcher falls back to the daemon-wide
+	// set"; it is never an instruction to narrow a child's PATH.
+	LoginPathDirs []string
+	// BinPath is the resolved binary this launch runs, when the caller knows it.
+	// The Launcher prepends its DIRECTORY to the child's PATH so an interpreted
+	// shim finds the interpreter that sits next to it (`<npm prefix>/bin/node`
+	// beside the shim) — the DI-04b failure mode is an `#!/usr/bin/env node`
+	// shim exiting 127 at runtime, which the daemon cannot see at spawn. Empty
+	// contributes nothing; it never selects or overrides the argv, which stays
+	// server-derived.
+	BinPath string
 }
 
 // Sandboxer prepares an isolation-wrapped launch: it prepares the workspace
@@ -239,8 +305,31 @@ type runMeta struct {
 	// terminal_runs stores only the hash) so the dashboard's project panel can
 	// resolve a token to its root without a store read. Retained past exit like
 	// the rest of runMeta and read through Service.ProjectRoot.
-	dir     string
-	endedAt time.Time
+	dir string
+	// spawnDir is the directory the child process ACTUALLY runs in — a
+	// different question from dir, and deliberately so:
+	//
+	//   • dir is AUTHORIZATION-bearing. It is the client-influenced project root
+	//     ValidateProjectRoot accepted, and it gates what the dashboard's
+	//     Files/Git panel may browse. A launch with no requested root ("default
+	//     cwd") legitimately has NO authorized root, so dir stays empty.
+	//   • spawnDir is FACT-bearing. Every child has a working directory: the
+	//     validated root when one was given, otherwise the daemon's own cwd,
+	//     which the child inherits (termsession spawn sets cmd.Dir = spec.Dir,
+	//     and an empty Dir inherits). It authorizes nothing and is never
+	//     browsed; it exists so correlation can ask "where does this run live?"
+	//     without borrowing an authorization answer.
+	//
+	// Conflating the two is what broke run→session correlation for every
+	// default-cwd launch: the discovery sweep asked ProjectRoot for the run's
+	// directory, got the honest "no authorized root", and skipped the run
+	// forever — so a dashboard "New Terminal" on a node with no
+	// [terminal.launch].allowed_project_roots could never link, even though the
+	// child's cwd (and the session's project root) were both perfectly known.
+	// Read through Service.SpawnDir; retained past exit like the rest of
+	// runMeta.
+	spawnDir string
+	endedAt  time.Time
 	// sandboxed records whether this run was launched through the B9
 	// Sandboxer seam (in-memory only; no DB column — see B9 plan §10 ledger
 	// G19, "was this historical run sandboxed?" is deliberately deferred).
@@ -276,6 +365,15 @@ type Service struct {
 	policy   Policy
 	rec      RunRecorder
 	launcher Launcher
+	// guiLauncher spawns a DETACHED IDE / desktop app (see gui.go). Optional;
+	// nil means the feature is absent on this daemon and LaunchGUI fails closed
+	// with ErrGUIUnsupported — the same nil-seam posture as sandboxer.
+	guiLauncher GUILauncher
+	// gui owns the in-memory GUI run list. It carries its OWN mutex because it
+	// shares no invariant with the PTY handle maps below (CLAUDE.md #4: one
+	// owner per piece of state) — a GUI run has no handle and no PTY reader
+	// ever consults it.
+	gui guiState
 	// sandboxer prepares a B9 sandboxed fresh launch (workspace + wrap argv).
 	// Optional; nil means the feature is absent — a Sandbox:true FreshRequest
 	// then fails closed with ErrSandboxUnavailable rather than silently
@@ -291,6 +389,10 @@ type Service struct {
 	feed                 *termfeed.Feed // optional; nil disables the status event feed
 	logger               *slog.Logger   // optional; nil disables the no-mapping debug log
 	now                  func() time.Time
+	// getwd resolves the daemon's own working directory (prod: os.Getwd). It is
+	// the cwd a child spawned with an empty Dir inherits, so it is the factual
+	// spawn directory of every default-cwd launch (see runMeta.spawnDir).
+	getwd func() (string, error)
 	// exitStatus, when set, is the authoritative "has this handle already
 	// exited?" query (termsession.Manager.ExitStatus). launch() consults it the
 	// instant it installs the handle→run mapping, to close the PRE-REGISTRATION
@@ -374,9 +476,18 @@ type Options struct {
 	// Sandboxer prepares a B9 sandboxed fresh launch (see Service.sandboxer).
 	// Nil disables the feature: a Sandbox:true FreshRequest then fails closed.
 	Sandboxer Sandboxer
+	// GUILauncher spawns a DETACHED IDE / desktop app (see gui.go). Nil
+	// disables the feature: LaunchGUI then fails closed with
+	// ErrGUIUnsupported, never degrading into a PTY launch.
+	GUILauncher GUILauncher
 	// SandboxWorkspacesDir is the daemon's managed-workspace root (see
 	// Service.sandboxWorkspacesDir).
 	SandboxWorkspacesDir string
+	// Getwd resolves the daemon's own working directory — the cwd a child
+	// spawned with no explicit Dir inherits, and therefore the run's factual
+	// spawn directory (see runMeta.spawnDir). Injected so the whole decision is
+	// table-testable; nil uses os.Getwd.
+	Getwd func() (string, error)
 }
 
 // New builds a Service.
@@ -385,11 +496,18 @@ func New(opts Options) *Service {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
+	getwd := opts.Getwd
+	if getwd == nil {
+		getwd = os.Getwd
+	}
 	return &Service{
+		getwd:                getwd,
 		policy:               opts.Policy,
 		rec:                  opts.Recorder,
 		launcher:             opts.Launcher,
 		sandboxer:            opts.Sandboxer,
+		guiLauncher:          opts.GUILauncher,
+		gui:                  guiState{runs: make(map[string]guiRunMeta)},
 		sandboxWorkspacesDir: opts.SandboxWorkspacesDir,
 		feed:                 opts.Feed,
 		logger:               opts.Logger,
@@ -455,6 +573,12 @@ type LaunchResult struct {
 // classification) — it is never a member of the capability registry's
 // launchable-tool set, so it can never collide with a real AI-tool name.
 const ShellTool = "shell"
+
+// SSHTool is the reserved pseudo-tool name an outbound SSH remote-system
+// session is recorded and reported under, mirroring ShellTool. Like ShellTool
+// it is never a member of the capability registry's launchable-tool set, so it
+// can never collide with a real adapter name.
+const SSHTool = "ssh"
 
 // LaunchFresh authorizes and starts a fresh agent (no --continue-from), or —
 // when req.Shell is set — a fresh plain shell. It fails closed on every
@@ -589,6 +713,85 @@ func (s *Service) resolveModelLaunch(tool, model string) (extraArgs, extraEnv []
 	return args, env
 }
 
+// SSHRequest is the dashboard-derived remote-system shell request
+// (docs/plans/ssh-remote-profiles-plan-2026-08-27.md §6.1).
+//
+// THE CLIENT SUPPLIES A PROFILE NAME AND NOTHING ELSE. Host, user, port, key
+// path and jump host are all resolved from the daemon's own operator-authored
+// config, so a request can only ever select among destinations the operator
+// already wrote down — it can never nominate one. That property is the whole
+// security model of this feature; do not add host/user fields here.
+type SSHRequest struct {
+	// Profile is the [[terminal.ssh.profiles]] name to connect to.
+	Profile string
+	// Rows / Cols are the initial PTY size (0 = OS default).
+	Rows uint16
+	Cols uint16
+}
+
+// LaunchSSH authorizes and starts an outbound SSH shell to an operator-
+// configured remote system. It fails closed on every authorization miss BEFORE
+// minting a run or spawning a process, exactly like LaunchFresh.
+//
+// Policy CONTRAST with LaunchAttachable (which is exempt from the allow-lists
+// because its caller is authorized by the attach socket's 0600 filesystem
+// permissions): an SSH launch is DASHBOARD-initiated, so it is gated — by
+// AllowSSH plus membership in the operator's profile list. There is no
+// equivalent of ValidateProjectRoot here because an SSH run has no LOCAL
+// project root at all (the shell's cwd is on another machine); Dir is
+// deliberately left empty and ProjectRootHash records as the honest zero.
+func (s *Service) LaunchSSH(ctx context.Context, req SSHRequest) (LaunchResult, error) {
+	if s.launcher == nil {
+		return LaunchResult{}, ErrNoLauncher
+	}
+	if !s.policy.AllowSSH {
+		return LaunchResult{}, ErrSSHLaunchDisabled
+	}
+	profile, ok := sshprofile.Find(s.policy.SSHProfiles, req.Profile)
+	if !ok {
+		return LaunchResult{}, fmt.Errorf("%w: %q", ErrSSHProfileUnknown, req.Profile)
+	}
+	// Re-validate at launch, including the key-path filesystem check: a key
+	// file deleted after the daemon started must fail the launch loudly rather
+	// than produce an opaque ssh error inside the PTY.
+	if err := profile.ValidateWithFS(); err != nil {
+		return LaunchResult{}, fmt.Errorf("%w: %w", ErrSSHProfileInvalid, err)
+	}
+	argv, err := sshprofile.Argv(profile, s.policy.SSHOptions)
+	if err != nil {
+		return LaunchResult{}, fmt.Errorf("%w: %w", ErrSSHProfileInvalid, err)
+	}
+	run := termrun.Run{
+		Tool:       SSHTool,
+		Kind:       termrun.KindSSH,
+		LaunchedAt: s.now(),
+	}
+	return s.launch(ctx, run, LaunchRequest{
+		Kind:    termrun.KindSSH,
+		Rows:    req.Rows,
+		Cols:    req.Cols,
+		SSHArgv: argv,
+	})
+}
+
+// SSHProfileList is the READ seam behind the dashboard's system picker: the
+// operator-configured remote systems, plus whether the feature is enabled at
+// all. It is served from the same Policy the launch gate consults, so the
+// picker can never offer a profile LaunchSSH would refuse (one owner, one
+// list). The returned slice is a copy — a caller cannot mutate the policy.
+//
+// There is deliberately no writer counterpart. Profiles are authored in
+// config.toml; adding a create/update path here would turn "which machines may
+// this daemon shell into" into something the dashboard can change.
+func (s *Service) SSHProfileList() (enabled bool, profiles []sshprofile.Profile) {
+	if len(s.policy.SSHProfiles) == 0 {
+		return s.policy.AllowSSH, nil
+	}
+	out := make([]sshprofile.Profile, len(s.policy.SSHProfiles))
+	copy(out, s.policy.SSHProfiles)
+	return s.policy.AllowSSH, out
+}
+
 // HandoffRequest is the dashboard-derived continue-a-session request. It does
 // not consult the fresh-launch allow-list — handoff-continue is the existing
 // narrow consent, gated by [handoff].allow_dashboard_launch at the cmd layer.
@@ -701,8 +904,10 @@ func (s *Service) LaunchAttachable(ctx context.Context, req AttachRequest) (Laun
 // against the fresh-launch allow-list; Subcommand is the launcher verb resolved
 // from the capability registry; ExtraArgs is the resume tail composed at the
 // boundary via integration.ResumeArgs (uniformly `["--resume", <id>]`);
-// SourceSessionID is the session being resumed; ProjectRoot is the
-// client-influenced input canonicalized + allow-list-checked here.
+// SourceSessionID is the session being resumed; it is both historical source
+// and correlation target because native resume reopens that exact transcript.
+// ProjectRoot is the client-influenced input canonicalized + allow-list-checked
+// here.
 type ResumeRequest struct {
 	Tool            string
 	Subcommand      string
@@ -724,8 +929,10 @@ type ResumeRequest struct {
 // minting a run or spawning a process. A Policy that denies LaunchFresh
 // therefore also denies LaunchResume (whereas LaunchAttachable, whose caller is
 // authorized by the socket's 0600 filesystem permissions, would still permit
-// it). The resumed session id is recorded on the run as SourceSessionID (NEVER a
-// correlation target — the same distinction LaunchHandoff draws, plan §2.1a).
+// it). The resumed session id is recorded on the run as SourceSessionID and,
+// after a successful still-live spawn, correlated as that run's target. This is
+// intentionally different from LaunchHandoff: a handoff creates a new session,
+// while native resume reopens the source session's real transcript.
 func (s *Service) LaunchResume(ctx context.Context, req ResumeRequest) (LaunchResult, error) {
 	if s.launcher == nil {
 		return LaunchResult{}, ErrNoLauncher
@@ -740,6 +947,12 @@ func (s *Service) LaunchResume(ctx context.Context, req ResumeRequest) (LaunchRe
 	if err != nil {
 		return LaunchResult{}, err
 	}
+	if strings.TrimSpace(req.SourceSessionID) == "" {
+		return LaunchResult{}, ErrResumeSessionRequired
+	}
+	if len(req.ExtraArgs) != 2 || req.ExtraArgs[0] != "--resume" || req.ExtraArgs[1] != req.SourceSessionID {
+		return LaunchResult{}, ErrResumeArgsMismatch
+	}
 	run := termrun.Run{
 		Tool:            req.Tool,
 		Kind:            termrun.KindResume,
@@ -747,7 +960,7 @@ func (s *Service) LaunchResume(ctx context.Context, req ResumeRequest) (LaunchRe
 		ProjectRootHash: termrun.HashProjectRoot(dir),
 		LaunchedAt:      s.now(),
 	}
-	return s.launch(ctx, run, LaunchRequest{
+	res, err := s.launch(ctx, run, LaunchRequest{
 		Subcommand: req.Subcommand,
 		Kind:       termrun.KindResume,
 		Dir:        dir,
@@ -756,6 +969,31 @@ func (s *Service) LaunchResume(ctx context.Context, req ResumeRequest) (LaunchRe
 		Rows:       req.Rows,
 		Cols:       req.Cols,
 	})
+	if err != nil {
+		return LaunchResult{}, err
+	}
+	// The daemon already verified that this exact argv resumes the exact
+	// captured session named by SourceSessionID. Link it directly on every OS;
+	// non-Unix launchers have no OOB emitter. SourceDiscovered records daemon-
+	// verified identity without fabricating the stronger OOB provenance.
+	//
+	// launch() reconciles an exit that raced registration before returning. Do
+	// not persist a known-session observation when that reconciliation already
+	// found the child dead. A later exit racing Correlate is still prevented
+	// from resurrecting the in-memory link by Correlate's own liveness check.
+	if _, live := s.HandleForRun(res.RunID); !live {
+		return res, nil
+	}
+	if corrErr := s.Correlate(ctx, res.RunID, req.SourceSessionID, termrun.SourceDiscovered, s.now()); corrErr != nil {
+		// The PTY has already spawned successfully. Returning corrErr would make
+		// the caller believe no child exists and orphan the live terminal. Keep
+		// the launch result and report the missing link through the existing
+		// uncorrelated-run state; a later trusted producer may still retry it.
+		if s.logger != nil {
+			s.logger.Warn("termsvc: native resume correlation failed", "run", res.RunID, "err", corrErr)
+		}
+	}
+	return res, nil
 }
 
 // launch is the shared mint→record→spawn→map path for both kinds. It records
@@ -807,6 +1045,12 @@ func (s *Service) launch(ctx context.Context, run termrun.Run, lr LaunchRequest)
 		return LaunchResult{}, err
 	}
 
+	// Resolve BOTH directory answers before taking the lock (each may hit the
+	// filesystem): the authorized project root and the factual spawn cwd. See
+	// runMeta.dir / runMeta.spawnDir for why they are separate.
+	dir := canonicalizeLaunchDir(lr.Dir)
+	spawnDir := s.spawnDirFor(lr.Dir)
+
 	s.mu.Lock()
 	// Release the launch reservation in the SAME critical section that installs
 	// the live mappings. Doing it as a separate lock acquisition (before or
@@ -816,25 +1060,13 @@ func (s *Service) launch(ctx context.Context, run termrun.Run, lr LaunchRequest)
 	delete(s.launching, runID)
 	s.byHandle[handle] = runID
 	s.byRun[runID] = handle
-	// dir is lr.Dir — the canonical, already-validated project root each caller
-	// (LaunchFresh/LaunchResume via ValidateProjectRoot, LaunchAttachable via
-	// AttachRequest.Dir) hashed into run.ProjectRootHash. One place, same value.
-	//
-	// Pin the retained root by fully resolving its symlinks HERE, the single
-	// storage point (finding 2a): the project panel resolves this token back to
-	// its root and browses under it, so canonicalizing at launch means a symlink
-	// component retargeted after launch cannot silently move the panel's root to
-	// a new target. On any resolution error (path missing/unreadable) store ""
-	// → treated as "no browsable project root" (ProjectRoot returns ok=false).
-	dir := lr.Dir
-	if dir != "" {
-		if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
-			dir = resolved
-		} else {
-			dir = ""
-		}
+	s.byMeta[handle] = runMeta{
+		Kind:      run.Kind,
+		Tool:      run.Tool,
+		dir:       dir,
+		spawnDir:  spawnDir,
+		sandboxed: lr.Sandboxed,
 	}
-	s.byMeta[handle] = runMeta{Kind: run.Kind, Tool: run.Tool, dir: dir, sandboxed: lr.Sandboxed}
 	s.mu.Unlock()
 
 	s.publish(termfeed.Event{
@@ -933,6 +1165,80 @@ func (s *Service) ProjectRoot(handle string) (string, bool) {
 		return "", false
 	}
 	return m.dir, true
+}
+
+// SpawnDir returns the directory the run's child process actually runs in: the
+// validated project root when the launch carried one, otherwise the daemon's
+// own cwd, which a child spawned with an empty Dir inherits. ok=false only for
+// an unknown handle or when the daemon's cwd itself was unreadable — the honest
+// "this run's working directory is unknown".
+//
+// It is NOT an authorization answer and must never gate browsing: use
+// ProjectRoot for that. SpawnDir exists for CORRELATION — the discovery sweep
+// matches a run to the observer session started in the same directory, and a
+// default-cwd launch has a perfectly well-known directory even though it has no
+// authorized project root. Served from byMeta (retained past exit-linger), the
+// same no-store-read contract as ProjectRoot/KindForHandle.
+func (s *Service) SpawnDir(handle string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byMeta[handle]
+	if !ok || m.spawnDir == "" {
+		return "", false
+	}
+	return m.spawnDir, true
+}
+
+// canonicalizeLaunchDir pins the AUTHORIZED project root a run was launched
+// with — lr.Dir, the canonical value each caller (LaunchFresh/LaunchResume via
+// ValidateProjectRoot, LaunchAttachable via AttachRequest.Dir) already hashed
+// into run.ProjectRootHash. One place, same value.
+//
+// It fully resolves symlinks HERE, the single storage point (finding 2a): the
+// project panel resolves this token back to its root and browses under it, so
+// canonicalizing at launch means a symlink component retargeted after launch
+// cannot silently move the panel's root to a new target. On any resolution
+// error (path missing/unreadable) it returns "" → treated as "no browsable
+// project root" (ProjectRoot returns ok=false). An empty input is a default-cwd
+// launch, which has no authorized root at all.
+func canonicalizeLaunchDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return ""
+	}
+	return resolved
+}
+
+// spawnDirFor resolves the FACTUAL working directory of a launch (see
+// runMeta.spawnDir): the launch dir when one was given, otherwise the daemon's
+// own cwd, which the child inherits.
+//
+// It differs from canonicalizeLaunchDir in its failure posture, and on purpose.
+// A root that fails to canonicalize is not browsable, so canonicalizeLaunchDir
+// must fail closed to ""; correlation authorizes nothing, so an unresolvable
+// path degrades to the raw spelling instead — which is frequently the exact
+// spelling the adapter stored for the session anyway, and matching on it can
+// only ever produce a link that is separately gated by tool + time + a
+// unique-or-abstain rule. Only an unreadable daemon cwd yields "", the honest
+// "unknown".
+func (s *Service) spawnDirFor(dir string) string {
+	if dir == "" {
+		if s.getwd == nil {
+			return ""
+		}
+		wd, err := s.getwd()
+		if err != nil {
+			return ""
+		}
+		dir = wd
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
+	}
+	return dir
 }
 
 // Sandboxed reports whether a live-or-lingering PTY handle was launched

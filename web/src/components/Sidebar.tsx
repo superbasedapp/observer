@@ -427,7 +427,7 @@ function Foot({
             <span className="absolute inset-0 -m-0.5 animate-ping rounded-full bg-success/40" />
           )}
         </span>
-        watcher {proxyOn ? "active" : "—"}
+        watcher {proxyOn ? "active" : "-"}
         {setup?.proxy_port ? (
           <>
             {" · "}
@@ -442,12 +442,12 @@ function Foot({
           maxWidth={320}
           content={
             (lagging
-              ? `Watcher is behind on ${watcher!.behind_count} append-only transcript(s) (${fmtBytes(watcher!.behind_total_bytes)} unread) — recent activity may not be captured yet. A rescan (Settings → Backfill) catches up if it persists. `
+              ? `Watcher is behind on ${watcher!.behind_count} append-only transcript(s) (${fmtBytes(watcher!.behind_total_bytes)} unread) - recent activity may not be captured yet. A rescan (Settings → Backfill) catches up if it persists. `
               : "") +
             (misrouted
               ? `${watcher!.suspected_misrouted_count} transcript(s) look misrouted (cursor at EOF, zero rows emitted). `
               : "") +
-            "Files whose cursor is a SQLite watermark, whose store is encrypted, or that only ever carry tokens are excluded from both counts — that comparison can't close, so counting it would pin this warning on forever."
+            "Files whose cursor is a SQLite watermark, whose store is encrypted, or that only ever carry tokens are excluded from both counts - that comparison can't close, so counting it would pin this warning on forever."
           }
         >
           {/* tabIndex={0} makes the warning keyboard-focusable so the Tooltip
@@ -489,7 +489,7 @@ function fmtUptime(sec: number): string {
 
 function fmtRelative(iso: string): string {
   const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "—";
+  if (!Number.isFinite(t)) return "-";
   const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
   if (sec < 60) return `${sec}s`;
   const min = Math.floor(sec / 60);

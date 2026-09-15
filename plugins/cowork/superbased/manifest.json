@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "superbased",
   "display_name": "SuperBased Observer",
-  "version": "1.32.0",
+  "version": "1.33.0",
   "description": "Token, cost and cache observability for Claude Desktop. Wires the SuperBased Observer MCP server. Requires the `observer` binary already on your PATH (npm i -g @superbased/observer, or pipx install superbased-observer) — this bundle is wiring only and installs no binary.",
   "long_description": "Query your own coding-agent history from inside Claude Desktop: per-session token and cost totals, cache behaviour, project patterns and past tool output. All data stays in a local SQLite database. Requires the `observer` binary already on your PATH.",
   "author": {

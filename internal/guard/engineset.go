@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/marmutapp/superbased-observer/internal/policy"
 )
@@ -27,9 +28,15 @@ import (
 // by pmu — the B1 per-snapshot cache object, bounded by
 // maxProjectEngines exactly as the old single-map cache was.
 type engineSet struct {
+	revision  uint64
 	base      *policy.Engine
 	orgLayer  *policyFile // retained so per-project engines re-merge it
 	userLayer *policyFile // unchanged across an org reload
+	// budgetBinding is sealed with base so a native intervention decision
+	// cannot pair one enrollment epoch with another epoch's numeric engine.
+	budgetBinding   string
+	budgetCalendars BudgetCalendars
+	budgetWitness   BudgetDocumentWitness
 
 	// states are the org+user layer descriptors (builtins carry no
 	// state entry), in New's insertion order (org, then user).
@@ -44,17 +51,29 @@ type engineSet struct {
 	projectCats    map[string]policy.Category
 }
 
+var engineRevision atomic.Uint64
+
+func (es *engineSet) accountingContext(managed bool) BudgetAccountingContext {
+	return BudgetAccountingContext{Managed: managed, Calendars: BudgetCalendars{
+		DailyTimezone: es.budgetCalendars.DailyTimezone, MonthlyTimezone: es.budgetCalendars.MonthlyTimezone,
+	}, BudgetBinding: es.budgetBinding}
+}
+
 // newEngineSet seals a base engine + layers + immutable states/categories
 // into a snapshot with an empty project cache.
-func newEngineSet(base *policy.Engine, org, user *policyFile, states []PolicyState, ruleCats map[string]policy.Category) *engineSet {
+func newEngineSet(base *policy.Engine, org, user *policyFile, states []PolicyState, ruleCats map[string]policy.Category, budgetBinding string, calendars ...BudgetCalendars) *engineSet {
 	return &engineSet{
-		base:           base,
-		orgLayer:       org,
-		userLayer:      user,
-		states:         states,
-		ruleCategories: ruleCats,
-		projectEngines: make(map[string]*policy.Engine),
-		projectCats:    make(map[string]policy.Category),
+		revision:        engineRevision.Add(1),
+		base:            base,
+		orgLayer:        org,
+		userLayer:       user,
+		budgetBinding:   budgetBinding,
+		budgetCalendars: normalizedBudgetCalendars(calendars),
+		budgetWitness:   normalizedBudgetCalendars(calendars).documentWitness,
+		states:          states,
+		ruleCategories:  ruleCats,
+		projectEngines:  make(map[string]*policy.Engine),
+		projectCats:     make(map[string]policy.Category),
 	}
 }
 
@@ -288,7 +307,7 @@ func (g *Guard) ReloadOrgLayer(ctx context.Context) error {
 	// the user entry; the project cache resets (rebuilds lazily against
 	// the new org layer).
 	states := replaceOrgState(cur.states, st)
-	newES := newEngineSet(base, pf, cur.userLayer, states, buildRuleCategories(pf, cur.userLayer))
+	newES := newEngineSet(base, pf, cur.userLayer, states, buildRuleCategories(pf, cur.userLayer), g.budgetBinding(), g.budgetCalendars())
 	g.set.Store(newES)
 
 	// Keep the state-log owner single + idempotent (FetchPolicyBundle

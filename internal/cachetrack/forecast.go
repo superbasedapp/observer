@@ -115,11 +115,19 @@ type ForecastInput struct {
 // package imports internal/cachetrack via store.PersistCacheObservation;
 // keeping the forecaster cost-import-free avoids the cycle).
 type RatePair struct {
-	Input          float64
-	Output         float64
-	CacheRead      float64
-	CacheCreation  float64
-	FastMultiplier float64
+	Input         float64
+	Output        float64
+	CacheRead     float64
+	CacheCreation float64
+	// CacheCreation1h is the 1-hour write tier, carried purely so the
+	// forecaster can tell a provider that PRICES writes by TTL (this
+	// exceeds CacheCreation — Anthropic, OpenAI 5.6+) from one whose
+	// write rate is TTL-independent (equal — Gemini, where a write is
+	// just an input token). No dollar math reads it; only the
+	// WarningTryOneHourTier gate does. Zero when the caller predates
+	// the field, which correctly suppresses the advice.
+	CacheCreation1h float64
+	FastMultiplier  float64
 }
 
 // ForecastResult is the headline payload the dashboard widget
@@ -179,11 +187,22 @@ const (
 	// answer is "turn fast off," not "switch models").
 	WarningFastModeActive WarningKind = "fast_mode_active"
 	// WarningTryOneHourTier fires when HasGapsOver5Min is set
-	// AND the candidate has a non-zero CacheCreation rate
-	// (Anthropic-only signal — non-Anthropic candidates leave
-	// this zero). Operator-facing: "you're idle long enough
-	// that 5m TTL expires between turns; 1h tier is cheaper
-	// over the same lifecycle."
+	// AND the candidate's rate card actually HAS a separately
+	// priced 1h write tier to move to — i.e. CacheCreation1h >
+	// CacheCreation. That is a capability test, not a provider
+	// test: Anthropic (1.25× vs 2× input) and OpenAI 5.6+ pass
+	// it, while a provider whose write rate is TTL-independent
+	// does not, so the advice is never offered where there is
+	// no tier to switch to. Until 2026-09-03 the gate was
+	// simply "CacheCreation > 0", which was equivalent while
+	// only Anthropic-shape rows carried a write rate at all;
+	// Gemini rows now derive one (a write is an ordinary input
+	// token there, identical at every TTL — see
+	// cost.cacheWriteRules), and would have drawn 1h-tier
+	// advice for a tier Google does not sell.
+	// Operator-facing: "you're idle long enough that 5m TTL
+	// expires between turns; 1h tier is cheaper over the same
+	// lifecycle."
 	WarningTryOneHourTier WarningKind = "try_1h_tier"
 	// WarningSwitchNeverPaysOff fires when the per-turn delta
 	// is ≤ 0 (candidate isn't cheaper per turn). Switching
@@ -258,7 +277,7 @@ func Forecast(in ForecastInput) ForecastResult {
 	if in.CurrentFast && in.CurrentRates.FastMultiplier > 1 {
 		out.Warnings = append(out.Warnings, WarningFastModeActive)
 	}
-	if in.HasGapsOver5Min && cand.CacheCreation > 0 {
+	if in.HasGapsOver5Min && cand.CacheCreation1h > cand.CacheCreation {
 		out.Warnings = append(out.Warnings, WarningTryOneHourTier)
 	}
 

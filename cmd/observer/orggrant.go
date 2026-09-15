@@ -52,6 +52,8 @@ func authorityPlainEnglish(tok string) string {
 		return "FORCE input-admission guardrail enforcement on this machine (managed tenancy only)"
 	case govern.AuthorityEnforceEgress:
 		return "FORCE egress-policy enforcement on this machine (managed tenancy only)"
+	case govern.AuthorityEnforceBudget:
+		return "make the organisation's spend cap AUTHORITATIVE on this machine - its numbers and enforcement mode replace your own, and if no verified organisation budget has reached this machine yet, proxied requests are refused until one does (managed tenancy only)"
 	case govern.AuthorityExtractManaged:
 		return "let the organisation RAISE what this machine shares, including tool inputs/outputs and other local data (managed tenancy only)"
 	case govern.AuthorityExtractCodeintel:
@@ -60,6 +62,12 @@ func authorityPlainEnglish(tok string) string {
 		return "let the organisation RAISE extraction of this machine's process-observability data as a content-free per-day/tool run/exit/duration count aggregate - never executable paths, command arguments, or network bodies (managed tenancy only)"
 	case govern.AuthorityExtractTerminal:
 		return "let the organisation RAISE extraction of this machine's terminal-run and remote-access-audit activity as content-free count aggregates - never command text, session ids, peer addresses, or routes (managed tenancy only)"
+	case govern.AuthorityExtractTasks:
+		return "let the organisation RAISE extraction of this machine's task/to-do checklists as item statuses and status transitions - the plan text itself still needs full content (managed tenancy only)"
+	case govern.AuthorityExtractToolAccounts:
+		return "let the organisation RAISE extraction of which vendor account each AI tool was logged in as, as opaque account keys and status - the account e-mail/name/id still need full content (managed tenancy only)"
+	case govern.AuthorityExtractIntel:
+		return "let the organisation turn on this machine's pull of its own Cloud Intelligence results for your sessions - a request that comes back to this machine, never data shipped out (managed tenancy only)"
 	case govern.AuthorityExtractToolBodies:
 		return "let the organisation RAISE extraction of this machine's tool-call inputs, outputs, reasoning, and error text (managed tenancy only)"
 	case govern.AuthorityExtractFolders:
@@ -72,8 +80,16 @@ func authorityPlainEnglish(tok string) string {
 		return "let the organisation RAISE extraction of this machine's model-routing decisions as a per-day model/turn-kind aggregate (managed tenancy only)"
 	case govern.AuthorityExtractPredictions:
 		return "let the organisation RAISE extraction of this machine's cost/limit predictor snapshots as a content-free per-day provider utilization aggregate (managed tenancy only)"
+	case govern.AuthorityExtractTargetActions:
+		return "let the organisation RAISE which action types on this machine may ship a raw target, such as a file path or command, instead of only a hash (managed tenancy only)"
+	case govern.AuthorityExtractScope:
+		return "let the organisation RAISE this machine's own [org_client.scope] restriction lists - widen, remove, or override what is included (managed tenancy only)"
+	case govern.AuthorityExtractPolicyState:
+		return "let the organisation RAISE extraction of this machine's effective-policy-state reports - which governance settings are actually applied here (managed tenancy only)"
+	case govern.AuthorityExtractObsEgress:
+		return "let the organisation RAISE extraction of this machine's egress-routing decisions for its own hosted-app traffic - part of the same trace family as full traces (managed tenancy only)"
 	default:
-		return "UNKNOWN to this version of Observer - it will be recorded but never acted on"
+		return "UNKNOWN to this version of Observer - no description is available, though it is still recorded on this grant"
 	}
 }
 

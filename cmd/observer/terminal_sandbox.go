@@ -304,11 +304,13 @@ func (r *sandboxRuntime) sources() []dashboard.SandboxSourceAvail {
 // state (StateRW); otherwise the honest zero note (SandboxSpec.Note) is the
 // reason. Branches on the capability SHAPE (a grounded row), never a tool name
 // (CLAUDE.md #3): v1 grounds only claude-code, every other launchable row
-// carries the Note fallback.
+// carries the Note fallback. Launchability itself is
+// integration.TerminalLaunchable, so a deprecated/dead product never appears
+// in the sandbox tool table either.
 func (r *sandboxRuntime) tools() map[string]dashboard.SandboxToolAvail {
 	out := map[string]dashboard.SandboxToolAvail{}
 	for _, c := range integration.Capabilities() {
-		if !c.Handoff.Launchable() {
+		if !integration.TerminalLaunchable(c) {
 			continue
 		}
 		if len(c.Sandbox.StateRW) > 0 {

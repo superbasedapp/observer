@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"slices"
 	"sort"
 	"text/tabwriter"
@@ -254,7 +255,7 @@ func newRoutingSimulateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			facts.Price = routingPriceFn(cost.NewEngine(cfg.Intelligence))
+			facts.Price = routingPriceFn(acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default()))
 
 			// Evidence for quality-risk flags comes from the Model Value
 			// Report over the same window; the replay turns come from

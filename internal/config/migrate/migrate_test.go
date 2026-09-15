@@ -284,8 +284,48 @@ func TestApply_MatchesNestedIndentStyle(t *testing.T) {
 }
 
 func TestLatestVersion(t *testing.T) {
-	if LatestVersion() != 2 {
-		t.Errorf("LatestVersion = %d, want 2", LatestVersion())
+	if LatestVersion() != 3 {
+		t.Errorf("LatestVersion = %d, want 3", LatestVersion())
+	}
+}
+
+// TestApply_RemovesDiskBudget pins step 3 (corpus-archival P4): the removed
+// codeintel.index.disk_budget_mb key is DROPPED from the file — durably, so the
+// deprecation warning stops recurring — while its siblings in the same block
+// survive untouched. A migration that took the whole block with it would
+// silently reset the operator's indexer settings.
+func TestApply_RemovesDiskBudget(t *testing.T) {
+	in := `[codeintel]
+enabled = true
+
+[codeintel.index]
+on_start = false
+disk_budget_mb = 500
+workers = 4
+`
+	res, err := Apply(in)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !res.Migrated {
+		t.Fatalf("Migrated = false; the removed key should have been dropped\n%s", res.Text)
+	}
+	if strings.Contains(res.Text, "disk_budget_mb") {
+		t.Errorf("disk_budget_mb survived the migration:\n%s", res.Text)
+	}
+	for _, keep := range []string{"on_start = false", "workers = 4", "enabled = true"} {
+		if !strings.Contains(res.Text, keep) {
+			t.Errorf("migration lost %q — only the removed key may be dropped:\n%s", keep, res.Text)
+		}
+	}
+	var removed bool
+	for _, c := range res.Changes {
+		if c.From == "codeintel.index.disk_budget_mb" && c.Kind == "remove" && c.To == "" {
+			removed = true
+		}
+	}
+	if !removed {
+		t.Errorf("no removal change reported for disk_budget_mb: %+v", res.Changes)
 	}
 }
 

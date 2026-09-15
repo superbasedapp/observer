@@ -177,7 +177,7 @@ func TestSetSessionAnnotationPartialAndGC(t *testing.T) {
 	}
 
 	yes, no := true, false
-	if err := s.SetSessionAnnotation(ctx, sid, &yes, nil, nil); err != nil {
+	if err := s.SetSessionAnnotation(ctx, sid, &yes, nil, nil, nil); err != nil {
 		t.Fatalf("set favorite: %v", err)
 	}
 	if countRows() != 1 {
@@ -185,7 +185,7 @@ func TestSetSessionAnnotationPartialAndGC(t *testing.T) {
 	}
 
 	note := "the run where compression broke"
-	if err := s.SetSessionAnnotation(ctx, sid, nil, &note, nil); err != nil {
+	if err := s.SetSessionAnnotation(ctx, sid, nil, &note, nil, nil); err != nil {
 		t.Fatalf("set note: %v", err)
 	}
 	a, err := s.GetSessionAnnotation(ctx, sid)
@@ -197,7 +197,7 @@ func TestSetSessionAnnotationPartialAndGC(t *testing.T) {
 	}
 
 	// Un-favoriting alone keeps the row (the note still carries meaning).
-	if err := s.SetSessionAnnotation(ctx, sid, &no, nil, nil); err != nil {
+	if err := s.SetSessionAnnotation(ctx, sid, &no, nil, nil, nil); err != nil {
 		t.Fatalf("unset favorite: %v", err)
 	}
 	if countRows() != 1 {
@@ -207,7 +207,7 @@ func TestSetSessionAnnotationPartialAndGC(t *testing.T) {
 	// A rating alone keeps the row after the note is cleared.
 	empty := ""
 	seven := 7
-	if err := s.SetSessionAnnotation(ctx, sid, nil, &empty, &seven); err != nil {
+	if err := s.SetSessionAnnotation(ctx, sid, nil, &empty, &seven, nil); err != nil {
 		t.Fatalf("clear note + set rating: %v", err)
 	}
 	if countRows() != 1 {
@@ -217,24 +217,45 @@ func TestSetSessionAnnotationPartialAndGC(t *testing.T) {
 		t.Fatalf("rating not persisted: %+v err=%v, want Rating=7", a, err)
 	}
 
-	// Clearing the rating too (0) returns the state to zero → the row is GC'd.
-	zero := 0
-	if err := s.SetSessionAnnotation(ctx, sid, nil, nil, &zero); err != nil {
-		t.Fatalf("clear rating: %v", err)
+	// A title alone keeps the row after the rating is cleared.
+	zeroRating := 0
+	title := "the compression regression run"
+	if err := s.SetSessionAnnotation(ctx, sid, nil, nil, &zeroRating, &title); err != nil {
+		t.Fatalf("clear rating + set title: %v", err)
+	}
+	if countRows() != 1 {
+		t.Fatal("row GC'd while a title was still set")
+	}
+	if a, err := s.GetSessionAnnotation(ctx, sid); err != nil || a.Title != title {
+		t.Fatalf("title not persisted: %+v err=%v, want Title=%q", a, err, title)
+	}
+
+	// Clearing the title too ("") returns the state to zero → the row is GC'd.
+	emptyTitle := ""
+	if err := s.SetSessionAnnotation(ctx, sid, nil, nil, nil, &emptyTitle); err != nil {
+		t.Fatalf("clear title: %v", err)
 	}
 	if countRows() != 0 {
 		t.Fatal("zero-value annotation row was not garbage-collected")
 	}
 
 	long := strings.Repeat("x", MaxNoteLen+1)
-	if err := s.SetSessionAnnotation(ctx, sid, nil, &long, nil); !errors.Is(err, ErrNoteTooLong) {
+	if err := s.SetSessionAnnotation(ctx, sid, nil, &long, nil, nil); !errors.Is(err, ErrNoteTooLong) {
 		t.Fatalf("over-long note: err=%v, want ErrNoteTooLong", err)
 	}
 	badRating := MaxRating + 1
-	if err := s.SetSessionAnnotation(ctx, sid, nil, nil, &badRating); !errors.Is(err, ErrInvalidRating) {
+	if err := s.SetSessionAnnotation(ctx, sid, nil, nil, &badRating, nil); !errors.Is(err, ErrInvalidRating) {
 		t.Fatalf("out-of-range rating: err=%v, want ErrInvalidRating", err)
 	}
-	if err := s.SetSessionAnnotation(ctx, "", &yes, nil, nil); err == nil {
+	longTitle := strings.Repeat("t", MaxTitleLen+1)
+	if err := s.SetSessionAnnotation(ctx, sid, nil, nil, nil, &longTitle); !errors.Is(err, ErrTitleTooLong) {
+		t.Fatalf("over-long title: err=%v, want ErrTitleTooLong", err)
+	}
+	newlineTitle := "line one\nline two"
+	if err := s.SetSessionAnnotation(ctx, sid, nil, nil, nil, &newlineTitle); !errors.Is(err, ErrInvalidTitle) {
+		t.Fatalf("newline title: err=%v, want ErrInvalidTitle", err)
+	}
+	if err := s.SetSessionAnnotation(ctx, "", &yes, nil, nil, nil); err == nil {
 		t.Fatal("empty session id accepted")
 	}
 }
@@ -253,8 +274,12 @@ func TestListSessionTagsAndAnnotationsBatched(t *testing.T) {
 		t.Fatalf("seed b: %v", err)
 	}
 	yes := true
-	if err := s.SetSessionAnnotation(ctx, "b", &yes, nil, nil); err != nil {
+	if err := s.SetSessionAnnotation(ctx, "b", &yes, nil, nil, nil); err != nil {
 		t.Fatalf("seed annotation b: %v", err)
+	}
+	title := "the compression baseline"
+	if err := s.SetSessionAnnotation(ctx, "a", nil, nil, nil, &title); err != nil {
+		t.Fatalf("seed title a: %v", err)
 	}
 
 	tags, err := s.ListSessionTags(ctx, []string{"a", "b", "c"})
@@ -275,8 +300,11 @@ func TestListSessionTagsAndAnnotationsBatched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAnnotations: %v", err)
 	}
-	if len(annots) != 1 || !annots["b"].Favorite {
-		t.Fatalf("ListAnnotations = %v, want only b favorited", annots)
+	if len(annots) != 2 || !annots["b"].Favorite {
+		t.Fatalf("ListAnnotations = %v, want b favorited and a titled", annots)
+	}
+	if annots["a"].Title != title {
+		t.Fatalf("ListAnnotations[a].Title = %q, want %q", annots["a"].Title, title)
 	}
 
 	if m, err := s.ListSessionTags(ctx, nil); err != nil || m == nil || len(m) != 0 {
@@ -478,34 +506,44 @@ func TestValidateClassificationInput(t *testing.T) {
 		return out
 	}
 	rating := func(n int) *int { return &n }
+	title := func(s string) *string { return &s }
+	longTitle := func(n int) *string { s := strings.Repeat("t", n); return &s }
 	tests := []struct {
 		name    string
 		add     []string
 		remove  []string
 		note    *string
 		rating  *int
+		title   *string
 		wantErr error
 	}{
-		{"empty", nil, nil, nil, nil, nil},
-		{"valid combo", []string{"Backend", "ui ux"}, []string{"junk"}, note(MaxNoteLen), rating(MaxRating), nil},
-		{"invalid add", []string{"bad/tag"}, nil, nil, nil, ErrInvalidTag},
-		{"invalid remove", nil, []string{"bad/tag"}, nil, nil, ErrInvalidTag},
-		{"note one over", nil, nil, note(MaxNoteLen + 1), nil, ErrNoteTooLong},
-		{"add list over cap", many(MaxTagsPerSession + 1), nil, nil, nil, ErrTooManyTags},
-		{"add list at cap", many(MaxTagsPerSession), nil, nil, nil, nil},
-		{"duplicates do not consume cap", append(many(MaxTagsPerSession), "t0", "T0"), nil, nil, nil, nil},
+		{"empty", nil, nil, nil, nil, nil, nil},
+		{"valid combo", []string{"Backend", "ui ux"}, []string{"junk"}, note(MaxNoteLen), rating(MaxRating), title("baseline run"), nil},
+		{"invalid add", []string{"bad/tag"}, nil, nil, nil, nil, ErrInvalidTag},
+		{"invalid remove", nil, []string{"bad/tag"}, nil, nil, nil, ErrInvalidTag},
+		{"note one over", nil, nil, note(MaxNoteLen + 1), nil, nil, ErrNoteTooLong},
+		{"add list over cap", many(MaxTagsPerSession + 1), nil, nil, nil, nil, ErrTooManyTags},
+		{"add list at cap", many(MaxTagsPerSession), nil, nil, nil, nil, nil},
+		{"duplicates do not consume cap", append(many(MaxTagsPerSession), "t0", "T0"), nil, nil, nil, nil, nil},
 		// The whole body is judged: valid tags + an over-long note is a
 		// rejection, which is exactly the case that used to half-commit.
-		{"valid tags with over-long note", []string{"x"}, nil, note(MaxNoteLen + 1), nil, ErrNoteTooLong},
+		{"valid tags with over-long note", []string{"x"}, nil, note(MaxNoteLen + 1), nil, nil, ErrNoteTooLong},
 		// Rating bounds: 0 (clear) and MaxRating are valid; over/under are not.
-		{"rating clear", nil, nil, nil, rating(0), nil},
-		{"rating at max", nil, nil, nil, rating(MaxRating), nil},
-		{"rating over max", nil, nil, nil, rating(MaxRating + 1), ErrInvalidRating},
-		{"rating negative", nil, nil, nil, rating(-1), ErrInvalidRating},
+		{"rating clear", nil, nil, nil, rating(0), nil, nil},
+		{"rating at max", nil, nil, nil, rating(MaxRating), nil, nil},
+		{"rating over max", nil, nil, nil, rating(MaxRating + 1), nil, ErrInvalidRating},
+		{"rating negative", nil, nil, nil, rating(-1), nil, ErrInvalidRating},
+		// Title bounds: "" (clear) and MaxTitleLen are valid; over-long and a
+		// newline are not.
+		{"title clear", nil, nil, nil, nil, title(""), nil},
+		{"title at max", nil, nil, nil, nil, longTitle(MaxTitleLen), nil},
+		{"title one over", nil, nil, nil, nil, longTitle(MaxTitleLen + 1), ErrTitleTooLong},
+		{"title with newline", nil, nil, nil, nil, title("line one\nline two"), ErrInvalidTitle},
+		{"valid tags with over-long title", []string{"x"}, nil, nil, nil, longTitle(MaxTitleLen + 1), ErrTitleTooLong},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateClassificationInput(tc.add, tc.remove, tc.note, tc.rating)
+			err := ValidateClassificationInput(tc.add, tc.remove, tc.note, tc.rating, tc.title)
 			if tc.wantErr == nil {
 				if err != nil {
 					t.Fatalf("ValidateClassificationInput = %v, want nil", err)

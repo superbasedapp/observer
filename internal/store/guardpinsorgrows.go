@@ -114,3 +114,51 @@ func (s *Store) SelectGuardApprovalRows(ctx context.Context) ([]orgcontract.Guar
 func guardPinKey(kind, name, client string) string {
 	return kind + ":" + name + ":" + client
 }
+
+// probeGuardPins is the Track R2 change-detection probe for the guard_pins
+// wire. It lives here — with the wire's own read — so orgsnapgate.go and
+// orgpush.go stay free of the table name.
+//
+// PROBE: (MAX(id), COUNT(*), MAX(last_verified), COUNT(DISTINCT status)) over
+// guard_pins. The table holds one row per pinned MCP server / client binding —
+// a handful of rows — so a full scan costs nothing.
+//
+// WHY last_verified AND status ARE IN THE PROBE: guard_pins is UPDATED in place
+// (`SET status = ?, last_verified = ?`) on every verification, and status is
+// exactly the column an admin watches (a pin flipping to a drift state is the
+// signal this wire exists to carry). Because the two columns are always written
+// together, MAX(last_verified) moves whenever the newest-verified pin changes,
+// and the distinct-status count moves whenever a pin enters or leaves a state
+// no other pin is in.
+//
+// RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: a status flip on a pin whose
+// last_verified is NOT the table maximum, into a state another pin already
+// occupies, moves neither component. snapGate's maxSkipAge recomputes within
+// the hour.
+func (s *Store) probeGuardPins(ctx context.Context) (string, error) {
+	return s.snapProbeScalar(ctx, `
+		SELECT 'gp' || COALESCE(MAX(id), 0) || '/' || COUNT(*) ||
+		       '/' || COALESCE(MAX(last_verified), '') || '/' || COUNT(DISTINCT status)
+		  FROM guard_pins`)
+}
+
+// probeGuardApprovals is the Track R2 change-detection probe for the
+// guard_approvals wire. It lives here — with the wire's own read — so
+// orgsnapgate.go and orgpush.go stay free of the table name.
+//
+// PROBE: (MAX(id), COUNT(*)) over guard_approvals — a small "reviewable
+// exception register", not an event log, so the count is free.
+//
+// WHY THE COUNT IS NEEDED: an approval is granted by INSERT and REVOKED by
+// DELETE, so revocation is a pure row disappearance that MAX(id) cannot see.
+//
+// RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: this wire's output is also
+// TIME-dependent — SelectGuardApprovalRows ships only approvals still active at
+// the moment of the push, so an approval simply expiring changes the wire with
+// no write at all. That was already the wire's documented model (an expired
+// approval "stops being re-shipped"; the server never deletes what it has), and
+// snapGate's maxSkipAge bounds the lag to an hour.
+func (s *Store) probeGuardApprovals(ctx context.Context) (string, error) {
+	return s.snapProbeScalar(ctx, `
+		SELECT 'ga' || COALESCE(MAX(id), 0) || '/' || COUNT(*) FROM guard_approvals`)
+}

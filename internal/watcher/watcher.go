@@ -2,12 +2,14 @@ package watcher
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,12 +19,14 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/cachetrack"
 	"github.com/marmutapp/superbased-observer/internal/compression/indexing"
 	"github.com/marmutapp/superbased-observer/internal/freshness"
+	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // Logger is the subset of slog.Logger used by the watcher. Satisfied by
 // *slog.Logger.
 type Logger interface {
+	Debug(msg string, args ...any)
 	Info(msg string, args ...any)
 	Warn(msg string, args ...any)
 	Error(msg string, args ...any)
@@ -77,6 +81,9 @@ type Watcher struct {
 	// skipModifiedBefore gates the historic scan's WalkDir callback.
 	// See Options.SkipModifiedBefore.
 	skipModifiedBefore time.Time
+	// rootDetectInterval is the cadence of the standalone re-detect loop
+	// Watch runs (runRootDetector). See Options.RootDetectInterval.
+	rootDetectInterval time.Duration
 
 	// Live fsnotify state, owned by Watch and mutated by RefreshRoots /
 	// applyDetectedRoots under liveMu. fsw is non-nil only while Watch is
@@ -86,6 +93,40 @@ type Watcher struct {
 	fsw       *fsnotify.Watcher
 	byRoot    map[string]adapter.Adapter
 	refreshCh chan struct{} // buffered 1; nudges Watch to re-apply + Scan
+
+	// rootCache memoizes each adapter's identity-deduped watch roots
+	// against a fingerprint of the RAW WatchPaths slice they were
+	// computed from. See watchRoots — the dedup does filesystem work
+	// (Stat + EvalSymlinks + SameFile per root) and the cursor poller
+	// re-derives the root→adapter map on EVERY grown file, so without
+	// this the steady-state poll cost is O(adapters × roots) syscalls
+	// per row. Guarded by its own mutex: watchRoots is called from
+	// applyDetectedRoots (which already holds liveMu), so the lock
+	// order is always liveMu → rootMu, never the reverse.
+	rootMu    sync.Mutex
+	rootCache map[string]rootCacheEntry
+	// dedupRoots is the identity-fold seam watchRoots calls on a cache
+	// miss. Set to adapter.DedupRootsByIdentity by New; a test may
+	// substitute a counting wrapper to observe memoization. Per-Watcher
+	// (not a package var) so substituting it can never race a parallel
+	// test. nil falls back to the real fold.
+	dedupRoots func([]string) []string
+	// budgetCaptureMu/budgetCaptureSeen memoize the last strict budget pass
+	// per (adapter, source file). An unchanged file costs one stat instead of
+	// a parse; see internal/watcher/budgetcapture.go for the entry shape and
+	// the invalidation rules.
+	budgetCaptureMu   sync.Mutex
+	budgetCaptureSeen map[string]budgetCaptureSeenEntry
+}
+
+// rootCacheEntry is one memoized (adapter → deduped roots) mapping,
+// keyed in Watcher.rootCache by adapter name and validated against a
+// fingerprint of the raw WatchPaths slice, so an adapter installed
+// mid-daemon (whose WatchPaths starts returning a new root) invalidates
+// itself on the next call rather than serving a stale root set.
+type rootCacheEntry struct {
+	fingerprint string
+	deduped     []string
 }
 
 // Options configures New.
@@ -133,6 +174,20 @@ type Options struct {
 	// The zero value (time.Time{}) changes nothing: every file is
 	// processed exactly as before this field existed.
 	SkipModifiedBefore time.Time
+	// RootDetectInterval is the cadence of Watch's standalone
+	// re-detection loop: every tick, adapter detection re-runs and any
+	// watch root that appeared since the last pass is registered with
+	// fsnotify AND walked once (see hotAddRoots). Zero uses
+	// defaultRootDetectInterval (30s); a negative value disables the
+	// loop entirely.
+	//
+	// Deliberately INDEPENDENT of PollInterval. Before this field the
+	// only automatic re-detection lived inside the poller's every-15th-
+	// tick branch, so `[observer.watch] poll_interval_seconds = 0`
+	// silently disabled hot-add altogether — a tool installed after the
+	// daemon started was never watched and never walked until a
+	// dashboard RefreshRoots or a restart.
+	RootDetectInterval time.Duration
 }
 
 // New returns a watcher. Reasonable zero defaults apply.
@@ -154,6 +209,10 @@ func New(s *store.Store, r *adapter.Registry, opts Options) *Watcher {
 	if warningTTL == 0 {
 		warningTTL = defaultAdapterWarningTTL
 	}
+	rootDetect := opts.RootDetectInterval
+	if rootDetect == 0 {
+		rootDetect = defaultRootDetectInterval
+	}
 	// A negative TTL disables dedup. newWarningDeduper handles
 	// non-positive values as "always allow", so a single deduper
 	// instance covers both branches.
@@ -170,7 +229,9 @@ func New(s *store.Store, r *adapter.Registry, opts Options) *Watcher {
 		warningDedup:       newWarningDeduper(warningTTL),
 		maxFileBytes:       opts.MaxFileBytes,
 		skipModifiedBefore: opts.SkipModifiedBefore,
+		rootDetectInterval: rootDetect,
 		refreshCh:          make(chan struct{}, 1),
+		dedupRoots:         adapter.DedupRootsByIdentity,
 	}
 }
 
@@ -189,8 +250,7 @@ func New(s *store.Store, r *adapter.Registry, opts Options) *Watcher {
 // is still queued so the next Watch loop iteration applies roots as soon
 // as fsnotify is live.
 func (w *Watcher) RefreshRoots(ctx context.Context) (ScanResult, error) {
-	added := w.applyDetectedRoots()
-	if added > 0 {
+	if added := w.hotAddRoots(ctx); added > 0 {
 		w.logger.Info("watcher.RefreshRoots: hot-added watch roots", "count", added)
 	}
 	select {
@@ -200,18 +260,31 @@ func (w *Watcher) RefreshRoots(ctx context.Context) (ScanResult, error) {
 	return w.Scan(ctx)
 }
 
+// rootBinding is one (adapter, watch root) pair the live fsnotify set
+// just gained. applyDetectedRoots returns them so the caller can walk
+// EXACTLY the roots that appeared, instead of re-walking every root of
+// every detected adapter.
+type rootBinding struct {
+	adapter adapter.Adapter
+	root    string
+}
+
 // applyDetectedRoots adds every currently-Detected adapter root that is
-// not already in byRoot to the live fsnotify watcher. Returns the number
-// of newly added roots. No-op when Watch is not running (fsw == nil).
-func (w *Watcher) applyDetectedRoots() int {
+// not already in byRoot to the live fsnotify watcher. Returns the
+// bindings that were newly added. No-op when Watch is not running
+// (fsw == nil).
+//
+// Registration ONLY — it never walks. Callers that want the new root's
+// pre-existing backlog captured go through hotAddRoots.
+func (w *Watcher) applyDetectedRoots() []rootBinding {
 	w.liveMu.Lock()
 	defer w.liveMu.Unlock()
 	if w.fsw == nil || w.byRoot == nil {
-		return 0
+		return nil
 	}
-	added := 0
+	var added []rootBinding
 	for _, a := range w.registry.Detected(w.allow) {
-		for _, root := range a.WatchPaths() {
+		for _, root := range w.watchRoots(a) {
 			if root == "" {
 				continue
 			}
@@ -224,12 +297,86 @@ func (w *Watcher) applyDetectedRoots() int {
 				continue
 			}
 			w.byRoot[root] = a
-			added++
-			w.logger.Info("watcher: hot-added watch root",
-				"adapter", a.Name(), "root", root)
+			added = append(added, rootBinding{adapter: a, root: root})
+			// A root that does not exist is registered anyway —
+			// addRecursive's WalkDir swallows the stat error, and
+			// adapters return canonical roots regardless of install
+			// state — but it is not news. Only an EXISTING root is
+			// worth an operator's attention at Info; the rest are
+			// bookkeeping and belong at Debug, where they stop
+			// drowning the real hot-add events in the journal.
+			if info, err := dirStat(root); err == nil && info.IsDir() {
+				w.logger.Info("watcher: hot-added watch root",
+					"adapter", a.Name(), "root", root)
+			} else {
+				w.logger.Debug("watcher: hot-added watch root (absent)",
+					"adapter", a.Name(), "root", root)
+			}
 		}
 	}
 	return added
+}
+
+// hotAddRoots registers newly-detected watch roots AND immediately walks
+// each one, so a tool installed (or first used, or only now discovered)
+// after the daemon started captures the files that were already sitting
+// under its store — the New Terminal install→launch premise.
+//
+// fsnotify only ever reports what happens AFTER a watch is registered,
+// so registration alone leaves a newly-appeared root's backlog invisible
+// until something else walks it. Before this seam existed that "something
+// else" was whatever full Scan the call site happened to run next: at
+// Watch startup an immediate one, from RefreshRoots an immediate one, and
+// automatically only inside the poller's every-15th-tick branch — which
+// is up to 15 poll intervals late and does not run at all when polling is
+// disabled. The walk now belongs to the hot-add itself.
+//
+// The walk is scoped to the new roots (not a full Scan) and goes through
+// the same processFile path as the startup walk, so it is idempotent via
+// parse_cursors + the (source_file, source_event_id) UNIQUE index, and it
+// inherits the identity dedup of watchRoots — the bindings ARE the
+// deduped roots, and a root already in byRoot is never re-added.
+func (w *Watcher) hotAddRoots(ctx context.Context) int {
+	added := w.applyDetectedRoots()
+	for _, b := range added {
+		if ctx.Err() != nil {
+			break
+		}
+		res := w.walkRoot(ctx, b.adapter, b.root, false)
+		if res.FilesProcessed > 0 || res.Errors > 0 {
+			w.logger.Info("watcher: walked hot-added root",
+				"adapter", b.adapter.Name(), "root", b.root,
+				"files", res.FilesProcessed, "errors", res.Errors)
+		}
+	}
+	return len(added)
+}
+
+// defaultRootDetectInterval is the cadence of Watch's standalone
+// re-detection loop when Options.RootDetectInterval is zero. It matches
+// the effective cadence of the poller's old full-scan branch (15 ticks ×
+// the 2s default poll interval) but costs one detection pass instead of
+// a walk of every root.
+const defaultRootDetectInterval = 30 * time.Second
+
+// runRootDetector re-runs adapter detection on its own cadence, hot-adds
+// any root that appeared, and walks it. Independent of the poller so a
+// node with `poll_interval_seconds = 0` still picks up a tool installed
+// mid-daemon. Exits with ctx.
+func (w *Watcher) runRootDetector(ctx context.Context) {
+	if w.rootDetectInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(w.rootDetectInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = w.hotAddRoots(ctx)
+		}
+	}
 }
 
 // snapshotByRoot returns a copy of the live root→adapter map for
@@ -254,6 +401,52 @@ func (w *Watcher) snapshotByRoot() map[string]adapter.Adapter {
 // sessions had no cache_entries. Idempotent; nil is a no-op disable.
 func (w *Watcher) SetCacheEngine(e *cachetrack.Engine) { w.store.SetCacheEngine(e) }
 
+// SetRootCommitResolver wires the lazy root-commit exec (Project Identity
+// Resolver v2, docs/plans/project-identity-resolver-v2-plan-2026-09-06.md
+// §3.1) through to the watcher's store. The daemon passes
+// git.DefaultRootCommit.
+//
+// The WATCHER is the deliberate home for this, not the adapters and not
+// the hook path. Adapters pass IdentityOptions.RootCommit = nil because
+// they run per parsed line; `observer hook` builds a short-lived store per
+// tool call, so an exec there would fork git on the agent's critical path.
+// The watcher's store is long-lived and its Ingest already runs once per
+// batch, where store.RootCommitNeedsCheck's 7-day fence collapses the exec
+// to at most one `git rev-list` per project root per week. A session
+// captured by the hook still gets its root commit filled in on the
+// watcher's next scan of the same project, because the column is written
+// backfill-on-touch against the shared projects row.
+//
+// Idempotent; nil is a no-op disable (the store's own default), which is
+// what keeps internal/store's tests from ever shelling out to git.
+func (w *Watcher) SetRootCommitResolver(fn store.RootCommitResolverFunc) {
+	w.store.SetRootCommitResolver(fn)
+}
+
+// SurfaceSeams exposes the watcher store's two capture-surface seams —
+// LoadSessionSurface (found=false on a missing session, never an error
+// for that case) and SetSessionSurface — for the daemon-lifetime
+// surface enricher (internal/surfaceenrich) that runs beside the
+// watcher on the SAME store handle. It deliberately returns two funcs
+// rather than the *store.Store, so the enricher cannot grow into a
+// second writer of anything else (CLAUDE.md Module Boundaries #2/#4).
+func (w *Watcher) SurfaceSeams() (
+	load func(ctx context.Context, sessionID string) (models.SessionSurface, bool, error),
+	stamp func(ctx context.Context, sf models.SessionSurface) (bool, error),
+) {
+	load = func(ctx context.Context, sessionID string) (models.SessionSurface, bool, error) {
+		sf, err := w.store.LoadSessionSurface(ctx, sessionID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.SessionSurface{}, false, nil
+		}
+		if err != nil {
+			return models.SessionSurface{}, false, err
+		}
+		return sf, true, nil
+	}
+	return load, w.store.SetSessionSurface
+}
+
 // Scan walks every detected adapter's watch paths once, parsing every
 // session file from its saved offset. Returns the total number of newly
 // inserted actions + a count of errors (non-fatal).
@@ -276,6 +469,25 @@ func (w *Watcher) Rescan(ctx context.Context) (ScanResult, error) {
 	return w.scan(ctx, true)
 }
 
+// ScanFile processes one recognized transcript through the normal ingestion
+// and cursor path. It supports bounded recovery without rescanning all history.
+func (w *Watcher) ScanFile(ctx context.Context, path string, forceFromZero bool) (ScanResult, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return ScanResult{}, fmt.Errorf("watcher.ScanFile: %w", err)
+	}
+	for _, a := range w.registry.Detected(w.allow) {
+		if !a.IsSessionFile(path) {
+			continue
+		}
+		if err := w.processFile(ctx, a, path, forceFromZero); err != nil {
+			return ScanResult{Errors: 1}, err
+		}
+		return ScanResult{FilesProcessed: 1}, nil
+	}
+	return ScanResult{}, fmt.Errorf("watcher.ScanFile: no enabled adapter recognizes %s", path)
+}
+
 func (w *Watcher) scan(ctx context.Context, forceFromZero bool) (ScanResult, error) {
 	var res ScanResult
 	detected := w.registry.Detected(w.allow)
@@ -284,63 +496,77 @@ func (w *Watcher) scan(ctx context.Context, forceFromZero bool) (ScanResult, err
 		return res, nil
 	}
 	for _, a := range detected {
-		for _, root := range a.WatchPaths() {
-			walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				if err != nil {
-					// Missing roots are not fatal — skip.
-					return nil
-				}
-				if d.IsDir() {
-					return nil
-				}
-				if !a.IsSessionFile(path) {
-					return nil
-				}
-				if !w.skipModifiedBefore.IsZero() {
-					// A file whose last write predates the window
-					// cannot contain any in-window rows — skip it
-					// without ever opening it. Use the fs.DirEntry
-					// info the walk already fetched (no extra
-					// os.Stat on the hit path) — EXCEPT for a
-					// symlink: WalkDir's DirEntry is built from
-					// Lstat, so d.Info() reports the LINK's own
-					// mtime, while processFile follows safe symlinks
-					// and parses the TARGET. An old symlink pointing
-					// at a freshly-updated session file must not be
-					// skipped on the link's stale mtime, so for a
-					// symlink entry we os.Stat(path) instead, which
-					// follows the link to the target's mtime. If
-					// either stat errors (e.g. a raced deletion or a
-					// broken symlink), fall through and let
-					// processFile's own os.Stat/open handle it —
-					// fail-open, never fail-skip.
-					info, infoErr := d.Info()
-					if infoErr == nil && d.Type()&fs.ModeSymlink != 0 {
-						info, infoErr = os.Stat(path)
-					}
-					if infoErr == nil && info.ModTime().Before(w.skipModifiedBefore) {
-						return nil
-					}
-				}
-				if err := w.processFile(ctx, a, path, forceFromZero); err != nil {
-					res.Errors++
-					w.logger.Warn("watcher.Scan: process failed",
-						"adapter", a.Name(), "path", path, "err", err)
-					return nil
-				}
-				res.FilesProcessed++
-				return nil
-			})
-			if walkErr != nil && !errors.Is(walkErr, ctx.Err()) {
-				w.logger.Warn("watcher.Scan: walk failed",
-					"adapter", a.Name(), "root", root, "err", walkErr)
-			}
+		for _, root := range w.watchRoots(a) {
+			r := w.walkRoot(ctx, a, root, forceFromZero)
+			res.FilesProcessed += r.FilesProcessed
+			res.Errors += r.Errors
 		}
 	}
 	return res, nil
+}
+
+// walkRoot walks ONE (adapter, root) pair and processes every session
+// file under it. The single walk implementation shared by the full scan
+// (scan, over every detected adapter's roots) and the scoped hot-add
+// walk (hotAddRoots, over just the roots that appeared) — so a file
+// picked up by either path takes the identical processFile route,
+// cursor semantics included.
+func (w *Watcher) walkRoot(ctx context.Context, a adapter.Adapter, root string, forceFromZero bool) ScanResult {
+	var res ScanResult
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil {
+			// Missing roots are not fatal — skip.
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !a.IsSessionFile(path) {
+			return nil
+		}
+		if !w.skipModifiedBefore.IsZero() {
+			// A file whose last write predates the window
+			// cannot contain any in-window rows — skip it
+			// without ever opening it. Use the fs.DirEntry
+			// info the walk already fetched (no extra
+			// os.Stat on the hit path) — EXCEPT for a
+			// symlink: WalkDir's DirEntry is built from
+			// Lstat, so d.Info() reports the LINK's own
+			// mtime, while processFile follows safe symlinks
+			// and parses the TARGET. An old symlink pointing
+			// at a freshly-updated session file must not be
+			// skipped on the link's stale mtime, so for a
+			// symlink entry we os.Stat(path) instead, which
+			// follows the link to the target's mtime. If
+			// either stat errors (e.g. a raced deletion or a
+			// broken symlink), fall through and let
+			// processFile's own os.Stat/open handle it —
+			// fail-open, never fail-skip.
+			info, infoErr := d.Info()
+			if infoErr == nil && d.Type()&fs.ModeSymlink != 0 {
+				info, infoErr = os.Stat(path)
+			}
+			if infoErr == nil && info.ModTime().Before(w.skipModifiedBefore) {
+				return nil
+			}
+		}
+		if err := w.processFile(ctx, a, path, forceFromZero); err != nil {
+			res.Errors++
+			w.logger.Warn("watcher.Scan: process failed",
+				"adapter", a.Name(), "path", path, "err", err)
+			return nil
+		}
+		res.FilesProcessed++
+		return nil
+	})
+	if walkErr != nil && !errors.Is(walkErr, ctx.Err()) {
+		w.logger.Warn("watcher.Scan: walk failed",
+			"adapter", a.Name(), "root", root, "err", walkErr)
+	}
+	return res
 }
 
 // ScanResult is the summary of a scan invocation.
@@ -376,8 +602,11 @@ func (w *Watcher) Watch(ctx context.Context) error {
 	w.byRoot = map[string]adapter.Adapter{}
 	w.liveMu.Unlock()
 
-	if n := w.applyDetectedRoots(); n == 0 {
-		w.logger.Info("watcher.Watch: no adapters detected yet — waiting for RefreshRoots / poller re-detect")
+	// Registration only: the initial full Scan directly below walks every
+	// one of these roots anyway, so paying hotAddRoots' scoped walk here
+	// would walk the whole tree twice at startup.
+	if n := len(w.applyDetectedRoots()); n == 0 {
+		w.logger.Info("watcher.Watch: no adapters detected yet — waiting for RefreshRoots / root re-detect")
 	}
 
 	// Initial scan, so existing files are caught up before watching.
@@ -389,12 +618,17 @@ func (w *Watcher) Watch(ctx context.Context) error {
 	// we don't leave a stale nudge that would only re-Scan once.
 	select {
 	case <-w.refreshCh:
-		_ = w.applyDetectedRoots()
+		_ = w.hotAddRoots(ctx)
 		if _, err := w.Scan(ctx); err != nil {
 			return err
 		}
 	default:
 	}
+
+	// Standalone root re-detection. Independent of the poller so a node
+	// that disabled polling still hot-adds (and walks) a store that
+	// appears after the daemon started.
+	go w.runRootDetector(ctx)
 
 	// Polling fallback. fsnotify is documented to drop events on busy or
 	// virtualized filesystems (e.g. WSL2 reading from a Windows NTFS
@@ -434,7 +668,7 @@ func (w *Watcher) Watch(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-w.refreshCh:
-			_ = w.applyDetectedRoots()
+			_ = w.hotAddRoots(ctx)
 			if _, err := w.Scan(ctx); err != nil && ctx.Err() == nil {
 				w.logger.Warn("watcher.Watch: refresh scan failed", "err", err)
 			}
@@ -529,6 +763,144 @@ func symlinkLeafEscapes(path string, roots []string) (bool, string) {
 }
 
 func (w *Watcher) processFile(ctx context.Context, a adapter.Adapter, path string, forceFromZero bool) error {
+	_, err := w.processFileMode(ctx, a, path, forceFromZero, false)
+	return err
+}
+
+// processFileStrict is the reconciliation variant of processFile. It keeps
+// the normal watcher fail-open behavior out of the strict status path: skips,
+// warnings, retries, parser errors, and panics remain visible to the caller.
+func (w *Watcher) processFileStrict(ctx context.Context, a adapter.Adapter, path string) (budgetCaptureFileOutcome, error) {
+	before, snapshotErr := strictBudgetFileSnapshot(a, path)
+	if snapshotErr != nil {
+		return budgetCaptureFileOutcome{
+			incomplete:       true,
+			incompleteDetail: snapshotErr.Error(),
+		}, nil
+	}
+	// Parse only the tail since the ordinary cursor. Re-reading every source
+	// from byte zero on every two-second control cycle cannot finish inside the
+	// pass deadline on a real corpus, which made the pass report scan_canceled
+	// forever (accounting-readiness correction, 2026-09-14). The events were
+	// always ingested idempotently; only the starting offset changes.
+	out, err := w.processFileMode(ctx, a, path, false, true)
+	out.beforeSnapshot = &before
+	after, afterErr := strictBudgetFileSnapshot(a, path)
+	if afterErr != nil {
+		out.incomplete = true
+		out.incompleteDetail = afterErr.Error()
+	} else if detail := strictBudgetFileChange(before, after); detail != "" {
+		out.incomplete = true
+		out.incompleteDetail = detail
+	}
+	return out, err
+}
+
+func (w *Watcher) processFileMode(ctx context.Context, a adapter.Adapter, path string, forceFromZero, strict bool) (out budgetCaptureFileOutcome, err error) {
+	if w.skipProcessFile(a, path, strict, &out) {
+		return out, nil
+	}
+
+	// Recover from a panic in adapter parsing. Normal watcher calls preserve
+	// the historical fail-open behavior; strict callers receive an outcome.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			out.parserPanic = true
+			if !strict {
+				w.logger.Warn("watcher.processFile: recovered from adapter panic",
+					"path", path, "adapter", a.Name(), "panic", recovered)
+			}
+			err = nil
+		}
+	}()
+
+	mu, lockErr := w.lockProcessFile(ctx, path, strict)
+	if lockErr != nil {
+		return out, lockErr
+	}
+	defer mu.Unlock()
+	if strict && !strictProcessFileRegular(path, &out) {
+		return out, nil
+	}
+
+	var off int64
+	if !forceFromZero {
+		var getErr error
+		off, getErr = w.store.GetCursor(ctx, path)
+		if getErr != nil {
+			if strict {
+				out.storeError = getErr
+				return out, nil
+			}
+			return out, getErr
+		}
+	}
+	if strict {
+		// Resume from the highest position this daemon has already reconciled
+		// for this exact file. The ordinary cursor is the floor (everything
+		// before it is ingested, actions included); the strict memo carries the
+		// tail this pass already consumed. The ordinary cursor is deliberately
+		// NEVER advanced from here: strict ingest is usage-only, so moving it
+		// would silently skip action/content capture for those bytes.
+		if memo, ok := w.budgetCaptureOffset(a, path); ok && memo > off {
+			off = memo
+		}
+	}
+	out.startOffset = off
+	res, parseErr := a.ParseSessionFile(ctx, path, off)
+	if parseErr != nil {
+		if strict {
+			out.parseError = parseErr
+			return out, nil
+		}
+		return out, parseErr
+	}
+	out.warnings = append([]string(nil), res.Warnings...)
+	out.retrySuggested = res.RetrySuggested
+	if strict && len(res.Warnings) == 0 && !res.RetrySuggested {
+		if complete, detail := strictFileCursorComplete(a, path, res.NewOffset); !complete {
+			out.incomplete = true
+			out.incompleteDetail = detail
+		}
+	}
+	// Strict reconciliation releases the per-file lock after parsing and lets
+	// the caller ingest complete results in batches. Its final file/directory
+	// snapshots still reject any source mutation during that interval, and the
+	// cursor is advanced by flushBudgetCaptureBatch only after the batch has
+	// been ingested - never before, so a dropped batch cannot skip usage.
+	if strict {
+		out.strictResult = &res
+		return out, nil
+	}
+	w.logProcessWarnings(a, path, res.Warnings)
+	if ingestErr := w.ingestProcessResult(ctx, a, res); ingestErr != nil {
+		return out, ingestErr
+	}
+	out.parsed = true
+
+	// Strict catchup deliberately leaves the ordinary cursor untouched. The
+	// full source was parsed and its events were ingested idempotently, but a
+	// later ordinary pass owns cursor advancement. This also ensures a strict
+	// pass can never advance a cursor past a warning or retry hint.
+	// Persist the cursor when:
+	//   - the adapter advanced past the prior offset (normal progress), OR
+	//   - the adapter explicitly asked to be re-polled (RetrySuggested)
+	//     — without writing a cursor row, fresh files with no prior
+	//     entry would never be picked up by pollCursors, so the
+	//     retry hint would be silently dropped.
+	// MAX(off, NewOffset) guards against accidental cursor regression
+	// when RetrySuggested is set with NewOffset < off (e.g. an adapter
+	// returning fromOffset on a transient miss).
+	if setErr := w.persistProcessCursor(ctx, path, off, res); setErr != nil {
+		return out, setErr
+	}
+	return out, nil
+}
+
+// skipProcessFile applies the pre-parse safety gates shared by ordinary and
+// strict processing. It returns true when the caller must stop before opening
+// the source.
+func (w *Watcher) skipProcessFile(a adapter.Adapter, path string, strict bool, out *budgetCaptureFileOutcome) bool {
 	// Refuse a symlink whose target escapes the watch root before opening it.
 	// fsnotify + WalkDir only gate on the path PREFIX (HasPathPrefix does not
 	// resolve symlinks, by design — a watch root may itself be a symlink), so a
@@ -536,91 +908,108 @@ func (w *Watcher) processFile(ctx context.Context, a adapter.Adapter, path strin
 	// /etc/passwd) would otherwise be opened and its contents excerpted into
 	// the DB. Regular files and in-tree symlinks take the fast path unchanged.
 	if escapes, real := symlinkLeafEscapes(path, a.WatchPaths()); escapes {
-		w.logger.Warn("watcher.processFile: skipping symlink whose target escapes the watch root",
-			"path", path, "resolved", real)
-		return nil
+		out.unsafeSymlink = true
+		if !strict {
+			w.logger.Warn("watcher.processFile: skipping symlink whose target escapes the watch root",
+				"path", path, "resolved", real)
+		}
+		return true
 	}
 
 	// DoS guard: skip a file larger than the configured cap before parsing.
 	// A malformed or hostile multi-GB session file in a watch root would
 	// otherwise drive the adapter's whole-file read into unbounded allocation.
-	if w.maxFileBytes > 0 {
-		if fi, err := os.Stat(path); err == nil && fi.Size() > w.maxFileBytes {
+	//
+	// The guard is capability-branched on the file's declared cursor
+	// semantics (CursorKind.SizeGateMeaningful), NOT applied uniformly: a
+	// watermark SQLite store is queried incrementally through the sql
+	// driver — its size never enters the heap in one piece — and gating it
+	// turns a normally-growing store into permanent silent capture loss
+	// the day it crosses the cap (the 2026-08-27 Windows opencode.db
+	// finding). Adapters that don't implement CursorSemantics keep the
+	// gate for every file, which is the pre-existing behaviour.
+	if w.maxFileBytes <= 0 {
+		return false
+	}
+	fi, statErr := os.Stat(path)
+	if statErr != nil || fi.Size() <= w.maxFileBytes {
+		return false
+	}
+	if oversizeGateApplies(a, path) {
+		out.oversize = true
+		if !strict {
 			w.logger.Warn("watcher.processFile: skipping oversize file",
 				"path", path, "size", fi.Size(), "max", w.maxFileBytes)
-			return nil
 		}
+		return true
 	}
+	if !strict && w.warningDedup.Allow(a.Name()+"|"+path+"|<oversize-watermark-exempt>") {
+		w.logger.Info("watcher.processFile: oversize watermark store exempt from size gate",
+			"path", path, "size", fi.Size(), "max", w.maxFileBytes)
+	}
+	return false
+}
 
-	// Recover from a panic in adapter parsing. The daemon runs the proxy,
-	// dashboard, and watcher in one process, so a single adapter panic on a
-	// malformed file would otherwise crash all three. A recovered parse is
-	// logged and the file skipped; the watcher keeps running.
-	defer func() {
-		if r := recover(); r != nil {
-			w.logger.Warn("watcher.processFile: recovered from adapter panic",
-				"path", path, "adapter", a.Name(), "panic", r)
-		}
-	}()
-
-	// Serialize concurrent processFile invocations for the same file.
-	// fsnotify-debounced fires and poller-tick fires can race on the
-	// same source_file; without a per-file lock the loser holds a
-	// pending BEGIN IMMEDIATE acquisition while the winner ingests,
-	// which on slow filesystems (WSL2 /mnt/c, OneDrive-synced dirs)
-	// can exceed the 30s busy_timeout and trip SQLITE_BUSY. The lock
-	// is cheap (~150ns per acquire) and outlives the call only as
-	// long as it's contended; sync.Map auto-cleans nothing but the
-	// per-path mutex value is ~24 bytes — leak is bounded by the
-	// number of distinct session files the daemon ever observed.
+// lockProcessFile serializes processing of one source path. Strict callers
+// use the context-aware lock so a canceled reconciliation can stop waiting;
+// ordinary watcher processing preserves its blocking acquisition.
+func (w *Watcher) lockProcessFile(ctx context.Context, path string, strict bool) (*sync.Mutex, error) {
 	muRaw, _ := w.fileLocks.LoadOrStore(path, &sync.Mutex{})
 	mu := muRaw.(*sync.Mutex)
-	mu.Lock()
-	defer mu.Unlock()
-
-	var off int64
-	if !forceFromZero {
-		var err error
-		off, err = w.store.GetCursor(ctx, path)
-		if err != nil {
-			return err
+	if strict {
+		if err := lockWatcherFile(ctx, mu); err != nil {
+			return nil, err
 		}
+	} else {
+		mu.Lock()
 	}
-	res, err := a.ParseSessionFile(ctx, path, off)
-	if err != nil {
-		return err
+	return mu, nil
+}
+
+// strictProcessFileRegular checks the source after the strict lock is held so
+// a reconciliation never parses a vanished or non-regular path.
+func strictProcessFileRegular(path string, out *budgetCaptureFileOutcome) bool {
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		out.incomplete = true
+		out.incompleteDetail = fmt.Sprintf("stat source %s before parse: %v", path, statErr)
+		return false
 	}
-	for _, msg := range res.Warnings {
-		// Dedup identical (adapter, path, message) within the TTL —
-		// otherwise antigravity's OSCrypt-retrieval warnings (and any
-		// other adapter that emits the same warning every poll) flood
-		// stderr and drown the signal. The first occurrence per TTL
-		// window still fires at WARN; suppressed repeats are dropped
-		// silently. See V3-3.
-		//
-		// M4.5 of the 2026-06-02 teams test follow-ups: antigravity
-		// decrypt failures all share the same root cause (the documented
-		// AES-128-CTR scheme doesn't match the Windows-side cipher) and
-		// the initial-scan burst can produce hundreds of lines per
-		// `observer start`. Collapse them to a single dedup entry by
-		// dropping the per-path component of the key for that family.
-		// The first decrypt-failure warning per TTL window fires;
-		// subsequent decrypt-failure warnings (any file, any path) are
-		// suppressed until the window expires.
+	if !info.Mode().IsRegular() {
+		out.incomplete = true
+		out.incompleteDetail = fmt.Sprintf("source %s is not a regular file", path)
+		return false
+	}
+	return true
+}
+
+// logProcessWarnings emits ordinary adapter warnings with the watcher's
+// existing deduplication policy. Strict reconciliation returns warnings to its
+// caller instead of logging them and therefore never calls this helper.
+func (w *Watcher) logProcessWarnings(a adapter.Adapter, path string, warnings []string) {
+	for _, msg := range warnings {
+		// Dedup identical (adapter, path, message) within the TTL — otherwise
+		// antigravity's OSCrypt-retrieval warnings (and any other adapter that
+		// emits the same warning every poll) flood stderr and drown diagnostics.
+		// M4.5 collapses antigravity decrypt failures across paths because the
+		// initial scan can produce hundreds of identical lines.
 		key := a.Name() + "|" + path + "|" + msg
 		if isAntigravityDecryptFailure(a.Name(), msg) {
 			key = a.Name() + "|<decrypt-failure-batch>|" + extractDecryptFailureFamily(msg)
 		}
-		if !w.warningDedup.Allow(key) {
-			continue
+		if w.warningDedup.Allow(key) {
+			w.logger.Warn("adapter warning", "adapter", a.Name(), "path", path, "msg", msg)
 		}
-		w.logger.Warn("adapter warning", "adapter", a.Name(), "path", path, "msg", msg)
 	}
+}
+
+// ingestProcessResult sends a parsed result through the ordinary store path.
+func (w *Watcher) ingestProcessResult(ctx context.Context, a adapter.Adapter, res adapter.ParseResult) error {
 	native := w.nativePredicate[a.Name()]
 	if native == nil {
 		native = func(string) bool { return false }
 	}
-	if _, err := w.store.Ingest(ctx, res.ToolEvents, res.TokenEvents, store.IngestOptions{
+	_, err := w.store.Ingest(ctx, res.ToolEvents, res.TokenEvents, store.IngestOptions{
 		IsNativeTool:        native,
 		Classifier:          w.classifier,
 		RecordFailures:      true,
@@ -628,29 +1017,70 @@ func (w *Watcher) processFile(ctx context.Context, a adapter.Adapter, path strin
 		CacheObservations:   res.CacheObservations,
 		SessionProcessSeeds: res.SessionProcessSeeds,
 		SessionLineages:     res.SessionLineages,
+		SessionSurfaces:     res.SessionSurfaces,
 		OutcomeUpdates:      res.OutcomeUpdates,
-	}); err != nil {
-		return err
+	})
+	return err
+}
+
+// persistProcessCursor advances the ordinary watcher cursor without allowing
+// a retry response to regress an already stored offset.
+func (w *Watcher) persistProcessCursor(ctx context.Context, path string, off int64, res adapter.ParseResult) error {
+	if res.NewOffset <= off && !res.RetrySuggested {
+		return nil
 	}
-	// Persist the cursor when:
-	//   - the adapter advanced past the prior offset (normal progress), OR
-	//   - the adapter explicitly asked to be re-polled (RetrySuggested)
-	//     — without writing a cursor row, fresh files with no prior
-	//     entry would never be picked up by pollCursors, so the retry
-	//     hint would be silently dropped.
-	// MAX(off, NewOffset) guards against accidental cursor regression
-	// when RetrySuggested is set with NewOffset < off (e.g. an adapter
-	// returning fromOffset on a transient miss).
-	if res.NewOffset > off || res.RetrySuggested {
-		target := res.NewOffset
-		if off > target {
-			target = off
+	target := res.NewOffset
+	if off > target {
+		target = off
+	}
+	return w.store.SetCursor(ctx, path, target)
+}
+
+// strictFileCursorComplete checks byte-offset files for a full EOF catchup.
+// Watermark stores explicitly opt out because their cursor is not a byte
+// count; their parser's monotonic watermark and sidecar/WAL handling remain
+// the freshness authority. This avoids using a SQLite main-file mtime as a
+// proxy for source health.
+func strictFileCursorComplete(a adapter.Adapter, path string, offset int64) (bool, string) {
+	if semantics, ok := a.(adapter.CursorSemantics); ok && !semantics.CursorSemanticsFor(path).Kind.LagMeaningful() {
+		return true, ""
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, fmt.Sprintf("stat source %s after parse: %v", path, err)
+	}
+	if offset < info.Size() {
+		return false, fmt.Sprintf("source %s remained at offset %d of %d bytes", path, offset, info.Size())
+	}
+	return true, ""
+}
+
+// lockWatcherFile waits for one source-file lock without making a strict
+// reconciliation immune to context cancellation. The normal watcher keeps
+// its historical blocking mutex acquisition; only the bounded catchup path
+// needs this context-aware variant.
+func lockWatcherFile(ctx context.Context, mu *sync.Mutex) error {
+	if ctx == nil {
+		mu.Lock()
+		return nil
+	}
+	for {
+		if mu.TryLock() {
+			return nil
 		}
-		if err := w.store.SetCursor(ctx, path, target); err != nil {
-			return err
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		case <-timer.C:
 		}
 	}
-	return nil
 }
 
 // pollFullScanEvery is how many poll ticks pass between full-tree scans.
@@ -677,6 +1107,8 @@ func (w *Watcher) runPoller(ctx context.Context) {
 				// (dashboard install, CLI install of a new tool, …)
 				// before walking — otherwise Scan finds files but
 				// live fsnotify still misses Create/Write on the new tree.
+				// Registration only: the full Scan below covers the new
+				// tree, and runRootDetector owns the scoped hot-add walk.
 				_ = w.applyDetectedRoots()
 				if _, err := w.Scan(ctx); err != nil && ctx.Err() == nil {
 					w.logger.Warn("watcher.poll: full scan failed", "err", err)
@@ -759,14 +1191,83 @@ func (w *Watcher) pollCursors(ctx context.Context) error {
 // the fsnotify event-handler path has always used (adapterForPath).
 // The registry is still queried per call so dynamically-added
 // adapters appear without restarting Watch.
+// oversizeGateApplies reports whether the MaxFileBytes DoS guard should
+// gate path for adapter a — branching on the file's declared cursor
+// capability (adapter.CursorKind.SizeGateMeaningful), never on the tool
+// name. An adapter without CursorSemantics keeps the gate everywhere.
+func oversizeGateApplies(a adapter.Adapter, path string) bool {
+	if cs, ok := a.(adapter.CursorSemantics); ok {
+		return cs.CursorSemanticsFor(path).Kind.SizeGateMeaningful()
+	}
+	return true
+}
+
 func (w *Watcher) adapterFor(path string) adapter.Adapter {
 	byRoot := map[string]adapter.Adapter{}
 	for _, a := range w.registry.Detected(w.allow) {
-		for _, root := range a.WatchPaths() {
+		for _, root := range w.watchRoots(a) {
 			byRoot[root] = a
 		}
 	}
 	return adapterForPath(byRoot, path)
+}
+
+// watchRoots is the ONE way the watcher reads an adapter's roots for
+// registration / scanning / dispatch mapping: WatchPaths collapsed by
+// directory identity.
+//
+// Adapters return canonical CANDIDATE roots — several spellings of the
+// same tree are legitimate (a Windows MSIX install exposes the Claude
+// Desktop sessions dir as both `%APPDATA%\Claude\…` and
+// `…\Packages\Claude_*\LocalCache\Roaming\Claude\…`, the latter being
+// the only spelling a WSL daemon can traverse over DrvFs). Registering
+// both walks ONE tree twice and ingests every session file under two
+// distinct source_file values — an exact 2x action-row inflation
+// (audit finding IDE-01). adapter.DedupRootsByIdentity folds them
+// (string spelling → EvalSymlinks → os.SameFile, first occurrence
+// wins) while retaining roots that do not exist, so Invariant #48
+// still holds and the walk below still skips them.
+//
+// Deliberately NOT applied to processFile's symlinkLeafEscapes check:
+// that one wants every spelling an adapter claims, so a file under a
+// symlinked root spelling is still recognised as in-tree.
+//
+// MEMOIZED. The fold above is filesystem work — os.Stat, EvalSymlinks
+// and an os.SameFile sweep for every root — while adapterFor rebuilds
+// the whole root→adapter map on EVERY grown cursor row the poller sees
+// (pollCursors), i.e. potentially per file per tick. The deduped result
+// is therefore cached per adapter, keyed on a fingerprint of the RAW
+// WatchPaths slice: the same adapter returning the same roots costs one
+// map lookup, while an adapter whose roots CHANGE (a tool installed
+// mid-daemon, whose sessions dir only now exists) recomputes on the
+// next call. WatchPaths itself is still called every time — it is the
+// adapters' own cheap accessor and the only honest way to notice a
+// changed root set.
+//
+// The returned slice is shared with the cache and MUST be treated as
+// read-only by callers (every call site ranges over it).
+func (w *Watcher) watchRoots(a adapter.Adapter) []string {
+	raw := a.WatchPaths()
+	// NUL is not a legal path byte on any supported platform, so
+	// joining on it cannot alias two distinct slices.
+	fingerprint := strings.Join(raw, "\x00")
+	name := a.Name()
+
+	w.rootMu.Lock()
+	defer w.rootMu.Unlock()
+	if e, ok := w.rootCache[name]; ok && e.fingerprint == fingerprint {
+		return e.deduped
+	}
+	fold := w.dedupRoots
+	if fold == nil {
+		fold = adapter.DedupRootsByIdentity
+	}
+	deduped := fold(raw)
+	if w.rootCache == nil {
+		w.rootCache = make(map[string]rootCacheEntry, 8)
+	}
+	w.rootCache[name] = rootCacheEntry{fingerprint: fingerprint, deduped: deduped}
+	return deduped
 }
 
 // adapterForPath returns the adapter whose watched root is a prefix of path,

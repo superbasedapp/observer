@@ -1,0 +1,35 @@
+{
+  "assistantActiveTimeMs": 75380,
+  "model": "custom:superbased-0",
+  "reasoningEffort": "high",
+  "interactionMode": "auto",
+  "autonomyLevel": "medium",
+  "autonomyMode": "auto-medium",
+  "compactionThresholdCheckEnabled": true,
+  "toolExecutionMode": "direct_only",
+  "allowSubagentsInScripts": false,
+  "childInclusiveTokenUsageBySessionId": {},
+  "inclusiveTokenUsage": {
+    "inputTokens": 15791,
+    "outputTokens": 1469,
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 103896,
+    "thinkingTokens": 0,
+    "factoryCredits": 0
+  },
+  "providerLock": "generic-chat-completion-api",
+  "providerLockTimestamp": "2026-09-03T10:11:29.619Z",
+  "tokenUsage": {
+    "inputTokens": 15791,
+    "outputTokens": 1469,
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 103896,
+    "thinkingTokens": 0,
+    "factoryCredits": 0
+  },
+  "lastCallTokenUsage": {
+    "inputTokens": 110,
+    "outputTokens": 200,
+    "cacheReadTokens": 15409
+  }
+}

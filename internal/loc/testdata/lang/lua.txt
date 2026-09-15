@@ -1,0 +1,8 @@
+-- A line comment
+local t = {}
+
+--[[ Block
+comment ]]
+print("-- not a comment")
+local x = t[t[1]]
+print(x) -- trailing

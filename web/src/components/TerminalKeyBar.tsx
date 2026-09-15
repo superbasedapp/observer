@@ -226,7 +226,7 @@ export function TerminalKeyBar({
         <Key
           label={modLabel(L.ctrl.main, mods.ctrl)}
           sub={L.ctrl.sub}
-          title={`${L.ctrlName} — tap to arm for the next key, double-tap to lock`}
+          title={`${L.ctrlName} - tap to arm for the next key, double-tap to lock`}
           pressed={mods.ctrl !== "off"}
           state={mods.ctrl}
           cls={modCls(mods.ctrl)}
@@ -236,7 +236,7 @@ export function TerminalKeyBar({
           label={modLabel(L.alt.main, mods.alt)}
           sub={L.alt.sub}
           // macOS Opt IS Alt (the ESC prefix) — see the Cmd note at the top.
-          title={`${L.altName} — tap to arm for the next key, double-tap to lock`}
+          title={`${L.altName} - tap to arm for the next key, double-tap to lock`}
           pressed={mods.alt !== "off"}
           state={mods.alt}
           cls={modCls(mods.alt)}
@@ -251,7 +251,7 @@ export function TerminalKeyBar({
           label="Interrupt"
           sub={L.chord("C")}
           wordLabel
-          title="Ctrl+C — interrupt"
+          title="Ctrl+C - interrupt"
           onPress={() => press("\x03")}
         />
         {/* Row 2 — navigation kept together, in the ← ↓ ↑ → order every mobile
@@ -260,7 +260,7 @@ export function TerminalKeyBar({
           label="End input"
           sub={L.chord("D")}
           wordLabel
-          title="Ctrl+D — end of input"
+          title="Ctrl+D - end of input"
           onPress={() => press("\x04")}
         />
         <Key

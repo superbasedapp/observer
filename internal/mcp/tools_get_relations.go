@@ -232,6 +232,14 @@ func (t *getRelationsTool) Invoke(ctx context.Context, raw json.RawMessage) (any
 			Reason:   "code index unavailable; fall back to get_file",
 			Warnings: []string{WarningIndexUnavailable},
 		}
+		// Corpus archival P2.3: an archived project reaches here looking
+		// exactly like a never-indexed one. Reason is the field this tool
+		// already uses to explain itself, so the honest explanation replaces
+		// the generic one rather than being bolted alongside it.
+		if note, archived := archivedNote(ctx, t.cg, args.ProjectRoot); archived {
+			res.Reason = note
+			res.Warnings = appendWarning(res.Warnings, WarningProjectArchived)
+		}
 		t.recordAudit(args, res, abs, started)
 		return res, nil
 	}

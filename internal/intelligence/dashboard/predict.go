@@ -106,20 +106,28 @@ func (s *Server) handleSessionPredict(w http.ResponseWriter, r *http.Request, se
 		Limit: loadLimitGauge(ctx, st, shape.Tool, sessionID),
 	}
 
-	// No model → no cost basis (hook-only / no tokens). Honest empty.
+	// No model → no turn substrate at all (hook-only / no tokens): the
+	// shape's model falls back to the dominant turn-row model, so an
+	// empty one means there are no turn rows to observe. Honest empty.
 	if shape.Model == "" {
-		resp.Estimate = predict.EstimateResult{Warnings: []predict.Warning{predict.WarnNoSessionHistory}}
+		resp.Estimate = predict.EstimateResult{PrefixTokens: shape.PrefixTokens, Warnings: []predict.Warning{predict.WarnNoSessionHistory}}
 		resp.Reason = "no model observed for this session — route the client through the observer proxy (or send a message) to capture token/cost data"
 		writeJSON(w, resp)
 		return
 	}
 
-	ctRates, ok := lookupRates(s.opts.CostEngine, shape.Model)
-	if !ok {
-		resp.Estimate = predict.EstimateResult{Model: shape.Model, Warnings: []predict.Warning{predict.WarnNoSessionHistory}}
+	// A missing pricing entry is a PRICING gap, not a data gap, so it must
+	// not short-circuit the estimate: the prefix, the per-turn token
+	// quantiles and the fan-out observations are facts about the session
+	// and stay in the response. Only the dollar columns drop out (see
+	// predict.EstimateInput.PricingUnknown). Bailing here used to return a
+	// zeroed EstimateResult carrying a false no_session_history, which the
+	// context-window surface then rendered as "no prefix observed yet" on
+	// sessions with observed turns (opencode alias models such as
+	// "big-pickle" have no pricing row).
+	ctRates, priced := lookupRates(s.opts.CostEngine, shape.Model)
+	if !priced {
 		resp.Reason = fmt.Sprintf("model %q has no pricing entry — cannot estimate cost", shape.Model)
-		writeJSON(w, resp)
-		return
 	}
 
 	young := s.opts.Predict.YoungSessionMessages
@@ -156,6 +164,7 @@ func (s *Server) handleSessionPredict(w http.ResponseWriter, r *http.Request, se
 			FastMultiplier: ctRates.FastMultiplier,
 		},
 		CurrentFast:          loadSessionFastNow(ctx, s.db(), sessionID),
+		PricingUnknown:       !priced,
 		PrefixTokens:         shape.PrefixTokens,
 		TurnSamples:          shape.TurnSamples,
 		TurnsPerMessage:      shape.TurnsPerMessage,

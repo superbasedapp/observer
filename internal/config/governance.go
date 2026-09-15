@@ -38,6 +38,34 @@ const GovernanceSidecarFilename = "governance-effective.json"
 // governance field.
 const NoGovernanceSidecar = "\x00none"
 
+// FeaturesSidecarFilename is the node-local node.features tools.disallow LKG
+// sidecar (P7 gateway-arc / P6 item 5), placed beside the DB exactly like the
+// governance sidecar so a WSL-daemon / Windows-tool bridge resolves the same
+// file, and so a bare CLI launcher and `observer adapters` see the live
+// disallow list without the daemon.
+const FeaturesSidecarFilename = "features-effective.json"
+
+// NoFeaturesSidecar is the FeaturesSidecar override that disables the sidecar
+// entirely (mirrors NoGovernanceSidecar).
+const NoFeaturesSidecar = "\x00none"
+
+// ResolveFeaturesSidecarPath returns the node.features LKG sidecar path,
+// derived from the DB path exactly like ResolveGovernanceSidecarPath. The same
+// local-escape caveat applies (advisory on processes the org does not own).
+func ResolveFeaturesSidecarPath(cfg Config, override string) string {
+	if override == NoFeaturesSidecar {
+		return ""
+	}
+	if override != "" {
+		return override
+	}
+	dbPath := expandHome(cfg.Observer.DBPath)
+	if strings.TrimSpace(dbPath) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(dbPath), FeaturesSidecarFilename)
+}
+
 // ResolveGovernanceSidecarPath returns the sidecar path Load would use.
 //
 // It is derived from the DB path, which the developer controls through the
@@ -89,14 +117,35 @@ const (
 var governancePinnableKeys = []governancePinnableKey{
 	{Key: "guard.enabled", Kind: "bool", Direction: governanceDirFree},
 	{Key: "guard.mode", Kind: "string", Enum: []any{"off", "observe", "enforce"}, Direction: governanceDirFree},
+	// guard.strict mirrors internal/policyfam/nodegov.PinnableKeys' row: a
+	// fail-posture choice (fail-open vs fail-closed on judge/policy-engine
+	// internal error), not a privacy-sharing direction, so it is free like
+	// guard.mode rather than restrictive-only like the scrubbing toggle
+	// below.
+	{Key: "guard.strict", Kind: "bool", Direction: governanceDirFree},
+	// The org-budget posture pair (org-budget plan §3.3a). Mirrors
+	// nodegov.PinnableKeys row for row: guard.budget.hard is restrictive-only
+	// with Safe=true (the restrictive value of a spend-BLOCKING flag is true),
+	// guard.budget.from_org is free (whether to apply the org's budget here at
+	// all is a posture, and the lowering-only direction of an applied org
+	// budget is enforced by govern.LowerFloat/LowerInt, not by this row).
+	{Key: "guard.budget.hard", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: true},
+	{Key: "guard.budget.from_org", Kind: "bool", Direction: governanceDirFree},
 	{Key: "observer.secrets.enable_scrubbing", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: true},
 	{Key: "compression.conversation.enabled", Kind: "bool", Direction: governanceDirFree},
 	{Key: "codeintel.enabled", Kind: "bool", Direction: governanceDirFree},
 	{Key: "cachetrack.enabled", Kind: "bool", Direction: governanceDirFree},
 	{Key: "predict.enabled", Kind: "bool", Direction: governanceDirFree},
+	{Key: "tasks.enabled", Kind: "bool", Direction: governanceDirFree},
 	{Key: "browser.enabled", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
 	{Key: "observer.process.enabled", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
 	{Key: "remote.enabled", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	// routing.enabled mirrors nodegov.PinnableKeys' row (W5,
+	// docs/plans/org-observer-fundamentals-fix-plan-2026-09-13.md R4): a
+	// plain posture toggle, free like guard.budget.from_org. routing.mode
+	// is NOT here — it stays on the separate signed org routing-policy body,
+	// gated by govern.Effective.GrantsRoutingEnforcement (enforce.routing).
+	{Key: "routing.enabled", Kind: "bool", Direction: governanceDirFree},
 }
 
 var governancePinnableByKey = func() map[string]governancePinnableKey {

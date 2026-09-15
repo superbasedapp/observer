@@ -13,6 +13,7 @@ import { NAV_ITEMS } from "@/lib/nav";
 import { useTour } from "@/components/tour/TourProvider";
 import { useFilters } from "@/lib/filters";
 import { toolMeta } from "@/lib/tools";
+import { fmtShortId } from "@/lib/format";
 import type {
   ActionListRow,
   ActionsResponse,
@@ -382,6 +383,7 @@ function Row({
       type="button"
       onMouseEnter={onHover}
       onClick={onActivate}
+      title={item.kind === "session" ? item.id : undefined}
       className={clsx(
         "flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors",
         active ? "bg-accent-soft text-fg-0" : "bg-transparent text-fg-1",
@@ -418,10 +420,10 @@ function renderRow(item: Item): ReactNode {
       <>
         <ToolDot tool={item.tool} />
         <span className="font-mono text-[11px] text-accent">
-          {item.id.slice(0, 12)}…
+          {fmtShortId(item.id, 12)}
         </span>
         <TruncatedPath
-          value={item.project || "—"}
+          value={item.project || "-"}
           className="font-mono text-[10.5px] text-fg-3"
           tooltipMaxWidth={360}
         />

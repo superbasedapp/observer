@@ -97,35 +97,30 @@ type SessionCacheEntry struct {
 }
 
 // SessionCacheEvent mirrors a cache_events row for the diagnostic
-// dump alongside the timeline. ZeroUsage is true when the event
-// has tokens_read=0 AND tokens_written=0; the frontend renders
-// these neutrally and the rate excludes them per the C12 follow-
-// up (cachetrack.MispredictRateGraded).
-type SessionCacheEvent struct {
-	Timestamp     string `json:"timestamp"`
-	Tier          string `json:"tier"`
-	Model         string `json:"model"`
-	Kind          string `json:"kind"`
-	Cause         string `json:"cause"`
-	PredictedKind string `json:"predicted_kind,omitempty"`
-	TokensRead    int64  `json:"tokens_read"`
-	TokensWritten int64  `json:"tokens_written"`
-	MessageID     string `json:"message_id,omitempty"`
-	ZeroUsage     bool   `json:"zero_usage,omitempty"`
-}
+// dump alongside the timeline. ZeroUsage is cachetrack.IsZeroUsage
+// over (Kind, TokensRead, TokensWritten) — a mispredict whose
+// provider envelope carried no token data at all; the frontend
+// renders these neutrally and the graded rate excludes them per the
+// C12 follow-up (cachetrack.MispredictRateGraded). CostDeltaUSD is a
+// nullable pointer (nil = not computed) feeding the efficiency tile's
+// AvoidableUSD.
+//
+// Alias of cachetrack.TimelineEvent — the pure builder now lives
+// in internal/cachetrack/timeline.go so the org server can reuse
+// it over the same per-event shape arriving on the wire. See
+// buildCacheTimeline below.
+type SessionCacheEvent = cachetrack.TimelineEvent
 
 // SessionCacheEfficiency is the rollup tile on the Cache tab.
 // Ratio is read/write — the cache-payback signal (higher = more
-// cache benefit). AvoidableUSD is a placeholder for now (the C9
-// reconciliation engine populates cost_delta_usd in a follow-up;
-// pre-population this stays at 0 and the frontend hides the tile
-// or shows it as "not yet computed").
-type SessionCacheEfficiency struct {
-	ReadTokens    int64   `json:"read_tokens"`
-	WrittenTokens int64   `json:"written_tokens"`
-	Ratio         float64 `json:"ratio"`
-	AvoidableUSD  float64 `json:"avoidable_usd"`
-}
+// cache benefit). AvoidableUSD is the sum of per-event cost_delta_usd
+// over the avoidable, non-baseline events (cachetrack.BuildEfficiency);
+// it stays 0 while every event's cost_delta_usd is NULL — a NULL
+// contributes nothing — so the frontend renders "not yet computed"
+// rather than a fabricated $0.00.
+//
+// Alias of cachetrack.Efficiency.
+type SessionCacheEfficiency = cachetrack.Efficiency
 
 // SessionCacheTimelineItem is one row of the panel's event
 // timeline. The operator UI steer: a long warm session produces
@@ -144,20 +139,9 @@ type SessionCacheEfficiency struct {
 //
 // The two are interleaved in the response in chronological
 // order; the frontend stamps them onto one timeline.
-type SessionCacheTimelineItem struct {
-	Kind string `json:"kind"` // "baseline" | "anomaly"
-
-	// Baseline-only fields.
-	Count            int    `json:"count,omitempty"`
-	BaselineReadSum  int64  `json:"baseline_read_sum,omitempty"`
-	BaselineWriteSum int64  `json:"baseline_write_sum,omitempty"`
-	FirstAt          string `json:"first_at,omitempty"`
-	LastAt           string `json:"last_at,omitempty"`
-
-	// Anomaly-only fields.
-	Event   *SessionCacheEvent `json:"event,omitempty"`
-	Flagged bool               `json:"flagged,omitempty"`
-}
+//
+// Alias of cachetrack.TimelineItem.
+type SessionCacheTimelineItem = cachetrack.TimelineItem
 
 // handleSessionCache serves /api/session/<id>/cache. Spec §13.
 //
@@ -206,7 +190,7 @@ func loadSessionCacheEvents(ctx context.Context, db *sql.DB, sessionID string) (
 		SELECT timestamp, tier, model, kind,
 		       COALESCE(cause, ''), COALESCE(predicted_kind, ''),
 		       COALESCE(tokens_read, 0), COALESCE(tokens_written, 0),
-		       COALESCE(message_id, '')
+		       COALESCE(message_id, ''), cost_delta_usd
 		FROM cache_events
 		WHERE session_id = ?
 		ORDER BY timestamp ASC, id ASC`
@@ -218,11 +202,22 @@ func loadSessionCacheEvents(ctx context.Context, db *sql.DB, sessionID string) (
 	out := []SessionCacheEvent{}
 	for rows.Next() {
 		var ev SessionCacheEvent
+		// cost_delta_usd is nullable and NOT COALESCE'd: nil = the
+		// reconciliation engine did not compute a delta, 0 = a genuinely
+		// zero delta. BuildEfficiency folds only non-nil positive deltas
+		// into AvoidableUSD, so the NULL must survive to the struct.
+		var costDelta sql.NullFloat64
 		if err := rows.Scan(&ev.Timestamp, &ev.Tier, &ev.Model, &ev.Kind,
-			&ev.Cause, &ev.PredictedKind, &ev.TokensRead, &ev.TokensWritten, &ev.MessageID); err != nil {
+			&ev.Cause, &ev.PredictedKind, &ev.TokensRead, &ev.TokensWritten, &ev.MessageID, &costDelta); err != nil {
 			return nil, fmt.Errorf("loadSessionCacheEvents: scan: %w", err)
 		}
-		ev.ZeroUsage = ev.Kind == "mispredict" && ev.TokensRead == 0 && ev.TokensWritten == 0
+		if costDelta.Valid {
+			v := costDelta.Float64
+			ev.CostDeltaUSD = &v
+		}
+		// IsZeroUsage is THE rule (cachetrack): a mispredict whose provider
+		// envelope carried no token data. A 0/0 hit or write is NOT vacant.
+		ev.ZeroUsage = cachetrack.IsZeroUsage(ev.Kind, ev.TokensRead, ev.TokensWritten)
 		out = append(out, ev)
 	}
 	if err := rows.Err(); err != nil {
@@ -276,43 +271,22 @@ func loadSessionCacheEntries(ctx context.Context, db *sql.DB, sessionID string) 
 // collapseTier returns the single-string tier label for the
 // session's events. "proxy" or "transcript" when all events
 // share one tier; "mixed" when both appear; "none" on empty.
+//
+// Thin delegation to cachetrack.CollapseTier — the one owner of
+// this logic (see internal/cachetrack/timeline.go).
 func collapseTier(events []SessionCacheEvent) string {
-	if len(events) == 0 {
-		return "none"
-	}
-	seen := map[string]bool{}
-	for _, ev := range events {
-		if ev.Tier != "" {
-			seen[ev.Tier] = true
-		}
-	}
-	if len(seen) == 0 {
-		return "none"
-	}
-	if len(seen) > 1 {
-		return "mixed"
-	}
-	for t := range seen {
-		return t
-	}
-	return "none"
+	return cachetrack.CollapseTier(events)
 }
 
 // buildCacheEfficiency rolls per-event tokens into the session's
 // efficiency tile. Ratio is read/write; division-by-zero falls
 // through to 0 (no writes = no cache yet = no payback signal).
-// AvoidableUSD stays 0 until the reconciliation engine populates
-// cost_delta_usd on events (deferred to a follow-up).
+// AvoidableUSD sums each non-baseline event's non-nil positive
+// cost_delta_usd; while those columns are NULL it stays 0.
+//
+// Thin delegation to cachetrack.BuildEfficiency.
 func buildCacheEfficiency(events []SessionCacheEvent) SessionCacheEfficiency {
-	var eff SessionCacheEfficiency
-	for _, ev := range events {
-		eff.ReadTokens += ev.TokensRead
-		eff.WrittenTokens += ev.TokensWritten
-	}
-	if eff.WrittenTokens > 0 {
-		eff.Ratio = float64(eff.ReadTokens) / float64(eff.WrittenTokens)
-	}
-	return eff
+	return cachetrack.BuildEfficiency(events)
 }
 
 // buildCacheTimeline produces the interleaved baseline-roll-up +
@@ -332,89 +306,23 @@ func buildCacheEfficiency(events []SessionCacheEvent) SessionCacheEfficiency {
 // these with a neutral "flagged" pill, not alarm-red. The
 // existing per-event diagnostic stays the same — only the pill
 // styling differs.
+//
+// Thin delegation to cachetrack.BuildTimeline — the pure builder
+// now lives in internal/cachetrack/timeline.go so the org server
+// can reuse it over the same per-event shape.
 func buildCacheTimeline(events []SessionCacheEvent) []SessionCacheTimelineItem {
-	out := []SessionCacheTimelineItem{}
-	var runStart, runEnd string
-	var runCount int
-	var runRead, runWrite int64
-
-	flushBaseline := func() {
-		if runCount == 0 {
-			return
-		}
-		out = append(out, SessionCacheTimelineItem{
-			Kind:             "baseline",
-			Count:            runCount,
-			BaselineReadSum:  runRead,
-			BaselineWriteSum: runWrite,
-			FirstAt:          runStart,
-			LastAt:           runEnd,
-		})
-		runCount, runRead, runWrite = 0, 0, 0
-		runStart, runEnd = "", ""
-	}
-
-	for i := range events {
-		ev := events[i]
-		if isBaselineEvent(ev) {
-			if runCount == 0 {
-				runStart = ev.Timestamp
-			}
-			runEnd = ev.Timestamp
-			runCount++
-			runRead += ev.TokensRead
-			runWrite += ev.TokensWritten
-			continue
-		}
-		flushBaseline()
-		evCopy := ev
-		out = append(out, SessionCacheTimelineItem{
-			Kind:    "anomaly",
-			Event:   &evCopy,
-			Flagged: isFlaggedCause(ev.Cause),
-		})
-	}
-	flushBaseline()
-	return out
+	return cachetrack.BuildTimeline(events)
 }
 
-// isBaselineEvent reports whether an event is part of the
-// healthy warm-growth baseline (collapsed into the timeline's
-// baseline roll-up rows). hit+suffix_growth is a cache hit on
-// the predicted prefix; write+suffix_growth is the normal
-// per-turn incremental write (every turn writes SOME new
-// suffix; that's not pathological).
+// isFlaggedCause reports whether cause is a known-limitation
+// cause that should render as a neutral "flagged" pill rather
+// than alarm-red (tools_changed: MCP server connect/disconnect
+// legitimately changes the tools array; see
+// docs/cache-tracking.md#mcp-tools_changed-readwrite-over-flag).
 //
-// reanchor is NOT baseline — it's the first turn for a session
-// and rates the visibility on a session-detail page. Per the
-// existing rate-skipped list it's denominator-excluded, but the
-// dashboard still itemizes it.
-//
-// Zero-usage mispredict events are also itemized (the frontend
-// renders them with the [zero-usage, excluded from rate] marker
-// per the C12 follow-up).
-func isBaselineEvent(ev SessionCacheEvent) bool {
-	if ev.Cause != "suffix_growth" {
-		return false
-	}
-	return ev.Kind == "hit" || ev.Kind == "write"
-}
-
-// flaggedCauses lists causes that may legitimately fire on a
-// real operator toggle. The frontend renders these neutrally
-// (a "flagged" pill, not "alarm").
-//
-// tools_changed: MCP server connect/disconnect legitimately
-// changes the tools array; the prior-prefix warm read combined
-// with the new-tail rewrite trips the read:write WARN at the
-// 3.0× default threshold even though the cause attribution is
-// correct (docs/cache-tracking.md#mcp-tools_changed-readwrite-over-flag).
-var flaggedCauses = map[string]bool{
-	"tools_changed": true,
-}
-
+// Thin delegation to cachetrack.IsFlaggedCause.
 func isFlaggedCause(cause string) bool {
-	return flaggedCauses[cause]
+	return cachetrack.IsFlaggedCause(cause)
 }
 
 // SessionCacheAnnotation is the C15 compact glance-view of
@@ -520,7 +428,7 @@ func loadCacheAnnotationsByKey(ctx context.Context, db *sql.DB, keyColumn string
 			ann.ReanchorCount++
 		case "mispredict":
 			ann.MispredictCount++
-			if read == 0 && written == 0 {
+			if cachetrack.IsZeroUsage(kind, read, written) {
 				ann.ZeroUsageCount++
 			}
 		}
@@ -592,7 +500,7 @@ func loadSessionCacheAnnotation(ctx context.Context, db *sql.DB, sessionID strin
 			out.ReanchorCount++
 		case "mispredict":
 			out.MispredictCount++
-			if read == 0 && written == 0 {
+			if cachetrack.IsZeroUsage(kind, read, written) {
 				out.ZeroUsageCount++
 			}
 		}

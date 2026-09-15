@@ -1,10 +1,13 @@
 package machineid
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -21,6 +24,44 @@ var (
 	// goos is a seam so a test can exercise every platform branch of
 	// rawIdentity regardless of the host it runs on.
 	goos = runtime.GOOS
+)
+
+// The PERSISTED-SEED rung's own I/O seams, kept separate from the read-only
+// ones above because this rung is the only part of the package that WRITES.
+// Tests override all four; a test that leaves them at their defaults would
+// touch the developer's real data dir.
+var (
+	homeDir  = os.UserHomeDir
+	mkdirAll = os.MkdirAll
+	randRead = rand.Read
+	// writeFileExcl creates path with O_EXCL — the create itself, not a
+	// check-then-write, is what arbitrates between two processes racing to
+	// mint the seed. The loser gets fs.ErrExist and re-reads the winner's
+	// value, so a machine never ends up with two identities.
+	writeFileExcl = func(path string, data []byte, perm fs.FileMode) error {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(data); err != nil {
+			_ = f.Close()
+			return err
+		}
+		return f.Close()
+	}
+)
+
+const (
+	// seedDirName / seedFileName locate the persisted seed inside the observer
+	// data dir (~/.observer/machine-id), alongside config.toml and observer.db
+	// — so any deployment that already mounts a volume for its database
+	// automatically persists its identity too.
+	seedDirName  = ".observer"
+	seedFileName = "machine-id"
+	// seedBytes is the minted seed's entropy. 16 bytes (128 bits) makes an
+	// accidental collision across a fleet impossible in practice; the value is
+	// hashed with the org salt before it ever leaves the host anyway.
+	seedBytes = 16
 )
 
 // ForOrg returns the org-salted, one-way machine fingerprint for orgID, or the
@@ -57,9 +98,11 @@ func hashIdentity(orgID, raw string) string {
 }
 
 // rawIdentity selects the most stable machine source available on this host,
-// walking a per-OS ordered list and falling back to the hostname. It returns
-// ("", nil) when nothing usable is found — never an error for a merely-absent
-// source, so a bare container degrades to "unbindable" rather than failing.
+// walking the ordered ladder documented in the package doc: the OS-native
+// source, then a self-minted seed persisted in the observer data dir, then the
+// hostname. It returns ("", nil) when nothing usable is found — never an error
+// for a merely-absent source, so a host with no writable state and no hostname
+// degrades to "unbindable" rather than failing.
 func rawIdentity() (string, error) {
 	switch goos {
 	case "linux":
@@ -78,12 +121,70 @@ func rawIdentity() (string, error) {
 			return id, nil
 		}
 	}
+	// Persisted-seed rung. Every OS, and deliberately ABOVE the hostname: a
+	// container image carries no /etc/machine-id, so without this rung the
+	// hostname is the identity — and orchestrators that remint the hostname per
+	// restart (Azure Container Instances' SandboxHost-<n> is the case that
+	// prompted this) orphan the machine binding on every restart, leaving the
+	// node 409ing until a human re-enrols it. A seed on the data dir survives
+	// the restart whenever that dir is a mounted volume, which is exactly the
+	// deployment shape that also wants a stable identity.
+	if id := persistedIdentity(); id != "" {
+		return id, nil
+	}
 	// Hostname fallback for every OS. Weakest source (hostnames collide and
-	// change), but better than an empty identity on a host without a stable id.
+	// change), but better than an empty identity on a host without a stable id
+	// — and the ONLY source left on a read-only filesystem, where the seed
+	// above cannot be minted.
 	if hn, err := hostname(); err == nil {
 		return strings.TrimSpace(hn), nil
 	}
 	return "", nil
+}
+
+// persistedIdentity read-or-mints the self-generated seed at
+// <home>/.observer/machine-id and returns its value, or "" when the data dir
+// is unreachable or unwritable (the caller then falls through to the hostname).
+//
+// It is additive and deterministic: once the file exists, every later call on
+// that host returns the same value, and a host that ALREADY has an OS-native
+// source never reaches this rung at all — so no existing machine's identity
+// changes when this rung ships.
+//
+// Writing is best-effort by design. A read-only root filesystem, a full disk,
+// or a home dir the process cannot create all yield "" rather than an error,
+// because an unbindable-but-running node is the product's chosen degradation
+// (see ForOrg) and a machine fingerprint is evidence, not prevention.
+func persistedIdentity() string {
+	home, err := homeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	path := filepath.Join(home, seedDirName, seedFileName)
+	if v := firstFileValue(path); v != "" {
+		return v
+	}
+
+	var buf [seedBytes]byte
+	if _, err := randRead(buf[:]); err != nil {
+		return ""
+	}
+	id := hex.EncodeToString(buf[:])
+
+	// 0700 dir + 0600 file: the seed is not a secret (it is hashed with the org
+	// salt before it is ever sent) but it is machine state that only this user's
+	// daemon should write. Filesystems that ignore modes — the SMB shares these
+	// containers mount — simply carry the create through.
+	if err := mkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return ""
+	}
+	if err := writeFileExcl(path, []byte(id+"\n"), 0o600); err != nil {
+		// Either another process won the mint race (fs.ErrExist) or the path is
+		// unwritable. Re-reading distinguishes them without branching on the
+		// error: a value means the race, nothing means fall through to hostname.
+		return firstFileValue(path)
+	}
+	return id
 }
 
 // firstFileValue returns the trimmed contents of the first readable, non-empty

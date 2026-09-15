@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# A comment
+echo "no # comment here"
+cat <<'EOF'
+# heredoc data, not a comment
+EOF
+echo done  # trailing

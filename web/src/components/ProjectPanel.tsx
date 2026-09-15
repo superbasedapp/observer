@@ -4,6 +4,7 @@ import { FloatingPanel } from "@/components/primitives/FloatingPanel";
 import { ContextMenu, type ContextMenuItem } from "@/components/primitives/ContextMenu";
 import { SegmentedControl } from "@/components/primitives/SegmentedControl";
 import { TruncatedPath } from "@/components/primitives/TruncatedPath";
+import { CloudDigestCard } from "@/components/CloudDigestCard";
 import { fmtBytes } from "@/lib/format";
 import {
   computeLaneGraph,
@@ -137,7 +138,16 @@ function RowMenuHandle({
 
 export type ProjectPanelTab = "files" | "git";
 
-const NO_ROOT_MSG = "This terminal was launched without a project root";
+/**
+ * Tooltip for the "working directory" label. Shown when the panel is browsing
+ * the directory the agent actually runs in rather than an allow-listed project
+ * root, so the header never implies a project that was never chosen.
+ */
+const WORKING_DIR_HINT =
+  "This terminal was launched without a project root, so these are the files in its working directory.";
+
+const NO_ROOT_MSG =
+  "This terminal has no browsable directory on this machine. An SSH terminal's files live on the remote host";
 
 /** Friendly copy for each wire error code. */
 function errorCopy(code: ProjectPanelErrorCode): { title: string; detail: string } {
@@ -148,7 +158,7 @@ function errorCopy(code: ProjectPanelErrorCode): { title: string; detail: string
         detail: "This terminal is no longer running, so its project can't be browsed.",
       };
     case "no_project_root":
-      return { title: "No project root", detail: NO_ROOT_MSG + "." };
+      return { title: "Nothing to browse", detail: NO_ROOT_MSG + "." };
     case "remote_view_disabled":
       return {
         title: "Viewing disabled",
@@ -250,6 +260,10 @@ export default function ProjectPanel({
   const [menu, setMenu] = useState<RowMenuRequest | null>(null);
   const [copiedRel, setCopiedRel] = useState<string | null>(null);
   const copyTimer = useRef<number | null>(null);
+  // The served root is this terminal's own working directory, not an
+  // operator-allow-listed project root. An older daemon omits root_kind
+  // entirely; absence means "project_root", the only kind it could serve.
+  const isWorkingDir = meta?.root_kind === "working_dir";
 
   useEffect(() => {
     let cancelled = false;
@@ -350,11 +364,11 @@ export default function ProjectPanel({
       cascade={cascade}
       onRaise={onRaise}
       onClose={onClose}
-      ariaLabel={`${tool} project files`}
+      ariaLabel={isWorkingDir ? `${tool} working directory files` : `${tool} project files`}
       title={
         <span className="flex items-center gap-2">
           <span className="font-mono text-fg-0">{tool}</span>
-          <span className="text-fg-3">· project</span>
+          <span className="text-fg-3">· {isWorkingDir ? "working dir" : "project"}</span>
         </span>
       }
       subtitle={meta ? <span className="font-mono">{lastSegment(meta.root)}</span> : "resolving…"}
@@ -369,12 +383,29 @@ export default function ProjectPanel({
             value={tab}
             onChange={onTabChange}
           />
-          <div className="min-w-0 flex-1">
+          {/* Honest path label. This terminal was launched without a project
+              root, so what is being browsed is the directory the agent actually
+              runs in, not an operator-chosen project. Say so next to the path
+              rather than letting the panel imply a project. */}
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            {meta && isWorkingDir && (
+              <span
+                className="shrink-0 text-[9.5px] uppercase tracking-[0.05em] text-fg-3"
+                title={WORKING_DIR_HINT}
+              >
+                working directory
+              </span>
+            )}
             {meta && (
               <TruncatedPath value={meta.root} className="text-[11px] text-fg-3" />
             )}
           </div>
         </div>
+        {meta && !isWorkingDir && (
+          <div className="border-b border-line-1 px-4 py-2">
+            <CloudDigestCard projectRoot={meta.root} />
+          </div>
+        )}
         <div className="min-h-0 flex-1">
           {metaErr ? (
             <ErrorState code={metaErr} />
@@ -845,7 +876,7 @@ function FileViewer({
           <div className="p-6 text-[12px] text-danger">{errorCopy(error).title}</div>
         ) : !file ? null : file.binary ? (
           <div className="p-6 text-[12px] text-fg-4">
-            Binary file — not shown ({fmtBytes(file.size)}).
+            Binary file - not shown ({fmtBytes(file.size)}).
           </div>
         ) : file.content === "" ? (
           <div className="p-6 text-[12px] text-fg-4">Empty file.</div>
@@ -853,7 +884,7 @@ function FileViewer({
           <>
             {(file.too_large || file.truncated) && (
               <div className="border-b border-line-1 bg-warn-soft px-4 py-1 text-[11px] text-warn">
-                File is large — showing the first {fmtBytes(file.content.length)} only.
+                File is large - showing the first {fmtBytes(file.content.length)} only.
               </div>
             )}
             <pre className="m-0 overflow-x-auto p-0 font-mono text-[11.5px] leading-[1.5] text-fg-1">
@@ -871,7 +902,7 @@ function FileViewer({
             {total > MAX_FILE_LINES && (
               <div className="border-t border-line-1 bg-warn-soft px-4 py-1 text-[11px] text-warn">
                 Showing first {MAX_FILE_LINES.toLocaleString()} of{" "}
-                {total.toLocaleString()} lines — the rest isn't rendered.
+                {total.toLocaleString()} lines - the rest isn't rendered.
               </div>
             )}
           </>
@@ -1064,7 +1095,7 @@ function ChangesSection({
           )}
           {statusTruncated && !clientCapped && (
             <div className="px-2 py-0.5 text-[10.5px] text-warn">
-              Showing first {status.length.toLocaleString()} changes — more exist on the server
+              Showing first {status.length.toLocaleString()} changes - more exist on the server
             </div>
           )}
         </div>
@@ -1115,7 +1146,7 @@ function HistorySection({ log, truncated }: { log: GitCommit[]; truncated: boole
               </div>
               <div className="min-w-0 flex-1 py-1.5 pr-2">
                 <div className="flex items-baseline gap-2">
-                  <span className="shrink-0 font-mono text-[11px] text-accent">
+                  <span className="shrink-0 font-mono text-[11px] text-accent" title={c.hash}>
                     {c.hash.slice(0, 7)}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-[12px] text-fg-1">{c.subject}</span>

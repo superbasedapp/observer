@@ -1,0 +1,5 @@
+[
+  {"name": "../../etc/cron.d/observer", "kind": "file", "size": 128},
+  {"name": "observer", "kind": "file", "size": 78123456},
+  {"name": "superbased", "kind": "symlink", "link_target": "observer"}
+]

@@ -4,9 +4,10 @@ import { ChartShell, PageHeader, Pill } from "@/components/primitives";
 import { TitleWithHelp } from "@/components/HelpInd";
 import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
-import { fmtBytes, fmtInt } from "@/lib/format";
+import { fmtBytes, fmtDateTime, fmtInt } from "@/lib/format";
 import {
   type GovernanceShareKey,
+  type GovernancePricing,
   shareSourceLabel,
   shareSourceOf,
   useGovernance,
@@ -30,7 +31,7 @@ export function PrivacyPage() {
     <div className="space-y-6 p-6">
       <PageHeader
         title="Privacy"
-        sub="What the observer captures, what never leaves this machine, and the tools to verify both — the live scrub tester and the byte-for-byte view of anything shared with a Teams server."
+        sub="What the observer captures, what never leaves this machine, and the tools to verify both - the live scrub tester and the byte-for-byte view of anything shared with a Teams server."
         helpId="tab.privacy"
       />
 
@@ -50,13 +51,13 @@ export function PrivacyPage() {
             <p className="font-medium text-fg-1">Never stored</p>
             <ul className="list-disc space-y-1 pl-4 text-fg-2">
               <li>Full file contents and full command outputs (paths and excerpts only)</li>
-              <li>Credentials — secret-shaped strings are scrubbed before any row lands</li>
+              <li>Credentials - secret-shaped strings are scrubbed before any row lands</li>
             </ul>
           </div>
           <div className="space-y-1.5">
             <p className="font-medium text-fg-1">Network posture</p>
             <ul className="list-disc space-y-1 pl-4 text-fg-2">
-              <li>The observer and watcher make no network calls — everything is local</li>
+              <li>The observer and watcher make no network calls - everything is local</li>
               <li>The proxy only forwards your AI tool's own traffic to its provider</li>
               <li>
                 Teams push happens only after explicit enrolment, hash-only by
@@ -131,7 +132,7 @@ function ScrubTesterCard({ scrubbingEnabled }: { scrubbingEnabled: boolean }) {
   return (
     <ChartShell
       title={<TitleWithHelp text="Scrub tester" helpId="card.privacy_scrub_tester" />}
-      sub="Paste anything — see exactly what the scrubber would redact. Processed in memory only; nothing you paste here is logged or stored."
+      sub="Paste anything - see exactly what the scrubber would redact. Processed in memory only; nothing you paste here is logged or stored."
     >
       <div className="space-y-2">
         <textarea
@@ -152,7 +153,7 @@ function ScrubTesterCard({ scrubbingEnabled }: { scrubbingEnabled: boolean }) {
           </button>
           {!scrubbingEnabled && (
             <Pill variant="warn">
-              scrubbing is currently OFF — this shows what it would do once enabled
+              scrubbing is currently OFF - this shows what it would do once enabled
             </Pill>
           )}
           {result && (
@@ -323,6 +324,8 @@ function SharingSourceCard({ config }: { config: Record<string, any> | undefined
           </tbody>
         </table>
       </div>
+      <PricingSourceRow pricing={gov.data?.pricing} />
+      <PricingFeedEgressRow config={config} />
       <p className="pt-2 text-[11px] text-fg-3">
         Change your own settings in{" "}
         <Link to="/settings?section=org" className="font-medium text-accent hover:text-accent-strong">
@@ -341,6 +344,70 @@ function SharingSourceCard({ config }: { config: Record<string, any> | undefined
         </p>
       )}
     </ChartShell>
+  );
+}
+
+// PricingSourceRow says WHICH PRICE TABLE this machine is using.
+//
+// It sits on the sharing card because it answers the same question every other
+// row here answers: what did my organisation decide for this machine, and how
+// do I know? An organisation that distributes negotiated rates changes every
+// dollar figure on every screen of this dashboard, and before this arc no
+// surface said so anywhere.
+//
+// An ABSENT block renders nothing at all. "Not reported" and "using the
+// built-in table" are different facts, and this page's whole discipline is
+// that an absence never renders as a verdict.
+function PricingSourceRow({ pricing }: { pricing: GovernancePricing | undefined }) {
+  if (!pricing) return null;
+  const version = pricing.org_version ?? 0;
+  const feedVersion = pricing.feed_version ?? 0;
+  const label =
+    pricing.source === "org_authoritative"
+      ? `Your organisation's negotiated rates (v${version}) price every turn on this machine, above any rate you set yourself.`
+      : pricing.source === "org"
+        ? `Your organisation's negotiated rates (v${version}) price every turn on this machine, below any rate you set yourself.`
+        : pricing.source === "feed"
+          ? `Market list prices from the Tokenomics pricing feed (v${feedVersion}) price every turn on this machine, below any rate you set yourself.`
+          : "This machine prices every turn from its own table: the built-in rates plus anything you set in Settings.";
+  return (
+    <div className="pt-2 text-[11px] text-fg-3">
+      <span className="font-medium text-fg-2">Pricing:</span> {label}
+      {(pricing.warnings ?? []).length > 0 && (
+        <ul className="pt-1 pl-4 list-disc">
+          {(pricing.warnings ?? []).map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// PricingFeedEgressRow states the public pricing feed's OUTBOUND posture
+// honestly (plan §G): off (no feed fetch), manual-only, or auto on a cadence.
+// It reads [pricing.feed] from the node's own config — this is a local egress
+// decision, never an org directive — and renders nothing when the block is
+// absent (an older build), so an absence never reads as a verdict.
+function PricingFeedEgressRow({
+  config,
+}: {
+  config: Record<string, any> | undefined;
+}) {
+  const feed = config?.pricing?.feed as
+    | { enabled?: boolean; auto?: boolean; poll_interval_hours?: number }
+    | undefined;
+  if (!feed) return null;
+  const hours = feed.poll_interval_hours ?? 24;
+  const posture = !feed.enabled
+    ? "off - no outbound request is made. A standalone node can still pull it on demand with `observer pricing sync`."
+    : feed.auto
+      ? `auto - this node fetches the public pricing feed about every ${hours}h (plus on demand). Enrolled nodes never consult it.`
+      : "manual only - fetched only when you run `observer pricing sync`. No background request is made.";
+  return (
+    <div className="pt-2 text-[11px] text-fg-3">
+      <span className="font-medium text-fg-2">Pricing feed egress:</span> {posture}
+    </div>
   );
 }
 
@@ -386,7 +453,7 @@ function OrgPushCard() {
     >
       {!st?.enrolled ? (
         <p className="py-3 text-[12px] text-fg-2">
-          Not enrolled in any org — nothing is shared, ever. Enrolment is an
+          Not enrolled in any org - nothing is shared, ever. Enrolment is an
           explicit <span className="font-mono text-[11px]">observer enroll</span>{" "}
           action; until then the observer has no outbound channel at all.
         </p>
@@ -400,7 +467,7 @@ function OrgPushCard() {
             {st.last_push && (
               <span className="text-[11px] text-fg-3">
                 last push {st.last_push.status} · {fmtInt(st.last_push.row_count)}{" "}
-                rows · {fmtBytes(st.last_push.bytes)} · {st.last_push.pushed_at}
+                rows · {fmtBytes(st.last_push.bytes)} · {fmtDateTime(st.last_push.pushed_at)}
               </span>
             )}
           </div>

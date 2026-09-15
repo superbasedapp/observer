@@ -79,7 +79,7 @@ export function PatternsPage() {
     <div className="space-y-6 p-6">
       <PageHeader
         title="Patterns"
-        sub={`Repeatable behaviours the observer noticed across your sessions — for example, "after running \`go test\`, you almost always run \`go vet\`." These get fed into observer-suggest which writes them into CLAUDE.md / AGENTS.md / .cursorrules, so new sessions inherit the habit without you re-typing instructions.`}
+        sub={`Repeatable behaviours the observer noticed across your sessions - for example, "after running \`go test\`, you almost always run \`go vet\`." These get fed into observer-suggest which writes them into CLAUDE.md / AGENTS.md / .cursorrules, so new sessions inherit the habit without you re-typing instructions.`}
         helpId="tab.patterns"
       />
       <ChartShell
@@ -425,7 +425,7 @@ function FileCard({
       setWriteMsg(
         out.changed
           ? `Wrote ${out.path}.`
-          : `No changes — ${out.path} already up to date.`,
+          : `No changes - ${out.path} already up to date.`,
       );
       setBody(out.body);
     } catch (e: unknown) {
@@ -643,7 +643,7 @@ function FlowNode({
       </div>
       <Tooltip content={<span className="break-all">{value || "(unset)"}</span>} maxWidth={420}>
         <div tabIndex={0} className="mt-0.5 cursor-help truncate text-fg-1 focus:outline-none">
-          {value || <span className="text-fg-4">—</span>}
+          {value || <span className="text-fg-4">-</span>}
         </div>
       </Tooltip>
     </div>
@@ -690,7 +690,7 @@ function parseDataKv(raw: string): [string, unknown][] {
 }
 
 function formatVal(v: unknown): string {
-  if (v == null) return "—";
+  if (v == null) return "-";
   if (typeof v === "number") return fmtInt(v);
   if (typeof v === "string") return v;
   return JSON.stringify(v);

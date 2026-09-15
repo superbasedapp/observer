@@ -1,0 +1,13 @@
+import os
+
+"""Module docstring.
+Still the docstring."""
+
+# A comment
+def f(x):
+    """Inline doc."""
+    return "# not a comment"
+
+s = '''multi
+line'''
+print(os.name, s, f(1))  # trailing

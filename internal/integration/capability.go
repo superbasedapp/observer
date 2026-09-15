@@ -58,6 +58,59 @@ const (
 	// dirs). Declared here in Phase 1; the manifest writer + the init 4th
 	// consent step land in Phase 2 (browser-extension proposal §10.2).
 	HookBrowserExtension HookMechanism = "chrome_native_messaging"
+	// HookGeminiSettings (Part B item 1): Gemini CLI's ~/.gemini/settings.json
+	// "hooks" block — the SAME Claude-Code-shaped
+	// {"hooks":{<event>:[{"hooks":[{"type":"command","command":…}]}]}}
+	// structure as HookClaudeSettings, registered by
+	// registerGenericSettingsHooks with a SINGLE event (BeforeAgent —
+	// the prompt-submit hook lane is the only reason this mechanism
+	// exists; Gemini CLI has no other hook this repo captures).
+	HookGeminiSettings HookMechanism = "gemini_settings_json"
+	// HookQwenSettings (Part B item 1): Qwen Code's ~/.qwen/settings.json
+	// "hooks" block — same shape and machinery as HookGeminiSettings,
+	// single event (UserPromptSubmit).
+	HookQwenSettings HookMechanism = "qwen_settings_json"
+	// HookFactoryJSON (Part B item 1): Factory Droid's
+	// ~/.factory/hooks.json — the SAME shape as HookCodexConfig's
+	// hooks.json (a dedicated {"hooks":{<event>:[{"matcher":…,"hooks":[…]}]}}
+	// file, not a shared settings.json), single event (UserPromptSubmit).
+	// Reuses codexHooksConfig/readCodexHooks/writeCodexHooks directly.
+	HookFactoryJSON HookMechanism = "factory_hooks_json"
+	// HookQoderJSON (Part B item 2, phase-3a): Qoder CLI's
+	// ~/.qoder/settings.json "hooks" block — byte-identical shape to
+	// HookClaudeSettings/HookGeminiSettings/HookQwenSettings, so
+	// registration reuses registerGenericSettingsHooks directly.
+	HookQoderJSON HookMechanism = "qoder_settings_json"
+	// HookPoolsideYAML (Part B item 2, phase-3a): the standalone `pool`
+	// CLI's ~/.config/poolside/settings.yaml "hooks" block — a genuinely
+	// new FORMAT (YAML, not JSON) for this repo's hook writers, using
+	// the internal/hook readYAMLMap/writeYAMLMap helpers already built
+	// for Hermes' config.yaml.
+	HookPoolsideYAML HookMechanism = "poolside_settings_yaml"
+	// HookZcodeJSON (Part B item 2, phase-3a): zcode's
+	// ~/.zcode/cli/config.json "hooks.events" block — its own shape,
+	// distinct from every other JSON hooks writer. Deliberately never
+	// auto-registered (AutoWired:false on the registry row) pending a
+	// liveness probe (zai-org/feedback#32) — the receiver exists and is
+	// tested, but no `register*` writer function exists for this
+	// mechanism at all yet.
+	HookZcodeJSON HookMechanism = "zcode_config_json"
+	// HookCascadeJSON (Part B item 2, phase-3a): Windsurf/Devin Desktop
+	// Cascade's ~/.codeium/windsurf/hooks.json — its OWN shape
+	// ({"hooks":{"pre_user_prompt":[{"command":…,"powershell":…}]}}),
+	// distinct from every other hooks.json writer (a flat command list,
+	// no matcher/type fields, a separate powershell command variant for
+	// Windows).
+	HookCascadeJSON HookMechanism = "cascade_hooks_json"
+	// HookCommandCodeMod (Part B item 2, phase-3a): commandcode's Mods
+	// SDK — NOT a shell-hook config file at all. Registration writes a
+	// go:embed'd TypeScript module to
+	// ~/.commandcode/mods/observer-guard.ts (jiti-compiled at load
+	// time, no build step) that shells out to
+	// `observer hook command-code transformInput`, mirroring the
+	// hermesplugin precedent (an embedded, non-JSON-config bridge) more
+	// than any of this repo's other hooks.json/settings.json writers.
+	HookCommandCodeMod HookMechanism = "commandcode_mods_ts"
 )
 
 // HookSpec describes a tool's hook-registration capability. A zero-value
@@ -73,6 +126,173 @@ type HookSpec struct {
 	// not yet register it (cline-cli today). Lets the doctor report "capable
 	// but not auto-wired" honestly instead of claiming coverage.
 	AutoWired bool
+	// PromptLaneOnly is true for a mechanism whose ENTIRE hook surface is
+	// the prompt-submit event — the Part B item 1/2 long-tail vendors
+	// (Gemini CLI, Qwen Code, Factory Droid, Qoder, Poolside, zcode,
+	// Windsurf/Devin Desktop Cascade, commandcode), each registered via a
+	// SINGLE event because their tool has no OTHER hook this repo
+	// captures (see each mechanism's own doc comment above). false for a
+	// mechanism that ALSO carries non-prompt-submit value on its own
+	// (Claude Code's 21 lifecycle events, Cursor's 18, Codex's session
+	// events) — auto-registering THOSE stays worthwhile even with
+	// [guard.prompt] off, since the developer still gets session/tool-call
+	// capture out of the same registration.
+	//
+	// B4 (phase-3a review): autoRegisterHooks (cmd/observer/start.go)
+	// gates a PromptLaneOnly mechanism on [guard.prompt].enabled &&
+	// hook_lane — writing a vendor config file whose only content is a
+	// hook the operator's own config says never to evaluate was dead
+	// weight at best and a surprise entry in someone's settings.json at
+	// worst. This is a MECHANISM-level flag, not a tool-name list
+	// (CLAUDE.md rule 3): a future prompt-submit-only vendor gets the
+	// same gate automatically by setting this true on its own row.
+	PromptLaneOnly bool
+}
+
+// EnforcementChannel classifies HOW an org guard policy can actually STOP a
+// dangerous action on this adapter — the honest answer to "what lever does
+// enforcement have here?", independent of whether guard is currently in
+// enforce mode (that is internal/policy.Mode) and independent of whether the
+// lever is available on THIS box right now (see EffectiveEnforcement, which
+// degrades EnforceSandbox on a platform without bwrap). Buckets are ordered
+// by enforcement strength; the zero value (EnforcementUnknown) is never
+// returned by the classifier below — every row lands in exactly one
+// non-zero bucket, mirroring the RouteStatus honesty convention.
+type EnforcementChannel string
+
+const (
+	// EnforcementUnknown: not yet classified. Never produced by
+	// (Capability).EnforcementChannel(); reserved for callers that need a
+	// zero value before a row is looked up.
+	EnforcementUnknown EnforcementChannel = ""
+	// EnforceHookBlock: the tool's own hook mechanism supports a genuine
+	// blocking reply (a non-zero/deny verdict the vendor's own tool honors
+	// BEFORE the dangerous action runs), and observer's receiver is wired to
+	// send one. Strongest channel: the action never executes.
+	EnforceHookBlock EnforcementChannel = "hook_block"
+	// EnforceSandbox: no blocking hook exists (or the mechanism is
+	// structurally fire-and-forget/post-hoc), but the tool is launchable via
+	// `observer <x>` — so a guard policy in enforce mode can require the
+	// launch go through the internal/sandbox bwrap filesystem sandbox
+	// (Linux/WSL2 only), containing the blast radius instead of preventing
+	// the call. Degrades to EnforceRecordedAcceptance when the platform
+	// can't actually provide a sandbox (see EffectiveEnforcement).
+	EnforceSandbox EnforcementChannel = "sandbox_enforce"
+	// EnforceOrgDisallow: neither a blocking hook nor a launcher exists, but
+	// the tool's model traffic is one observer proxy-routes (Proxy != nil)
+	// — so the only lever is refusing to route it at all (or the launcher
+	// refusing to start it, for the org-disallow node-side honor path).
+	EnforceOrgDisallow EnforcementChannel = "org_disallow"
+	// EnforceRecordedAcceptance: no grounded lever exists at all (no
+	// blocking hook, no launcher, no proxy route) — e.g. the *-web browser-
+	// capture rows, or a native/IDE-extension surface observer only
+	// observes. The only honest posture is a dated acknowledgment that the
+	// org accepted the risk of allowing this tool, surfaced in the matrix.
+	EnforceRecordedAcceptance EnforcementChannel = "recorded_acceptance"
+)
+
+// blockingHookMechanisms is the grounded set of hook mechanisms verified
+// (survey 2026-08-30, grep against internal/hook + each adapter's hook
+// receiver) to support a genuine deny reply, i.e. the vendor tool itself
+// aborts the dangerous action when observer's hook replies non-approve:
+//
+//   - HookClaudeSettings: Claude Code PreToolUse — a non-zero exit / deny
+//     JSON reply blocks (internal/hook/guarded.go::HandleGuarded, the
+//     reference implementation; cmd/observer/hook.go::handleClaudeCodePreTool
+//     replies BEFORE the lazy DB persist).
+//   - HookCursor: Cursor's parallel guarded path
+//     (internal/hook/cursor.go::BuildCursorEvent + HandleCursorEventGuarded).
+//
+// Every other mechanism was checked and found NOT blocking-capable, each for
+// a distinct grounded reason (not merely "not yet wired"):
+//
+//   - HookCodexConfig: internal/hook/codex.go::HandleCodexEvent replies `{}`
+//     on stdout UNCONDITIONALLY and FIRST, before the event is even parsed
+//     — genuinely fire-and-forget today. Codex's own PermissionRequest hook
+//     class may support a deny in principle, but observer has no vendor-
+//     verified reply schema for it (docs/codex-hook-capture.md's
+//     capture-first discipline: do not fabricate a schema, prove it live).
+//   - HookHermesPlugin: internal/hook/hermesplugin's embedded plugin hard-
+//     documents "absent / slow / mis-configured MUST NEVER block the host
+//     Hermes" — a design invariant, not an omission.
+//   - HookClineCLIJSONL: a post-hoc TAIL of hooks.jsonl, read AFTER the
+//     logged action already completed — structurally incapable of blocking.
+//   - HookBrowserExtension: the native-messaging chat-capture bridge has no
+//     local dangerous-tool-call surface to gate at all.
+//
+// A future vendor-verified deny schema is the only honest way to grow this
+// set — never add a mechanism here without live confirmation.
+var blockingHookMechanisms = map[HookMechanism]bool{
+	HookClaudeSettings: true,
+	HookCursor:         true,
+}
+
+// EnforcementChannel returns the grounded bucket for how an org guard policy
+// can stop a dangerous action on this adapter, walked as an ordered ladder
+// (table-driven, CLAUDE.md rule #5 — not a tool-name switch):
+//
+//  1. a wired, blocking-capable hook mechanism -> EnforceHookBlock
+//  2. else a launchable tool (Handoff.Launch != nil) -> EnforceSandbox
+//  3. else a proxy-routable tool (Proxy != nil)      -> EnforceOrgDisallow
+//  4. else                                            -> EnforceRecordedAcceptance
+//
+// This is computed, not stored, so it can never drift from the underlying
+// grounded fields (mirrors HandoffCapability.Launchable()'s existing
+// computed-property idiom) — a future edit to Hook/Handoff/Proxy
+// automatically reclassifies correctly. The registry golden test pins the
+// resulting bucket per adapter so a silent reclassification is loud.
+func (c Capability) EnforcementChannel() EnforcementChannel {
+	if blockingHookMechanisms[c.Hook.Mechanism] {
+		return EnforceHookBlock
+	}
+	if c.Handoff.Launchable() {
+		return EnforceSandbox
+	}
+	if c.Proxy != nil {
+		return EnforceOrgDisallow
+	}
+	return EnforceRecordedAcceptance
+}
+
+// EffectiveEnforcement is EnforcementChannel() degraded for the current
+// platform: EnforceSandbox is only a real lever where internal/sandbox can
+// actually build a bwrap sandbox (Linux/WSL2 with a working userns; see
+// sandbox.Probe). sandboxAvailable should come from that probe's Verdict ==
+// VerdictAvailable at the call site (cmd/observer). Never upgrades a
+// channel, never fails — the honest floor when sandboxing isn't available
+// is the same recorded-acceptance posture as a tool with no lever at all.
+func (c Capability) EffectiveEnforcement(sandboxAvailable bool) EnforcementChannel {
+	ch := c.EnforcementChannel()
+	if ch == EnforceSandbox && !sandboxAvailable {
+		return EnforceRecordedAcceptance
+	}
+	return ch
+}
+
+// BudgetAdmissionChannel names a pre-model-request enforcement point that can
+// enforce an Observer-managed hard budget. It is intentionally separate from
+// EnforcementChannel: a blocking tool hook or filesystem sandbox does not
+// control provider spend.
+type BudgetAdmissionChannel string
+
+const (
+	// BudgetAdmissionNone is the safe zero value: Observer has no verified
+	// pre-model-request budget blocker for this capability row.
+	BudgetAdmissionNone BudgetAdmissionChannel = ""
+	// BudgetAdmissionObserverProxy means the tool has a live-verified Proxy
+	// route and can be admitted when this invocation proves it uses that route.
+	BudgetAdmissionObserverProxy BudgetAdmissionChannel = "observer_proxy"
+)
+
+// BudgetAdmissionChannel returns the capability's verified budget enforcement
+// point. ProxyProbe, hooks, handoff launchability, and sandboxing are excluded:
+// none of them proves that this invocation's model request can be denied for a
+// spent budget.
+func (c Capability) BudgetAdmissionChannel() BudgetAdmissionChannel {
+	if c.Proxy != nil {
+		return BudgetAdmissionObserverProxy
+	}
+	return BudgetAdmissionNone
 }
 
 // MCPFormat names the on-disk shape a client uses to store MCP server
@@ -492,6 +712,13 @@ const (
 	// (reached over crossmount from a WSL daemon, or native on a Windows
 	// daemon).
 	ProbeWindows ProbeOS = "windows"
+	// ProbeDarwin: the dir belongs under a macOS home (or, with Abs, at a
+	// macOS absolute location such as /Applications). A darwin daemon walks
+	// BOTH ProbeUnix and ProbeDarwin dirs — the former is the shared
+	// Unix-flavored table, the latter the macOS-only extras (app bundles,
+	// ~/Applications) that would be dead weight on Linux. Added for the GUI
+	// launch rows (docs/plans/ide-desktop-launch-plan-2026-09-03.md §2.3).
+	ProbeDarwin ProbeOS = "darwin"
 )
 
 // ProbeDir is a single per-tool EXTRA directory the resolver scans for the
@@ -503,6 +730,22 @@ const (
 type ProbeDir struct {
 	OS  ProbeOS
 	Rel string
+	// EnvRoot, when non-empty, names an environment variable whose value
+	// replaces HOME as the root of Rel (e.g. "ProgramFiles" for a probe dir
+	// under %ProgramFiles%, rather than the user's home). Empty means
+	// HOME-relative (the common case). The resolver skips the dir entirely
+	// when the named variable is unset — a Windows-only concept in practice
+	// (grounded 2026-09-02: kiro-cli's installer prints an install location
+	// under Program Files that the MSI's own Directory table contradicts —
+	// probing both honestly needs a non-HOME root on one of the two dirs).
+	EnvRoot string
+	// Abs marks Rel as an ABSOLUTE path the resolver walks verbatim — no HOME
+	// join, no EnvRoot expansion (e.g.
+	// "/Applications/Visual Studio Code.app/Contents/MacOS" for a macOS GUI
+	// row). It is mutually exclusive with EnvRoot; when both are set Abs wins
+	// and EnvRoot is ignored. The zero value keeps the HOME-relative default
+	// every existing row relies on.
+	Abs bool
 }
 
 // InstallHint is a single grounded, one-click install command for a tool on a
@@ -521,7 +764,12 @@ type ProbeDir struct {
 type InstallHint struct {
 	// OS scopes the hint: "linux" | "darwin" | "windows" | "" (any OS).
 	OS string
-	// Channel names the install method: "npm" | "script" | "brew".
+	// Channel names the install method, a CLOSED vocabulary (pinned by
+	// TestInstallHintChannelIsClosedVocabulary): "npm" | "script" | "brew" |
+	// "winget" | "uv" | "scoop". "choco" is deliberately NOT in the
+	// vocabulary — the one candidate row found (opencode) is a stale
+	// third-party publish (0.11.1 vs. npm's 1.18.26), so it was never
+	// adopted (2026-09-02 research).
 	Channel string
 	// Argv is the compile-time-constant command spawned verbatim (never
 	// interpolated with request data).
@@ -545,6 +793,21 @@ type BinaryResolveSpec struct {
 	Names     BinaryNames
 	ProbeDirs []ProbeDir
 	Installs  []InstallHint
+	// WindowsNote is the honest-zero carrier for Names.Windows: REQUIRED
+	// (non-empty) whenever Names.Windows is empty on a launchable row — it
+	// states the grounded REASON there is no Windows spelling (e.g. muse:
+	// no Windows build exists per the vendor), never a placeholder. Rendered
+	// by the dashboard install_note surface and `observer doctor`
+	// (2026-09-02 dashboard-install-gap-remediation research, §1.7).
+	WindowsNote string
+	// InstallNote is the honest-zero carrier for Installs: REQUIRED
+	// (non-empty) whenever no InstallHint in Installs matches an OS the
+	// tool is launchable on (an empty Installs slice, or one that only
+	// covers a subset of OSes) — it states the grounded reason (e.g.
+	// zcode: desktop-installer-only, no CLI channel exists). Never
+	// fabricates a channel to fill the gap. Rendered alongside
+	// WindowsNote.
+	InstallNote string
 }
 
 // Vocabulary is an adapter's NATIVE TOOL VOCABULARY row: whether the
@@ -629,3 +892,64 @@ type SandboxSpec struct {
 // fails the row if it ships a name-based action classifier after all. Do
 // not try to move that judgement in here.
 func (v Vocabulary) Declared() bool { return v.InTaxonomy || v.Note != "" }
+
+// PromptLane names the prompt-submit intervention mechanism a tool
+// speaks (docs/plans/prompt-submit-intervention-exploration-2026-09-07.md
+// Part B) — a MECHANISM-shaped field, never a tool-name branch
+// (CLAUDE.md rule 3): `observer doctor`/`observer adapters`/init all
+// dispatch on this, not on the tool string. The zero value
+// (PromptLaneNone, "") is the honest default for the ~30 rows with no
+// grounded prompt-submit capability at all (no hook, or a hook that
+// carries no documented deny semantics) — most adapters, not a hole.
+type PromptLane string
+
+const (
+	// PromptLaneNone: no grounded prompt-submit intervention capability
+	// (no hook event, or one with no documented block/deny semantics).
+	// Zero value.
+	PromptLaneNone PromptLane = ""
+	// PromptLaneHook: a VERIFIED hook dialect exists and
+	// internal/hook/promptsubmit.go has a wired builder for it — see
+	// the matching internal/guard/conformance.go row (CanBlock: true)
+	// for the exact capabilities.
+	PromptLaneHook PromptLane = "hook"
+	// PromptLaneProxyOnly: no prompt-submit hook exists, but the tool
+	// is already proxy-routed (Capability.Proxy != nil), so the PROXY
+	// LANE (internal/guard/proxyguard.go's scanPrompt, composed onto
+	// the real request path by cmd/observer/guardwire.go +
+	// cmd/observer/proxy.go — built and wired, not a future phase) is
+	// this tool's only path to prompt-submit intervention.
+	PromptLaneProxyOnly PromptLane = "proxy_only"
+	// PromptLaneProbeRequired: the vendor's own docs describe a
+	// prompt-submit block mechanism, but the exact wire shape is
+	// UNVERIFIED or contested by the vendor's own issue tracker — a
+	// conformance row exists with zero Capabilities (or, where the
+	// vendor's lack of a message channel is itself documented,
+	// CanAsk:false) rather than a guessed payload. `observer doctor
+	// --probe-hook` is what promotes this to PromptLaneHook.
+	PromptLaneProbeRequired PromptLane = "probe_required"
+	// PromptLaneDocumented existed briefly (FIX-7, phase-2 review) for
+	// a vendor whose docs fully described the prompt-submit wire shape
+	// but Observer had not yet built a dialect builder/receiver for it.
+	// REMOVED (F9, phase-3a review): Part B item 2 (phase-3a,
+	// 2026-09-07) built and tested dialects/receivers for every vendor
+	// that constant covered (Qoder, Poolside, zcode, commandcode,
+	// Devin) and promoted all five to PromptLaneHook — real
+	// conformance rows now exist for each (internal/guard/
+	// conformance.go). No registry row ever set this value again after
+	// that promotion, so it was dead vocabulary: declared, with one
+	// unreachable switch case (cmd/observer/adapters.go's promptCell),
+	// and the test asserting that case's output
+	// (TestRenderAdapterMatrixCoversEveryAdapter) was actually passing
+	// on an unrelated coincidental substring match, not a live render
+	// of this case at all. zcode's own remaining "not auto-wired"
+	// nuance (a tested receiver with no registration writer, pending
+	// the zai-org/feedback#32 liveness question) is fully and
+	// correctly represented today by Hook.AutoWired:false alone — see
+	// HookZcodeJSON's own row and cmd/observer/adapters.go's hookCell
+	// ("+manual" suffix) / `observer guard prompt status` / runProbeHook,
+	// all three of which already read Hook.AutoWired directly as their
+	// one shared source of truth. Introducing a second field that must
+	// be kept in sync with Hook.AutoWired==false would have been a NEW
+	// drift risk, not a fix.
+)

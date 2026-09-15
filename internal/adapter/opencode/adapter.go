@@ -148,6 +148,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	res.TokenEvents = append(res.TokenEvents, tokens...)
 	res.CacheObservations = append(res.CacheObservations, cacheObservations...)
 	res.SessionLineages = append(res.SessionLineages, lineages...)
+	adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 	return res, nil
 }
 
@@ -1194,12 +1195,14 @@ func mapTool(part toolPartData) (actionType, target string, success bool, errMsg
 // The cache lives for one ParseSessionFile call; same cwd resolves once.
 // projectGitInfo is the per-cwd cache entry for resolveProjectRoot /
 // resolveProjectRemote: the resolved project root and its normalized
-// "origin" remote, captured together from a single git.Resolve call so
-// the two never drift and the filesystem walk never happens twice for
-// the same cwd.
+// "origin" remote, captured together from a single git.ResolveIdentity
+// call so the two never drift and the filesystem walk never happens
+// twice for the same cwd. Identity carries the fuller Project Identity
+// Resolver v2 bundle from the same call.
 type projectGitInfo struct {
-	Root   string
-	Remote string
+	Root     string
+	Remote   string
+	Identity git.Identity
 }
 
 func (a *Adapter) resolveProjectRoot(cwd string, cache map[string]projectGitInfo) string {
@@ -1221,12 +1224,16 @@ func (a *Adapter) resolveProjectRoot(cwd string, cache map[string]projectGitInfo
 	if info, ok := cache[cwd]; ok {
 		return info.Root
 	}
-	info, err := git.Resolve(cwd)
+	// RootCommit is left nil: the lazy, cached root-commit exec belongs
+	// only in the store-side path (Store.maybeRunLazyRootCommit), never
+	// on a per-row adapter hot path.
+	info, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
 		cache[cwd] = projectGitInfo{Root: cwd}
 		return cwd
 	}
-	cache[cwd] = projectGitInfo{Root: info.Root, Remote: git.NormalizeRemote(info.Remote)}
+	// info.Remote is already NormalizeRemote'd by ResolveIdentity.
+	cache[cwd] = projectGitInfo{Root: info.Root, Remote: info.Remote, Identity: info}
 	return info.Root
 }
 
@@ -1243,6 +1250,22 @@ func (a *Adapter) resolveProjectRemote(cwd string, cache map[string]projectGitIn
 	}
 	cwd = crossmount.TranslateForeignPath(cwd)
 	return cache[cwd].Remote
+}
+
+// identitiesByRoot flattens a per-cwd projectGitInfo cache into a
+// per-root git.Identity map suitable for
+// adapter.ApplyProjectIdentityByRoot. Multiple cwds resolving to the
+// same repo root collapse to one entry (they carry identical
+// identity, since ResolveIdentity is keyed off the discovered root).
+func identitiesByRoot(cache map[string]projectGitInfo) map[string]git.Identity {
+	out := make(map[string]git.Identity, len(cache))
+	for _, entry := range cache {
+		if entry.Root == "" {
+			continue
+		}
+		out[entry.Root] = entry.Identity
+	}
+	return out
 }
 
 func latestWatermark(ctx context.Context, path string) (int64, error) {

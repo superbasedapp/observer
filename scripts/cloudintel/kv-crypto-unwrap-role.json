@@ -1,0 +1,15 @@
+{
+  "Name": "Cloudintel KV Crypto Unwrap (<SBCI_ENV>)",
+  "IsCustom": true,
+  "Description": "Least-privilege Key Vault crypto role for the sbci-WORKER managed identity's evidence-decryption path (plan §6 CI-P6 IaC #3/#4, contract §2 'get'). Grants read of the key plus unwrapKey ONLY (the worker unwraps the per-evidence data key the API wrapped, to decrypt evidence under the execution lease; it never wraps). This SPLITS the built-in 'Key Vault Crypto User' role — the worker gets unwrapKey, NOT wrapKey/encrypt/decrypt/sign/verify. Both permissions are Key Vault DATA actions; the management Actions list is empty. Scope the ASSIGNMENT to the vault (see ensure_kv_role_assignments in cloudintel-azure.sh). NOTE: data-action custom roles can lag RBAC propagation (~5min) on first assignment; a fresh apply may see AuthorizationFailed briefly before it settles.",
+  "Actions": [],
+  "NotActions": [],
+  "DataActions": [
+    "Microsoft.KeyVault/vaults/keys/read",
+    "Microsoft.KeyVault/vaults/keys/unwrap/action"
+  ],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/<SUBSCRIPTION_ID>"
+  ]
+}

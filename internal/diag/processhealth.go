@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/processobs"
@@ -51,6 +52,58 @@ type ProcessHealth struct {
 	QueueDepth int64 `json:"queue_depth"`
 	// LastError mirrors HealthSnapshot.LastError (empty when clean).
 	LastError string `json:"last_error,omitempty"`
+
+	// Dropped mirrors HealthSnapshot.Dropped, keyed by the DropReason string
+	// ("sink_error", "unattributed", "self_excluded", "no_start_time",
+	// "sink_retry_exhausted", …). Counters, cumulative since daemon start.
+	//
+	// These are the ONLY outside-the-daemon evidence of why capture did not
+	// land. Without them a daemon silently discarding whole batches on a busy
+	// DB is indistinguishable from a quiet box where nothing spawned — which
+	// is exactly the state the 2026-08-26 process-capture anomaly was stuck in
+	// for a full boot (task 9c/9d). The keys are the domain's own vocabulary
+	// carried as plain strings so this record stays a wire shape rather than a
+	// leaked processobs type; an unknown key from a newer daemon must be
+	// rendered, never dropped, so a reason added later is visible on an older
+	// reader.
+	Dropped map[string]int64 `json:"dropped,omitempty"`
+	// Attributed / Unattributed mirror the runs the daemon resolved to a
+	// session and the runs it could not. They are the DENOMINATOR the Dropped
+	// counters are read against: "300 unattributed drops" means one thing
+	// beside 4 attributed runs and another beside 40,000.
+	Attributed   int64 `json:"attributed,omitempty"`
+	Unattributed int64 `json:"unattributed,omitempty"`
+	// AttributedByTool is Attributed broken out per tool, mirroring
+	// HealthSnapshot.AttributedByTool. A tool absent here captured nothing.
+	AttributedByTool map[string]int64 `json:"attributed_by_tool,omitempty"`
+	// SinkRetained is a GAUGE (not a counter): runs held back right now after
+	// a transient sink failure, waiting for the next flush. Non-zero means
+	// writes are failing but capture is being BUFFERED rather than lost —
+	// a different fact from any Dropped counter, and the early warning that
+	// precedes "sink_retry_exhausted".
+	SinkRetained int64 `json:"sink_retained,omitempty"`
+	// SinkFlushMaxMs is the LONGEST single sink flush the daemon has observed,
+	// and QueueDepthMax the high-water mark of its backend queue. Both are
+	// WATERMARKS, so a stall that opened and closed between two 30 s health
+	// publishes still shows — unlike QueueDepth, which is a sample.
+	//
+	// They used to measure a loss no drop counter could see: the flush ran on
+	// the only goroutine draining the capture backend, so a long flush was a
+	// window in which the backend was not read at all, and a snapshot-diff
+	// backend that blocks on send stopped enumerating inside it. Since task 9g
+	// the flush runs on its own goroutine, so a long SinkFlushMaxMs now means
+	// "the database was contended" — read it beside FlushBacklogHits, which is
+	// what says the contention actually reached capture.
+	SinkFlushMaxMs int64 `json:"sink_flush_max_ms,omitempty"`
+	QueueDepthMax  int64 `json:"queue_depth_max,omitempty"`
+	// HandoffDepthMax is the high-water mark of the drain→flusher hand-off
+	// buffer (in BATCHES) and FlushBacklogHits counts how often the drain found
+	// it full. Hits > 0 with no dropped{flush_backlog} is the GOOD outcome: a
+	// slow sink was absorbed and capture was delayed, not lost. Hits climbing
+	// together with dropped{flush_backlog} means the sink was persistently
+	// slower than capture.
+	HandoffDepthMax  int64 `json:"handoff_depth_max,omitempty"`
+	FlushBacklogHits int64 `json:"flush_backlog_hits,omitempty"`
 	// NetworkAccountingMode is one of the processobs.NetworkAccounting*
 	// values — "off" (not requested), "unavailable" (requested, could not
 	// attach) or "tcp" (live, TCP payload bytes only).
@@ -342,6 +395,82 @@ func (h ProcessHealth) Age(now time.Time) time.Duration {
 // carried fact, so no consumer keeps a second boolean beside it.
 func (h ProcessHealth) TransportConfigured() bool {
 	return h.TransportState == processobs.TransportStateConfigured
+}
+
+// CaptureLine renders the capture-yield half of the record — what the daemon
+// resolved and what it threw away — as one operator-facing sentence.
+//
+// It is ALWAYS rendered, including in the all-zero case, and that is the
+// point: the alternative this replaced was silence, and silence is what a
+// daemon dropping every batch on a locked database looked like from outside
+// for a whole boot. "0 attributed" is a measurement; a missing line is not.
+//
+// The drop reasons are listed loudest-first (largest count) and then
+// alphabetically, so repeated reads are stable and the dominant reason leads.
+// A reason this build has never heard of still prints: an older reader must
+// not silently swallow a newer daemon's vocabulary.
+func (h ProcessHealth) CaptureLine() string {
+	line := fmt.Sprintf("%d attributed, %d unattributed", h.Attributed, h.Unattributed)
+	if tools := renderCounts(h.AttributedByTool); tools != "" {
+		line += " (" + tools + ")"
+	}
+	if drops := renderCounts(h.Dropped); drops != "" {
+		line += fmt.Sprintf("; %d dropped: %s", sumCounts(h.Dropped), drops)
+	} else {
+		line += "; no drops recorded"
+	}
+	if h.SinkRetained > 0 {
+		line += fmt.Sprintf("; %d run(s) RETAINED — the sink is failing transiently and capture is being buffered, not lost", h.SinkRetained)
+	}
+	if h.SinkFlushMaxMs > 0 || h.QueueDepthMax > 0 {
+		line += fmt.Sprintf("; peak flush %dms, peak queue %d", h.SinkFlushMaxMs, h.QueueDepthMax)
+	}
+	if h.FlushBacklogHits > 0 {
+		line += fmt.Sprintf("; flush backlog hit %d time(s), peak hand-off %d batch(es)", h.FlushBacklogHits, h.HandoffDepthMax)
+	}
+	return line
+}
+
+// sumCounts totals a counter map. Separate from renderCounts so the headline
+// number and the breakdown can never disagree about what was counted.
+func sumCounts(m map[string]int64) int64 {
+	var total int64
+	for _, v := range m {
+		total += v
+	}
+	return total
+}
+
+// renderCounts formats a counter map as "key=n, key=n", largest first then
+// alphabetical. Zero-valued entries are skipped — a reason recorded as zero
+// carries no information and only crowds out the ones that do. Empty map
+// (or a map of nothing but zeroes) renders as "".
+func renderCounts(m map[string]int64) string {
+	type kv struct {
+		k string
+		v int64
+	}
+	pairs := make([]kv, 0, len(m))
+	for k, v := range m {
+		if v == 0 {
+			continue
+		}
+		pairs = append(pairs, kv{k, v})
+	}
+	if len(pairs) == 0 {
+		return ""
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].v != pairs[j].v {
+			return pairs[i].v > pairs[j].v
+		}
+		return pairs[i].k < pairs[j].k
+	})
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, fmt.Sprintf("%s=%d", p.k, p.v))
+	}
+	return strings.Join(out, ", ")
 }
 
 // staleQualified prefixes a headline with the record's age when the daemon

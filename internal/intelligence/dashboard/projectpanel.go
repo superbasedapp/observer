@@ -15,6 +15,46 @@ import (
 // truncated with too_large set.
 const projectPanelReadCap = fsview.DefaultMaxReadBytes
 
+// TerminalRoot is the ONE answer the panel's token→directory seam returns: the
+// directory the project panel browses for a launch token, plus the PROVENANCE
+// of that directory. Both halves travel together so the surface can never
+// disclose a path without disclosing what kind of path it is.
+//
+// Provenance, not permission (operator ruling 2026-08-28). Authorized=true means
+// the run was launched into a root the operator allow-listed under
+// [terminal.launch].allowed_project_roots. Authorized=false means the run was
+// launched with the default cwd and the panel is serving the directory the
+// child actually runs in (the daemon's own working directory). BOTH are
+// browsable: the allow-list governs which roots a dashboard client may REQUEST
+// at launch time, not which directory an already-running, owner-local terminal
+// may browse. Every per-request containment guard (fsview traversal/symlink
+// re-verification, gitview argv hardening, the remote allow_terminal_view gate)
+// applies identically to either root.
+type TerminalRoot struct {
+	// Path is the canonical, symlink-resolved directory to browse. Empty means
+	// "nothing to browse" (an SSH run, whose cwd is on another machine, or a
+	// daemon whose own cwd was unreadable) → 409 no_project_root.
+	Path string
+	// Authorized reports whether Path is an operator allow-listed project root
+	// (true) rather than the run's factual working directory (false).
+	Authorized bool
+}
+
+// Wire values for projectMetaResp.RootKind. The frontend branches on these to
+// label the path honestly instead of always calling it a project.
+const (
+	terminalRootKindProject = "project_root"
+	terminalRootKindWorking = "working_dir"
+)
+
+// rootKindWire projects a TerminalRoot's provenance onto its wire spelling.
+func rootKindWire(root TerminalRoot) string {
+	if root.Authorized {
+		return terminalRootKindProject
+	}
+	return terminalRootKindWorking
+}
+
 // handleTerminalProject serves the per-terminal project panel (Arc A):
 //
 //	GET /api/terminal/project/<token>              → meta
@@ -23,12 +63,16 @@ const projectPanelReadCap = fsview.DefaultMaxReadBytes
 //	GET /api/terminal/project/<token>/git          → git snapshot
 //
 // The browser never sends a filesystem root: the token (a live launch handle)
-// resolves — server-side — to the canonical project root the run was launched
-// with, from state retained at spawn. The browsable set is exactly {live
-// terminal runs with a known root}. All endpoints are GET-only and View-tier.
+// resolves — server-side — to the canonical directory the run was launched
+// into, from state retained at spawn. The browsable set is exactly {live
+// terminal runs with a known directory}: an allow-listed project root when the
+// launch requested one, otherwise the run's own working directory (operator
+// ruling 2026-08-28 — see TerminalRoot). All endpoints are GET-only and
+// View-tier.
 //
 // Errors are JSON {"error": code}: 404 unknown_token (unknown/exited token),
-// 409 no_project_root (live run launched with the default cwd), 403
+// 409 no_project_root (a live run with no local directory to browse: an SSH
+// shell whose cwd is on another machine, or an unreadable daemon cwd), 403
 // remote_view_disabled (remote-exposed caller without allow_terminal_view), 400
 // bad_path (traversal/absolute/other), 404 not_found (missing path). Absolute
 // filesystem paths of failures are NEVER echoed in an error body; the meta
@@ -71,7 +115,7 @@ func (s *Server) handleTerminalProject(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, http.StatusNotFound, "unknown_token")
 		return
 	}
-	if root == "" {
+	if root.Path == "" {
 		writeProjectError(w, http.StatusConflict, "no_project_root")
 		return
 	}
@@ -80,30 +124,36 @@ func (s *Server) handleTerminalProject(w http.ResponseWriter, r *http.Request) {
 	case "":
 		s.projectMeta(w, r, root)
 	case "files":
-		s.projectFiles(w, r, root)
+		s.projectFiles(w, r, root.Path)
 	case "file":
-		s.projectFile(w, r, root)
+		s.projectFile(w, r, root.Path)
 	case "git":
-		s.projectGit(w, r, root)
+		s.projectGit(w, r, root.Path)
 	default:
 		writeProjectError(w, http.StatusNotFound, "not_found")
 	}
 }
 
 // projectMetaResp is the GET /api/terminal/project/<token> payload. root is the
-// canonical project root (the one sanctioned place a path is disclosed; a
-// remote caller reaching here already passed the allow_terminal_view gate).
+// canonical directory being browsed (the one sanctioned place a path is
+// disclosed; a remote caller reaching here already passed the
+// allow_terminal_view gate), and root_kind says what that directory IS so the
+// panel can label it honestly rather than always calling it a project.
 type projectMetaResp struct {
-	Root         string `json:"root"`
+	Root string `json:"root"`
+	// RootKind is "project_root" when the run was launched into an operator
+	// allow-listed root, "working_dir" when the panel is serving the terminal's
+	// own working directory (a default-cwd launch). See TerminalRoot.
+	RootKind     string `json:"root_kind"`
 	GitAvailable bool   `json:"git_available"`
 	IsGit        bool   `json:"is_git"`
 	Branch       string `json:"branch"`
 }
 
-func (s *Server) projectMeta(w http.ResponseWriter, r *http.Request, root string) {
+func (s *Server) projectMeta(w http.ResponseWriter, r *http.Request, root TerminalRoot) {
 	gitAvailable := true
 	var gi gitview.Info
-	info, err := gitview.Snapshot(r.Context(), root)
+	info, err := gitview.Snapshot(r.Context(), root.Path)
 	switch {
 	case errors.Is(err, gitview.ErrGitUnavailable):
 		gitAvailable = false
@@ -111,7 +161,8 @@ func (s *Server) projectMeta(w http.ResponseWriter, r *http.Request, root string
 		gi = info
 	}
 	writeJSON(w, projectMetaResp{
-		Root:         root,
+		Root:         root.Path,
+		RootKind:     rootKindWire(root),
 		GitAvailable: gitAvailable,
 		IsGit:        gi.IsGit,
 		Branch:       gi.Branch,

@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "feed_version": 42,
+  "generated_at": "2026-01-15T12:00:00Z",
+  "rows": [
+    {
+      "model": "aaa-every-rate",
+      "input_per_mtok": 15,
+      "output_per_mtok": 75,
+      "cache_read_per_mtok": 1.5,
+      "cache_write_per_mtok": 18.75,
+      "cache_write_1h_per_mtok": 30,
+      "long_context_threshold": 200000,
+      "long_context_input_per_mtok": 30,
+      "long_context_output_per_mtok": 150,
+      "long_context_cache_read_per_mtok": 3,
+      "long_context_cache_write_per_mtok": 37.5,
+      "long_context_cache_write_1h_per_mtok": 60,
+      "web_search_per_request": 0.01,
+      "effective_from": "2026-01-01T00:00:00Z",
+      "source": "list",
+      "grade": "verified",
+      "economics": {
+        "cache_mode": "explicit",
+        "cache_write_billing": "per_write",
+        "cache_ttl_seconds": 300,
+        "cache_ttl_1h_available": true,
+        "min_cacheable_tokens": 512,
+        "reasoning_supported": true,
+        "reasoning_billing": "output_rate",
+        "context_window_tokens": 200000,
+        "fast_multiplier": 1.5,
+        "notes": "anthropic explicit cache"
+      }
+    },
+    {
+      "model": "bbb-quoted-zero",
+      "input_per_mtok": 1,
+      "cache_read_per_mtok": 0,
+      "source": "list",
+      "grade": "vendor_endpoint_fetched"
+    },
+    {
+      "model": "ccc-empty-grade",
+      "input_per_mtok": 2,
+      "source": "list"
+    },
+    {
+      "model": "ddd-one-econ-field",
+      "input_per_mtok": 3,
+      "source": "list",
+      "grade": "verified",
+      "economics": {
+        "cache_mode": "implicit"
+      }
+    }
+  ],
+  "digest": "d2455d8843a09021c6cf90e60ba0bc72399616b00bfc9fcda6080b23b0143a6e",
+  "signature": "7t+nkfyUB8kLVzOexug2RWjMTtCeSLE4MvN4MTPru1x2k/A2b5m1Loxo4PzQBErStz19SKkiaty31jPm4HNwCA==",
+  "key_id": "pricing-feed-v1"
+}

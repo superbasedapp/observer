@@ -1,0 +1,37 @@
+{
+ "schemaVersion": 3,
+ "value": {
+  "rows": [
+   {
+    "id": "11111111-2222-3333-4444-555555555555",
+    "name": "Example Bot",
+    "description": "An anonymized example agent.",
+    "title": "",
+    "avatarShape": "blob",
+    "avatarColor": "blue",
+    "avatarVersion": null,
+    "createdAt": 1780000000000,
+    "updatedAt": 1780000014000,
+    "path": "/home/box/sand-data/agents/11111111-2222-3333-4444-555555555555/store.db",
+    "lastEntry": {
+     "kind": "text",
+     "text": "Still typ"
+    },
+    "lastMessageId": "t1s3",
+    "newestEntryId": "t1s3",
+    "hasUnread": false,
+    "unreadCount": 0,
+    "lastViewedAt": 1780000014000,
+    "lastActivityAt": 1780000014000,
+    "awaitingUserResponse": null,
+    "notificationsEnabled": false,
+    "notifyOnUpdatesEnabled": true,
+    "isHiddenFromSidebar": false,
+    "origin": "user",
+    "isGroup": false,
+    "memberIds": [],
+    "conversationPartnerIds": []
+   }
+  ]
+ }
+}

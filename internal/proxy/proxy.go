@@ -213,6 +213,25 @@ type CostTokens struct {
 	Fast bool
 }
 
+// VirtualKeySource supplies the org-issued AI Gateway virtual key
+// (sbo-vk-…) used for Sol S2 auth-substitution when Gateway Mode is
+// active (docs/plans/plane-b-dual-mode-gateway-rbac-ia-design-2026-08-29.md
+// §2.3). In production this is a thin adapter over the node's
+// orgclient.BearerStore third slot (SaveVirtualKey/LoadVirtualKey) — bound
+// at the orgclient wiring point in cmd/observer so internal/proxy never
+// imports internal/orgclient, the same seam pattern as CostComputer for
+// internal/intelligence and Admitter/EgressReporter for internal/obs.
+type VirtualKeySource interface {
+	// LoadVirtualKey returns the currently stored virtual key and the
+	// routing generation it was minted under. An error (typically
+	// orgclient.ErrNoSecret when Gateway Mode has not been provisioned
+	// locally yet) means the proxy has no usable credential for the
+	// gateway leg — the caller MUST fail closed rather than forward the
+	// developer's own provider credential or silently fall back to a
+	// direct-provider destination.
+	LoadVirtualKey() (key string, generation uint64, err error)
+}
+
 // Options configures a Proxy.
 type Options struct {
 	// AnthropicUpstream is the base URL for Anthropic requests. Must be an
@@ -263,6 +282,24 @@ type Options struct {
 	// wiring point so internal/proxy never imports internal/obs. See
 	// [EgressReporter].
 	EgressReporter EgressReporter
+	// VirtualKeySource supplies the AI Gateway virtual key for Sol S2
+	// auth-substitution. nil ⇒ Gateway Mode requests fail closed (a local
+	// 502 error, never a forwarded developer credential). Only consulted
+	// when the installed org-route (SetOrgGatewayRoute) is in
+	// orgModeGateway; a build with no org-route installed never touches
+	// this field. Bound at the orgclient wiring point so internal/proxy
+	// never imports internal/orgclient. See [VirtualKeySource].
+	VirtualKeySource VirtualKeySource
+	// GatewayFleetAlerter, when non-nil, receives one GatewayLadderAlert each
+	// time the Gateway-Mode fallback ladder exhausts every configured endpoint
+	// and applies its terminal policy (queue-and-hold, break-glass-unavailable,
+	// or custody-downgrading direct fallback — Luna L16). It is the "raise a
+	// fleet alert" signal from the design's terminal-policy contract. nil (the
+	// default) leaves the ladder behavior byte-identical except for a nil
+	// check; the executor always also logs at Warn. Bound at the daemon
+	// composition point (dashboard / org-client), never imported by
+	// internal/proxy directly. See [GatewayFleetAlerter].
+	GatewayFleetAlerter GatewayFleetAlerter
 	// AdmissionUserHeader names the request header the admission gate reads
 	// the end-user identity from (org-hosted-app model). Empty ⇒ no per-end-
 	// user identity is threaded from the proxy path.
@@ -396,6 +433,39 @@ type Options struct {
 	// behavior byte-identical to before this seam existed. See
 	// ObsContentExtractor's doc comment.
 	ObsContentExtractor ObsContentExtractor
+	// DrainGate, when non-nil, is the bounded-drain seam an in-place binary
+	// update needs (enterprise-update-management plan §3.7 step 4a, rulings
+	// R9/R13). While the gate is closed the proxy stops ADMITTING and
+	// answers a retryable 503 with Retry-After; requests already admitted
+	// run to completion, which is what "wait for in-flight to reach zero"
+	// means. nil (the default) leaves proxy behavior byte-identical except
+	// for a nil check.
+	//
+	// It is an INTERFACE, like Sink / Admitter / CostComputer, so the
+	// concrete counter (internal/quiesce.Gate) stays on the other side of
+	// the seam and internal/proxy never learns what an update is.
+	DrainGate DrainGate
+}
+
+// DrainGate is the proxy's half of the node's quiescence contract.
+//
+// The rule it implements is a DRAIN, not a sample. A point-in-time "is
+// anything in flight?" check races the request that arrives during the
+// restart window, which is precisely the failure CLAUDE.md's
+// "don't stop/restart the daemon while the proxy route is active" rule
+// exists to prevent: the node cannot flip its client's base URL, so the
+// closest honest equivalent of "route OFF" is a retryable refusal.
+type DrainGate interface {
+	// Enter admits one request, reporting whether it was admitted. A
+	// refusal is answered 503 + Retry-After, never dropped and never held.
+	Enter() bool
+	// Leave releases one admitted request. Called from a defer, so every
+	// exit path of the handler — including a panic — is covered.
+	Leave()
+	// RetryAfterSeconds is the hint sent with a refusal. It is the drain's
+	// own budget rather than a constant, so a client that obeys it never
+	// returns before the gate could have reopened.
+	RetryAfterSeconds() int
 }
 
 // NetworkCaptureOptions controls optional proxy→process-network capture.
@@ -447,7 +517,28 @@ type Proxy struct {
 	// (copy-on-write), so a swap never races an in-flight request that
 	// already read the old snapshot. nil/empty upstreams map when no
 	// [proxy.upstreams] are configured (fail-open to the fixed three).
-	lanes               atomic.Pointer[laneTable]
+	lanes atomic.Pointer[laneTable]
+	// laneGen is the monotonically increasing source of laneTable.generation
+	// ids (Sol S7). Every setter that publishes a new laneTable (New,
+	// SetUpstreams, SetLaneTable, SetOrgGatewayRoute) calls nextGeneration()
+	// exactly once and stamps the result into the snapshot it Stores — so
+	// "the ACKed generation is exactly what was installed" is a plain
+	// integer equality check, with no ambiguity from partial/torn state.
+	laneGen atomic.Uint64
+	// virtualKeySource supplies the AI Gateway virtual key for Sol S2
+	// auth-substitution when Gateway Mode is active. nil ⇒ Gateway Mode
+	// can never succeed (fails closed — see the gateway auth-substitution
+	// block in serve()); a byte-identical-to-pre-P5a build simply never
+	// sets an org-route, so this only matters once Gateway Mode is
+	// actually installed. Bound at the orgclient wiring point so
+	// internal/proxy never imports internal/orgclient (same pattern as
+	// Admitter/EgressReporter for internal/obs).
+	virtualKeySource VirtualKeySource
+	// gatewayAlerter mirrors Options.GatewayFleetAlerter — the fleet-alert
+	// sink the Gateway-Mode fallback executor fires on terminal-policy
+	// application. nil ⇒ no sink (the executor still logs). See
+	// gatewayfallback.go.
+	gatewayAlerter      GatewayFleetAlerter
 	forceChatGPTHTTP    bool
 	sink                Sink
 	compressor          Compressor
@@ -516,6 +607,10 @@ type Proxy struct {
 	// see obsGatewayMaxConcurrentSynthesis's doc comment). Always
 	// allocated (cheap, fixed-size); only ever touched when obsSink != nil.
 	obsSem chan struct{}
+	// drainGate is the optional bounded-drain seam (Options.DrainGate). nil
+	// ⇒ admission is unconditional, byte-identical to the pre-update-arc
+	// behaviour.
+	drainGate DrainGate
 }
 
 // codexVariantRe matches OpenAI-shape model identifiers that belong to
@@ -697,6 +792,8 @@ func New(opts Options) (*Proxy, error) {
 		compressor:          opts.Compressor,
 		admitter:            opts.Admitter,
 		egressReporter:      opts.EgressReporter,
+		virtualKeySource:    opts.VirtualKeySource,
+		gatewayAlerter:      opts.GatewayFleetAlerter,
 		egressBreaker:       newEgressBreaker(),
 		admissionUserHeader: opts.AdmissionUserHeader,
 		cost:                opts.CostComputer,
@@ -722,19 +819,29 @@ func New(opts Options) (*Proxy, error) {
 		obsSink:             opts.ObsSink,
 		obsContentExtractor: opts.ObsContentExtractor,
 		obsSem:              make(chan struct{}, obsGatewayMaxConcurrentSynthesis),
+		drainGate:           opts.DrainGate,
 	}
 	// atomic.Pointer has no struct-literal form (unexported internal
 	// state) — publish the initial lane table via Store, same call path
-	// SetUpstreams/SetLaneTable use for a later hot swap.
-	p.lanes.Store(&laneTable{upstreams: explicitUpstreams, autoDefault: opts.AutoDefaultLane})
+	// SetUpstreams/SetLaneTable/SetOrgGatewayRoute use for a later hot
+	// swap. orgRoute starts at its zero value (orgModeNode — inert).
+	p.lanes.Store(&laneTable{upstreams: explicitUpstreams, autoDefault: opts.AutoDefaultLane, generation: p.nextGeneration()})
 	return p, nil
+}
+
+// nextGeneration returns the next monotonically increasing routing-
+// generation id (Sol S7). Safe for concurrent use; every laneTable setter
+// calls this exactly once per publish.
+func (p *Proxy) nextGeneration() uint64 {
+	return p.laneGen.Add(1)
 }
 
 // SetUpstreams parses and validates every entry in upstreams, then
 // atomically swaps the live routing-id → upstream-URL map used by
 // /up/<id> lane selection and the virtual "auto" lane (Phase 1, gateway
 // config plane spec), PRESERVING the currently live auto-default lane id
-// unchanged. All-or-nothing: if ANY entry fails to parse, the PREVIOUSLY
+// AND org-gateway route (Sol S7 — see SetOrgGatewayRoute) unchanged.
+// All-or-nothing: if ANY entry fails to parse, the PREVIOUSLY
 // live table keeps serving unchanged and the first parse error is
 // returned — there is no partial swap. "auto" is a reserved lane id
 // (Phase 2) and is always rejected, mirroring the config-time check in
@@ -761,7 +868,8 @@ func (p *Proxy) SetUpstreams(upstreams map[string]string) error {
 		}
 		next[id] = u
 	}
-	p.lanes.Store(&laneTable{upstreams: next, autoDefault: p.laneSnapshot().autoDefault})
+	prev := p.laneSnapshot()
+	p.lanes.Store(&laneTable{upstreams: next, autoDefault: prev.autoDefault, orgRoute: prev.orgRoute, generation: p.nextGeneration()})
 	return nil
 }
 
@@ -770,7 +878,9 @@ func (p *Proxy) SetUpstreams(upstreams map[string]string) error {
 // gateway config plane spec — the install seam for a dashboard-managed
 // gateway.providers policy resource). Unlike SetUpstreams, which preserves
 // whatever default is currently live, this replaces it outright: passing
-// an empty autoDefaultLane clears the default.
+// an empty autoDefaultLane clears the default. The org-gateway route
+// (Sol S7 — see SetOrgGatewayRoute) is PRESERVED unchanged, same as
+// SetUpstreams.
 //
 // All-or-nothing: if ANY upstream entry fails to parse, or autoDefaultLane
 // is non-empty and doesn't name a key of upstreams (including "auto",
@@ -806,7 +916,7 @@ func (p *Proxy) SetLaneTable(upstreams map[string]string, autoDefaultLane string
 			return fmt.Errorf("proxy.SetLaneTable: auto_default_lane %q does not name a configured upstream", autoDefaultLane)
 		}
 	}
-	p.lanes.Store(&laneTable{upstreams: next, autoDefault: autoDefaultLane})
+	p.lanes.Store(&laneTable{upstreams: next, autoDefault: autoDefaultLane, orgRoute: p.laneSnapshot().orgRoute, generation: p.nextGeneration()})
 	return nil
 }
 
@@ -835,6 +945,151 @@ func (p *Proxy) LaneTable() (upstreams map[string]string, autoDefaultLane string
 		out[id] = u.String()
 	}
 	return out, t.autoDefault
+}
+
+// SetOrgGatewayRoute atomically installs (or clears) the org-wide AI
+// Gateway routing mode, destination, and fallback ladder as part of the
+// SAME immutable routing-generation snapshot as the /up/<id> lane table
+// (Sol S7, docs/plans/plane-b-dual-mode-gateway-rbac-ia-design-2026-08-29.md
+// §2 Gateway Mode). This is the ONLY way org-route state changes — there
+// is no second atomic.Pointer for it (Sol S7's "no second setter/pointer"
+// constraint). PRESERVES the currently live upstream map and auto-default
+// lane id unchanged, mirroring SetUpstreams' RMW pattern for the other
+// half of the snapshot.
+//
+// mode must be orgModeNode ("" — clears any installed route; default-lane
+// traffic goes directly to the fixed upstreams, byte-identical to every
+// pre-P5a build) or orgModeGateway ("gateway" — default-lane traffic with
+// no explicit /up/<id> lane is redirected to primary via upstreamForPath,
+// Sol S8, and Gateway Mode auth-substitution activates for it, Sol S2).
+// Any other mode string is rejected. In gateway mode, primary is required
+// and must parse as a valid upstream URL (scheme + host); every entry in
+// fallbacks must too. The fallback ladder's runtime state machine (try
+// each entry, apply a terminal policy) is Sol S10 / P5b — this call only
+// stores the data so a later phase can walk it.
+//
+// All-or-nothing: on any validation error the previously live snapshot
+// keeps serving unchanged and the error is returned — there is no partial
+// install. A nil error means the generation this call just published
+// (see RoutingGeneration) is now exactly what's live: no torn state for a
+// caller (e.g. the org policy-state ACK path) to worry about.
+func (p *Proxy) SetOrgGatewayRoute(mode, primary string, fallbacks []string) error {
+	return p.SetOrgGatewayRouteWithFallback(mode, primary, fallbacks, "", false)
+}
+
+// SetOrgGatewayRouteWithFallback is SetOrgGatewayRoute plus the compiled
+// fallback-ladder terminal policy (Sol S10 / Luna L16). The runtime ladder
+// executor (gatewayfallback.go) reads the stored terminal rung + custody-ack
+// when primary and every fallback endpoint is exhausted. terminal is one of
+// terminalHold / terminalBreakGlass / terminalDirect (empty ⇒ hold);
+// custodyAck is only honored for terminalDirect. The three-arg
+// SetOrgGatewayRoute is the terminal="hold" default form.
+func (p *Proxy) SetOrgGatewayRouteWithFallback(mode, primary string, fallbacks []string, terminal string, custodyAck bool) error {
+	org, err := newOrgRouteState(mode, primary, fallbacks, terminal, custodyAck)
+	if err != nil {
+		return fmt.Errorf("proxy.SetOrgGatewayRoute: %w", err)
+	}
+	prev := p.laneSnapshot()
+	p.lanes.Store(&laneTable{
+		upstreams:   prev.upstreams,
+		autoDefault: prev.autoDefault,
+		orgRoute:    org,
+		generation:  p.nextGeneration(),
+	})
+	return nil
+}
+
+// SetRoutingSnapshot atomically installs BOTH the /up/<id> lane table
+// (upstreams + auto-default) AND the org-gateway route (mode + primary +
+// fallbacks) as ONE routing-generation snapshot — the true realization of
+// Sol S7's "one immutable routing-generation snapshot, published in one
+// swap, ACKed as one generation." It is the combined form of SetLaneTable +
+// SetOrgGatewayRoute for the gateway.providers MODE-body accept path, which
+// must publish lanes and mode together so a reader can never observe new
+// lanes with an old mode (or vice versa) across the accept.
+//
+// mode is orgModeNode ("") or orgModeGateway ("gateway"); in gateway mode
+// primary is required and every URL must parse. Validation is all-or-nothing:
+// on any error the previously live snapshot keeps serving unchanged. The
+// autoLaneID lane id is reserved for both the lane map and auto_default_lane.
+//
+// For a lane-only body that carries no mode block, the accept path reads the
+// live OrgRoute() and passes it straight through here, so "preserve the
+// current org-route" is expressed as "set it to what it already is" — still
+// one atomic swap, never a torn generation.
+func (p *Proxy) SetRoutingSnapshot(upstreams map[string]string, autoDefaultLane, mode, primary string, fallbacks []string) error {
+	return p.SetRoutingSnapshotWithFallback(upstreams, autoDefaultLane, mode, primary, fallbacks, "", false)
+}
+
+// SetRoutingSnapshotWithFallback is SetRoutingSnapshot plus the compiled
+// fallback-ladder terminal policy (Sol S10 / Luna L16). The mode-body accept
+// path (cmd/observer's gatewayProvidersHandle.ApplyWithMode) calls this so a
+// Gateway-Mode body installs its lanes, destination, ordered fallback ladder,
+// AND terminal rung in ONE routing generation — the runtime executor
+// (gatewayfallback.go) then reads the terminal rung + custody-ack from the
+// same snapshot it reads the endpoints from, never straddling two
+// generations. The six-arg SetRoutingSnapshot is the terminal="hold" default
+// form. All validation stays all-or-nothing.
+func (p *Proxy) SetRoutingSnapshotWithFallback(upstreams map[string]string, autoDefaultLane, mode, primary string, fallbacks []string, terminal string, custodyAck bool) error {
+	// Validate the lane half (mirrors SetLaneTable).
+	var next map[string]*url.URL
+	for id, raw := range upstreams {
+		if id == autoLaneID {
+			return fmt.Errorf("proxy.SetRoutingSnapshot: %q is a reserved lane id", autoLaneID)
+		}
+		u, err := parseUpstream("upstream:"+id, raw, "")
+		if err != nil {
+			return fmt.Errorf("proxy.SetRoutingSnapshot: %w", err)
+		}
+		if next == nil {
+			next = map[string]*url.URL{}
+		}
+		next[id] = u
+	}
+	if autoDefaultLane == autoLaneID {
+		return fmt.Errorf("proxy.SetRoutingSnapshot: auto_default_lane %q is a reserved lane id", autoLaneID)
+	}
+	if autoDefaultLane != "" {
+		if _, ok := next[autoDefaultLane]; !ok {
+			return fmt.Errorf("proxy.SetRoutingSnapshot: auto_default_lane %q does not name a configured upstream", autoDefaultLane)
+		}
+	}
+	// Validate the org-route half (mirrors SetOrgGatewayRoute).
+	org, err := newOrgRouteState(mode, primary, fallbacks, terminal, custodyAck)
+	if err != nil {
+		return fmt.Errorf("proxy.SetRoutingSnapshot: %w", err)
+	}
+	// One swap, one generation — lanes and org-route together.
+	p.lanes.Store(&laneTable{upstreams: next, autoDefault: autoDefaultLane, orgRoute: org, generation: p.nextGeneration()})
+	return nil
+}
+
+// OrgRoute returns the currently live org-gateway route: the mode
+// (orgModeNode or orgModeGateway), the primary destination and fallback
+// ladder as plain strings, and the routing-generation id of the snapshot
+// they came from. All four come from ONE laneSnapshot() load, so a caller
+// can never observe a mixed generation across a concurrent
+// SetOrgGatewayRoute swap. mode == orgModeNode means primary/fallbacks are
+// always "" / nil (no route installed).
+func (p *Proxy) OrgRoute() (mode, primary string, fallbacks []string, generation uint64) {
+	t := p.laneSnapshot()
+	if t.orgRoute.primary != nil {
+		primary = t.orgRoute.primary.String()
+	}
+	for _, u := range t.orgRoute.fallbacks {
+		if u == nil {
+			continue
+		}
+		fallbacks = append(fallbacks, u.String())
+	}
+	return t.orgRoute.mode, primary, fallbacks, t.generation
+}
+
+// RoutingGeneration returns the generation id of the currently live
+// routing snapshot (Sol S7). Exposed for tests and diagnostics that need
+// to confirm an install landed without inspecting the rest of the state.
+func (p *Proxy) RoutingGeneration() uint64 {
+	return p.laneSnapshot().generation
 }
 
 // laneSnapshot returns the currently live laneTable (a Load() of the
@@ -1034,6 +1289,29 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bounded drain (enterprise-update-management plan §3.7 step 4a, R9/R13).
+	// Placed here, immediately AFTER the liveness probe and BEFORE any
+	// routing, body read, admission or compression, for two reasons: the
+	// probe must keep answering while the node quiesces (a supervisor that
+	// reads it would otherwise restart the daemon in the middle of its own
+	// update), and a refusal must cost nothing — no upstream dial, no body
+	// buffered, no lane resolved.
+	//
+	// The defer covers every one of serve's many exit paths, including the
+	// websocket-upgrade branch. That branch is a KNOWN under-report: a
+	// hijacked connection outlives serve, so a long-lived upgrade stops
+	// counting once serve returns. Upgrades are not the API-turn traffic the
+	// drain exists to protect, and the alternative — counting inside
+	// serveUpgradePassthrough's copy loops — would make a single idle
+	// websocket block every update indefinitely.
+	if p.drainGate != nil {
+		if !p.drainGate.Enter() {
+			writeDrainRefusal(w, providerForPath(r.URL.Path), p.drainGate.RetryAfterSeconds())
+			return
+		}
+		defer p.drainGate.Leave()
+	}
+
 	// Phase C: explicit per-provider upstream selection. A routed tool whose
 	// traffic must reach a non-default host (e.g. hermes → OpenRouter) points
 	// its base URL at .../up/<id>/v1; stripUpstreamPrefix rewrites r.URL.Path
@@ -1070,8 +1348,27 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	// auto lane's own resolution (bug W1.3a).
 	chatgptAuth := explicitUpstream == nil && upstreamLaneID == "" && provider == models.ProviderOpenAI && isChatGPTAuthRequest(r)
 	upstream := explicitUpstream
+	// gatewayRouted reports whether this request resolved to the org's AI
+	// Gateway (Sol S8) rather than a fixed provider upstream or an
+	// explicit /up/<id> lane. It gates Sol S2 auth-substitution below —
+	// deliberately false for the explicitUpstream (named-lane) case, since
+	// a named lane never falls through to org-route by construction.
+	gatewayRouted := false
+	// routeGeneration is the routing-snapshot generation this turn was
+	// served under (Sol S7 / Luna L15). It is stamped onto every api_turns
+	// row via stampRoute below so a mixed-mode fleet's org rollup can
+	// attribute each turn to the exact routing generation that produced it.
+	routeSnap := p.laneSnapshot()
+	routeGeneration := routeSnap.generation
 	if upstream == nil {
-		upstream = p.upstreamForPath(r.URL.Path, provider, chatgptAuth)
+		// Sol S8: this laneSnapshot() load is self-contained and NOT shared
+		// with the independent laneSnapshot() calls further down (the
+		// websocket-upgrade branch and the post-body auto-lane resolution)
+		// — each resolves against its own read of the live snapshot, so a
+		// concurrent SetOrgGatewayRoute/SetLaneTable install between them
+		// can only ever advance a caller to a newer generation, never mix
+		// halves of two different ones within a single call.
+		upstream, gatewayRouted = p.upstreamForPath(r.URL.Path, provider, chatgptAuth, routeSnap, upstreamLaneID)
 	}
 	upstreamPath := r.URL.Path
 	if chatgptAuth {
@@ -1097,6 +1394,21 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	if isWebSocketUpgrade(r) {
 		if p.forceChatGPTHTTP && (isChatGPTBackendPath(r.URL.Path) || chatgptAuth) {
 			http.Error(w, "observer: ChatGPT websocket disabled; use HTTP fallback", http.StatusUpgradeRequired)
+			return
+		}
+		// G1 (custody blocker on the WS path): when this upgrade resolved to the
+		// org AI Gateway, it MUST NOT reach serveUpgradePassthrough — that path
+		// forwards the client's original Authorization / X-Api-Key /
+		// X-Goog-Api-Key / Api-Key untouched (it strips only hosted-identity
+		// query params, never the gateway-credential set, and never attaches the
+		// virtual key), which is the exact F1 developer-credential leak, on the
+		// WS path. The gateway data plane is HTTP request/response only
+		// (internal/aigateway/gwhttp/handler.go has no Upgrade/Hijack shape), so
+		// a WS upgrade to it is not a supported request: fail closed. The
+		// upstream is never dialed and no developer credential leaves the node.
+		if gatewayRouted {
+			p.logger.Warn("proxy: refusing websocket upgrade routed to the org AI gateway (HTTP-only data plane)", "path", r.URL.Path)
+			http.Error(w, "observer: websocket upgrade is not supported on the org AI gateway", http.StatusBadGateway)
 			return
 		}
 		// The auto lane's target normally depends on the request body's
@@ -1268,6 +1580,45 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	// the request's JSON envelope and scrub any values inside before
 	// returning a body to forward. When the compressor returns Skipped or
 	// an empty Body, we keep the original request untouched.
+	// Prompt-submit intervention PROXY LANE, phase 1 (LIVE CORRECTION
+	// 2026-09-07): scan the developer's latest turn on the ORIGINAL
+	// body, BEFORE conversation compression. The pipeline forward-scrubs
+	// the outbound body (scrub.ScrubForward), so the single
+	// post-compression scan below used to see [REDACTED] where the
+	// secret was and could never ask-once/block -- two live Codex Desktop
+	// turns were silently redacted with no event and no message. Only a
+	// PromptPhaseScanner takes this path; the post-compression scan then
+	// runs ScanRequestAfterPrompt so the prompt lane is never evaluated
+	// twice for one submission.
+	promptPhase, twoPhase := p.guard.(PromptPhaseScanner)
+	promptSID := ""
+	promptAPISessionID := ""
+	if twoPhase {
+		// Keep the real identity separate from the guard-only scope. The
+		// latter may be a local fallback for session-less clients, but it
+		// must never land in api_turns, traces, or cost attribution.
+		promptAPISessionID = p.resolveAPITurnSessionID(r, provider, reqShapeBody)
+		promptSID = resolvePromptGuardScopeID(r, promptAPISessionID,
+			promptGuardUpstreamID(upstreamLaneID, provider), provider)
+		pr := promptPhase.ScanPrompt(r.Context(), provider, reqShapeBody, promptSID)
+		switch pr.Action {
+		case "prompt_deny":
+			p.serveGuardPromptDeny(w, r, provider, pr, reqShapeBody, promptAPISessionID)
+			return
+		case "deny":
+			p.serveGuardDeny(w, r, provider, pr, reqShapeBody, promptAPISessionID)
+			return
+		case "mask":
+			// Same json.Valid backstop as the post-compression mask
+			// branch: a structurally invalid masked body is dropped in
+			// favour of the original rather than forwarded.
+			if len(pr.Body) > 0 && json.Valid(pr.Body) {
+				reqShapeBody = pr.Body
+				bodyMutated = true
+			}
+		}
+	}
+
 	var compression CompressionResult
 	if p.compressor != nil {
 		compressionInput := reqShapeBody
@@ -1407,19 +1758,44 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	//     to `<unattributed>` in `observer cost --group-by session`.
 	// Hoisted above the forward (G9) so the guard scan sees it; the
 	// inputs are identical to the old post-response call site.
-	sessionID := p.resolveAPITurnSessionID(r, provider, reqShapeBody)
+	// Two-phase scanners already resolved the id on the ORIGINAL body
+	// in phase 1; reuse it rather than re-parsing the (now possibly
+	// compressed) body — both serializers preserve the envelope fields
+	// this reads (prompt_cache_key / metadata.user_id), so the ids agree,
+	// and the reconsider-once fingerprint stays on one session id.
+	sessionID := promptAPISessionID
+	if !twoPhase {
+		sessionID = p.resolveAPITurnSessionID(r, provider, reqShapeBody)
+	}
+	guardSessionID := sessionID
+	// Phase 2 is the egress/injection/MCP guard path, not the prompt
+	// reconsider path. Keep its identity on the real API session (empty
+	// when unresolved); a prompt-only fallback must not affect its
+	// deduplication, taint, budget, or approval semantics.
 
 	// Guard egress scan + injection heuristics (guard spec §8.1/§8.2/
 	// §8.4): ONE call on the final outbound body — after compression,
 	// the same bytes cachetrack hashes — for both providers. Proxy-
 	// only, zero effect on other paths (the compression precedent).
 	if p.guard != nil {
-		gr := p.guard.ScanRequest(r.Context(), provider, reqShapeBody, sessionID)
+		var gr GuardRequestResult
+		if twoPhase {
+			gr = promptPhase.ScanRequestAfterPrompt(r.Context(), provider, reqShapeBody, guardSessionID)
+		} else {
+			gr = p.guard.ScanRequest(r.Context(), provider, reqShapeBody, sessionID)
+		}
 		switch gr.Action {
 		case "deny":
 			// §8.5: synthetic 403 with a provider-shaped error body
 			// carrying the rule ID — never a connection drop.
 			p.serveGuardDeny(w, r, provider, gr, reqShapeBody, sessionID)
+			return
+		case "prompt_deny":
+			// Prompt-submit intervention PROXY LANE (contract §3): a
+			// provider-shaped error body written for the DEVELOPER, at
+			// gr.Status (400 for a fresh ask-once interrupt, 403 for an
+			// unconditional block — never 429, never a 5xx).
+			p.serveGuardPromptDeny(w, r, provider, gr, reqShapeBody, sessionID)
 			return
 		case "mask":
 			// Adopt the masked body only when it is still valid JSON — the
@@ -1630,10 +2006,49 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Sol S2 fail-closed gate: when this request resolved via the org AI
+	// Gateway (gatewayRouted, Sol S8), a usable virtual key MUST exist
+	// before any upstream request is built. Checked here — before outURL/
+	// outReq are constructed — so a missing key can never result in the
+	// developer's own provider credential being copied onto a gateway-
+	// bound request, and never silently falls back to a direct-provider
+	// destination (the fallback ladder is separate, explicit config that
+	// only a later phase, Sol S10, walks; this is a hard failure, not a
+	// fallback trigger).
+	var gatewayVirtualKey string
+	if gatewayRouted {
+		if p.virtualKeySource == nil {
+			p.logger.Warn("proxy: gateway mode active but no virtual key source configured")
+			http.Error(w, "proxy: AI Gateway auth not provisioned on this node", http.StatusBadGateway)
+			return
+		}
+		key, _, vkErr := p.virtualKeySource.LoadVirtualKey()
+		if vkErr != nil || key == "" {
+			p.logger.Warn("proxy: gateway mode active but no virtual key available", "err", vkErr)
+			http.Error(w, "proxy: AI Gateway auth not provisioned on this node", http.StatusBadGateway)
+			return
+		}
+		gatewayVirtualKey = key
+	}
+
 	// Build the upstream request.
 	outURL := *upstream
 	outURL.Path = joinPath(upstream.Path, upstreamPath)
 	outURL.RawQuery = stripHostedIdentityQueryParams(r.URL.RawQuery)
+
+	// Capture the developer's ORIGINAL provider credentials BEFORE any Gateway
+	// Mode auth-substitution strips them, so a custody-acked direct fallback can
+	// restore whichever shape the direct provider expects (F1). Google carries
+	// its key in a header AND/OR the ?key= query param; both are captured.
+	origGoogAPIKey := r.Header.Get("X-Goog-Api-Key")
+	origAzureAPIKey := r.Header.Get("Api-Key")
+	origKeyQuery := credentialQueryParam(r.URL.RawQuery)
+	if gatewayRouted {
+		// A provider credential also travels in the Gemini ?key= query param —
+		// strip it from the gateway-bound URL so the developer's Google
+		// credential never reaches the org gateway (F1 custody blocker).
+		outURL.RawQuery = stripGatewayCredentialQueryParams(outURL.RawQuery)
+	}
 
 	upstreamURL := outURL.String()
 	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(reqBody))
@@ -1643,6 +2058,20 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.copyRequestHeaders(outReq.Header, r.Header)
+	if gatewayRouted {
+		// Sol S2 auth-substitution: the developer's own provider credential
+		// (however copyRequestHeaders just carried it) must never reach the
+		// gateway. Strip EVERY provider-credential header shape — not just
+		// Authorization / X-Api-Key but also the Gemini X-Goog-Api-Key and the
+		// Azure Api-Key (F1 custody blocker) — then attach the org-issued
+		// virtual key. The gateway's own extractKey checks X-Api-Key first
+		// (internal/aigateway/gwhttp/handler.go), so that's the header the
+		// virtual key rides in on.
+		for _, h := range gatewayCredentialHeaders {
+			outReq.Header.Del(h)
+		}
+		outReq.Header.Set("X-Api-Key", gatewayVirtualKey)
+	}
 	// Force identity response encoding on upstream so we can parse the
 	// SSE stream and the non-streaming JSON body. Without this, claude
 	// (and most modern HTTP clients) send Accept-Encoding: gzip, br —
@@ -1687,8 +2116,31 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	// §R12 reliability wraps the forward: same-target retries +
 	// fallback chains, all strictly BEFORE the first client write —
-	// the never-retry-after-streamed-bytes rule is structural.
-	resp, err := p.forwardReliable(r, outReq, reqBody, reqShapeBody, fallbackChain, provider, &reqShape)
+	// the never-retry-after-streamed-bytes rule is structural. A
+	// Gateway-Mode request (Sol S8) instead walks the org fallback ladder
+	// (primary → fallbacks → terminal policy, Luna L16) — which itself uses
+	// forwardReliable per endpoint, so the §R12 semantics are preserved on
+	// each rung. A non-gateway request takes the byte-identical single-forward
+	// path.
+	var resp *http.Response
+	if gatewayRouted {
+		resp, err = p.walkGatewayLadder(r, outReq, reqBody, reqShapeBody, fallbackChain, provider, &reqShape, gatewayLadderCtx{
+			endpoints:         gatewayLadderEndpoints(routeSnap),
+			upstreamPath:      upstreamPath,
+			rawQuery:          outURL.RawQuery,
+			terminal:          routeSnap.orgRoute.terminal,
+			custodyAck:        routeSnap.orgRoute.custodyAck,
+			generation:        routeSnap.generation,
+			provider:          provider,
+			origAuthorization: r.Header.Get("Authorization"),
+			origAPIKey:        r.Header.Get("X-Api-Key"),
+			origGoogAPIKey:    origGoogAPIKey,
+			origAzureAPIKey:   origAzureAPIKey,
+			origKeyQuery:      origKeyQuery,
+		})
+	} else {
+		resp, err = p.forwardReliable(r, outReq, reqBody, reqShapeBody, fallbackChain, provider, &reqShape)
+	}
 
 	// Egress realized-outcome + breaker feedback (G22 wave 2, design §3.6/§6).
 	// A route_upstream target's dial outcome trains its breaker so a repeatedly-
@@ -1790,6 +2242,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			turn := buildErrorTurn(provider, reqShape, errBody, resp.Header, resp.StatusCode, start, sessionID)
 			turn.RequestID = resolveRequestID(turn.RequestID)
+			stampRoute(&turn, gatewayRouted, routeGeneration)
 			p.applyCost(&turn)
 			errTurnID := p.insertTurnDetached(turn, routerToken, "proxy: insert error api_turn (stream)")
 			p.synthesizeObsTrace(turn, errTurnID, r, reqShapeBody, errBody)
@@ -1798,6 +2251,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		turn := p.buildStreamTurn(provider, reqShape, captured, resp.Header, start, sessionID)
 		turn.RequestID = resolveRequestID(turn.RequestID)
+		stampRoute(&turn, gatewayRouted, routeGeneration)
 		var apiTurnID int64
 		switch {
 		case turn.Model == "":
@@ -1856,6 +2310,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			turn := p.buildStreamTurn(provider, reqShape, respBody, resp.Header, start, sessionID)
 			turn.RequestID = resolveRequestID(turn.RequestID)
+			stampRoute(&turn, gatewayRouted, routeGeneration)
 			var apiTurnID int64
 			switch {
 			case turn.Model == "":
@@ -1882,6 +2337,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		turn := buildErrorTurn(provider, reqShape, respBody, resp.Header, resp.StatusCode, start, sessionID)
 		turn.RequestID = resolveRequestID(turn.RequestID)
+		stampRoute(&turn, gatewayRouted, routeGeneration)
 		p.applyCost(&turn)
 		errTurnID := p.insertTurnDetached(turn, routerToken, "proxy: insert error api_turn")
 		p.synthesizeObsTrace(turn, errTurnID, r, reqShapeBody, respBody)
@@ -1891,6 +2347,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 
 	turn := p.buildTurn(provider, reqShape, respBody, resp.Header, start, sessionID)
 	turn.RequestID = resolveRequestID(turn.RequestID)
+	stampRoute(&turn, gatewayRouted, routeGeneration)
 	var apiTurnID int64
 	switch {
 	case turn.Model == "":
@@ -1912,17 +2369,63 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 // so the denial is visible on the cost/timeline surfaces like any
 // other failed request.
 func (p *Proxy) serveGuardDeny(w http.ResponseWriter, r *http.Request, provider string, gr GuardRequestResult, reqShapeBody []byte, sessionID string) {
-	body := guardDenyBody(provider, gr.RuleID, gr.Reason)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	if _, err := w.Write(body); err != nil {
-		p.logger.Warn("proxy: write guard-deny body", "err", err)
+	status := gr.Status
+	if status == 0 {
+		status = http.StatusForbidden
 	}
-	turn := buildErrorTurn(provider, parseRequest(reqShapeBody), body, http.Header{}, http.StatusForbidden, p.now(), sessionID)
+	body := guardDenyBody(provider, gr.RuleID, gr.Reason, status)
+	p.writeGuardErrorTurn(w, r, provider, body, status, reqShapeBody, sessionID, "proxy: write guard-deny body", "proxy: insert guard-denied api_turn")
+}
+
+// serveGuardPromptDeny writes the prompt-submit intervention PROXY
+// LANE's own deny (contract §3): a provider-shaped error body written
+// for the DEVELOPER (guardPromptDenyBody, not guardDenyBody's
+// agent-facing egress framing), at gr.Status (400 for a fresh
+// ask-once interrupt, 403 for an unconditional block — an unset
+// Status defaults to 403, the same conservative default serveGuardDeny
+// uses).
+//
+// F8 (phase-3b review): gr.Status is a value the guard scanner sets
+// (guard.promptDenyStatus), not an HTTP status this package trusts
+// blindly from another package's arithmetic — contract §3.3 is
+// explicit that only {400, 403} are ever safe here (never 429, which
+// every major SDK retries by default and would silently "confirm" an
+// interrupt the developer never read; never a 5xx). Any OTHER value —
+// a future guard-side bug, or an already-caught regression — is
+// clamped to the conservative 403 default, with a warn log so the
+// underlying bug is visible rather than silently shipping an unsafe
+// status to a live client.
+func (p *Proxy) serveGuardPromptDeny(w http.ResponseWriter, r *http.Request, provider string, gr GuardRequestResult, reqShapeBody []byte, sessionID string) {
+	status := gr.Status
+	switch status {
+	case http.StatusBadRequest, http.StatusForbidden:
+		// contract §3.3's exact two safe values — pass through as-is.
+	default:
+		if status != 0 {
+			p.logger.Warn("proxy: guard prompt-deny Status outside the contract's {400,403} set; clamping to 403",
+				"status", status, "session_id", sessionID)
+		}
+		status = http.StatusForbidden
+	}
+	body := guardPromptDenyBody(provider, gr.Reason, status)
+	p.writeGuardErrorTurn(w, r, provider, body, status, reqShapeBody, sessionID, "proxy: write guard-prompt-deny body", "proxy: insert guard-prompt-denied api_turn")
+}
+
+// writeGuardErrorTurn is the shared write-response + record-error-turn
+// tail both serveGuardDeny and serveGuardPromptDeny use — the only
+// difference between the two callers is which body-builder produced
+// body and which status code applies.
+func (p *Proxy) writeGuardErrorTurn(w http.ResponseWriter, r *http.Request, provider string, body []byte, status int, reqShapeBody []byte, sessionID, writeErrLog, insertErrLog string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if _, err := w.Write(body); err != nil {
+		p.logger.Warn(writeErrLog, "err", err)
+	}
+	turn := buildErrorTurn(provider, parseRequest(reqShapeBody), body, http.Header{}, status, p.now(), sessionID)
 	p.applyCost(&turn)
 	// routerToken 0: a guard-denied request is refused before the
 	// routing seam runs, so there is no decision row to anchor.
-	denyTurnID := p.insertTurnDetached(turn, 0, "proxy: insert guard-denied api_turn")
+	denyTurnID := p.insertTurnDetached(turn, 0, insertErrLog)
 	p.synthesizeObsTrace(turn, denyTurnID, r, reqShapeBody, body)
 }
 
@@ -2507,6 +3010,72 @@ const hostedIdentityHeaderPrefix = "X-Superbased-"
 // — this is the one list a later change needs to extend.
 var hostedIdentityQueryParams = []string{hostedSessionQueryParam}
 
+// gatewayCredentialHeaders enumerates EVERY provider-credential header shape a
+// developer request can carry. In Gateway Mode (Sol S2 auth-substitution) all
+// of them are stripped before the request reaches the org gateway, which
+// authenticates with the org-issued virtual key instead — deny-listing every
+// shape, not just Authorization / X-Api-Key, so a Gemini X-Goog-Api-Key or an
+// Azure Api-Key can never carry the developer's own provider credential onto a
+// gateway-bound request (custody blocker). Matched by canonical MIME key.
+var gatewayCredentialHeaders = []string{
+	"Authorization",  // OpenAI / Anthropic bearer + OAuth
+	"X-Api-Key",      // Anthropic api-key
+	"X-Goog-Api-Key", // Google Gemini api-key header
+	"Api-Key",        // Azure OpenAI api-key
+}
+
+// gatewayCredentialQueryParams lists forwarded-URL query parameters that carry
+// a PROVIDER API credential (Gemini's ?key=) rather than hosted-app identity.
+// They are stripped ONLY on a gateway-bound request — a direct-provider (Node
+// Mode) request legitimately carries the developer's own ?key= to Google, so
+// this strip is gateway-mode-scoped, distinct from hostedIdentityQueryParams.
+var gatewayCredentialQueryParams = []string{"key"}
+
+// credentialQueryParam returns the value of the first gateway-credential query
+// param present in rawQuery (Gemini's ?key=), or "" — captured before a
+// gateway strip so a custody-acked direct fallback can restore it.
+func credentialQueryParam(rawQuery string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	q, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return ""
+	}
+	for _, name := range gatewayCredentialQueryParams {
+		if v := q.Get(name); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// stripGatewayCredentialQueryParams removes gatewayCredentialQueryParams from
+// rawQuery and returns the re-encoded remainder. Only called when building a
+// GATEWAY-bound request's URL (never on the original inbound request, never on
+// a direct-provider forward). A malformed query is returned unchanged
+// (fail-open, matching stripHostedIdentityQueryParams).
+func stripGatewayCredentialQueryParams(rawQuery string) string {
+	if rawQuery == "" {
+		return rawQuery
+	}
+	q, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return rawQuery
+	}
+	changed := false
+	for _, name := range gatewayCredentialQueryParams {
+		if q.Has(name) {
+			q.Del(name)
+			changed = true
+		}
+	}
+	if !changed {
+		return rawQuery
+	}
+	return q.Encode()
+}
+
 // isHostedIdentityHeader reports whether k (in canonical MIME header form,
 // as produced by iterating an http.Header or by http.CanonicalHeaderKey) is
 // a hosted-app end-user/session identity header that must be stripped from
@@ -2611,17 +3180,44 @@ func (p *Proxy) requestClass(r *http.Request, provider string) RequestClass {
 	return class
 }
 
-func (p *Proxy) upstreamForPath(path, provider string, chatgptAuth bool) *url.URL {
+// upstreamForPath resolves the fixed provider upstream for a request that
+// carries no explicit /up/<id> lane, OR (Sol S8, P5a) the org-wide AI
+// Gateway primary destination when Gateway Mode is active for that
+// request.
+//
+// The org-route override applies ONLY when upstreamLaneID == "" — an
+// explicitly named /up/<id> lane never falls through to org-route; the
+// caller already resolved it via stripUpstreamPrefix/explicitUpstream and
+// never reaches this function for that case. lanes must be a single
+// laneSnapshot() load from the caller so the mode/primary pair it reads
+// here can never straddle two routing generations (Sol S7).
+//
+// The ChatGPT-backend / JWT-auth branch is deliberately checked FIRST and
+// is NEVER redirected to the gateway: that channel authenticates with a
+// ChatGPT session JWT, not a provider API key, and P5a's auth-substitution
+// (Sol S2) only knows how to swap API-key-shaped credentials for a virtual
+// key. Redirecting an unfamiliar auth wire contract into Gateway Mode
+// without that groundwork would silently break it, so it is out of scope
+// here and stays on p.chatgptURL regardless of org-route state.
+//
+// The second return value reports whether the org-route (Gateway Mode)
+// branch was the one that resolved upstream, so the caller can decide
+// whether to run Sol S2 auth-substitution — parsing/token capture is
+// otherwise completely unaffected by which branch fired.
+func (p *Proxy) upstreamForPath(path, provider string, chatgptAuth bool, lanes *laneTable, upstreamLaneID string) (*url.URL, bool) {
 	if isChatGPTBackendPath(path) || chatgptAuth {
-		return p.chatgptURL
+		return p.chatgptURL, false
+	}
+	if upstreamLaneID == "" && lanes != nil && lanes.orgRoute.mode == orgModeGateway && lanes.orgRoute.primary != nil {
+		return lanes.orgRoute.primary, true
 	}
 	if provider == models.ProviderGoogle {
-		return p.geminiURL
+		return p.geminiURL, false
 	}
 	if provider == models.ProviderOpenAI {
-		return p.openaiURL
+		return p.openaiURL, false
 	}
-	return p.anthropicURL
+	return p.anthropicURL, false
 }
 
 // unknownUpstreamWarnCap bounds the unknownUpstreamWarned dedup map (and thus
@@ -2636,11 +3232,15 @@ const unknownUpstreamWarnCap = 64
 const autoLaneID = "auto"
 
 // laneTable is the single unit of state behind Proxy.lanes: the explicit
-// /up/<id> upstream map and the virtual "auto" lane's fallback default,
-// published together so one atomic.Pointer swap can never leave a reader
-// with a map from one generation and a default id from another (Phase 3,
-// gateway config plane spec). The zero value (nil map, empty default) is a
-// valid "no lanes configured" table.
+// /up/<id> upstream map, the virtual "auto" lane's fallback default, AND
+// (Sol S7, P5a) the org-wide AI Gateway route, published together so one
+// atomic.Pointer swap can never leave a reader with a map from one
+// generation and a default id (or org-route, or generation id) from
+// another (Phase 3, gateway config plane spec; extended by
+// docs/plans/plane-b-dual-mode-gateway-rbac-ia-design-2026-08-29.md §2).
+// The zero value (nil map, empty default, zero orgRoute, generation 0) is
+// a valid "nothing configured" table — inert, byte-identical to pre-P5a
+// behavior.
 type laneTable struct {
 	// upstreams maps a routing id to its parsed upstream URL. nil/empty
 	// when no [proxy.upstreams] are configured.
@@ -2649,6 +3249,106 @@ type laneTable struct {
 	// to when the request's model carries no matching "<lane>/" prefix.
 	// "" means no default (see resolveAutoLane).
 	autoDefault string
+	// orgRoute carries the org-wide AI Gateway routing mode, destination,
+	// and fallback ladder (Sol S7/S8) as part of THIS SAME snapshot, so a
+	// reader can never observe org-mode from one generation and a
+	// route/ladder from another. Zero value (mode == orgModeNode) means
+	// "no org-route installed" — upstreamForPath ignores it entirely.
+	orgRoute orgRouteState
+	// generation is a monotonically increasing id (from Proxy.laneGen)
+	// stamped on every published snapshot by its setter. 0 only ever
+	// appears before New's first Store; every live snapshot carries a
+	// positive id.
+	generation uint64
+}
+
+// orgModeNode and orgModeGateway are the two values laneTable.orgRoute.mode
+// can take. orgModeNode (the zero value) is "not installed" — org-route is
+// inert and default-lane traffic (upstreamLaneID == "") goes directly to
+// the fixed upstreams, exactly like every pre-P5a build. orgModeGateway
+// redirects that same default-lane traffic to orgRoute.primary (Sol S8)
+// and is the trigger condition for auth-substitution (Sol S2).
+const (
+	orgModeNode    = ""
+	orgModeGateway = "gateway"
+)
+
+// orgRouteState is the org-wide AI Gateway half of a laneTable snapshot
+// (Sol S7). It is data only in P5a — the fallback ladder's runtime state
+// machine (try each entry, apply a terminal policy) is Sol S10 / P5b; this
+// type only guarantees the ladder can be carried atomically with the rest
+// of the routing state.
+type orgRouteState struct {
+	// mode is orgModeNode or orgModeGateway. See the constants' doc.
+	mode string
+	// primary is the AI Gateway upstream to redirect default-lane traffic
+	// to when mode == orgModeGateway. Always non-nil in that case (never
+	// nil-primary + gateway mode — SetOrgGatewayRoute rejects that);
+	// always nil when mode == orgModeNode.
+	primary *url.URL
+	// fallbacks is the ordered fallback ladder data (Sol S10 owns walking
+	// it). Empty when no fallback policy is installed, regardless of mode.
+	fallbacks []*url.URL
+	// terminal is the compiled fallback-ladder terminal rung (terminalHold /
+	// terminalBreakGlass / terminalDirect) reached after primary + every
+	// fallback endpoint is exhausted (Sol S10 runtime executor, Luna L16 —
+	// see gatewayfallback.go). Empty is treated as terminalHold (the safe
+	// fail-closed default); only meaningful when mode == orgModeGateway.
+	terminal string
+	// custodyAck echoes the publisher's explicit custody-downgrade
+	// acknowledgment. It gates terminalDirect: auto-fallback-to-direct is
+	// only ever walked when custodyAck is true (the compile side already
+	// refuses to emit terminalDirect without it — this is defence in depth).
+	custodyAck bool
+}
+
+// newOrgRouteState validates and builds the org-route half of a routing
+// snapshot for the two setters (SetOrgGatewayRoute / SetRoutingSnapshot*).
+// mode must be orgModeNode ("" — a zero orgRouteState) or orgModeGateway;
+// in gateway mode primary is required and every URL (primary + fallbacks)
+// must parse (scheme + host). terminal is the compiled terminal rung
+// (defaulting to terminalHold when empty); custodyAck echoes the
+// custody-downgrade acknowledgment. All-or-nothing: any error leaves the
+// caller free to keep the previous snapshot.
+func newOrgRouteState(mode, primary string, fallbacks []string, terminal string, custodyAck bool) (orgRouteState, error) {
+	switch mode {
+	case orgModeNode:
+		return orgRouteState{}, nil
+	case orgModeGateway:
+		if primary == "" {
+			return orgRouteState{}, fmt.Errorf("primary is required in %q mode", orgModeGateway)
+		}
+		primaryURL, err := parseUpstream("org-gateway-primary", primary, "")
+		if err != nil {
+			return orgRouteState{}, err
+		}
+		var fbURLs []*url.URL
+		for i, raw := range fallbacks {
+			u, err := parseUpstream(fmt.Sprintf("org-gateway-fallback[%d]", i), raw, "")
+			if err != nil {
+				return orgRouteState{}, err
+			}
+			fbURLs = append(fbURLs, u)
+		}
+		term := terminal
+		switch term {
+		case "":
+			term = terminalHold
+		case terminalHold, terminalBreakGlass, terminalDirect:
+			// ok
+		default:
+			return orgRouteState{}, fmt.Errorf("unknown terminal_policy %q (want %q, %q, or %q)", term, terminalHold, terminalBreakGlass, terminalDirect)
+		}
+		return orgRouteState{
+			mode:       orgModeGateway,
+			primary:    primaryURL,
+			fallbacks:  fbURLs,
+			terminal:   term,
+			custodyAck: custodyAck && term == terminalDirect,
+		}, nil
+	default:
+		return orgRouteState{}, fmt.Errorf("unknown mode %q (want %q or %q)", mode, orgModeNode, orgModeGateway)
+	}
 }
 
 // warnUnknownUpstreamOnce logs the fail-open warning for a /up/ routing id
@@ -2844,6 +3544,29 @@ func savingsPercent(before, after int) int {
 // It returns the turn even when usage fields are zero so the caller can
 // decide whether to store it; the serve() path drops turns with an empty
 // Model since those almost always indicate an error body we couldn't parse.
+// stampRoute writes the Plane B per-turn authority stamps (Sol S5 / Luna
+// L15, migration 095) onto a turn just before it is persisted: how the node
+// proxy served it (direct vs the org AI Gateway), the routing-snapshot
+// generation it resolved under, and which source owns its org-level usage
+// authority. Content-free metadata only — never touches request bytes.
+//
+// A gateway-routed turn declares the gateway as its usage authority
+// (models.TurnAuthorityGateway) so a mixed-mode org rollup lets the
+// gateway's own audit row win on a request_id collision rather than
+// double-counting the node-side shadow. A fallback-rung turn is stamped by
+// the fallback executor (Sol S10) which re-labels Route after the ladder
+// walk; this base stamp covers the direct and primary-gateway cases.
+func stampRoute(t *models.APITurn, gatewayRouted bool, generation uint64) {
+	t.RoutingGeneration = int64(generation)
+	if gatewayRouted {
+		t.Route = models.TurnRouteGateway
+		t.AuthoritySource = models.TurnAuthorityGateway
+		return
+	}
+	t.Route = models.TurnRouteDirect
+	t.AuthoritySource = models.TurnAuthorityNode
+}
+
 func (p *Proxy) buildTurn(
 	provider string,
 	req requestShape,

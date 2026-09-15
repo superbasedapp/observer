@@ -19,6 +19,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/processobs/poll"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/store"
+	"github.com/marmutapp/superbased-observer/internal/termrun"
 )
 
 // processObserverMaxTracked caps the Attributor's live process tree as a
@@ -253,6 +254,34 @@ func processHealthRecord(h processobs.HealthSnapshot) diag.ProcessHealth {
 		LastError:               h.LastError,
 		NetworkAccountingMode:   h.NetworkAccountingMode,
 		NetworkAccountingReason: h.NetworkAccountingReason,
+		Unattributed:            h.Unattributed,
+		SinkRetained:            h.SinkRetained,
+		SinkFlushMaxMs:          h.SinkFlushMaxMs,
+		QueueDepthMax:           h.QueueDepthMax,
+		HandoffDepthMax:         h.HandoffDepthMax,
+		FlushBacklogHits:        h.FlushBacklogHits,
+	}
+	// The capture-YIELD half. It used to be omitted entirely, which left every
+	// out-of-process surface unable to tell "nothing spawned" from "every batch
+	// was discarded on a locked database" — the state the 2026-08-26 capture
+	// anomaly sat in undiagnosed (task 9d). The DropReason keys are flattened
+	// to plain strings here, at the same boundary that flattens the transport
+	// half, so diag keeps a wire shape instead of a leaked processobs type.
+	if len(h.Dropped) > 0 {
+		r.Dropped = make(map[string]int64, len(h.Dropped))
+		for reason, n := range h.Dropped {
+			r.Dropped[string(reason)] = n
+		}
+	}
+	if len(h.AttributedByTool) > 0 {
+		r.AttributedByTool = make(map[string]int64, len(h.AttributedByTool))
+		for tool, n := range h.AttributedByTool {
+			r.AttributedByTool[tool] = n
+			// Attributed is DERIVED here rather than carried as its own
+			// counter: one owner for the total means the breakdown and the
+			// headline can never disagree (CLAUDE.md rule 4).
+			r.Attributed += n
+		}
 	}
 	switch h.TransportState {
 	case processobs.TransportStateConfigured:
@@ -750,7 +779,16 @@ func consumeLaunchSeeds(ctx context.Context, st *store.Store, bridge *pidbridge.
 		}
 		return
 	}
-	matches := processobs.MatchLaunchSeeds(seeds, refs, nil)
+	// The deterministic half (migration 091 / task 9f): resolve the terminal
+	// run each dashboard-launched seed carries to the session that run was
+	// observed to produce. A failure here is NON-FATAL by design — the matcher
+	// simply falls back to the pre-091 heuristic for every seed, which is what
+	// a bare-shell launch gets anyway.
+	runSessions, rerr := st.LaunchSeedRunSessions(ctx, launchSeedRunIDs(seeds), termrun.MinLinkConfidence)
+	if rerr != nil && logger != nil {
+		logger.Debug("process observability: launch-seed run binding unavailable (falling back to heuristic matching)", "err", rerr)
+	}
+	matches := processobs.MatchLaunchSeeds(seeds, refs, nil, runSessions)
 	byPID := make(map[int]processobs.LaunchSeed, len(seeds))
 	for _, s := range seeds {
 		byPID[s.PID] = s
@@ -780,6 +818,19 @@ func consumeLaunchSeeds(ctx context.Context, st *store.Store, bridge *pidbridge.
 				"pid", pid, "tool", seed.Tool, "session", sessionID)
 		}
 	}
+}
+
+// launchSeedRunIDs projects the non-empty terminal run ids off a seed batch.
+// Most seeds carry none (every launch the daemon did not spawn), so this keeps
+// the store seam from being asked about runs that do not exist.
+func launchSeedRunIDs(seeds []processobs.LaunchSeed) []string {
+	out := make([]string, 0, len(seeds))
+	for _, s := range seeds {
+		if s.RunID != "" {
+			out = append(out, s.RunID)
+		}
+	}
+	return out
 }
 
 // buildProcessScrubber maps the [observer.process] config into the pure

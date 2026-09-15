@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/modelvalue"
 	"github.com/marmutapp/superbased-observer/internal/routing"
 	"github.com/marmutapp/superbased-observer/internal/routingapply"
@@ -153,7 +153,7 @@ func applyModelValueReport(cmd *cobra.Command, configPath string, days int) (*mo
 	if err != nil {
 		return nil, err
 	}
-	facts.Price = routingPriceFn(cost.NewEngine(cfg.Intelligence))
+	facts.Price = routingPriceFn(acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default()))
 	rep := modelvalue.Build(facts, modelvalue.Options{})
 	return &rep, nil
 }

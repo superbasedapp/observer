@@ -230,3 +230,52 @@ func (s *Store) SelectRemoteAuditRows(ctx context.Context) ([]orgcontract.Remote
 	}
 	return out, nil
 }
+
+// probeTerminalActivity is the Track R2 change-detection probe SHARED by every
+// wire fed from the terminal tables: terminal_runs and terminal_commands (this
+// file) and terminal_summary (terminalsummary.go). It lives here — with the
+// other terminal_* SQL — so orgsnapgate.go and orgpush.go stay free of the
+// table names the privacy sentinel forbids there.
+//
+// PROBE: (MAX(rowid), COUNT(*), COUNT(ended_at), MAX(ended_at)) over
+// terminal_run, plus MAX(id) on terminal_commands and terminal_run_session.
+//
+// WHY ended_at IS IN THE PROBE: terminal_run is the most visibly MUTABLE
+// substrate in the snapshot family — a run is INSERTed at launch and later
+// UPDATEd with ended_at / exit_code / end_reason. An id-only probe would leave
+// every finished run rendered as still-running on the org dashboard until the
+// next launch. Counting and maximising ended_at catches the transition that
+// matters, and terminal_run is small (one row per terminal launch), so the
+// scan is trivial. terminal_commands supplies the per-run command count the
+// wires ship, and terminal_run_session the session correlation.
+//
+// RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: the shutdown stampers set
+// end_reason WITHOUT setting ended_at on attach runs, and the resume path
+// rewrites end_reason alone; neither moves the probe. snapGate's maxSkipAge
+// recomputes within the hour.
+func (s *Store) probeTerminalActivity(ctx context.Context) (string, error) {
+	return s.snapProbeScalar(ctx, `
+		SELECT 'tr' || (SELECT COALESCE(MAX(rowid), 0) || '/' || COUNT(*) || '/' || COUNT(ended_at) ||
+		                       '/' || COALESCE(MAX(ended_at), '')
+		                  FROM terminal_run) ||
+		       ':tc' || (SELECT COALESCE(MAX(id), 0) FROM terminal_commands) ||
+		       ':ts' || (SELECT COALESCE(MAX(id), 0) FROM terminal_run_session)`)
+}
+
+// probeRemoteAudit is the Track R2 change-detection probe SHARED by both wires
+// fed from the remote-audit log: remote_audit_rows (this file) and
+// remote_audit_summary (terminalsummary.go). It lives here — with the other
+// remote_audit SQL — so orgsnapgate.go and orgpush.go stay free of the table
+// name the privacy sentinel forbids there.
+//
+// PROBE: COALESCE(MAX(id),0) — one index-endpoint seek, O(1).
+//
+// WHY THAT REFLECTS MUTATION: remote_audit is a strictly append-only audit log;
+// InsertRemoteAudit is its only writer and an audit row is never revised.
+//
+// RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: retention DELETEs inside the 7-day
+// window are invisible to MAX(id); snapGate's maxSkipAge recomputes within the
+// hour.
+func (s *Store) probeRemoteAudit(ctx context.Context) (string, error) {
+	return s.snapProbeScalar(ctx, `SELECT 'ra' || COALESCE(MAX(id), 0) FROM remote_audit`)
+}

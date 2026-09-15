@@ -54,6 +54,7 @@ reference: [`docs/one-shot-usage-report.md`](docs/one-shot-usage-report.md).
 - [Dashboard tour](#dashboard-tour)
 - [Terminals — launch, join, and track your AI CLIs](#terminals--launch-join-and-track-your-ai-clis)
 - [MCP server — 25 cross-tool intelligence calls](#mcp-server--25-cross-tool-intelligence-calls)
+- [Sign in and Cloud Intelligence (beta, experimental)](#sign-in-and-cloud-intelligence-beta-experimental)
 - [Integrations — the stable contract to build against](#integrations--the-stable-contract-to-build-against)
 - [API proxy — accurate token capture + compression](#api-proxy--accurate-token-capture--compression)
 - [Architecture](#architecture)
@@ -86,7 +87,7 @@ can't give you, in order of how much they matter:
    telemetry, no analytics, no remote reporting. Everything SuperBased
    captures is written to your own database and stays there.
    Full details: [`PRIVACY.md`](PRIVACY.md).
-3. **One capture layer, every tool you actually use.** 33 adapters —
+3. **One capture layer, every tool you actually use.** 40 adapters —
    Claude Code, Codex, Cursor, Cline + Cline CLI, GitHub Copilot +
    Copilot CLI, Gemini CLI, OpenCode, Google Antigravity, Cowork,
    Hermes Agent, Kilo Code, Aider, Goose, Devin, Qoder, Crush, Grok,
@@ -97,7 +98,7 @@ can't give you, in order of how much they matter:
    `*-web` adapters cover ChatGPT/Claude.ai/Gemini/Copilot/Perplexity
    in the browser — those need the browser-capture extension, which
    today only installs unpacked; every tool listed above works out of
-   the box.) Twenty-two of those are also full CLI launchers you can
+   the box.) Twenty-seven of those are also full CLI launchers you can
    run as real terminals — from the dashboard or your own shell,
    captured through the same pipeline — see
    [Terminals](#terminals--launch-join-and-track-your-ai-clis) below.
@@ -580,10 +581,11 @@ The dashboard doesn't just watch your AI tools after the fact — it
 can launch them, and any paired device can join a session that's
 already running.
 
-- **Launch from the dashboard or any shell.** All 22 CLI launchers
+- **Launch from the dashboard or any shell.** All 27 CLI launchers
   (claude, codex, opencode, cursor, copilot-cli, kilo, cline-cli,
   hermes, gemini, openclaw, pi, antigravity, qwen, kiro, grok, kimi,
-  devin, qoder, goose, droid, open-interpreter, command-code) launch
+  devin, qoder, goose, droid, open-interpreter, command-code, muse,
+  prime-agent, zcode, vibe, freebuff) launch
   as real PTY terminals from the
   dashboard ("Launch here") or via `observer <verb>`; Linux/macOS +
   native Windows (ConPTY, Win10 1809+). Guided one-click install when
@@ -625,7 +627,7 @@ already running.
 - **Workspace grid.** Up to 9 live terminal tiles at once, drag to
   resize, layouts persist server-side; read-only when viewed from a
   remote device.
-- **Restarts & continuity.** On a daemon restart, 21 of the 22
+- **Restarts & continuity.** On a daemon restart, 26 of the 27
   launchers auto-resume the same transcript (native resume) —
   openclaw is the sole holdout, because its resume is picker-only.
   Fork any tool's session forward with
@@ -702,6 +704,24 @@ Knowledge captured from one tool benefits all the others working on
 the same project — data is organized by git root, not by tool. A
 read by Claude Code becomes a freshness signal for Codex; a Cursor
 compaction is visible from Cline.
+
+---
+
+## Sign in and Cloud Intelligence (beta, experimental)
+
+Optional, opt-in, and **beta (experimental)**. Nothing is sent
+anywhere unless you run `observer cloud login` and enrol a session
+yourself - the `observer cloud` CLI is the only outbound trigger, and
+it touches the network only while one of its commands is running.
+**Signed-in Free** gives up to 20 session enrichments per day (100 per
+month) on GPT-5.6 Luna (xhigh reasoning). **Plus (beta)** runs
+enrichments on GPT-5.6 Sol (xhigh reasoning), capped at 120 per month,
+USD 15/month with a 7-day trial. An enrichment returns a narrative
+summary of the session: what was done, which plans were implemented,
+which issues or bugs were found, what failed, and what to do next.
+Behaviour, allowances, and pricing may change. The local daemon -
+proxy, watcher, dashboard, MCP - needs no account and is unaffected by
+any of it. Full detail: [docs/cloud-intelligence.md](docs/cloud-intelligence.md).
 
 ---
 
@@ -928,7 +948,7 @@ your client through the proxy — the one-click button path in the
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│ Claude Code  │     │    Cursor    │     │    Codex     │    ... 33 adapters total
+│ Claude Code  │     │    Cursor    │     │    Codex     │    ... 40 adapters total
 └──────┬───────┘     └──────┬───────┘     └──────┬───────┘
        │ JSONL              │ hook events        │ rollout files
        ▼                    ▼                    ▼

@@ -199,6 +199,26 @@ func (p *Proxy) admit(ctx context.Context, provider string, body []byte, userID,
 	if text == "" {
 		// Nothing to judge (a tool-result-only turn, or an unparseable
 		// body — e.g. an undecoded gzip payload, §3.5) — never gate.
+		//
+		// G1 visibility fix (docs/audits/multimodal-tracking-audit-2026-08-26.md):
+		// this branch also covers an image/audio-only turn, which the judge
+		// then silently never evaluates. Judging non-text content is a
+		// separate design arc (out of scope here — we must NOT synthesize
+		// marker text and feed it to the judge, that would fake coverage).
+		// What we CAN do cheaply and safely is tell an admin "there was
+		// non-text content here that nothing judged" apart from the
+		// routine "truly nothing to judge" case (a tool-result-only turn),
+		// by logging a distinct, greppable line — read-only, no Admitter
+		// call, so this cannot change gating behavior.
+		if types := nonTextBlockTypes(provider, body); len(types) > 0 {
+			p.logger.Info(
+				"proxy: admission skipped — non-text user content present, not judged",
+				"provider", provider,
+				"request_id", requestID,
+				"session_id", sessionIDForProvider(provider, body),
+				"non_text_block_types", types,
+			)
+		}
 		return AdmitResult{}, false
 	}
 	res := p.admitter.Admit(ctx, AdmitInput{
@@ -453,4 +473,142 @@ func decodeMessageText(raw json.RawMessage) string {
 		b.WriteString(bl.Text)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// nonTextBlockTypes returns the distinct content-block "type" values present
+// in the LAST user message of a provider request body — companion to
+// extractLastUserText, used ONLY for the G1 admission-visibility log line
+// (docs/audits/multimodal-tracking-audit-2026-08-26.md): telling "an
+// image/audio-only turn the judge never saw" apart from "truly nothing here"
+// (a tool-result-only turn) without ever invoking the judge. Best-effort and
+// read-only, matching extractLastUserText's own fail-open shape: an
+// unparseable or provider-unhandled body, or a message with no array-shaped
+// content, yields nil.
+func nonTextBlockTypes(provider string, body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	if provider == models.ProviderOpenAI {
+		return nonTextBlockTypesOpenAI(body)
+	}
+	return nonTextBlockTypesAnthropic(body)
+}
+
+// nonTextBlockTypesAnthropic finds the last user-role message in a Messages
+// API body and reports its non-text block types. Unlike lastUserTextAnthropic
+// (which keeps walking backward past a user message that decoded to no text,
+// looking for one that did), this stops at the first — i.e. most recent — user
+// message: since the caller already knows overall text extraction came up
+// empty, the most recent turn is the one relevant to log.
+func nonTextBlockTypesAnthropic(body []byte) []string {
+	var raw struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	for i := len(raw.Messages) - 1; i >= 0; i-- {
+		if raw.Messages[i].Role != "user" {
+			continue
+		}
+		return decodeMessageBlockTypes(raw.Messages[i].Content)
+	}
+	return nil
+}
+
+// nonTextBlockTypesOpenAI mirrors nonTextBlockTypesAnthropic for a Chat
+// Completions body, falling back to the Responses API input[] shape — the
+// same two shapes lastUserTextOpenAI handles.
+func nonTextBlockTypesOpenAI(body []byte) []string {
+	var raw struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	for i := len(raw.Messages) - 1; i >= 0; i-- {
+		if raw.Messages[i].Role != "user" {
+			continue
+		}
+		return decodeMessageBlockTypes(raw.Messages[i].Content)
+	}
+	in := bytes.TrimSpace(raw.Input)
+	if len(in) == 0 || in[0] != '[' {
+		return nil
+	}
+	var items []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(in, &items) != nil {
+		return nil
+	}
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].Role != "user" {
+			continue
+		}
+		return decodeMessageBlockTypes(items[i].Content)
+	}
+	return nil
+}
+
+// decodeMessageBlockTypes returns the distinct "type" values of content
+// blocks in a message's content field that carry genuine non-text USER
+// content the judge never sees — image, image_url, input_image, input_audio,
+// audio, document, video, file, etc. — the non-text-detecting companion to
+// decodeMessageText.
+//
+// Two categories are deliberately excluded, both to avoid miscounting the
+// EXISTING "nothing to judge" case (extractLastUserText's own doc comment:
+// "a tool-result-only turn... never gate") as the NEW "non-text content
+// existed but was never judged" case this function exists to surface:
+//   - text-shaped types (text, input_text, output_text) — decodeMessageText
+//     already covers these; this function only runs when that came up empty
+//   - non-user-authored control/plumbing types (tool_use, tool_result,
+//     thinking, redacted_thinking, server_tool_use, web_search_tool_result,
+//     and similar *_tool_result variants) — these appear in "user"-role
+//     messages as protocol mechanics (a tool result re-injected, a replayed
+//     thinking block), not content a human/app sent for the judge to weigh
+//
+// A bare-string content field, or blocks carrying no "type", contribute
+// nothing — matching decodeMessageText's own best-effort shape: content this
+// function can't positively identify as non-text user content is invisible
+// here, not miscounted as such.
+func decodeMessageBlockTypes(raw json.RawMessage) []string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || raw[0] != '[' {
+		return nil
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return nil
+	}
+	seen := make(map[string]bool, len(blocks))
+	var types []string
+	for _, bl := range blocks {
+		switch bl.Type {
+		case "", "text", "input_text", "output_text",
+			"tool_use", "tool_result", "server_tool_use",
+			"thinking", "redacted_thinking":
+			continue
+		}
+		if strings.HasSuffix(bl.Type, "_tool_result") {
+			continue
+		}
+		if seen[bl.Type] {
+			continue
+		}
+		seen[bl.Type] = true
+		types = append(types, bl.Type)
+	}
+	return types
 }

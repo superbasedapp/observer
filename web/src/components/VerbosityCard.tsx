@@ -199,7 +199,7 @@ function VerbosityCost({ data }: { data: VerbosityResponse }) {
         )}
       </div>
       <p className="mt-0.5 text-[9.5px] text-fg-3/70">
-        est. — output tokens apportioned by content type, priced at the model's
+        est. - output tokens apportioned by content type, priced at the model's
         output rate. Bytes above are exact.
       </p>
     </div>

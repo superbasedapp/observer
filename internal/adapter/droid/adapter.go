@@ -111,6 +111,10 @@ func defaultRoots() []string {
 type header struct {
 	sessionID string
 	cwd       string
+	// parent is the source session id when this transcript is a
+	// Factory Desktop fork of another session (see lineageForHeader).
+	// Empty for a normal or CLI-authored session.
+	parent string
 }
 
 // readHeader reads line 1 of the transcript and decodes the session_start
@@ -144,6 +148,7 @@ func readHeader(path string) header {
 		h.sessionID = rec.ID
 	}
 	h.cwd = rec.Cwd
+	h.parent = strings.TrimSpace(rec.Parent)
 	return h
 }
 
@@ -185,9 +190,9 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		firstOffset: fromOffset,
 		pendingTool: map[string]pendingMark{},
 	}
-	st.projectRoot, st.gitBranch, st.gitRemote = resolveProjectRoot(hdr.cwd)
+	st.projectRoot, st.gitBranch, st.gitRemote, st.identity = resolveProjectRoot(hdr.cwd)
 	if hasSidecar {
-		st.model = strings.TrimSpace(sc.Model)
+		st.model = sc.resolvedModel()
 	}
 
 	if fromOffset > 0 {
@@ -198,7 +203,17 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	}
 
 	res := adapter.ParseResult{NewOffset: fromOffset}
+	// Fork lineage lives entirely on line 1, which readHeader above just
+	// re-read regardless of fromOffset — so, like emitSessionStart, this
+	// only needs to run on the very first (offset 0) parse; every later
+	// resumed parse would just re-derive and re-append the identical row.
+	if fromOffset == 0 {
+		if lin, ok := lineageForHeader(st.sessionID, hdr.parent); ok {
+			res.SessionLineages = append(res.SessionLineages, lin)
+		}
+	}
 	if err := st.stream(ctx, f, fromOffset, &res); err != nil {
+		adapter.ApplyProjectIdentity(&res, st.identity)
 		return res, err
 	}
 	st.deferUnpairedTail(&res)
@@ -211,6 +226,13 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		if ev, ok := tokenEvent(sc, path, st.sessionID, st.projectRoot, st.gitBranch, st.gitRemote, ts); ok {
 			res.TokenEvents = append(res.TokenEvents, ev)
 		}
+	}
+	adapter.ApplyProjectIdentity(&res, st.identity)
+	// Capture-surface attribution (see surface.go): stamped once, at most,
+	// per parse window, when this window observed a real user-typed
+	// message carrying droid's own Factory Desktop marker.
+	if st.surfaceDesktop {
+		res.SessionSurfaces = append(res.SessionSurfaces, desktopSurface(st.sessionID))
 	}
 	return res, nil
 }
@@ -343,17 +365,18 @@ func (st *parseState) replayRecord(rec *rawRecord) {
 // by filepath.Abs and get the observer's OWN cwd prefixed onto it
 // (feedback_foreign_path_git_resolve). Returns (projectRoot, gitBranch,
 // gitRemote); a blank cwd yields ("", "", "").
-func resolveProjectRoot(rawCWD string) (root, branch, remote string) {
+func resolveProjectRoot(rawCWD string) (root, branch, remote string, id git.Identity) {
 	cwd := strings.TrimSpace(rawCWD)
 	if cwd == "" {
-		return "", "", ""
+		return "", "", "", git.Identity{}
 	}
 	cwd = crossmount.TranslateForeignPath(cwd)
-	info, err := git.Resolve(cwd)
+	identity, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
-		return cwd, "", ""
+		return cwd, "", "", git.Identity{}
 	}
-	return info.Root, info.Branch, git.NormalizeRemote(info.Remote)
+	// identity.Remote is already NormalizeRemote'd by ResolveIdentity.
+	return identity.Root, identity.Branch, identity.Remote, identity
 }
 
 // parseState carries the per-call bookkeeping the record handlers share.
@@ -364,6 +387,9 @@ type parseState struct {
 	projectRoot string
 	gitBranch   string
 	gitRemote   string
+	// identity is the Project Identity Resolver v2 bundle (2026-09-06,
+	// §3.1 / W1) resolved alongside gitBranch/gitRemote.
+	identity git.Identity
 	// model is the current model id: seeded from the sidecar's `model`
 	// and upgraded by each assistant message's own `modelId`.
 	model string
@@ -382,6 +408,10 @@ type parseState struct {
 	// success/output onto it. Whatever is still pending at EOF drives
 	// the tail deferral in pending.go.
 	pendingTool map[string]pendingMark
+	// surfaceDesktop is set once this parse window observes a real
+	// user-typed message carrying userMessageSourceDesktop. See
+	// surface.go for the grounding and why there is no negative case.
+	surfaceDesktop bool
 	// curLineStart / curToolLen / curTokenLen are the rewind coordinates
 	// of the record currently being handled, captured by stream before
 	// dispatch.
@@ -456,6 +486,9 @@ func (st *parseState) handleMessage(rec *rawRecord, ts time.Time, res *adapter.P
 	msg := rec.Message
 	if msg == nil {
 		return
+	}
+	if msg.Role == "user" && msg.UserMessageSource == userMessageSourceDesktop {
+		st.surfaceDesktop = true
 	}
 	blocks := decodeBlocks(msg.Content)
 	if len(blocks) == 0 {

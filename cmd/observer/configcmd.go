@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	adapterdefaults "github.com/marmutapp/superbased-observer/internal/adapter/defaults"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/config/migrate"
 )
@@ -25,6 +26,7 @@ func newConfigCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newConfigSetCmd())
 	cmd.AddCommand(newConfigMigrateCmd())
+	cmd.AddCommand(newConfigAdoptDefaultsCmd())
 	return cmd
 }
 
@@ -124,6 +126,123 @@ func printMigrateReport(out io.Writer, path string, res migrate.Result, dry bool
 	if !dry {
 		fmt.Fprintf(out, "backup written to %s.bak\n", path)
 	}
+}
+
+// newConfigAdoptDefaultsCmd exposes the Invariant #51 drift-hardening
+// fix (internal/config.AdoptEnabledAdapters) as an explicit command.
+// Config.Default() only seeds [observer.watch] enabled_adapters when
+// the key is absent from config.toml — an operator with an explicit
+// list carried over from a prior release silently never picks up
+// newly-registered default adapters, and their sessions from those
+// tools go uncaptured. This command appends exactly the missing names
+// to the operator's existing array, preserving order, formatting, and
+// comments.
+//
+// Unlike `config migrate`, dry-run is the DEFAULT here rather than
+// opt-in: this command edits a list the operator wrote by hand, so it
+// only touches disk when explicitly told to via --write.
+func newConfigAdoptDefaultsCmd() *cobra.Command {
+	var (
+		configPath string
+		write      bool
+	)
+	cmd := &cobra.Command{
+		Use:   "adopt-defaults",
+		Short: "Add newly-registered default adapters to an explicit enabled_adapters list",
+		Long: "Config.Default() only seeds [observer.watch] enabled_adapters when the\n" +
+			"key is absent from config.toml. If your config.toml carries an\n" +
+			"explicit list from a prior release, newly-added default adapters\n" +
+			"never run — sessions from those tools go uncaptured until you add\n" +
+			"them by hand. This command does that for you: it appends only the\n" +
+			"missing names, leaving your existing order, formatting, and comments\n" +
+			"untouched.\n\n" +
+			"  observer config adopt-defaults          # preview only, writes nothing\n" +
+			"  observer config adopt-defaults --write  # apply the append\n\n" +
+			"A backup is written to config.toml.bak before any change. A file with\n" +
+			"no explicit enabled_adapters key, or one that already lists every\n" +
+			"default, is reported as-is with nothing written.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedPath, err := config.ResolveGlobalPath(configPath)
+			if err != nil {
+				return fmt.Errorf("resolve config path: %w", err)
+			}
+			out := cmd.OutOrStdout()
+
+			defs := adapterdefaults.Adapters()
+			names := make([]string, len(defs))
+			for i, a := range defs {
+				names[i] = a.Name()
+			}
+
+			body, readErr := os.ReadFile(resolvedPath)
+			fileExists := !os.IsNotExist(readErr)
+			if readErr != nil && fileExists {
+				return fmt.Errorf("read %s: %w", resolvedPath, readErr)
+			}
+			if !fileExists {
+				fmt.Fprintf(out, "no config file at %s — nothing to adopt\n", resolvedPath)
+				return nil
+			}
+
+			if !write {
+				_, res, err := config.AdoptEnabledAdapters(string(body), names)
+				if err != nil {
+					return err
+				}
+				printAdoptReport(out, resolvedPath, res, true)
+				return nil
+			}
+
+			res, err := config.AdoptEnabledAdaptersFile(resolvedPath, names)
+			if err != nil {
+				return err
+			}
+			printAdoptReport(out, resolvedPath, res, false)
+			if res.Changed && !res.Skipped {
+				if pokeReload() {
+					fmt.Fprintln(out, "daemon reloaded — new settings apply to new sessions now")
+				} else {
+					fmt.Fprintln(out, "no running daemon detected — applies on next start")
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
+	cmd.Flags().BoolVar(&write, "write", false, "Apply the append (default: preview only, writes nothing)")
+	return cmd
+}
+
+// printAdoptReport renders an config.AdoptResult to the user, mirroring
+// printMigrateReport's style and honesty-first posture: every branch
+// describes exactly what is true of the file, never implies a change
+// that didn't happen.
+func printAdoptReport(out io.Writer, path string, res config.AdoptResult, dry bool) {
+	switch {
+	case !res.HadExplicitList:
+		fmt.Fprintf(out, "%s has no explicit enabled_adapters list — nothing to adopt (every default adapter already applies)\n", path)
+		return
+	case res.Skipped:
+		fmt.Fprintf(out, "skipped %s: %s\n", path, res.SkipReason)
+		return
+	case !res.Changed:
+		fmt.Fprintf(out, "%s already lists every default adapter (%d) — no changes\n", path, len(res.Existing))
+		return
+	}
+	verb := "added"
+	if dry {
+		verb = "would add"
+	}
+	fmt.Fprintf(out, "%s %d missing default adapter(s) to %s:\n", verb, len(res.Missing), path)
+	for _, m := range res.Missing {
+		fmt.Fprintf(out, "  • %s\n", m)
+	}
+	if dry {
+		fmt.Fprintln(out, "re-run with --write to apply")
+		return
+	}
+	fmt.Fprintf(out, "backup written to %s.bak\n", path)
 }
 
 func newConfigSetCmd() *cobra.Command {

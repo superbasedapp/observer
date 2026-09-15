@@ -27,6 +27,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/intelligence/discover"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/learn"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/suggest"
+	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/processbridge/setup"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
@@ -78,16 +79,50 @@ type Options struct {
 	DB *sql.DB
 	// DBPath is displayed in the header; not used to open anything.
 	DBPath string
+	// ProcessArchive serves process capture that has moved to cold storage
+	// (corpus archival Bucket B, design §4.3). Nil — the default, and the
+	// state whenever [archive].enabled is false — means the process surfaces
+	// behave exactly as they did before the arc: hot rows or nothing.
+	ProcessArchive ProcessArchiveReader
 	// CostEngine prices token summaries. Defaults to baked-in pricing.
 	CostEngine *cost.Engine
 	// Predict carries the [predict] tunables (Next-Message Cost & Limit
 	// Predictor). Zero value → the handler falls back to built-in
 	// defaults, so tests and read-only callers need not set it.
 	Predict config.PredictConfig
+	// LocEditorToken is the per-install shared secret POST
+	// /api/loc/editor-change verifies X-Observer-Token against. The
+	// daemon resolves it in cmd (generate-on-first-start into
+	// [loc].editor_token_file, or the deprecated
+	// OBSERVER_LOC_EDITOR_TOKEN override) and hands the VALUE here — this
+	// package never reads the file, so a test needs no filesystem.
+	//
+	// Empty means "no configured token", which leaves the endpoint on the
+	// loopback + Origin posture it shipped with. Deliberately NOT read
+	// back out anywhere: nothing in the dashboard renders it.
+	LocEditorToken string
+	// LocEditorTokenRequired is [loc].editor_token_required: refuse a
+	// POST /api/loc/editor-change that carries no token. Default false —
+	// an extension older than the token file sends none. A request that
+	// DOES carry a token is verified either way (locEditorAuth).
+	LocEditorTokenRequired bool
 	// CacheWarm carries the [cachewarm] tunables (cache-expiry warning +
 	// smart keep-warm). Zero value disables the cache-status surface
 	// (Enabled=false), so tests and read-only callers need not set it.
 	CacheWarm config.CacheWarmConfig
+	// Tasks carries the [tasks] tunables (session-level task/todo/plan
+	// checklist tracking, docs/task-tracking.md). Consumed by
+	// taskflowOptions() (taskreport.go) to build the taskflow.Options
+	// every LoadSessionTaskReport/LoadTaskRollup call needs — an
+	// EXPLICIT argument, not read off a fresh store.New(db)'s
+	// Store.TasksOptions(), which would silently return the zero value
+	// here (that store instance never had SetTasksOptions called on
+	// it). Zero value → match_mode/concurrent_attribution/
+	// include_sidechains all read as "" / "" / false, the same
+	// unconfigured behavior taskflow.Attributor's own zero value
+	// already documents, so tests and read-only callers need not set
+	// it.
+	Tasks config.TasksConfig
 	// Dashboard carries the [dashboard] tunables that the SERVER reads
 	// (Addr is resolved in cmd, not here). Today that is
 	// OrgAnnouncements, the node operator's opt-out for rail R3 of the
@@ -167,6 +202,10 @@ type Options struct {
 	// Used by /api/setup/codex to compute the desired
 	// ~/.codex/config.toml base_url. Zero falls back to 8820.
 	ProxyPort int
+	// ArenaAdmission runs immediately before each Agent Arena candidate or
+	// judge process starts. Nil preserves the standalone Arena engine's
+	// unconfigured behavior. cmd owns the concrete budget-policy check.
+	ArenaAdmission func(context.Context, string, string) error
 	// StashDir is the proxy-side SROD (Stash & Retrieve on Demand) stash
 	// directory (cfg.Compression.Conversation.Stash.Dir). When set, the
 	// /api/compression/retrieval surface reads short content snippets of
@@ -241,6 +280,14 @@ type Options struct {
 	// (GET /api/terminal/<handle>/status + GET /ws/terminal/status). Nil is the
 	// honest disabled state (503 / the WS closes).
 	TerminalStatus TerminalStatusProvider
+	// PolicyStop, when non-nil, resolves a durable explanation for a terminal
+	// run the daemon's OWN node-intervention loop stopped — an org-managed
+	// node's process-control policy killing a vendor process the operator
+	// launched via "New Terminal" (docs/plans/... managed-node process
+	// control). It is surfaced additively on the exit event and the status
+	// payload; nil simply omits policy_stop everywhere (the honest "no
+	// managed-node intervention wired" state, e.g. an unmanaged node).
+	PolicyStop PolicyStopProvider
 	// ToolPreflight, when non-nil, resolves a launchable tool NAME to its
 	// binary-resolution verdict for GET /api/terminal/launch/preflight
 	// (tool-binary-resolution arc). It is the dashboard's seam onto
@@ -275,14 +322,21 @@ type Options struct {
 	RecentModels func(ctx context.Context, tool string) ([]store.RecentToolModel, error)
 	// ProjectRootResolver, when non-nil, backs the per-terminal project panel
 	// (GET /api/terminal/project/<token>...). It resolves a live launch token
-	// (LaunchInfo.ID / PTY handle) to the canonical project root the run was
-	// launched with, from server-retained state only — the browser never sends
-	// a filesystem root. It returns known=false for an unknown OR exited token
-	// (→404 unknown_token) and (root="", known=true) for a live run launched
-	// with the default cwd (→409 no_project_root). Injected by cmd from
-	// termsvc.Service; nil (the default) makes the panel endpoints 404 (a nil
-	// seam IS the disabled state), keeping the solo-local experience unchanged.
-	ProjectRootResolver func(token string) (root string, known bool)
+	// (LaunchInfo.ID / PTY handle) to the canonical directory the run was
+	// launched into PLUS that directory's provenance (TerminalRoot), from
+	// server-retained state only — the browser never sends a filesystem root.
+	//
+	// It returns known=false for an unknown OR exited token (→404 unknown_token)
+	// and (Path="", known=true) for a live run with no local directory to browse
+	// (→409 no_project_root). A default-cwd launch resolves to the run's own
+	// working directory with Authorized=false rather than to an empty path
+	// (operator ruling 2026-08-28): the launch allow-list governs which roots a
+	// client may REQUEST, not which directory an owner-local terminal may browse.
+	//
+	// Injected by cmd from termsvc.Service; nil (the default) makes the panel
+	// endpoints 404 (a nil seam IS the disabled state), keeping the solo-local
+	// experience unchanged.
+	ProjectRootResolver func(token string) (root TerminalRoot, known bool)
 	// SessionResolver, when non-nil, backs the per-terminal session cockpit
 	// (GET /api/terminal/session/<token>). It resolves a live launch token to
 	// its run identity (run id + kind + tool) and — once the daemon has
@@ -302,6 +356,39 @@ type Options struct {
 	// (e.g. config wouldn't come back) — the daemon keeps running. Nil means
 	// this process mode can't self-restart (the handler reports 501).
 	RestartFunc func() error
+	// UpdateApplyFunc, when non-nil, runs an in-place binary update in the
+	// DAEMON process (POST /api/update/apply) — the enterprise-update
+	// management plan's §3.7 sequence.
+	//
+	// It is a function seam for the same reason RestartFunc is: cmd owns the
+	// process lifecycle, and the drain + fork-exec-and-watch handshake are
+	// only meaningful in the process that holds the listeners. The dashboard
+	// package contributes a route and an authorization decision, nothing
+	// else. Nil (the default) makes the endpoint 501, which is the honest
+	// answer for a process mode that cannot replace its own binary.
+	//
+	// The route is CapabilityLocal: replacing the daemon's executable is the
+	// most privileged thing this surface can be asked to do, and it must be
+	// refused on any remotely-exposed bind before a principal is even
+	// resolved.
+	UpdateApplyFunc func(ctx context.Context, req UpdateApplyRequest) (UpdateApplyResult, error)
+	// UpdateStatusFunc, when non-nil, composes the node's own update posture
+	// for GET /api/update/status (W5: the Settings -> Health card and the
+	// update banner). Nil returns the honest "feature off" zero value rather
+	// than a 404.
+	//
+	// It is a READ and introduces no outbound request: everything it reports
+	// was already written to this daemon by the push cycle and the apply path.
+	UpdateStatusFunc func(ctx context.Context) (UpdateStatusResult, error)
+	// UpdateExtensionVersionFunc, when non-nil, receives the VS Code
+	// extension's own version on POST /api/update/extension-version, so the
+	// org board can show editor/daemon skew (ruling R6). Nil makes the route
+	// answer 501.
+	//
+	// It takes a plain string and returns nothing: the daemon's job is to
+	// remember what the extension said, and a report that cannot be stored is
+	// not worth failing an editor's activation over.
+	UpdateExtensionVersionFunc func(version string)
 	// Remote is the injected remote-access security substrate (plan §4).
 	// Nil (the default) means loopback-only: a non-loopback bind is REFUSED
 	// (§4.6 atomic-safety rule). A non-nil controller reporting Ready()
@@ -334,6 +421,12 @@ type Options struct {
 	// creates it on first write). Nil (the default) is the honest disabled
 	// state for `observer dashboard` without a co-located watcher.
 	RefreshWatchRoots func()
+	// CloudAccount is the Cloud Intelligence ACCOUNT seam (cloud_account.go):
+	// the local sign-in probe + the `observer cloud <verb>` subprocess runner
+	// cmd/observer injects, so this package never links the cloud network or
+	// credential lane. Nil (the default) omits `sign_in` from /api/cloud/status
+	// and makes the Sign in / Sign out routes answer 503 with honest copy.
+	CloudAccount *CloudAccountSeams
 }
 
 // TerminalSessionLink is the resolved identity of a live terminal launch token
@@ -799,6 +892,12 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// review metadata a paired remote owner legitimately drives).
 	reg("/api/sessions/tags", V, secSessions, s.handleSessionsTags)
 	reg("/api/sessions/tags/manage", X, secSessions, s.handleSessionsTagsManage)
+	// Tag definitions (migration 101): the optional human-readable
+	// explanation + category attached to a tag name. Same tier split as
+	// the vocabulary above — GET is a pure read (View), POST is a
+	// whole-route Execute mutation (method-aware requirement auto-
+	// escalates it, same as /api/sessions/tags/manage).
+	reg("/api/tags/definitions", V, secSessions, s.handleTagDefinitions)
 	// /api/session/ keeps a View base — its many GET sub-route reads must work
 	// remotely — while its mutating sub-routes resolve explicitly via
 	// sessionSubRouteCapabilities (§9.1): /handoff + /launch are Execute (a
@@ -840,6 +939,38 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// side effects. Distinct from the fail-CLOSED validation inside
 	// handleTerminalLaunch, which actually refuses a launch.
 	reg("/api/terminal/sandbox", V, secTerminals, s.handleTerminalSandbox)
+	// SSH remote-system terminals (docs/plans/ssh-remote-profiles-plan-2026-08-27.md
+	// §6.2). BOTH verbs are LOCAL-ONLY — deliberately NOT the X (execute) class
+	// /api/terminal/launch carries.
+	//
+	//   GET  discloses the operator's configured remote hostnames, which are
+	//        the same privacy class as sessions.git_branch (internal names
+	//        encode clients and environments).
+	//   POST opens an interactive shell on a THIRD-PARTY machine. Letting a
+	//        paired phone do that is a materially different grant from letting
+	//        it drive a local terminal, and it needs its own threat model
+	//        before it is ever offered (plan D1).
+	//
+	// Expressing that as route CLASS rather than an in-handler check means a
+	// future refactor cannot silently drop it. The exact pattern is more
+	// specific than the /api/terminal/ catch-all below, so mux precedence
+	// routes it here.
+	reg("/api/terminal/ssh", L, secTerminals, s.handleTerminalSSH)
+	// Instance switcher (ssh-remote-profiles plan §12 D2, partially lifted).
+	// LOCAL-ONLY for the SAME two reasons /api/terminal/ssh is, plus a third:
+	//
+	//   GET  discloses the operator's configured remote hostnames.
+	//   POST .../connect spawns an `ssh -N -L` child to a THIRD-PARTY machine.
+	//   The forward it opens is reachable on THIS machine's loopback, so a
+	//   remote principal able to drive it would gain a path toward the remote
+	//   dashboard as well — the pivot D1 has not been threat-modelled for.
+	//
+	// Both patterns are registered because the mux needs the exact "/api/
+	// instances" for the list and the "/api/instances/" prefix for the
+	// {name}/{verb} verbs; both carry the same class, so no reachable path is
+	// left unclassified.
+	reg("/api/instances", L, secTerminals, s.handleInstances)
+	reg("/api/instances/", L, secTerminals, s.handleInstanceVerb)
 	// Sandbox config editor. LOCAL + confirm-token-gated: unlike the probe
 	// above, this writes [terminal.sandbox], including authority-expanding
 	// remote-clone / extra-rw-bind escape hatches.
@@ -959,12 +1090,50 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/guard/evidence", L, secSecurity, s.handleGuardEvidence)
 	reg("/api/guard/evidence/download", V, secSecurity, s.handleGuardEvidenceDownload)
 	reg("/api/guard/budget", V, secSecurity, s.handleGuardBudget)
+	// Lines-of-code authorship (docs/plans/lines-of-code-tracking-plan-2026-09-07.md).
+	// A View route: it serves counts over node-local file_changes rows and
+	// carries no file content or path. The per-session read is a sub-route
+	// of /api/session/ (see handleSessionDetail).
+	reg("/api/loc/summary", V, secSessions, s.handleLOCSummary)
+	// The editor-change ingest is owner-LOCAL: a loopback-only POST from
+	// the developer's own editor, refused outright on any remotely-exposed
+	// bind. It carries LINE COUNTS and a workspace-relative path that is
+	// hashed before it reaches the database — never file content. See
+	// loc_editor.go for the integrity posture the UI depends on.
+	reg("/api/loc/editor-change", L, secSessions, s.handleLOCEditorChange)
+	// Prompt-submit intervention (PHASE-3b-DASHBOARD, §8.2): status/
+	// events/detectors are reads (View); clear + allow-revoke mutate
+	// state (Local, same posture as /api/guard/approvals above); probe
+	// spawns a subprocess that reads local hook config files, so it is
+	// Local too (machine-reaching, not a remote viewer's decision).
+	reg("/api/guard/prompt/status", V, secSecurity, s.handleGuardPromptStatus)
+	reg("/api/guard/prompt/events", V, secSecurity, s.handleGuardPromptEvents)
+	reg("/api/guard/prompt/detectors", V, secSecurity, s.handleGuardPromptDetectors)
+	reg("/api/guard/prompt/clear", L, secSecurity, s.handleGuardPromptClear)
+	reg("/api/guard/prompt/allow/", L, secSecurity, s.handleGuardPromptAllowDelete)
+	reg("/api/guard/prompt/probe", L, secSecurity, s.handleGuardPromptProbe)
 	reg("/api/cache/status", V, secCache, s.handleCacheStatus)
 	reg("/api/cache/overview", V, secCache, s.handleCacheOverview)
 	reg("/api/cache/timeseries", V, secCache, s.handleCacheTimeseries)
 	reg("/api/cache/health", V, secCache, s.handleCacheHealth)
 	reg("/api/cache/events", V, secCache, s.handleCacheEvents)
 	reg("/api/cache/entry-states", V, secCache, s.handleCacheEntryStates)
+	// Cloud Intelligence (Signed-in Free spine — plan §6 CI-P5). Read-only
+	// node-local state; nothing here talks to the hosted service. Status lives
+	// on the Configure/Settings page (secSettings); the per-session view drives
+	// the SessionDetailPanel Cloud row (secSessions). Both View.
+	reg("/api/cloud/status", V, secSettings, s.handleCloudStatus)
+	reg("/api/cloud/session/", V, secSessions, s.handleCloudSession)
+	// Cloud ACCOUNT actions (cloud_account.go): login / login/state / logout,
+	// all Local — they spawn `observer cloud <verb>` on THIS machine.
+	s.registerCloudAccountRoutes(reg)
+	// /api/tasks — the Phase-2 session-level task-tracking rollup
+	// (docs/task-tracking.md "Phase 2"): project/tool/window aggregate
+	// over LoadSessionTaskReport. Filed under Analysis, the same
+	// section the equivalent per-session cost/output-composition
+	// breakdowns already live under; the per-session detail itself is
+	// the /api/session/<id>/tasks sub-route above (secSessions).
+	reg("/api/tasks", V, secAnalysis, s.handleTaskRollup)
 	reg("/api/benchmarks", V, secBenchmarks, s.handleBenchmarks)
 	reg("/api/benchmarks/", V, secBenchmarks, s.handleBenchmarkDetail)
 	reg("/api/projects", V, secNone, s.handleProjects)
@@ -987,6 +1156,12 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/config/pricing", L, secSettings, s.handleConfigPricing)
 	reg("/api/config/pricing/defaults", V, secSettings, s.handleConfigPricingDefaults)
 	reg("/api/config/section/", L, secSettings, s.handleConfigSection)
+	// Schema-driven settings (dashboard-config-management plan §2.2): the
+	// generated schema + the generic batched dotted-key write. Both Local —
+	// the schema describes the owner-local settings surface and the write is
+	// a config mutation. governanceGuard has a body-aware arm for /keys.
+	reg("/api/config/schema", L, secSettings, s.handleConfigSchema)
+	reg("/api/config/keys", L, secSettings, s.handleConfigKeys)
 	reg("/api/config/backup", L, secSettings, s.handleConfigBackup)
 	reg("/api/config/reload", L, secSettings, s.handleConfigReload)
 	reg("/api/config/profiles", L, secSettings, s.handleConfigProfiles)
@@ -999,6 +1174,20 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/health/failures", V, secSettings, s.handleHealthFailures)
 	reg("/api/mcp/value", V, secSettings, s.handleMCPValue)
 	reg("/api/admin/restart", L, secNone, s.handleAdminRestart)
+	// In-place binary update (enterprise-update-management plan §3.10).
+	// CapabilityLocal: replacing the daemon's own executable is the most
+	// privileged thing this surface can be asked to do, so it is refused on
+	// any remotely-exposed bind before a principal is resolved — the same
+	// posture as the restart route beside it.
+	reg("/api/update/apply", L, secNone, s.handleUpdateApply)
+	// W5 read side. CapabilityView, not Local: it discloses this node's own
+	// version and update state to a viewer who can already see /api/status,
+	// and the Settings -> Health card needs it on every bind mode.
+	reg("/api/update/status", V, secSettings, s.handleUpdateStatus)
+	// W5: the VS Code extension's self-report. CapabilityLocal, mirroring
+	// /api/loc/editor-change above — a loopback report from an editor sharing
+	// this machine, never something a remote caller writes.
+	reg("/api/update/extension-version", L, secSettings, s.handleUpdateExtensionVersion)
 	reg("/api/admin/antigravity-bridge.exe", V, secNone, s.handleAntigravityBridge)
 	reg("/api/scan/run", L, secSettings, s.handleScanRun)
 	reg("/api/backfill/status", V, secSettings, s.handleBackfillStatus)
@@ -1768,7 +1957,7 @@ func parseSessionsSortParams(r *http.Request) (sortBy string, desc bool) {
 	switch sortBy {
 	case "session", "tool", "project", "started_at", "elapsed", "actions",
 		"input", "cache_r", "cache_w", "output", "cost", "quality",
-		"errors", "redundancy", "favorite", "rating":
+		"errors", "redundancy", "favorite", "rating", "ai_code_lines":
 	default:
 		sortBy = "started_at"
 	}
@@ -1781,7 +1970,12 @@ func parseSessionsSortParams(r *http.Request) (sortBy string, desc bool) {
 // full filtered set loaded before paging, rather than an SQL ORDER BY + LIMIT.
 func sessionsSortRequiresInMemory(sortBy string) bool {
 	switch sortBy {
-	case "elapsed", "input", "cache_r", "cache_w", "output", "cost":
+	// ai_code_lines is a CORRELATED SUBQUERY over file_changes, not a
+	// stored column. Putting it in the SQL ORDER BY would make the
+	// database evaluate that subquery for every session in the corpus
+	// just to page twenty rows; sorting the already-loaded filtered set
+	// in Go costs the same subqueries the SELECT already ran.
+	case "elapsed", "input", "cache_r", "cache_w", "output", "cost", "ai_code_lines":
 		return true
 	}
 	return false
@@ -2055,6 +2249,16 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		                 '') AS last_seen_at,
 		        (SELECT COUNT(*) FROM actions a WHERE a.session_id = s.id) AS total_actions,
 		        (SELECT COUNT(*) FROM actions a WHERE a.session_id = s.id AND a.is_sidechain = 1) AS sidechain_actions,
+		        -- Lines-of-code authorship (migration 103) is NOT selected
+		        -- here. It is attached below from the store seam
+		        -- (store.LoadSessionLOCLines), because internal/store owns
+		        -- file_changes and this was the only raw read of that table
+		        -- outside it. The two copies of the collapse rule drifted:
+		        -- the card summed each digest group's MIN(id) representative
+		        -- while this query took the group's MAX line count, so a
+		        -- codex invocation/executor pair whose executor landed at
+		        -- the lower id made the list and the card report different
+		        -- numbers for one session. One owner, one rule.
 		        s.quality_score, s.error_rate, s.redundancy_ratio,
 		        s.redundancy_ratio_wasteful, s.stale_reads_wasteful, s.stale_reads_necessary
 		 FROM sessions s
@@ -2085,10 +2289,30 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		// this is the only structural marker. > 0 implies the session
 		// fanned out work to sub-agents — surfaced as a "sidechain N"
 		// pill on the Sessions tab.
-		SidechainActionCount int      `json:"sidechain_action_count"`
-		QualityScore         *float64 `json:"quality_score,omitempty"`
-		ErrorRate            *float64 `json:"error_rate,omitempty"`
-		RedundancyRatio      *float64 `json:"redundancy_ratio,omitempty"`
+		SidechainActionCount int `json:"sidechain_action_count"`
+		// AICodeLines is the agent-authored CODE lines this session
+		// touched: added + modified, comments / blanks / whitespace-only
+		// reflows excluded, deduplicated across the codex
+		// invocation/executor pair. Deleted lines are deliberately not in
+		// it — deleting code is real work, but it is not lines written,
+		// and summing the two would let a delete-heavy refactor outscore
+		// a feature.
+		//
+		// HumanCodeLines is its editor-reported counterpart and is 0
+		// unless an editor is reporting saves. The UI must NOT derive an
+		// "AI share" from these two on their own: with no editor capture
+		// the human side is unmeasured, not zero, and a share would read
+		// as 100% AI. /api/loc/summary carries the capture flag that
+		// makes a share legitimate.
+		//
+		// Both carry omitempty so a corpus that has never run
+		// `observer backfill --loc` emits the byte-identical payload it
+		// did before this feature existed (tests/invariant/golden/sessions.json).
+		AICodeLines     int      `json:"ai_code_lines,omitempty"`
+		HumanCodeLines  int      `json:"human_code_lines,omitempty"`
+		QualityScore    *float64 `json:"quality_score,omitempty"`
+		ErrorRate       *float64 `json:"error_rate,omitempty"`
+		RedundancyRatio *float64 `json:"redundancy_ratio,omitempty"`
 		// Spec §14.1 wasteful-subset (nil when the session has
 		// no cache_events).
 		RedundancyRatioWasteful *float64 `json:"redundancy_ratio_wasteful,omitempty"`
@@ -2146,6 +2370,23 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		// Rating is the 1-10 overall score (0 = unrated). omitempty for the
 		// same golden-payload-stability reason as the three above.
 		Rating int `json:"rating,omitempty"`
+		// Title is the developer's OWN session title (migration 116) —
+		// distinct from CloudTitle below (the AI-generated one) and always
+		// wins over it wherever the frontend renders an "effective title".
+		// omitempty for the same golden-payload-stability reason as Rating.
+		Title string `json:"title,omitempty"`
+		// CloudEnriched/CloudTitle surface the cloud-intelligence enrichment
+		// state (node-local cloud_results, migration 097) attached
+		// post-scan from the same batched-per-page pattern as the
+		// classification fields above. CloudEnriched is true when a
+		// non-superseded cloud_results row exists for the session;
+		// CloudTitle is that row's AI-generated title, or "" when none.
+		// Both carry omitempty/zero-value defaults so an unenriched corpus
+		// emits the byte-identical payload it did before cloud-intelligence
+		// existed.
+		CloudEnriched   bool                           `json:"cloud_enriched,omitempty"`
+		CloudTitle      string                         `json:"cloud_title,omitempty"`
+		CloudEnrichment *store.CloudEnrichmentProgress `json:"cloud_enrichment,omitempty"`
 	}
 	var out []sessRow
 	for rows.Next() {
@@ -2154,7 +2395,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		var rrWasteful sql.NullFloat64
 		var stWasteful, stNecessary sql.NullInt64
 		if err := rows.Scan(&sr.ID, &sr.Tool, &sr.Project, &sr.StartedAt, &sr.LastSeenAt,
-			&sr.TotalActions, &sr.SidechainActionCount, &q, &er, &rr,
+			&sr.TotalActions, &sr.SidechainActionCount,
+			&q, &er, &rr,
 			&rrWasteful, &stWasteful, &stNecessary); err != nil {
 			writeErr(w, err)
 			return
@@ -2198,6 +2440,31 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	if out == nil {
 		out = []sessRow{}
+	}
+
+	// Attach lines-of-code authorship through the store seam — ONE batched
+	// query per 400 sessions, deduplicated by the same collapse rule the
+	// session card reads through, so the two surfaces can never report
+	// different numbers for one session.
+	//
+	// It runs HERE, before the in-memory sort, because ai_code_lines is a
+	// sortable column and that sort covers the whole filtered set, not just
+	// the page. A failure degrades the page to "no LOC shown" rather than
+	// 500ing the list — same posture as tags/annotations/cloud below.
+	if len(out) > 0 {
+		locIDs := make([]string, len(out))
+		for i := range out {
+			locIDs[i] = out[i].ID
+		}
+		if locLines, lErr := store.New(s.db()).LoadSessionLOCLines(r.Context(), locIDs); lErr == nil {
+			for i := range out {
+				lines := locLines[out[i].ID]
+				out[i].AICodeLines = lines.AICodeLines
+				out[i].HumanCodeLines = lines.HumanCodeLines
+			}
+		} else {
+			s.opts.Logger.Warn("sessions: per-session LOC load failed", "err", lErr)
+		}
 	}
 
 	// Attach per-session token totals + cost from the cost engine, then (for
@@ -2290,6 +2557,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				return float64(sr.OutputTokens)
 			case "cost":
 				return sr.CostUSD
+			case "ai_code_lines":
+				return float64(sr.AICodeLines)
 			}
 			return 0
 		}
@@ -2395,9 +2664,32 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				out[i].Favorite = a.Favorite
 				out[i].HasNote = a.Note != ""
 				out[i].Rating = a.Rating
+				out[i].Title = a.Title
 			}
 		} else {
 			s.opts.Logger.Warn("sessions: per-session annotation load failed", "err", aErr)
+		}
+
+		progress := s.cloudListEnrichmentProgress(r.Context(), st, pageIDs)
+		for i := range out {
+			out[i].CloudEnrichment = progress[out[i].ID]
+		}
+
+		// Attach cloud-intelligence enrichment state: ONE batched query over
+		// the page's session ids through the store seam
+		// (internal/store/cloudlocal_enriched.go::LoadCloudEnrichedTitles),
+		// scoped to the current (non-superseded) result per session. A
+		// failure degrades to "no enrichment shown" rather than 500ing the
+		// list — same posture as tags/annotations above.
+		if titleBySession, cErr := st.LoadCloudEnrichedTitles(r.Context(), pageIDs); cErr == nil {
+			for i := range out {
+				if title, ok := titleBySession[out[i].ID]; ok {
+					out[i].CloudEnriched = true
+					out[i].CloudTitle = title
+				}
+			}
+		} else {
+			s.opts.Logger.Warn("sessions: per-session cloud-enrichment load failed", "err", cErr)
 		}
 	}
 
@@ -3000,6 +3292,15 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionCache(w, r, id)
 		return
 	}
+	// Sub-route: /api/session/<id>/loc → lines-of-code authorship for the
+	// session (AI main vs sidechain vs editor-reported human, code vs
+	// docs vs config, with the confidence and overwrite caveats attached
+	// to the numbers). A read over node-local file_changes.
+	if strings.HasSuffix(id, "/loc") {
+		id = strings.TrimSuffix(id, "/loc")
+		s.handleSessionLOC(w, r, id)
+		return
+	}
 	// Sub-route: /api/session/<id>/processes → the Process Observability
 	// session tree (docs/process-observability.md §13.1). Attributed
 	// fork/exec/exit lineage with the spawning command per subtree. Empty
@@ -3087,6 +3388,27 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(id, "/predict") {
 		id = strings.TrimSuffix(id, "/predict")
 		s.handleSessionPredict(w, r, id)
+		return
+	}
+	// Sub-route: /api/session/<id>/tasks → the Phase-2 session-level
+	// task/todo/plan tracking report (docs/task-tracking.md "Phase 2").
+	// Per-task tokens/cost/elapsed/actions attributed via
+	// taskflow.Attributor, priced through the same cost-ladder pattern
+	// as live.go. Read-only; the calm empty state (has_tasks=false) is
+	// the majority case.
+	if strings.HasSuffix(id, "/tasks") {
+		id = strings.TrimSuffix(id, "/tasks")
+		s.handleSessionTasks(w, r, id)
+		return
+	}
+	// Sub-route: /api/session/<id>/org-intel → the org-served Cloud
+	// Intelligence result the node last pulled back for this session
+	// (org-served-cloud-intelligence plan §3.5, W8b). A read over the
+	// NODE-LOCAL org_intel_cache; the honest empty (enriched=false) is the
+	// ordinary state for a node whose org has not enabled enrichment.
+	if strings.HasSuffix(id, "/org-intel") {
+		id = strings.TrimSuffix(id, "/org-intel")
+		s.handleSessionOrgIntel(w, r, id)
 		return
 	}
 	// Sub-route: /api/session/<id>/verbosity → the Output Composition
@@ -3180,11 +3502,11 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		StaleReadsNecessary     *int             `json:"stale_reads_necessary,omitempty"`
 		RedundancyRatioWasteful *float64         `json:"redundancy_ratio_wasteful,omitempty"`
 		Tokens                  map[string]int64 `json:"tokens"`
+		// TokenUsageAvailable distinguishes captured zero usage from no usage rows.
+		TokenUsageAvailable bool `json:"token_usage_available"`
 		// ContextBudgetTokens + TokensNote are the honest fallback for a
-		// session with NO billed token usage. Cursor isn't proxied (no
-		// api_turns) and only reports usage on its `stop` hook, so a
-		// cancelled/interrupted turn records zero tokens even though it
-		// carried a real context. ContextBudgetTokens is the carried context
+		// session with NO captured token usage. Hooks and native files can
+		// omit usage even when an agent did real work. ContextBudgetTokens is the carried context
 		// budget (the prompt_context section counts — part of a turn's input
 		// but never billed on their own), surfaced as an ESTIMATE separate
 		// from cost_usd; TokensNote explains why the billed figure is empty.
@@ -3223,6 +3545,14 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		ThreadSource   string         `json:"thread_source,omitempty"`
 		ParentInDB     bool           `json:"parent_in_db"`
 		Children       []lineageChild `json:"children"`
+		// Surface / SurfaceHost are the capture-surface attribution
+		// (migration 107): the normalized kind (cli | ide | desktop |
+		// sdk | web) + the concrete host token ("vscode", "cursor",
+		// "claude-desktop", ...). Both omitted when no adapter stamped
+		// one — the frontend treats absence as "unknown", never as
+		// "cli". Additive; frontend rendering is a follow-up.
+		Surface     string `json:"surface,omitempty"`
+		SurfaceHost string `json:"surface_host,omitempty"`
 		// Resume declares how a CLOSED session on this tool can be reopened
 		// (session-attach design Phase 3): kind "native" (grounded
 		// ResumeNative → the Resume button POSTs /resume), "handoff" (no native
@@ -3422,7 +3752,9 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		           WHERE tw.session_id = at.session_id AND COALESCE(tw.fast, 0) = 1
 		             AND COALESCE(tw.model, '') = COALESCE(at.model, '')
 		             AND COALESCE(tw.input_tokens, 0) = COALESCE(at.input_tokens, 0)
-		             AND COALESCE(tw.output_tokens, 0) = COALESCE(at.output_tokens, 0)
+		             -- Reasoning fold: proxy output is gross (visible +
+		             -- reasoning); codex's JSONL twin nets reasoning out.
+		             AND COALESCE(tw.output_tokens, 0) + COALESCE(tw.reasoning_tokens, 0) = COALESCE(at.output_tokens, 0)
 		             AND COALESCE(tw.cache_read_tokens, 0) = COALESCE(at.cache_read_tokens, 0)
 		             AND COALESCE(tw.cache_creation_tokens, 0) = COALESCE(at.cache_creation_tokens, 0)
 		       ) THEN 1 ELSE 0 END AS inherited_fast,
@@ -3444,15 +3776,20 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		  -- F1: also drop a JSONL row that duplicates a proxy turn by
 		  -- token-bundle shape when the ids don't match (codex: tk:… vs
 		  -- resp_…). COALESCE because codex leaves cache_creation NULL on
-		  -- one side and 0 on the other. Anthropic proxy rows fold reasoning
-		  -- into output, so their output_tokens differ from the JSONL row's
-		  -- and never false-match (verified: 0 claude-code collisions live).
+		  -- one side, 0 on the other. The output comparison FOLDS the
+		  -- JSONL row's reasoning back in: the proxy stores gross output
+		  -- (visible + reasoning), while codex's adapter nets reasoning
+		  -- out at emit time — an exact-output match missed every
+		  -- reasoning turn, so both captures of the same call survived
+		  -- and the timeline showed each turn twice (tk:… and resp_…).
+		  -- Anthropic adapters store reasoning 0 (thinking already folded
+		  -- into output on both sides), so the sum is a no-op for them.
 		  AND NOT EXISTS (
 		      SELECT 1 FROM api_turns ap
 		      WHERE ap.session_id = tu.session_id
 		        AND COALESCE(ap.model, '') = COALESCE(tu.model, '')
 		        AND COALESCE(ap.input_tokens, 0) = COALESCE(tu.input_tokens, 0)
-		        AND COALESCE(ap.output_tokens, 0) = COALESCE(tu.output_tokens, 0)
+		        AND COALESCE(ap.output_tokens, 0) = COALESCE(tu.output_tokens, 0) + COALESCE(tu.reasoning_tokens, 0)
 		        AND COALESCE(ap.cache_read_tokens, 0) = COALESCE(tu.cache_read_tokens, 0)
 		        AND COALESCE(ap.cache_creation_tokens, 0) = COALESCE(tu.cache_creation_tokens, 0)
 		  )
@@ -3607,15 +3944,15 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		"reasoning":         totalReasoning,
 	}
 	d.PerModel = perModel
+	d.TokenUsageAvailable = len(perModel) > 0
 
-	// Context-budget fallback for a session with no billed token usage.
-	// Cursor isn't proxied and only reports usage on its `stop` hook, so a
-	// cancelled turn leaves zero billed tokens; surface the carried context
-	// budget (prompt_context section counts) as an honest estimate + a note
-	// explaining the empty bill. Never touches cost_usd.
-	if totalIn+totalOut+totalCR+totalCC+totalCC1h+totalReasoning == 0 {
+	// Context occupancy cannot replace missing usage. A captured row with
+	// zero counts is distinct from an absent row. Never infer cost from budget.
+	if !d.TokenUsageAvailable {
 		d.ContextBudgetTokens = s.sessionContextBudget(r.Context(), id)
 		d.TokensNote = tokensUnbilledNote(d.Tool, d.ContextBudgetTokens)
+	} else if d.Tool == "cursor" {
+		d.TokensNote, _ = store.New(s.db()).CursorUsageNote(r.Context(), id)
 	}
 
 	// Headline model fallback. sessions.model is populated only when an
@@ -3640,6 +3977,12 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	// a query failure leaves the lineage fields at their zero value and the
 	// modal simply hides the badge + spawned-sessions list. Children is
 	// normalized to [] below so the frontend can map unconditionally.
+	// Capture-surface attribution (migration 107) — best-effort read;
+	// a failure leaves both fields empty (= unknown) and omitted.
+	if sv, serr := store.New(s.db()).LoadSessionSurface(r.Context(), id); serr == nil {
+		d.Surface = sv.Surface
+		d.SurfaceHost = sv.SurfaceHost
+	}
 	if lin, lerr := store.New(s.db()).LoadSessionLineage(r.Context(), id); lerr == nil {
 		d.ForkedFromID = lin.ForkedFromID
 		d.ParentThreadID = lin.ParentThreadID
@@ -3664,7 +4007,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	// Additive resume-capability block (session-attach design Phase 3):
 	// native / handoff / none, derived from the integration registry by
 	// capability shape so the frontend never branches on tool name.
-	d.Resume = resumeInfoForTool(d.Tool)
+	d.Resume = resumeInfoForSession(d.Tool, id)
 
 	// Session classification (plan §4). Degrades to the unclassified state on
 	// error — an annotation-layer failure must not 500 the whole detail view.
@@ -3723,19 +4066,17 @@ func (s *Server) sessionContextBudget(ctx context.Context, sessionID string) int
 	return total
 }
 
-// tokensUnbilledNote explains why a session shows no billed token usage. For
-// cursor it names the real cause (not proxied + usage only on the stop hook);
-// otherwise a generic note. The budget clause is appended only when a carried
-// context figure is available.
+// tokensUnbilledNote describes missing capture without attributing it to an
+// unobserved failure. The budget clause never implies billed token counts.
 func tokensUnbilledNote(tool string, budget int64) string {
 	if tool == "cursor" {
-		n := "No billed token usage — Cursor isn't routed through the proxy and reports usage only on its stop hook, so a cancelled or interrupted turn records no tokens."
+		n := "Token usage was not captured for this Cursor session. Cursor's stop and afterAgentResponse hooks can omit usage, and an interrupted CLI run may end before reporting totals. Input, output, cache counts and cost are unknown, not zero."
 		if budget > 0 {
-			n += " The figure shown is the carried context budget (estimated), not a bill."
+			n += " The context budget is an estimate of prompt size, not billed usage."
 		}
 		return n
 	}
-	return "No billed token usage captured for this session."
+	return "Token usage was not captured for this session. Token counts and cost are unknown, not zero."
 }
 
 type actionBucket struct {
@@ -3783,6 +4124,51 @@ func proxyAwareCost(engine *cost.Engine, model string, bundle cost.TokenBundle, 
 //
 // Includes user-prompt rows synthesized from action_type='user_prompt'
 // so the timeline shows "user said X → assistant did Y" together.
+// inferenceBucketIndex picks which of a turn's chronologically-ordered token
+// buckets owns a transcript action stamped actionTS (all stamps RFC3339).
+//
+// Boundary semantics differ by capture source: a proxy bucket (api_turns) is
+// stamped at request START, so it owns actions from its own timestamp until
+// the next bucket begins; a transcript bucket (codex token_count) is stamped
+// at inference END, so it owns actions since the PREVIOUS bucket's end (the
+// first transcript bucket is unbounded below). Both reduce to one walk: each
+// bucket i has a lower bound — its own stamp when isProxy[i], otherwise
+// bucket i-1's stamp — and the action belongs to the LAST bucket whose lower
+// bound is strictly before the action stamp, defaulting to the first bucket.
+// Strictly-before keeps an action stamped exactly at a transcript bucket's
+// end (same-instant fixture data) on that bucket rather than sliding to its
+// successor. Returns -1 only for an empty bucket list; an unparseable
+// actionTS falls back to the first bucket.
+func inferenceBucketIndex(stamps []string, isProxy []bool, actionTS string) int {
+	if len(stamps) == 0 || len(stamps) != len(isProxy) {
+		return -1
+	}
+	at, err := time.Parse(time.RFC3339Nano, actionTS)
+	if err != nil {
+		return 0
+	}
+	pick := 0
+	for i := range stamps {
+		var boundStamp string
+		switch {
+		case isProxy[i]:
+			boundStamp = stamps[i]
+		case i == 0:
+			continue // unbounded below — the default pick already covers it
+		default:
+			boundStamp = stamps[i-1]
+		}
+		bound, err := time.Parse(time.RFC3339Nano, boundStamp)
+		if err != nil {
+			continue
+		}
+		if bound.Before(at) {
+			pick = i
+		}
+	}
+	return pick
+}
+
 func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if sessionID == "" {
 		http.Error(w, "missing session id", http.StatusBadRequest)
@@ -3865,6 +4251,7 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		ResponseTokensEst int64  `json:"response_tokens_est,omitempty"`
 	}
 	type messageRow struct {
+		Account models.MessageAccount `json:"account"`
 		// Seq is the row's 1..N ordinal in CHRONOLOGICAL order, assigned
 		// once right after the authoritative merge sort and therefore
 		// stable across pagination, ?tail and any ?sort_by reordering.
@@ -3957,6 +4344,12 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		lastT      time.Time
 		tsCount    int
 		turnRollup bool
+		// isProxy marks a bucket created from an api_turns row. Proxy
+		// rows are stamped at request START while transcript token rows
+		// are stamped at inference END — pickTurnBucket needs to know
+		// which boundary semantics a bucket's Timestamp carries when
+		// assigning a turn's tool calls to per-inference buckets.
+		isProxy bool
 	}
 
 	// 1. Token rows joined into per-message buckets. Two modes:
@@ -3974,13 +4367,24 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 	//     for claudecode it's identical to the default mode because
 	//     turn_id is NULL.
 	//
-	// api_turns is always per-HTTP-request (proxy emits one row per
-	// upstream call), so its request_id is already the right grouping
-	// key in both modes.
+	// api_turns is per-HTTP-request (proxy emits one row per upstream
+	// call). Its request_id alone is NOT a usable grouping key for
+	// transcript-backed adapters whose id scheme is disjoint from the
+	// wire's (codex: actions + token rows key by turn_id / tk:…, the
+	// proxy stores resp_…) — bucketing proxy rows by request_id strands
+	// them with no tool calls and the timeline degrades into
+	// "API call (no recovered text)" placeholder stubs. So each proxy
+	// row first resolves its JSONL TWIN (the same turn captured from the
+	// transcript — see the twin join below) and adopts the key the twin
+	// would have used; request_id remains the fallback when no twin
+	// exists (claude-code, where the ids already agree; or the JSONL
+	// side not yet ingested).
 	//nolint:gosec // G101: code-constant SQL grouping expression switched by query param. No credentials involved; gosec false-positives on the `_id` substring.
 	tokenGroupExpr := `COALESCE(NULLIF(turn_id, ''), NULLIF(message_id, ''), source_event_id, '')`
+	proxyKeyExpr := `COALESCE(NULLIF(tw.turn_id, ''), NULLIF(tw.message_id, ''), NULLIF(at.request_id, ''), '')` //nolint:gosec // G101: same false-positive; code-constant SQL fragment.
 	if r.URL.Query().Get("detail") == "inference" {
-		tokenGroupExpr = `COALESCE(NULLIF(message_id, ''), source_event_id, '')` //nolint:gosec // G101: same false-positive as above; code-constant SQL fragment.
+		tokenGroupExpr = `COALESCE(NULLIF(message_id, ''), source_event_id, '')`                                            //nolint:gosec // G101: same false-positive as above; code-constant SQL fragment.
+		proxyKeyExpr = `COALESCE(NULLIF(tw.message_id, ''), NULLIF(tw.source_event_id, ''), NULLIF(at.request_id, ''), '')` //nolint:gosec // G101: same false-positive; code-constant SQL fragment.
 	}
 	dedupedRowsCTE := `WITH proxy_turn_ids AS (
 		SELECT request_id FROM api_turns
@@ -3988,30 +4392,71 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 	),
 	combined AS (
 		-- api_turns has no reasoning_tokens column (proxy folds reasoning
-		-- into output_tokens at capture); pad with 0 for UNION schema
-		-- parity so cost.Compute treats proxy rows correctly. fast = the
-		-- proxy row's own tier; inherited_fast = a fast JSONL twin exists
-		-- for this turn (codex priority flag lives only on the JSONL/config
-		-- path) — audit F1.
-		SELECT COALESCE(NULLIF(at.request_id, ''), '') AS msg_key,
+		-- into output_tokens at capture — the cross-provider proxy
+		-- convention, see parseGeminiResponse). tw is the row's JSONL
+		-- TWIN: the same turn captured by the file adapter, matched by
+		-- token-bundle shape WITH the reasoning fold applied (proxy
+		-- output = JSONL output + reasoning; Anthropic adapters store
+		-- reasoning 0 with the fold already baked into output, so the
+		-- sum is a no-op there). The twin supplies what the wire capture
+		-- can't know: the transcript's turn_id / per-inference
+		-- message_id (so the proxy row lands in the SAME bucket the
+		-- transcript's action rows key to), the reasoning split for
+		-- display, and the codex priority flag (inherited_fast — audit
+		-- F1; the flag lives only on the JSONL/config path). closest-
+		-- timestamp LIMIT 1 disambiguates the (effectively impossible —
+		-- cache_read grows monotonically) case of two same-shape turns.
+		SELECT ` + proxyKeyExpr + ` AS msg_key,
 		       at.model, at.timestamp,
-		       at.input_tokens, at.output_tokens, at.cache_read_tokens,
+		       at.input_tokens,
+		       CASE WHEN tw.rowid IS NOT NULL
+		                 AND COALESCE(at.output_tokens, 0) >= COALESCE(tw.reasoning_tokens, 0)
+		            THEN COALESCE(at.output_tokens, 0) - COALESCE(tw.reasoning_tokens, 0)
+		            ELSE at.output_tokens END AS output_tokens,
+		       at.cache_read_tokens,
 		       at.cache_creation_tokens, at.cache_creation_1h_tokens,
-		       0 AS reasoning_tokens,
+		       CASE WHEN tw.rowid IS NOT NULL
+		                 AND COALESCE(at.output_tokens, 0) >= COALESCE(tw.reasoning_tokens, 0)
+		            THEN COALESCE(tw.reasoning_tokens, 0)
+		            ELSE 0 END AS reasoning_tokens,
 		       at.web_search_requests, at.cost_usd,
 		       COALESCE(at.fast, 0) AS fast,
-		       CASE WHEN EXISTS (
-		           SELECT 1 FROM token_usage tw
-		           WHERE tw.session_id = at.session_id AND COALESCE(tw.fast, 0) = 1
-		             AND COALESCE(tw.model, '') = COALESCE(at.model, '')
-		             AND COALESCE(tw.input_tokens, 0) = COALESCE(at.input_tokens, 0)
-		             AND COALESCE(tw.output_tokens, 0) = COALESCE(at.output_tokens, 0)
-		             AND COALESCE(tw.cache_read_tokens, 0) = COALESCE(at.cache_read_tokens, 0)
-		             AND COALESCE(tw.cache_creation_tokens, 0) = COALESCE(at.cache_creation_tokens, 0)
-		       ) THEN 1 ELSE 0 END AS inherited_fast,
-		       '' AS turn_id,
-		       COALESCE(at.total_response_ms, 0) AS total_response_ms
-		FROM api_turns at WHERE at.session_id = ?
+		       CASE WHEN COALESCE(tw.fast, 0) = 1 THEN 1 ELSE 0 END AS inherited_fast,
+		       COALESCE(tw.turn_id, '') AS turn_id,
+		       COALESCE(at.total_response_ms, 0) AS total_response_ms,
+		       1 AS is_proxy
+		FROM api_turns at
+		LEFT JOIN token_usage tw ON tw.rowid = (
+		    SELECT tu.rowid FROM token_usage tu
+		    WHERE tu.session_id = at.session_id
+		      AND COALESCE(tu.model, '') = COALESCE(at.model, '')
+		      AND COALESCE(tu.input_tokens, 0) = COALESCE(at.input_tokens, 0)
+		      AND COALESCE(tu.output_tokens, 0) + COALESCE(tu.reasoning_tokens, 0) = COALESCE(at.output_tokens, 0)
+		      AND COALESCE(tu.cache_read_tokens, 0) = COALESCE(at.cache_read_tokens, 0)
+		      AND COALESCE(tu.cache_creation_tokens, 0) = COALESCE(at.cache_creation_tokens, 0)
+		      -- SQLite (both the C library and modernc.org/sqlite) cannot
+		      -- resolve a correlated outer-table reference (at.timestamp)
+		      -- placed in a subquery's ORDER BY clause — only WHERE — so
+		      -- "ORDER BY ABS(julianday(tu.timestamp) -
+		      -- julianday(at.timestamp)) LIMIT 1" throws "no such column:
+		      -- at.timestamp" at prepare time and 500s this endpoint for
+		      -- EVERY session that has any api_turns row. Pick the
+		      -- closest-timestamp twin via an equality against a MIN(...)
+		      -- computed the same way instead — both references stay in
+		      -- WHERE, where correlation works.
+		      AND ABS(julianday(tu.timestamp) - julianday(at.timestamp)) = (
+		          SELECT MIN(ABS(julianday(tu2.timestamp) - julianday(at.timestamp)))
+		          FROM token_usage tu2
+		          WHERE tu2.session_id = at.session_id
+		            AND COALESCE(tu2.model, '') = COALESCE(at.model, '')
+		            AND COALESCE(tu2.input_tokens, 0) = COALESCE(at.input_tokens, 0)
+		            AND COALESCE(tu2.output_tokens, 0) + COALESCE(tu2.reasoning_tokens, 0) = COALESCE(at.output_tokens, 0)
+		            AND COALESCE(tu2.cache_read_tokens, 0) = COALESCE(at.cache_read_tokens, 0)
+		            AND COALESCE(tu2.cache_creation_tokens, 0) = COALESCE(at.cache_creation_tokens, 0)
+		      )
+		    LIMIT 1
+		)
+		WHERE at.session_id = ?
 		UNION ALL
 		SELECT ` + tokenGroupExpr + ` AS msg_key,
 		       tu.model, tu.timestamp,
@@ -4022,7 +4467,8 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		       COALESCE(tu.fast, 0) AS fast,
 		       0 AS inherited_fast,
 		       COALESCE(tu.turn_id, '') AS turn_id,
-		       0 AS total_response_ms
+		       0 AS total_response_ms,
+		       0 AS is_proxy
 		FROM token_usage tu
 		WHERE tu.session_id = ?
 		  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
@@ -4030,14 +4476,20 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		  -- F1: also drop a JSONL row that duplicates a proxy turn by
 		  -- token-bundle shape when the ids don't match (codex: tk:… vs
 		  -- resp_…). COALESCE because codex leaves cache_creation NULL on
-		  -- one side, 0 on the other. Anthropic proxy rows fold reasoning
-		  -- into output, so output_tokens differ and never false-match.
+		  -- one side, 0 on the other. The output comparison FOLDS the
+		  -- JSONL row's reasoning back in: the proxy stores gross output
+		  -- (visible + reasoning), while codex's adapter nets reasoning
+		  -- out at emit time — an exact-output match missed every
+		  -- reasoning turn, so both captures of the same call survived
+		  -- and the timeline showed each turn twice (tk:… and resp_…).
+		  -- Anthropic adapters store reasoning 0 (thinking already folded
+		  -- into output on both sides), so the sum is a no-op for them.
 		  AND NOT EXISTS (
 		      SELECT 1 FROM api_turns ap
 		      WHERE ap.session_id = tu.session_id
 		        AND COALESCE(ap.model, '') = COALESCE(tu.model, '')
 		        AND COALESCE(ap.input_tokens, 0) = COALESCE(tu.input_tokens, 0)
-		        AND COALESCE(ap.output_tokens, 0) = COALESCE(tu.output_tokens, 0)
+		        AND COALESCE(ap.output_tokens, 0) = COALESCE(tu.output_tokens, 0) + COALESCE(tu.reasoning_tokens, 0)
 		        AND COALESCE(ap.cache_read_tokens, 0) = COALESCE(tu.cache_read_tokens, 0)
 		        AND COALESCE(ap.cache_creation_tokens, 0) = COALESCE(tu.cache_creation_tokens, 0)
 		  )
@@ -4084,7 +4536,8 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		       COALESCE(fast, 0),
 		       COALESCE(inherited_fast, 0),
 		       COALESCE(turn_id, ''),
-		       COALESCE(total_response_ms, 0)
+		       COALESCE(total_response_ms, 0),
+		       COALESCE(is_proxy, 0)
 		FROM combined
 		WHERE msg_key IS NOT NULL AND msg_key != ''
 		ORDER BY timestamp ASC`,
@@ -4097,18 +4550,29 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 
 	byKey := map[string]*messageRow{}
 	out := []*messageRow{}
+	// turnBuckets groups the token buckets of one transcript turn, in
+	// chronological order, keyed by the turn id the ADAPTER stamps on
+	// its action rows (codex actions carry message_id = the turn UUID).
+	// In default (turn-rollup) mode the bucket key IS the turn id so
+	// actions match byKey directly and this map is never consulted; in
+	// ?detail=inference mode the buckets are per-inference (tk:… /
+	// resp_… keys) and this map is the join that lets each tool call
+	// land on the inference that emitted it (see pickTurnBucket) instead
+	// of stranding every inference row with a synthetic
+	// "API call (no recovered text)" stub.
+	turnBuckets := map[string][]*messageRow{}
 	for rows.Next() {
 		var key, ts, model, turnID string
 		var bundle cost.TokenBundle
 		var recorded float64
-		var fastInt, inheritedFastInt int
+		var fastInt, inheritedFastInt, isProxyInt int
 		var respMs int64
 		if err := rows.Scan(&key, &ts, &model,
 			&bundle.Input, &bundle.Output,
 			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
 			&bundle.Reasoning,
 			&bundle.WebSearchRequests,
-			&recorded, &fastInt, &inheritedFastInt, &turnID, &respMs); err != nil {
+			&recorded, &fastInt, &inheritedFastInt, &turnID, &respMs, &isProxyInt); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -4131,9 +4595,13 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 				Role:      "assistant",
 				Model:     model,
 				ToolCalls: []toolCallRow{},
+				isProxy:   isProxyInt != 0,
 			}
 			byKey[key] = mr
 			out = append(out, mr)
+			if turnID != "" {
+				turnBuckets[turnID] = append(turnBuckets[turnID], mr)
+			}
 		}
 		if mr.Model == "" && model != "" {
 			mr.Model = model
@@ -4218,6 +4686,7 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		        COALESCE(json_extract(a.metadata, '$.response_tokens_est'), 0) AS response_tokens_est
 		 FROM actions a
 		 WHERE a.session_id = ?
+		   AND a.action_type <> 'post_tool_batch'
 		 ORDER BY a.timestamp ASC`, fullTextInlineMax, sessionID)
 	if err != nil {
 		writeErr(w, err)
@@ -4301,6 +4770,29 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 			ResponseTokensEst: responseTokensEst,
 		}
 		mr, ok := byKey[key]
+		if !ok && actionType != "user_prompt" {
+			// The action's message key is a transcript TURN id with no
+			// same-key token bucket — the ?detail=inference case, where
+			// the token buckets are per-inference (tk:… / resp_… keys)
+			// while codex stamps every action with the turn UUID. The
+			// content exists; only the join key differs in grain. Assign
+			// the tool call to the inference that emitted it by
+			// timestamp (inferenceBucketIndex) instead of stranding the
+			// per-inference rows as "API call (no recovered text)"
+			// stubs. user_prompt stays excluded: it deliberately
+			// synthesizes its own role=user row below.
+			if list := turnBuckets[key]; len(list) > 0 {
+				stamps := make([]string, len(list))
+				proxies := make([]bool, len(list))
+				for i, b := range list {
+					stamps[i] = b.Timestamp
+					proxies[i] = b.isProxy
+				}
+				if idx := inferenceBucketIndex(stamps, proxies, ts); idx >= 0 {
+					mr, ok = list[idx], true
+				}
+			}
+		}
 		if !ok {
 			// No matching token row — this is a user_prompt or
 			// other action whose parent message doesn't carry token
@@ -4478,6 +4970,38 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		}
 	}
 
+	accounts, accountErr := store.New(s.db()).LoadMessageAccounts(r.Context(), sessionID, sessionTool)
+	if accountErr != nil {
+		http.Error(w, "account evidence unavailable", http.StatusInternalServerError)
+		return
+	}
+	accountSummary := struct {
+		Accounts  []models.ToolAccountEvidence `json:"accounts"`
+		Observed  int                          `json:"observed"`
+		Unknown   int                          `json:"unknown"`
+		Conflicts int                          `json:"conflicts"`
+	}{Accounts: []models.ToolAccountEvidence{}}
+	seenAccounts := map[string]bool{}
+	for _, mr := range out {
+		mr.Account = accounts[mr.Role+":"+mr.MessageID]
+		if mr.Account.Status == "" {
+			mr.Account = models.MessageAccount{Status: "unknown", Label: "Unknown", Evidence: []models.ToolAccountEvidence{}}
+		}
+		switch mr.Account.Status {
+		case "observed":
+			accountSummary.Observed++
+		case "conflict":
+			accountSummary.Conflicts++
+		default:
+			accountSummary.Unknown++
+		}
+		for _, e := range mr.Account.Evidence {
+			if !seenAccounts[e.Key] {
+				seenAccounts[e.Key] = true
+				accountSummary.Accounts = append(accountSummary.Accounts, e)
+			}
+		}
+	}
 	// ?sort_by / ?sort_dir — display ordering, applied LAST: after the
 	// authoritative chronological merge, after the Seq assignment, and after
 	// the ElapsedMs / TpsMs derivations (which are defined over the
@@ -4494,21 +5018,23 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		fields := make([]messageSortField, len(rows))
 		for i, mr := range rows {
 			f := messageSortField{
-				Seq:         mr.Seq,
-				Timestamp:   mr.Timestamp,
-				MessageID:   mr.MessageID,
-				Role:        mr.Role,
-				Model:       mr.Model,
-				EffortLevel: mr.EffortLevel,
-				Input:       mr.Input,
-				CacheRead:   mr.CacheRead,
-				CacheWrite:  mr.CacheCreation,
-				Output:      mr.Output,
-				ElapsedMs:   mr.ElapsedMs,
-				ToolCalls:   mr.ToolCallCount,
-				AICostUSD:   mr.AICostUSD,
-				ToolCostUSD: mr.ToolCostUSD,
-				CostUSD:     mr.CostUSD,
+				Seq:            mr.Seq,
+				Timestamp:      mr.Timestamp,
+				MessageID:      mr.MessageID,
+				Role:           mr.Role,
+				Model:          mr.Model,
+				EffortLevel:    mr.EffortLevel,
+				Account:        mr.Account.Label,
+				AccountUnknown: mr.Account.Status == "unknown",
+				Input:          mr.Input,
+				CacheRead:      mr.CacheRead,
+				CacheWrite:     mr.CacheCreation,
+				Output:         mr.Output,
+				ElapsedMs:      mr.ElapsedMs,
+				ToolCalls:      mr.ToolCallCount,
+				AICostUSD:      mr.AICostUSD,
+				ToolCostUSD:    mr.ToolCostUSD,
+				CostUSD:        mr.CostUSD,
 			}
 			// Tok/s: same arithmetic as the client's tokensPerSec() helper
 			// (output ÷ tps_ms/1000, absent when either is missing) so the
@@ -4565,11 +5091,12 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 			// for display. tail+sort is therefore NOT an error (unlike
 			// tail+pagination, which would fight over the window).
 			writeJSON(w, map[string]any{
-				"session_id": sessionID,
-				"messages":   applySort(out[offset:]),
-				"total":      total,
-				"limit":      n,
-				"offset":     offset,
+				"session_id":      sessionID,
+				"messages":        applySort(out[offset:]),
+				"account_summary": accountSummary,
+				"total":           total,
+				"limit":           n,
+				"offset":          offset,
 			})
 			return
 		}
@@ -4616,11 +5143,12 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		page = page[:limit]
 	}
 	writeJSON(w, map[string]any{
-		"session_id": sessionID,
-		"messages":   page,
-		"total":      total,
-		"limit":      limit,
-		"offset":     offset,
+		"session_id":      sessionID,
+		"messages":        page,
+		"account_summary": accountSummary,
+		"total":           total,
+		"limit":           limit,
+		"offset":          offset,
 	})
 }
 

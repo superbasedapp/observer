@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify-taxonomy-ts.sh — compile the REAL web/src/lib/actions.ts and run
+# verify-taxonomy-ts.sh — compile the REAL shared/lib/actions.ts and run
 # it against the vectors web/taxgen generated from internal/tooltax.
 #
 # Why a second gate: verify-taxonomy-build.sh proves the GENERATED files
@@ -9,7 +9,7 @@
 # which can only prove Go agrees with Go (reverting actions.ts's
 # separatorMinIndex guard left it green). This gate executes the real
 # thing: esbuild bundles actions.ts, node runs mcpIdentity/actionMeta
-# over web/src/lib/actiontax.vectors.gen.json, whose expectations are
+# over shared/lib/actiontax.vectors.gen.json, whose expectations are
 # derived from tooltax.MCPIdentity at generation time.
 #
 # Like the other verify-* gates this NEVER mutates the working tree and
@@ -22,9 +22,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-SOURCE="web/src/lib/actions.ts"
-VECTORS="web/src/lib/actiontax.vectors.gen.json"
-TAXONOMY="web/src/lib/actiontax.gen.json"
+SOURCE="shared/lib/actions.ts"
+VECTORS="shared/lib/actiontax.vectors.gen.json"
+TAXONOMY="shared/lib/actiontax.gen.json"
 ESBUILD="web/node_modules/.bin/esbuild"
 GATE="scripts/taxonomy-ts-gate.mjs"
 

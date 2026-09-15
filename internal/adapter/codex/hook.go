@@ -133,6 +133,9 @@ func BuildHookEvent(eventName string, body []byte, sc *scrub.Scrubber) (models.T
 	case HookEventUserPromptSubmit:
 		// User-prompt rows: ProjectRoot + SessionID + the prompt body.
 		base.ActionType = models.ActionUserPrompt
+		if raw.TurnID != "" {
+			base.MessageID = "user:" + raw.TurnID
+		}
 		text := scrubText(sc, raw.Prompt)
 		base.RawToolInput = text
 		base.Target = previewLine(text, 120)

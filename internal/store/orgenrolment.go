@@ -70,8 +70,12 @@ func (s *Store) WriteEnrolment(ctx context.Context, e Enrolment) error {
 // agent is not enrolled (no row, or a pre-028 schema with no table). The
 // not-enrolled path is never an error — org mode being absent is the default.
 func (s *Store) LoadEnrolment(ctx context.Context) (*Enrolment, error) {
+	return loadEnrolment(ctx, s.db)
+}
+
+func loadEnrolment(ctx context.Context, q querier) (*Enrolment, error) {
 	var e Enrolment
-	err := s.db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT org_id, org_name, org_server_url, user_id, user_email, enrolled_at, bearer_key_id, tenancy
 		   FROM org_enrolment WHERE id = 1`).
 		Scan(&e.OrgID, &e.OrgName, &e.OrgServerURL, &e.UserID, &e.UserEmail, &e.EnrolledAt, &e.BearerKeyID, &e.Tenancy)
@@ -119,6 +123,37 @@ func (s *Store) DeleteEnrolment(ctx context.Context) error {
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM org_routing_policies`); err != nil {
 		return fmt.Errorf("store.DeleteEnrolment: clear routing policy: %w", err)
+	}
+	// The org-served-cloud-intelligence result cache (migration 112/114) — same
+	// rationale as the caches above: a departed org's derived per-session intel
+	// must not outlive the enrolment that produced it, and its rows are bound to
+	// the org id so clearing them here keeps a re-enrol into a different org from
+	// rendering the previous org's results (finding 6).
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM org_intel_cache`); err != nil {
+		return fmt.Errorf("store.DeleteEnrolment: clear intel cache: %w", err)
+	}
+	// The org's signed PRICE document (migration 106 org_pricing_cache) — the
+	// org's rates are the ORG's, and a node that left has no claim on them
+	// (finding F6). If this survived, a departed node with [guard.budget].from_org
+	// still set in TOML would keep stamping api_turns.cost_usd at the dead org's
+	// rates forever, since cost is stamped at CAPTURE with no retroactive
+	// re-pricing. This is the SINGLETON row (id = 1) SaveOrgPricing UPDATEs, so
+	// we RESET it to the seeded-empty state rather than DELETE it — deleting the
+	// row would make a later re-enrol's SaveOrgPricing UPDATE match zero rows.
+	// pricing_feed_cache is deliberately left ALONE: it is the node's OWN
+	// standalone public-feed data, not the org's, and unenrolment is exactly the
+	// transition into the standalone case where that feed applies.
+	if _, err := s.db.ExecContext(ctx, `
+UPDATE org_pricing_cache
+   SET version = 0, org_key_fingerprint = '', body_json = '', fetched_at = '', state = ''
+ WHERE id = 1`); err != nil {
+		return fmt.Errorf("store.DeleteEnrolment: clear org pricing: %w", err)
+	}
+	// The signed budget body is resolved per member. It must not survive the
+	// enrollment identity that authenticated and verified it. Reset the seeded
+	// singleton rather than deleting it so a later enrollment can save normally.
+	if err := s.ClearOrgBudget(ctx); err != nil {
+		return fmt.Errorf("store.DeleteEnrolment: clear org budget: %w", err)
 	}
 	return nil
 }

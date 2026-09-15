@@ -60,14 +60,17 @@ func (a *Adapter) WatchPaths() []string { return a.roots }
 
 // IsSessionFile implements adapter.Adapter. Matches OpenClaw's
 // runs.sqlite / sessions.json index, plus any per-session `.jsonl`
-// under its tasks/agents roots. The under-WatchPaths constraint
-// enforces the v1.4.51 dispatch contract — without it the bare
-// `.jsonl` branch would collide alphabetically with claude-code,
-// codex, etc.
+// under its tasks/agents roots, plus the OpenClaw 2.0 per-agent store
+// `agents/<agentId>/agent/openclaw-agent.sqlite` (and its `-wal`
+// sidecar — a trigger only; parsing always opens the main file). The
+// under-WatchPaths constraint enforces the v1.4.51 dispatch contract —
+// without it the bare `.jsonl` branch would collide alphabetically with
+// claude-code, codex, etc.
 func (a *Adapter) IsSessionFile(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
 	shapeOK := base == "runs.sqlite" || base == "runs.sqlite-wal" ||
-		base == "sessions.json" || filepath.Ext(base) == ".jsonl"
+		base == "sessions.json" || filepath.Ext(base) == ".jsonl" ||
+		isAgentDBPath(path)
 	if !shapeOK {
 		return false
 	}
@@ -80,6 +83,11 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	switch {
 	case base == "runs.sqlite" || base == "runs.sqlite-wal":
 		return a.parseTaskRuns(ctx, resolveRunsDB(path), fromOffset)
+	case isAgentDBPath(path):
+		// OpenClaw 2.0 moved live sessions + transcripts into a
+		// per-agent SQLite store; the legacy `sessions/` tree becomes an
+		// archive that `openclaw doctor --fix` imports. See agentdb.go.
+		return a.parseAgentDB(ctx, path, fromOffset)
 	case base == "sessions.json":
 		return a.parseSessionsIndex(path, fromOffset)
 	case strings.HasSuffix(base, ".trajectory.jsonl"):
@@ -169,6 +177,7 @@ func (a *Adapter) parseTaskRuns(ctx context.Context, dbPath string, fromOffset i
 			&tr.CreatedAt, &tr.StartedAt, &tr.EndedAt, &tr.LastEventAt, &tr.Error,
 			&tr.ProgressSummary, &tr.TerminalSummary, &tr.TerminalOutcome,
 		); err != nil {
+			adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 			return res, err
 		}
 		if suppressTaskRun(tr, sessionAliases) {
@@ -180,6 +189,7 @@ func (a *Adapter) parseTaskRuns(ctx context.Context, dbPath string, fromOffset i
 			res.ToolEvents = append(res.ToolEvents, a.taskCompleteEvent(dbPath, tr, alias, rootCache))
 		}
 	}
+	adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 	return res, rows.Err()
 }
 
@@ -373,6 +383,7 @@ func (a *Adapter) parseSessionsIndex(path string, fromOffset int64) (adapter.Par
 		})
 	}
 	res.NewOffset = latest
+	adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 	return res, nil
 }
 
@@ -389,18 +400,18 @@ type jsonlLine struct {
 }
 
 type openclawMessage struct {
-	Role         string           `json:"role"`
-	Content      []messageContent `json:"content"`
-	StopReason   string           `json:"stopReason"`
-	API          string           `json:"api"`
-	Provider     string           `json:"provider"`
-	Model        string           `json:"model"`
-	Usage        tokenUsage       `json:"usage"`
-	Timestamp    int64            `json:"timestamp"`
-	ToolCallID   string           `json:"toolCallId"`
-	ToolName     string           `json:"toolName"`
-	IsError      bool             `json:"isError"`
-	ErrorMessage string           `json:"errorMessage"`
+	Role         string             `json:"role"`
+	Content      messageContentList `json:"content"`
+	StopReason   string             `json:"stopReason"`
+	API          string             `json:"api"`
+	Provider     string             `json:"provider"`
+	Model        string             `json:"model"`
+	Usage        tokenUsage         `json:"usage"`
+	Timestamp    int64              `json:"timestamp"`
+	ToolCallID   string             `json:"toolCallId"`
+	ToolName     string             `json:"toolName"`
+	IsError      bool               `json:"isError"`
+	ErrorMessage string             `json:"errorMessage"`
 }
 
 type messageContent struct {
@@ -409,6 +420,43 @@ type messageContent struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
+}
+
+// messageContentList is an OpenClaw message body, which is EITHER a plain
+// string (the shape user turns use) OR an array of typed content blocks
+// (assistant turns, tool calls, tool results). Grounded against a live
+// openclaw@2026.8.2 per-agent store (testdata/openclaw/agentdb) where
+// user messages carry string content while assistant messages carry
+// []{type,text}; the pre-2.0 `<id>.jsonl` message log shares the type and
+// the same duality. A bare string decodes to a single text block so every
+// consumer (messageText, the tool-call scan) sees one uniform shape and no
+// user turn is reported as a malformed event.
+type messageContentList []messageContent
+
+func (m *messageContentList) UnmarshalJSON(b []byte) error {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*m = nil
+		return nil
+	}
+	switch trimmed[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		*m = messageContentList{{Type: "text", Text: s}}
+		return nil
+	case '[':
+		var arr []messageContent
+		if err := json.Unmarshal(trimmed, &arr); err != nil {
+			return err
+		}
+		*m = messageContentList(arr)
+		return nil
+	default:
+		return fmt.Errorf("openclaw: message content is neither a string nor an array")
+	}
 }
 
 type tokenUsage struct {
@@ -474,6 +522,16 @@ func (a *Adapter) parseSessionJSONL(ctx context.Context, path string, fromOffset
 	// wired.
 	cacheAcc := cacheobs.New(MaxBlocksPerSession)
 
+	sc := &transcriptScope{
+		sourceFile:        path,
+		state:             state,
+		pending:           pending,
+		rootCache:         rootCache,
+		seenSystemPrompts: seenSystemPrompts,
+		cacheAcc:          cacheAcc,
+		bootstrapPrefix:   bootstrapPrefix,
+	}
+
 	scanner := bufio.NewScanner(f)
 	const maxLine = 16 * 1024 * 1024
 	scanner.Buffer(make([]byte, 64*1024), maxLine)
@@ -482,6 +540,7 @@ func (a *Adapter) parseSessionJSONL(ctx context.Context, path string, fromOffset
 	lineNum := 0
 	for scanner.Scan() {
 		if ctx.Err() != nil {
+			adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 			return res, ctx.Err()
 		}
 		raw := scanner.Bytes()
@@ -498,67 +557,112 @@ func (a *Adapter) parseSessionJSONL(ctx context.Context, path string, fromOffset
 			continue
 		}
 		res.NewOffset = bytesRead
-		ts := parseTimestamp(line.Timestamp)
-
-		switch line.Type {
-		case "session":
-			if line.ID != "" {
-				state.SessionID = line.ID
-				applySessionAlias(path, &state, line.ID)
-				if state.ProjectRoot != "" && state.ProjectRoot != "[openclaw]" {
-					state.ProjectRoot, state.ProjectRemote = a.resolveProjectRoot(state.ProjectRoot, rootCache)
-				}
-			}
-			if line.Cwd != "" {
-				state.ProjectRoot, state.ProjectRemote = a.resolveProjectRoot(line.Cwd, rootCache)
-			}
-		case "model_change":
-			state.Provider = line.Provider
-			state.Model = line.ModelID
-		case "message":
-			a.parseMessageLine(path, line, lineNum, ts, &state, pending, bootstrapPrefix, cacheAcc, &res)
-		case "custom":
-			// OpenClaw emits typed `custom` events for runtime
-			// notifications. customType="model-snapshot" is redundant
-			// with the model_change handler above, so it's a no-op.
-			// customType="openclaw:bootstrap-context:full" marks a
-			// bootstrap-context load — pre-v1.4.23 silently dropped.
-			// Per user direction (2026-05-01): capture event/action
-			// info even when no rich body is in the payload. Emit a
-			// minimal ActionSystemPrompt row carrying the data field
-			// JSON so analysts can detect bootstrap activity.
-			if line.CustomType == "openclaw:bootstrap-context:full" && len(line.Data) > 0 {
-				body := strings.TrimSpace(string(line.Data))
-				if body != "" && body != "null" {
-					hash := openclawShortHash("bootstrap:" + body)
-					if !seenSystemPrompts[hash] {
-						seenSystemPrompts[hash] = true
-						preview := "bootstrap-context: " + truncate(body, 180)
-						res.ToolEvents = append(res.ToolEvents, models.ToolEvent{
-							SourceFile:    path,
-							SourceEventID: fmt.Sprintf("sysprompt:bootstrap:%s:L%d", hash, lineNum),
-							SessionID:     state.SessionID,
-							ProjectRoot:   state.ProjectRoot,
-							GitRemote:     state.ProjectRemote,
-							Timestamp:     ts,
-							Model:         modelName(&state),
-							Tool:          models.ToolOpenClaw,
-							ActionType:    models.ActionSystemPrompt,
-							Target:        truncate(preview, 200),
-							Success:       true,
-							RawToolName:   "system_prompt.bootstrap",
-							RawToolInput:  a.scrubber.String(body),
-							MessageID:     "system:" + hash,
-						})
-					}
-				}
-			}
-		}
+		a.handleTranscriptEntry(sc, line, lineNum, parseTimestamp(line.Timestamp), &res)
 	}
 	if err := scanner.Err(); err != nil {
+		adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 		return res, fmt.Errorf("openclaw.ParseSessionFile: scan: %w", err)
 	}
+	adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 	return res, nil
+}
+
+// transcriptScope is the per-session mutable state one transcript entry
+// stream is parsed against.
+//
+// It exists so the pre-2.0 `<id>.jsonl` message log and the 2.0
+// per-agent SQLite store (agentdb.go, `transcript_events.event_json`)
+// run through ONE entry handler. The two layouts carry the SAME entry
+// shape — 2.0 moved the bytes, not the schema — so duplicating the
+// switch would let the layouts silently drift in what they extract.
+type transcriptScope struct {
+	// sourceFile is the path stamped on every emitted event, and the
+	// path the sibling sessions.json alias / trajectory preamble are
+	// resolved relative to. For the SQLite layout it is deliberately
+	// NOT the DB path but the canonical legacy message-log path — see
+	// legacySourceFile in agentdb.go.
+	sourceFile string
+	state      sessionContext
+	// pending maps a tool-call id to its index in res.ToolEvents so a
+	// later toolResult can back-fill the output. Per session.
+	pending           map[string]int
+	rootCache         map[string]projectGitInfo
+	seenSystemPrompts map[string]bool
+	cacheAcc          *cacheobs.Accumulator
+	bootstrapPrefix   func() string
+}
+
+// handleTranscriptEntry folds ONE decoded transcript entry into the
+// scope and appends whatever it produces to res. lineNum is the entry's
+// ordinal within its stream — the 1-based file line for the JSONL
+// layout, `transcript_events.seq` for the SQLite one — and is only ever
+// used to synthesize a SourceEventID for an entry that carries no id of
+// its own.
+func (a *Adapter) handleTranscriptEntry(sc *transcriptScope, line jsonlLine, lineNum int, ts time.Time, res *adapter.ParseResult) {
+	switch line.Type {
+	case "session":
+		if line.ID != "" {
+			sc.state.SessionID = line.ID
+			applySessionAlias(sc.sourceFile, &sc.state, line.ID)
+			if sc.state.ProjectRoot != "" && sc.state.ProjectRoot != "[openclaw]" {
+				sc.state.ProjectRoot, sc.state.ProjectRemote = a.resolveProjectRoot(sc.state.ProjectRoot, sc.rootCache)
+			}
+		}
+		if line.Cwd != "" {
+			sc.state.ProjectRoot, sc.state.ProjectRemote = a.resolveProjectRoot(line.Cwd, sc.rootCache)
+		}
+	case "model_change":
+		sc.state.Provider = line.Provider
+		sc.state.Model = line.ModelID
+	case "message":
+		a.parseMessageLine(sc.sourceFile, line, lineNum, ts, &sc.state, sc.pending, sc.bootstrapPrefix, sc.cacheAcc, res)
+	case "custom":
+		// OpenClaw emits typed `custom` events for runtime
+		// notifications. customType="model-snapshot" is redundant
+		// with the model_change handler above, so it's a no-op.
+		// customType="openclaw:bootstrap-context:full" marks a
+		// bootstrap-context load — pre-v1.4.23 silently dropped.
+		// Per user direction (2026-05-01): capture event/action
+		// info even when no rich body is in the payload. Emit a
+		// minimal ActionSystemPrompt row carrying the data field
+		// JSON so analysts can detect bootstrap activity.
+		a.bootstrapContextEvent(sc, line, lineNum, ts, res)
+	}
+}
+
+// bootstrapContextEvent emits the deduped ActionSystemPrompt row for an
+// `openclaw:bootstrap-context:full` custom entry. Split out of
+// handleTranscriptEntry purely to keep that switch flat.
+func (a *Adapter) bootstrapContextEvent(sc *transcriptScope, line jsonlLine, lineNum int, ts time.Time, res *adapter.ParseResult) {
+	if line.CustomType != "openclaw:bootstrap-context:full" || len(line.Data) == 0 {
+		return
+	}
+	body := strings.TrimSpace(string(line.Data))
+	if body == "" || body == "null" {
+		return
+	}
+	hash := openclawShortHash("bootstrap:" + body)
+	if sc.seenSystemPrompts[hash] {
+		return
+	}
+	sc.seenSystemPrompts[hash] = true
+	preview := "bootstrap-context: " + truncate(body, 180)
+	res.ToolEvents = append(res.ToolEvents, models.ToolEvent{
+		SourceFile:    sc.sourceFile,
+		SourceEventID: fmt.Sprintf("sysprompt:bootstrap:%s:L%d", hash, lineNum),
+		SessionID:     sc.state.SessionID,
+		ProjectRoot:   sc.state.ProjectRoot,
+		GitRemote:     sc.state.ProjectRemote,
+		Timestamp:     ts,
+		Model:         modelName(&sc.state),
+		Tool:          models.ToolOpenClaw,
+		ActionType:    models.ActionSystemPrompt,
+		Target:        truncate(preview, 200),
+		Success:       true,
+		RawToolName:   "system_prompt.bootstrap",
+		RawToolInput:  a.scrubber.String(body),
+		MessageID:     "system:" + hash,
+	})
 }
 
 // trajLine is the subset of an OpenClaw trajectory event we read. Only
@@ -657,6 +761,7 @@ func (a *Adapter) parseTrajectoryJSONL(ctx context.Context, path string, fromOff
 	lineNum := 0
 	for scanner.Scan() {
 		if ctx.Err() != nil {
+			adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 			return res, ctx.Err()
 		}
 		lineStart := bytesRead
@@ -724,8 +829,10 @@ func (a *Adapter) parseTrajectoryJSONL(ctx context.Context, path string, fromOff
 		})
 	}
 	if err := scanner.Err(); err != nil {
+		adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 		return res, fmt.Errorf("openclaw.parseTrajectoryJSONL: scan: %w", err)
 	}
+	adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 	return res, nil
 }
 
@@ -1036,7 +1143,7 @@ func (a *Adapter) parseMessageLine(
 					accumulateAssistantTextCache(cacheAcc, cappedBody)
 					res.ToolEvents = append(res.ToolEvents, models.ToolEvent{
 						SourceFile:         sourceFile,
-						SourceEventID:      fmt.Sprintf("asst:%s:L%d:P%d:%s", firstNonEmpty(line.ID, "noid"), lineNum, partIdx, openclawShortHash(body)),
+						SourceEventID:      assistantTextEventID(line.ID, lineNum, partIdx, body),
 						SessionID:          state.SessionID,
 						ProjectRoot:        state.ProjectRoot,
 						GitRemote:          state.ProjectRemote,
@@ -1369,6 +1476,12 @@ func mapToolName(name string) string {
 type projectGitInfo struct {
 	Root   string
 	Remote string
+	// Identity is the Project Identity Resolver v2 bundle (2026-09-06,
+	// §3.1 / W1) resolved alongside Root/Remote, zero-valued on every
+	// branch that doesn't run git.ResolveIdentity (an honest gap, never
+	// a fabricated value). Applied at the end of each parse entry point
+	// via adapter.ApplyProjectIdentityByRoot, keyed by Root.
+	Identity git.Identity
 }
 
 // resolveProjectRoot turns a recorded cwd into a stable project root plus
@@ -1385,16 +1498,28 @@ func (a *Adapter) resolveProjectRoot(cwd string, cache map[string]projectGitInfo
 	}
 	translated := crossmount.TranslateForeignPath(cwd)
 	if _, err := os.Stat(translated); err == nil {
-		if info, err := git.Resolve(translated); err == nil && info.IsGit {
-			remote := git.NormalizeRemote(info.Remote)
-			cache[cwd] = projectGitInfo{Root: info.Root, Remote: remote}
-			return info.Root, remote
+		if id, err := git.ResolveIdentity(translated, git.IdentityOptions{}); err == nil && id.IsGit {
+			// id.Remote is already NormalizeRemote'd by ResolveIdentity.
+			cache[cwd] = projectGitInfo{Root: id.Root, Remote: id.Remote, Identity: id}
+			return id.Root, id.Remote
 		}
 		cache[cwd] = projectGitInfo{Root: translated}
 		return translated, ""
 	}
 	cache[cwd] = projectGitInfo{Root: cwd}
 	return cwd, ""
+}
+
+// identitiesByRoot collapses a per-cwd projectGitInfo cache into a
+// per-root git.Identity map, for adapter.ApplyProjectIdentityByRoot.
+func identitiesByRoot(cache map[string]projectGitInfo) map[string]git.Identity {
+	out := make(map[string]git.Identity, len(cache))
+	for _, info := range cache {
+		if info.Root != "" {
+			out[info.Root] = info.Identity
+		}
+	}
+	return out
 }
 
 func targetFromArgs(args map[string]any, fallback string) string {
@@ -1557,6 +1682,48 @@ func userMessageID(id string, lineNum int) string {
 
 func assistantMessageID(id string, lineNum int) string {
 	return firstNonEmpty(id, fmt.Sprintf("assistant:L%d", lineNum))
+}
+
+// assistantTextEventID builds the SourceEventID for one assistant TEXT
+// part. It deliberately does NOT include the entry's file position when
+// the entry carries its own id (O1).
+//
+// The two capture paths for one OpenClaw session number entries
+// differently: the pre-2.0 message log counts LINES (1-based, assigned
+// by the scanner) while the 2.0 store carries `transcript_events.seq`
+// (whatever the writer put there — 0-based on the builds we have, and
+// not a contract either way). Every other row in this file already
+// tolerates that, because they reach for the ordinal only through
+// firstNonEmpty(line.ID, "…L%d") — an entry with an id never sees it.
+// This row alone interpolated the ordinal UNCONDITIONALLY, so a session
+// migrated by `openclaw doctor --fix` and then re-read out of the store
+// produced `asst:<id>:L0:P0:<hash>` against the log's
+// `asst:<id>:L1:P0:<hash>` — two different keys for one row, defeating
+// the UNIQUE(source_file, source_event_id) dedup that
+// legacySourceFile() exists to arm, and double-ingesting every assistant
+// message.
+//
+// entryID + partIdx + contentHash is sufficient on its own: partIdx
+// separates the parts within one entry, the hash separates two parts
+// that happen to share an index across a re-write, and the entry id
+// separates entries. Only when the entry has NO id does the ordinal come
+// back as the last-resort discriminator — matching every sibling row's
+// scheme exactly, and no worse than they already are.
+//
+// ⚠️ MIGRATION NOTE: this CHANGES the id for assistant-text rows already
+// ingested from a legacy `.jsonl`. Steady-state watching is unaffected
+// (those rows are long past their watermark), but an explicit
+// `observer scan --force` / `backfill` over an old message log will
+// re-insert each assistant_message row ONCE under the new key, next to
+// the old one. That is a one-time, bounded, assistant-text-only
+// duplicate. It is the honest trade: the alternative — keeping the
+// ordinal and teaching the SQLite path to synthesize the same
+// 1-based line number — would have to assume a `seq` contract OpenClaw
+// does not publish, and would silently re-introduce the double-ingest
+// the moment a build numbered `seq` differently.
+func assistantTextEventID(entryID string, lineNum, partIdx int, body string) string {
+	return fmt.Sprintf("asst:%s:P%d:%s",
+		firstNonEmpty(entryID, fmt.Sprintf("L%d", lineNum)), partIdx, openclawShortHash(body))
 }
 
 func truncate(s string, n int) string {

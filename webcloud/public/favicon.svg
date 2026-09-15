@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SuperBased">
+  <!-- Blueprint badge + the brand mark: U+259E (quadrant upper-right and
+       lower-left), drawn as two filled squares so it stays crisp at 16px. -->
+  <rect width="512" height="512" rx="112" fill="#2647E8"/>
+  <rect x="256" y="112" width="144" height="144" fill="#FFFFFF"/>
+  <rect x="112" y="256" width="144" height="144" fill="#FFFFFF"/>
+</svg>

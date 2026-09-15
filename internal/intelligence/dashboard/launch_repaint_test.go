@@ -159,14 +159,27 @@ var repaintGeometry = []LaunchInfo{{ID: "HANDLE-abc", Rows: 40, Cols: 120, Initi
 // before the test writes its resize frame.
 func dialRepaintWS(t *testing.T, ctx context.Context, ts *httptest.Server) *websocket.Conn {
 	t.Helper()
+	c := dialRepaintWSRaw(t, ctx, ts)
+	if !waitForControl(t, ctx, c, "pty_size") {
+		t.Fatal("bridge never sent the on-open pty_size frame")
+	}
+	return c
+}
+
+// dialRepaintWSRaw dials the same bridge WITHOUT waiting for the on-open
+// pty_size frame. A session whose geometry is never known sends no such frame —
+// the bridge refuses to announce all-zero dimensions, which would carry nothing
+// the client could restore (Q1 probe, P4) — so a test in that state must not
+// wait for one. Nothing is lost: the client's resize frame is queued on the
+// socket and read as soon as the bridge's loop starts, and waitResizeSeq's own
+// deadline absorbs that startup gap.
+func dialRepaintWSRaw(t *testing.T, ctx context.Context, ts *httptest.Server) *websocket.Conn {
+	t.Helper()
 	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/ws/launch/HANDLE-abc", &websocket.DialOptions{
 		HTTPHeader: http.Header{"Origin": {ts.URL}},
 	})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
-	}
-	if !waitForControl(t, ctx, c, "pty_size") {
-		t.Fatal("bridge never sent the on-open pty_size frame")
 	}
 	return c
 }
@@ -339,7 +352,8 @@ func TestTerminalRepaintNudgeSkippedWhenGeometryUnknown(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c := dialRepaintWS(t, ctx, ts)
+	// Raw dial: with no geometry there is no on-open pty_size frame to wait for.
+	c := dialRepaintWSRaw(t, ctx, ts)
 	defer func() { _ = c.CloseNow() }()
 
 	if err := c.Write(ctx, websocket.MessageText, []byte(`{"t":"resize","rows":40,"cols":120}`)); err != nil {

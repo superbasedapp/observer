@@ -1,0 +1,1 @@
+{"tool":"gemini-cli","raw_tool_name":"write_todos","raw_tool_input":"{\"todos\":[{\"description\":\"Ship the release notes\",\"status\":\"in_progress\"},{\"description\":\"Tag the release\",\"status\":\"pending\"},{\"description\":\"Notify the changelog channel\",\"status\":\"blocked\"}]}","raw_tool_output":""}

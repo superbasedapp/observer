@@ -351,11 +351,12 @@ func lookupRates(engine *cost.Engine, model string) (cachetrack.RatePair, bool) 
 	}
 	const perMillion = 1_000_000.0
 	return cachetrack.RatePair{
-		Input:          p.Input / perMillion,
-		Output:         p.Output / perMillion,
-		CacheRead:      p.CacheRead / perMillion,
-		CacheCreation:  p.CacheCreation / perMillion,
-		FastMultiplier: p.FastMultiplier,
+		Input:           p.Input / perMillion,
+		Output:          p.Output / perMillion,
+		CacheRead:       p.CacheRead / perMillion,
+		CacheCreation:   p.CacheCreation / perMillion,
+		CacheCreation1h: p.CacheCreation1h / perMillion,
+		FastMultiplier:  p.FastMultiplier,
 	}, true
 }
 

@@ -78,10 +78,13 @@ func TestDefaultRootsOSShaped(t *testing.T) {
 		{Path: "/mnt/c/Users/win", OS: crossmount.OSWindows, Origin: "wsl-mnt:win"},
 	})
 	roots := defaultRoots()
+	// The session root is the PARENT `.kiro/sessions` — it covers BOTH
+	// the CLI's `cli/` flat bundles and the Kiro IDE's
+	// `<bucket>/<sid>/` subtree, with no nested duplicate watch.
 	want := []string{
-		filepath.Clean("/home/dev/.kiro/sessions/cli"),
+		filepath.Clean("/home/dev/.kiro/sessions"),
 		filepath.Clean("/home/dev/.local/share/kiro-cli"),
-		filepath.Clean("/mnt/c/Users/win/.kiro/sessions/cli"),
+		filepath.Clean("/mnt/c/Users/win/.kiro/sessions"),
 		filepath.Clean("/mnt/c/Users/win/AppData/Local/Kiro-Cli"),
 	}
 	if len(roots) != len(want) {

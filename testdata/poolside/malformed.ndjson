@@ -1,0 +1,2 @@
+{"id": "ev-0001", "step_id": "", "timestamp": "2026-09-05T01:10:00.1234567+00:00", "type": "session.start", "session_start": {"working_directories": ["C:\\Users\\devuser\\workspace\\demo-project"]}}
+{"id": "ev-0002", "step_id": "", "timestamp": "2026-09-05T01:10:01.1234567+00:00", "type": "session.input", "session_input": {"prompt": "Summarize this project and create a demo script."}}

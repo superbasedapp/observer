@@ -56,7 +56,7 @@ export function RestartPendingBanner() {
 
   function onRestart() {
     void restart(
-      "Restart the daemon now?\n\nThis applies pending config changes. Reconnecting takes ~1s; an active proxied coding session may drop one in-flight request.",
+      "Restart the daemon now?\n\nThis applies pending config changes. Reconnecting takes ~1s.",
     );
   }
 
@@ -74,10 +74,23 @@ export function RestartPendingBanner() {
     <div className="flex items-center gap-2 border-b border-warn/30 bg-warn-soft px-4 py-1.5 text-[11.5px] text-fg-2">
       <span className="font-semibold text-warn">Restart pending</span>
       <span className="min-w-0 truncate">
-        saved changes to{" "}
-        <span className="font-mono">{pending.sections.join(", ")}</span> apply
-        on the next daemon start
-        {restartErr && <span className="ml-2 text-danger">— {restartErr}</span>}
+        {pending.keys && pending.keys.length > 0 ? (
+          <>
+            {pending.keys.length} setting{pending.keys.length === 1 ? "" : "s"} apply on
+            restart:{" "}
+            <span className="font-mono" title={pending.keys.join(", ")}>
+              {pending.keys.slice(0, 4).join(", ")}
+              {pending.keys.length > 4 ? `, +${pending.keys.length - 4} more` : ""}
+            </span>
+          </>
+        ) : (
+          <>
+            saved changes to{" "}
+            <span className="font-mono">{pending.sections.join(", ")}</span> apply
+            on the next daemon start
+          </>
+        )}
+        {restartErr && <span className="ml-2 text-danger">- {restartErr}</span>}
       </span>
       <div className="flex-1" />
       <button

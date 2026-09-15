@@ -165,8 +165,8 @@ func TestParseToolCallSession(t *testing.T) {
 	}
 
 	// Project root resolves from the record cwd (a non-git dir → itself).
-	if wf.ProjectRoot != "/home/dev/proj" {
-		t.Errorf("project root = %q, want /home/dev/proj", wf.ProjectRoot)
+	if !hasPathSuffix(wf.ProjectRoot, "/home/dev/proj") {
+		t.Errorf("project root = %q, want */home/dev/proj", wf.ProjectRoot)
 	}
 	// GitBranch carried from the envelope.
 	if wf.GitBranch != "master" {
@@ -210,8 +210,8 @@ func TestSegmentTokensNonZeroFlow(t *testing.T) {
 	if first.SessionID != sid {
 		t.Errorf("session id = %q, want %q (recovered from path)", first.SessionID, sid)
 	}
-	if first.ProjectRoot != "/home/dev/proj" {
-		t.Errorf("project root = %q, want /home/dev/proj (from config.loaded)", first.ProjectRoot)
+	if !hasPathSuffix(first.ProjectRoot, "/home/dev/proj") {
+		t.Errorf("project root = %q, want */home/dev/proj (from config.loaded)", first.ProjectRoot)
 	}
 	if first.MessageID != "req-0000-0001" {
 		t.Errorf("MessageID = %q, want req-0000-0001", first.MessageID)

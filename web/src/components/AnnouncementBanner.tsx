@@ -145,7 +145,7 @@ export function AnnouncementBanner() {
       <span className={style.label}>{style.text}</span>
       <span className="min-w-0 truncate">
         <span className="font-medium text-fg-1">{showing.title}</span>
-        {showing.body ? ` — ${showing.body}` : ""}
+        {showing.body ? ` - ${showing.body}` : ""}
       </span>
       <div className="flex-1" />
       {showing.url && (

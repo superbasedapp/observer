@@ -33,6 +33,15 @@ const (
 	// KindSessionMeta is session-level metadata (posture signals
 	// such as yolo flags or sandbox state).
 	KindSessionMeta EventKind = "session_meta"
+	// KindUserPrompt is the developer's own prompt text at
+	// submit-time (hook lane) or the latest user turn extracted from
+	// an outbound LLM API request (proxy lane) — the prompt-submit
+	// intervention feature (docs/plans/
+	// prompt-submit-intervention-exploration-2026-09-07.md). Target
+	// is empty; the prompt text itself is NEVER carried on the
+	// Event (only PIIFindings/Secrets, the compute-at-the-owner
+	// detector output) — this package never sees prompt content.
+	KindUserPrompt EventKind = "user_prompt"
 )
 
 // Dialect identifies the shell dialect of a command string so the
@@ -191,6 +200,36 @@ type Event struct {
 	// api_request row consumes them; this package never runs
 	// detectors over message content itself.
 	Secrets []SecretFinding
+	// PIIFindings are typed PII-detector findings stamped by the
+	// boundary that built the event (internal/scrub's typed PII
+	// detectors, injected — the same compute-at-the-owner pattern as
+	// Secrets/Taint) — the prompt-submit intervention feature
+	// (docs/plans/prompt-submit-intervention-exploration-2026-09-07.md
+	// §4.2/§4.4). The R-190 row (KindUserPrompt) consumes them; this
+	// package never runs detectors or reads prompt content itself.
+	PIIFindings []PIIFinding
+	// PromptTruncated reports whether the boundary's PII detection pass
+	// over this event's prompt text was skipped because the body
+	// exceeded scrub.MaxRawInputBytes (scrub.DetectPromptFindings'
+	// truncated return, FIX-2 round-2 re-review). Only meaningful on a
+	// KindUserPrompt event; the guard layer's EvaluatePrompt reads it to
+	// degrade an oversize, unscanned prompt to warn (or block under
+	// mode=block) instead of silently treating "not scanned" the same
+	// as "scanned clean" — an empty PIIFindings slice is otherwise
+	// indistinguishable between the two.
+	PromptTruncated bool
+	// PromptFieldMissing reports whether the boundary's dialect
+	// extractor could not find ANY of its known prompt-field names in
+	// the raw hook payload at all (FIX-2, phase-2 review) — schema
+	// drift (a vendor renamed or removed the field this repo's
+	// extractor expects), NOT a developer who genuinely submitted an
+	// empty prompt. Only meaningful on a KindUserPrompt event; like
+	// PromptTruncated, EvaluatePrompt degrades this to warn (or block
+	// under mode=block) rather than silently treating "the extractor
+	// found nothing to scan because the field doesn't exist" the same
+	// as "scanned clean" — an empty PIIFindings slice can't tell the
+	// two apart on its own.
+	PromptFieldMissing bool
 	// MCPFindings are MCP config-layer security findings stamped by
 	// the guard composition layer (the §9.2/§9.3 pin-diff and
 	// poisoning results computed in guard/mcpsec — the same
@@ -211,14 +250,29 @@ type Event struct {
 	// cost data). 0 means unknown/unstamped — budget rules treat it
 	// as no-match, never as "free". Hook-path events are never
 	// stamped (the lookup lives in the daemon).
-	SessionCostUSD float64
-	DailyCostUSD   float64
+	// USDUnavailable / TokensUnavailable distinguish a failed or incomplete
+	// accounting read from measured zero usage. They are stamped at the proxy
+	// admission boundary; a configured hard window cannot admit on unknown spend.
+	USDUnavailable    BudgetUnavailableWindows
+	TokensUnavailable BudgetUnavailableWindows
+	SessionCostUSD    float64
+	DailyCostUSD      float64
 	// WeeklyCostUSD / MonthlyCostUSD are the rolling-7-day and
 	// calendar-month spend-so-far stamps for the B-604 / B-603 budget
 	// windows, stamped by the same TTL-cached budget lookup. 0 means
 	// unknown/unstamped (treated as no-match, never "free").
 	WeeklyCostUSD  float64
 	MonthlyCostUSD float64
+	// SessionTokens / DailyTokens / WeeklyTokens / MonthlyTokens are the
+	// TOKEN-denominated siblings of the four spend stamps above, for the
+	// B-621..B-624 rows (org-budget plan §3.3c). Stamped by the SAME
+	// TTL-cached guard budget lookup, over the same windows, so a token
+	// budget and a dollar budget can never disagree about which turns they
+	// are counting. 0 means unknown/unstamped (no-match, never "free").
+	SessionTokens int64
+	DailyTokens   int64
+	WeeklyTokens  int64
+	MonthlyTokens int64
 	// Window5hUtil / Window7dUtil are the provider's own 5h and weekly
 	// usage-window utilization (0..1), stamped from the latest
 	// limit_snapshots row for the B-610..B-613 limit rules. 0 means
@@ -239,11 +293,78 @@ type Event struct {
 // SecretFinding is one typed secret detection stamped onto an Event
 // by the boundary (internal/scrub's typed detectors, injected — this
 // package imports zero observer packages). It deliberately carries NO
-// value/span: rules only ever see what KIND of secret appeared.
+// raw value: rules only ever see what KIND of secret appeared.
+//
+// SpanLen/Hash (round-2 review B1, added after the original "gains
+// nothing" phase-1 comment on this type): the prompt-submit
+// intervention feature's reconsider-once fingerprint (§5.2) needs a
+// one-way digest of the matched span to distinguish "the developer
+// resent the identical secret" from "the developer edited it" — the
+// SAME ingredient PIIFinding.Hash already supplies. Phase 1 shipped
+// without these fields and compensated by stricting every ask-once/
+// redact secret finding to block-every-time; that stricten branch is
+// gone now that the boundary can populate them. Every OTHER consumer
+// of SecretFinding (R-172's shell-arg/api-request matchers,
+// SummarizeSecretFindings) ignores both fields and is unaffected.
 type SecretFinding struct {
 	// Type is the stable detector name ("github_pat", "entropy", ...).
 	Type string
 	// Certain reports a pattern-certain detection; the entropy
 	// heuristic reports false (spec §8.2 gates masking on certainty).
 	Certain bool
+	// SpanLen is the length in bytes of the matched span — reporting
+	// only (mirrors PIIFinding.SpanLen); never enough on its own to
+	// reconstruct the value.
+	SpanLen int
+	// Hash is sha256 hex of the NORMALIZED matched span (separators
+	// stripped, ASCII-lowered — see the reconsider-once fingerprint
+	// spec §5.2), computed by the boundary from the in-memory match.
+	// Empty means the boundary could not (or chose not to) compute one
+	// — EvaluatePrompt treats an empty Hash as "cannot participate in
+	// the identical-resend refinement" and degrades that ONE finding
+	// to block, exactly as an unhashable finding always has; a
+	// populated Hash participates in the fingerprint like any
+	// PIIFinding.
+	Hash string
+}
+
+// PIIFinding is one deterministic PII-detector finding stamped onto
+// an Event by the boundary (internal/scrub's typed PII detectors,
+// injected — this package imports zero observer packages), for the
+// prompt-submit intervention feature (docs/plans/
+// prompt-submit-intervention-exploration-2026-09-07.md §4.2/§4.4/§5.2).
+// Like SecretFinding it carries NO raw value; unlike SecretFinding it
+// also carries a per-span Hash so the guard layer's reconsider-once
+// state machine can distinguish "the developer resent the identical
+// finding" from "the developer edited the value" without a whole-
+// prompt hash (which would break that distinction — a developer who
+// adds a sentence around an unchanged secret should still count as an
+// identical resend, §5.2).
+type PIIFinding struct {
+	// Type is the stable detector name ("credit_card", "us_ssn", ...).
+	Type string
+	// Class is "pii" for every row today; carried for symmetry with
+	// internal/scrub's TypedFinding.Class and to keep the field
+	// meaningful if a future detector class is ever added here.
+	Class string
+	// SpanLen is the length in bytes of the matched span — reporting
+	// only (guard_events reason renders "credit_card×1 (16 chars)");
+	// never enough on its own to reconstruct the value.
+	SpanLen int
+	// Hash is sha256 hex of the NORMALIZED matched span (separators
+	// stripped, ASCII-lowered — see the reconsider-once fingerprint
+	// spec §5.2), computed by the boundary from the in-memory match.
+	// It is a one-way digest of the value, never the value itself,
+	// and this package never computes or interprets it — it is pure
+	// pass-through cargo for whatever layer builds the reconsider-once
+	// fingerprint.
+	//
+	// UPDATE (round-2 review B1): the contract's original §4.4/§10 item
+	// 9 said "policy.SecretFinding gains nothing", which forced every
+	// secret-shaped ask-once/redact prompt finding to degrade to
+	// block-every-time (no per-span hash to fingerprint on). That
+	// asymmetry broke the operator's core requirement — ask-once for
+	// API tokens typed into a prompt — so SecretFinding now carries the
+	// same SpanLen/Hash shape as this type; see its doc comment.
+	Hash string
 }

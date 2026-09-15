@@ -196,3 +196,154 @@ func TestQuantile(t *testing.T) {
 		t.Errorf("single-element quantile should be the element")
 	}
 }
+
+// TestEstimate_PricingDecoupledFromFacts pins the invariant that a
+// missing pricing entry suppresses ONLY the dollar columns. The token
+// facts (prefix, per-turn quantiles, fan-out tier, sample counts) are
+// observations of the session, so they must be identical whether or not
+// the model has a rate card.
+//
+// Regression: the dashboard handler used to bail on a pricing miss and
+// return a zeroed EstimateResult carrying a false no_session_history,
+// which the context-window surface rendered as "no prefix observed yet"
+// on a session with three observed turns (opencode alias model
+// "big-pickle", latest cache_read 8448).
+func TestEstimate_PricingDecoupledFromFacts(t *testing.T) {
+	// The real remote-node shape: 3 turns, cache_read 8320/8320/8448,
+	// P "now" = the latest read.
+	shape := func() EstimateInput {
+		return EstimateInput{
+			Model:        "big-pickle",
+			PrefixTokens: 8448,
+			TurnSamples: []TurnSample{
+				{FreshInput: 120, Output: 300},
+				{FreshInput: 240, Output: 700},
+				{FreshInput: 360, Output: 1500},
+			},
+			TurnsPerMessage:  []int{2, 3, 4},
+			ObservedMessages: 3,
+			YoungThreshold:   3,
+		}
+	}
+
+	cases := []struct {
+		name    string
+		mutate  func(*EstimateInput)
+		wantEst bool // HasEstimate (dollar half)
+		wantSh  bool // HasShape (fact half)
+		wantUSD bool // mid.MessageUSD > 0
+		want    []Warning
+		notWant []Warning
+	}{
+		{
+			name:    "priced model keeps the cost band",
+			mutate:  func(in *EstimateInput) { in.Rates = opusRates },
+			wantEst: true, wantSh: true, wantUSD: true,
+			notWant: []Warning{WarnNoPricing, WarnNoSessionHistory},
+		},
+		{
+			name: "unpriced model keeps the facts and drops the dollars",
+			mutate: func(in *EstimateInput) {
+				in.PricingUnknown = true // Rates stays zero, as the miss leaves it
+			},
+			wantEst: false, wantSh: true, wantUSD: false,
+			want:    []Warning{WarnNoPricing},
+			notWant: []Warning{WarnNoSessionHistory},
+		},
+		{
+			name: "free model is priced, not unknown",
+			mutate: func(in *EstimateInput) {
+				in.Rates = RatePair{} // ":free" resolves exact with all-zero rates
+			},
+			wantEst: true, wantSh: true, wantUSD: false,
+			notWant: []Warning{WarnNoPricing, WarnNoSessionHistory},
+		},
+		{
+			name: "no substrate at all stays fully empty",
+			mutate: func(in *EstimateInput) {
+				in.TurnSamples = nil
+				in.TurnsPerMessage = nil
+				in.ObservedMessages = 0
+				in.PrefixTokens = 0
+				in.PricingUnknown = true
+			},
+			wantEst: false, wantSh: false, wantUSD: false,
+			want:    []Warning{WarnNoSessionHistory},
+			notWant: []Warning{WarnNoPricing},
+		},
+	}
+
+	// The priced run is the reference the unpriced run's facts must match.
+	priced := shape()
+	priced.Rates = opusRates
+	ref := Estimate(priced)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := shape()
+			tc.mutate(&in)
+			got := Estimate(in)
+
+			if got.HasEstimate != tc.wantEst {
+				t.Errorf("HasEstimate = %v, want %v (warnings %v)", got.HasEstimate, tc.wantEst, got.Warnings)
+			}
+			if got.HasShape != tc.wantSh {
+				t.Errorf("HasShape = %v, want %v", got.HasShape, tc.wantSh)
+			}
+			if (got.Mid.MessageUSD > 0) != tc.wantUSD {
+				t.Errorf("mid.MessageUSD = %v, want positive=%v", got.Mid.MessageUSD, tc.wantUSD)
+			}
+			for _, w := range tc.want {
+				if !hasWarn(got.Warnings, w) {
+					t.Errorf("missing warning %q; got %v", w, got.Warnings)
+				}
+			}
+			for _, w := range tc.notWant {
+				if hasWarn(got.Warnings, w) {
+					t.Errorf("unexpected warning %q; got %v", w, got.Warnings)
+				}
+			}
+			if !tc.wantSh {
+				return
+			}
+			// Every FACT must be byte-identical to the priced reference.
+			if got.PrefixTokens != 8448 {
+				t.Errorf("PrefixTokens = %d, want 8448 (latest observed cache_read)", got.PrefixTokens)
+			}
+			if got.SampleTurns != ref.SampleTurns || got.SampleTurns != 3 {
+				t.Errorf("SampleTurns = %d, want 3", got.SampleTurns)
+			}
+			if got.SampleMessages != ref.SampleMessages || got.SampleMessages != 3 {
+				t.Errorf("SampleMessages = %d, want 3", got.SampleMessages)
+			}
+			if got.TurnsTier != ref.TurnsTier || got.TurnsTier != TurnsObserved {
+				t.Errorf("TurnsTier = %q, want %q", got.TurnsTier, TurnsObserved)
+			}
+			for _, b := range []struct {
+				name     string
+				got, ref Band
+			}{
+				{"low", got.Low, ref.Low},
+				{"mid", got.Mid, ref.Mid},
+				{"high", got.High, ref.High},
+			} {
+				if b.got.Turns != b.ref.Turns || b.got.FreshInput != b.ref.FreshInput || b.got.Output != b.ref.Output {
+					t.Errorf("%s band token dims = (T %.1f, S %d, O %d), want (T %.1f, S %d, O %d)",
+						b.name, b.got.Turns, b.got.FreshInput, b.got.Output,
+						b.ref.Turns, b.ref.FreshInput, b.ref.Output)
+				}
+			}
+			if !tc.wantEst {
+				for _, b := range []struct {
+					name string
+					band Band
+				}{{"low", got.Low}, {"mid", got.Mid}, {"high", got.High}} {
+					if b.band.PerTurnUSD != 0 || b.band.MessageUSD != 0 {
+						t.Errorf("%s band should carry no dollars without pricing: per_turn=%v message=%v",
+							b.name, b.band.PerTurnUSD, b.band.MessageUSD)
+					}
+				}
+			}
+		})
+	}
+}

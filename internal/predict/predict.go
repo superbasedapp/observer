@@ -40,6 +40,20 @@ type EstimateInput struct {
 	// per-turn math (Anthropic Opus speed="fast", 2×).
 	CurrentFast bool
 
+	// PricingUnknown reports that the cost engine has NO pricing row for
+	// Model, so Rates carries nothing (an alias/codename model id such as
+	// opencode's "big-pickle"). The estimator still scores the whole
+	// FACTUAL half — PrefixTokens, the per-turn (S, O) quantiles, the
+	// fan-out tier and the sample counts are OBSERVATIONS of the session,
+	// not prices — and leaves only the USD columns at zero, emitting
+	// WarnNoPricing with HasEstimate=false.
+	//
+	// This is an explicit flag and NOT inferred from all-zero Rates: a
+	// genuinely free model (the pricing table's ":free" rung) resolves to
+	// an exact, all-zero Pricing and must keep producing a real $0 band.
+	// Zero value = pricing known, so existing callers are unaffected.
+	PricingUnknown bool
+
 	// PrefixTokens is P "now": the cache prefix re-read on every turn —
 	// the LATEST turn's cache_read_tokens, not an average (the prefix
 	// grows across a session; the next message starts from the current
@@ -120,6 +134,13 @@ const (
 	// the per-turn numbers already include the multiplier. The operator
 	// may prefer turning fast off to switching models.
 	WarnFastModeActive Warning = "fast_mode_active"
+	// WarnNoPricing — the model has no pricing entry, so the dollar
+	// columns are absent (HasEstimate=false) while the token facts in
+	// the result are real. Distinct from WarnNoSessionHistory, which
+	// means there is no observed substrate at all: reporting a pricing
+	// gap as a data gap is what made the context-window surface claim
+	// "no prefix observed yet" over three observed turns.
+	WarnNoPricing Warning = "no_pricing"
 )
 
 // Band is one quantile column of the estimate (low / mid / high). Turns
@@ -134,12 +155,24 @@ type Band struct {
 	MessageUSD float64 `json:"message_usd"`
 }
 
-// EstimateResult is the headline payload. Empty (HasEstimate=false)
-// when there is no substrate to estimate from.
+// EstimateResult is the headline payload.
+//
+// Two INDEPENDENT halves, and surfaces must read the right flag:
+//
+//   - the FACTUAL half — PrefixTokens, TurnsTier, the bands' token
+//     dimensions (Turns / FreshInput / Output), SampleTurns,
+//     SampleMessages — is present whenever the session has any observed
+//     turn, gated by HasShape. It never depends on pricing.
+//   - the COST half — the bands' PerTurnUSD / MessageUSD — additionally
+//     requires a pricing entry for the model, gated by HasEstimate.
+//
+// HasEstimate=false with HasShape=true is the "observed turns, unpriced
+// model" case: show the token facts, omit the dollars.
 type EstimateResult struct {
 	Model        string    `json:"model"`
 	PrefixTokens int64     `json:"prefix_tokens"`
 	HasEstimate  bool      `json:"has_estimate"`
+	HasShape     bool      `json:"has_shape"`
 	TurnsTier    TurnsTier `json:"turns_tier"`
 	Low          Band      `json:"low"`
 	Mid          Band      `json:"mid"`
@@ -154,6 +187,11 @@ type EstimateResult struct {
 // Estimate scores the input and returns the low/mid/high band. Pure;
 // deterministic; safe to call concurrently. Fail-soft: an empty or
 // degenerate snapshot yields a defensible empty result, never NaN.
+//
+// Facts are decoupled from prices. A missing pricing entry
+// (in.PricingUnknown) suppresses ONLY the USD columns; the prefix, the
+// per-turn token quantiles, the fan-out tier and the sample counts are
+// still computed and returned with HasShape=true.
 func Estimate(in EstimateInput) EstimateResult {
 	out := EstimateResult{Model: in.Model, PrefixTokens: in.PrefixTokens}
 
@@ -191,27 +229,36 @@ func Estimate(in EstimateInput) EstimateResult {
 	}
 	p := float64(in.PrefixTokens)
 
+	// The band's token dimensions are quantiles of observed turns, so
+	// they are computed unconditionally; only the two USD columns are
+	// gated on pricing.
 	build := func(turns, freshQ, outQ float64) Band {
 		s := math.Max(0, freshQ)
 		o := math.Max(0, outQ)
-		perTurn := p*r.CacheRead + s*r.Input + o*r.Output
 		t := math.Max(0, turns)
-		return Band{
+		b := Band{
 			Turns:      round1(t),
 			FreshInput: int64(math.Round(s)),
 			Output:     int64(math.Round(o)),
-			PerTurnUSD: perTurn,
-			MessageUSD: t * perTurn,
 		}
+		if !in.PricingUnknown {
+			b.PerTurnUSD = p*r.CacheRead + s*r.Input + o*r.Output
+			b.MessageUSD = t * b.PerTurnUSD
+		}
+		return b
 	}
 
 	out.Low = build(turnsLow, quantile(freshSorted, 0.25), quantile(outSorted, 0.25))
 	out.Mid = build(turnsMid, quantile(freshSorted, 0.50), quantile(outSorted, 0.50))
 	out.High = build(turnsHigh, quantile(freshSorted, 0.75), quantile(outSorted, 0.75))
 
-	out.HasEstimate = true
+	out.HasShape = true
+	out.HasEstimate = !in.PricingUnknown
 	out.SampleTurns = len(in.TurnSamples)
 	out.SampleMessages = in.ObservedMessages
+	if in.PricingUnknown {
+		out.Warnings = append(out.Warnings, WarnNoPricing)
+	}
 
 	switch tier {
 	case TurnsPrior:

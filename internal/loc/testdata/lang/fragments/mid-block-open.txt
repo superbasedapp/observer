@@ -1,0 +1,4 @@
+func f() int {
+	return 1 /* start of a comment
+	that never ends
+}

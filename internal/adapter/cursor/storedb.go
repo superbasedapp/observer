@@ -41,6 +41,7 @@ type promptSection struct {
 // scan.go::projectRootForStoreDB) so these rows share the exact project
 // attribution of their session's activity rows.
 type cursorStoreData struct {
+	Todos        []cursorTodoCall
 	SystemPrompt string
 	Sections     []promptSection
 	// Model is the resolved model id from the turn blobs
@@ -117,6 +118,11 @@ func scanStoreDB(dbPath string) (cursorStoreData, bool) {
 		if err := rows.Scan(&data); err != nil {
 			continue
 		}
+		if len(data) > 0 && data[0] == 0x12 {
+			if call, ok := decodeCursorTodoCall(data); ok {
+				out.Todos = append(out.Todos, call)
+			}
+		}
 		switch {
 		case bytes.HasPrefix(bytes.TrimSpace(data), []byte(`{"role"`)):
 			if out.SystemPrompt == "" {
@@ -136,7 +142,7 @@ func scanStoreDB(dbPath string) (cursorStoreData, bool) {
 			}
 		}
 	}
-	return out, out.SystemPrompt != "" || len(out.Sections) > 0 || out.Model != ""
+	return out, out.SystemPrompt != "" || len(out.Sections) > 0 || out.Model != "" || len(out.Todos) > 0
 }
 
 // modelFromBlob extracts a real model id from a turn blob's

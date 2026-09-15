@@ -153,6 +153,18 @@ func (a *CLIAdapter) ParseSessionFile(ctx context.Context, path string, fromOffs
 	res.ToolEvents = append(res.ToolEvents, todos...)
 	res.TokenEvents = append(res.TokenEvents, tokens...)
 	res.CacheObservations = append(res.CacheObservations, cacheObservations...)
+	// Project Identity Resolver v2 (2026-09-06, §3.1 / W1): rootCache
+	// already carries one git.Identity per distinct cwd this parse
+	// touched (a kilo-cli db can span multiple sessions/projects), keyed
+	// by the resolved root — exactly what ApplyProjectIdentityByRoot
+	// wants.
+	identitiesByRoot := make(map[string]git.Identity, len(rootCache))
+	for _, resolved := range rootCache {
+		if resolved.root != "" {
+			identitiesByRoot[resolved.root] = resolved.identity
+		}
+	}
+	adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot)
 	return res, nil
 }
 
@@ -1103,14 +1115,15 @@ func (a *CLIAdapter) resolveProjectRoot(cwd string, cache map[string]kiloResolve
 	if resolved, ok := cache[cwd]; ok {
 		return resolved.root, resolved.remote
 	}
-	info, err := git.Resolve(cwd)
+	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
 		cache[cwd] = kiloResolvedRoot{root: cwd}
 		return cwd, ""
 	}
-	remote = git.NormalizeRemote(info.Remote)
-	cache[cwd] = kiloResolvedRoot{root: info.Root, remote: remote}
-	return info.Root, remote
+	// id.Remote is already NormalizeRemote'd by ResolveIdentity.
+	remote = id.Remote
+	cache[cwd] = kiloResolvedRoot{root: id.Root, remote: remote, identity: id}
+	return id.Root, remote
 }
 
 // kiloResolvedRoot is the resolveProjectRoot cache entry: the git
@@ -1121,6 +1134,10 @@ func (a *CLIAdapter) resolveProjectRoot(cwd string, cache map[string]kiloResolve
 type kiloResolvedRoot struct {
 	root   string
 	remote string
+	// identity is the Project Identity Resolver v2 bundle (2026-09-06,
+	// §3.1 / W1) resolved alongside root/remote, applied to every event
+	// whose ProjectRoot matches via adapter.ApplyProjectIdentityByRoot.
+	identity git.Identity
 }
 
 func latestWatermark(ctx context.Context, path string) (int64, error) {

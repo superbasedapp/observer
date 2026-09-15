@@ -1,0 +1,4 @@
+[
+  {"name": "observer", "kind": "symlink", "link_target": "/bin/sh"},
+  {"name": "superbased", "kind": "symlink", "link_target": "observer"}
+]

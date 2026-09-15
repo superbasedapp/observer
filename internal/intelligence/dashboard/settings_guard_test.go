@@ -28,6 +28,10 @@ import (
 //     territory).
 //  4. Closed enums (mode / egress_action / min_severity) are rejected
 //     with 400 at the PUT, not at the next daemon start.
+//  5. [guard.prompt] (§8.1, PHASE-3b-DASHBOARD) IS editable through
+//     this section — a body that supplies a full Prompt object (as
+//     the real frontend's draft always does, see sectionSpecs.ts's
+//     "Guard.Prompt"/"Guard.Prompt.Detectors" groups) persists it.
 func TestHandleConfigSection_Guard(t *testing.T) {
 	tdir := t.TempDir()
 	cfgPath := filepath.Join(tdir, "config.toml")
@@ -78,7 +82,16 @@ endpoint = "http://localhost:9999/v1/chat/completions"
 		`"Alerts":{"Desktop":true,"MinSeverity":"warn"},` +
 		`"Export":{"OTel":false},` +
 		`"Dialects":{"Compile":true,"Targets":["claude-code"]},` +
-		`"Cloud":{"Enabled":false,"PayloadMaxBytes":0}}`
+		`"Cloud":{"Enabled":false,"PayloadMaxBytes":0},` +
+		// Prompt (§8.1, PHASE-3b-DASHBOARD) is a real, editable section
+		// now — the frontend's draft always sends the complete object
+		// (see sectionSpecs.ts's "Guard.Prompt"/"Guard.Prompt.Detectors"
+		// groups), never an omitted key on a real save.
+		`"Prompt":{"Enabled":true,"Mode":"ask-once","HookLane":true,"ProxyLane":true,` +
+		`"EnforceIndependent":true,"ReconsiderTTL":"30m","ReconsiderMinDelay":"3s","Allow":[],"SuppressInCode":true,` +
+		`"MaxFindings":64,"Detectors":{"credit_card":"ask-once","iban":"ask-once",` +
+		`"us_ssn":"ask-once","uk_nino":"ask-once","in_aadhaar":"ask-once","in_pan":"ask-once",` +
+		`"email":"off","phone_e164":"off","phone_nanp":"off","github_pat":"block"}}}`
 	rr := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rr,
 		httptest.NewRequest(http.MethodPut, "/api/config/section/guard", strings.NewReader(body)))
@@ -129,6 +142,15 @@ endpoint = "http://localhost:9999/v1/chat/completions"
 	if g.Budget.SessionUSD != 5 || g.Budget.DailyUSD != 40 {
 		t.Errorf("budget not persisted: %+v", g.Budget)
 	}
+	// 4. Prompt (§8.1, PHASE-3b-DASHBOARD) is a real editable section
+	// now, not preserved-from-prior — the body's values land.
+	if g.Prompt.Mode != "ask-once" || !g.Prompt.Enabled || !g.Prompt.HookLane ||
+		!g.Prompt.ProxyLane || g.Prompt.ReconsiderTTL != "30m" || g.Prompt.ReconsiderMinDelay != "3s" || g.Prompt.MaxFindings != 64 {
+		t.Errorf("guard.prompt not persisted: %+v", g.Prompt)
+	}
+	if g.Prompt.Detectors["github_pat"] != "block" || g.Prompt.Detectors["email"] != "off" {
+		t.Errorf("guard.prompt.detectors not persisted: %+v", g.Prompt.Detectors)
+	}
 
 	// 4. Closed enums reject at the PUT.
 	for _, bad := range []string{
@@ -161,6 +183,187 @@ endpoint = "http://localhost:9999/v1/chat/completions"
 	}
 	if !found {
 		t.Errorf("editable_sections must advertise guard: %v", got.EditableSections)
+	}
+}
+
+// TestHandleConfigSection_Guard_PromptFullObjectRoundTrips pins the
+// PHASE-3b-DASHBOARD contract for [guard.prompt]: it is now a REAL
+// editable section (sectionSpecs.ts's "Guard.Prompt"/
+// "Guard.Prompt.Detectors" groups), not preserved-from-prior. Its
+// draft is a full clone of the loaded config (StructuredConfigSection
+// resolves the whole ["Guard"] subtree, not just the fields it
+// renders), so a real save always echoes back the CURRENT Prompt
+// object even when the operator only touched an unrelated field
+// (retention_days here) — this test pins that echo round-trips
+// unchanged, the same "send the whole subtree" contract every other
+// guard-section field already relies on (Rules.Disable, Taint,
+// Proxy, …). Superseded name: this used to be
+// TestHandleConfigSection_Guard_PreservesPrompt, back when Phase 1
+// shipped the schema with no dashboard form yet and the server had to
+// defensively preserve Prompt server-side against a real frontend
+// that never sent it at all. See
+// TestHandleConfigSection_Guard_RejectsMissingPrompt for the new
+// failure mode a genuinely Prompt-less body now hits.
+func TestHandleConfigSection_Guard_PromptFullObjectRoundTrips(t *testing.T) {
+	tdir := t.TempDir()
+	cfgPath := filepath.Join(tdir, "config.toml")
+	seed := `[guard]
+enabled = true
+mode = "observe"
+
+[guard.prompt]
+enabled = true
+mode = "block"
+hook_lane = true
+proxy_lane = false
+reconsider_ttl = "45m"
+allow = ["TESTKEY-[0-9]+"]
+suppress_in_code = false
+max_findings = 32
+
+[guard.prompt.detectors]
+credit_card = "block"
+email = "warn"
+`
+	if err := os.WriteFile(cfgPath, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	database, err := openTestDB(context.Background(), db.Options{Path: filepath.Join(tdir, "d.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	server, err := New(Options{DB: database, ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := config.Load(config.LoadOptions{GlobalPath: cfgPath})
+	if err != nil {
+		t.Fatalf("initial load: %v", err)
+	}
+	wantPrompt := loaded.Guard.Prompt
+	if wantPrompt.Mode != "block" || wantPrompt.ReconsiderTTL != "45m" {
+		t.Fatalf("seed did not take: %+v", wantPrompt)
+	}
+
+	// Body shaped like today's REAL frontend (post-PHASE-3b-DASHBOARD):
+	// it edits an unrelated guard knob (retention_days) but its draft is
+	// a full clone of the loaded config, so it echoes the CURRENT Prompt
+	// object back unchanged — exactly what StructuredConfigSection sends
+	// on every save, whether or not the operator touched anything under
+	// the "Guard.Prompt" groups this turn.
+	promptJSON, err := json.Marshal(wantPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"Enabled":true,"Mode":"enforce","Strict":false,"RetentionDays":200,` +
+		`"Proxy":{"EgressAction":"mask"},` +
+		`"Alerts":{"MinSeverity":"high"},` +
+		`"Prompt":` + string(promptJSON) + `}`
+	rr := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rr,
+		httptest.NewRequest(http.MethodPut, "/api/config/section/guard", strings.NewReader(body)))
+	if rr.Code != 200 {
+		t.Fatalf("PUT guard: %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	reloaded, err := config.Load(config.LoadOptions{GlobalPath: cfgPath})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got := reloaded.Guard.Prompt
+	if got.Mode != wantPrompt.Mode ||
+		got.Enabled != wantPrompt.Enabled ||
+		got.HookLane != wantPrompt.HookLane ||
+		got.ProxyLane != wantPrompt.ProxyLane ||
+		got.ReconsiderTTL != wantPrompt.ReconsiderTTL ||
+		got.SuppressInCode != wantPrompt.SuppressInCode ||
+		got.MaxFindings != wantPrompt.MaxFindings ||
+		len(got.Allow) != len(wantPrompt.Allow) ||
+		len(got.Detectors) != len(wantPrompt.Detectors) {
+		t.Errorf("guard.prompt must survive an unrelated guard-section save:\n  got  %+v\n  want %+v", got, wantPrompt)
+	}
+	for id, mode := range wantPrompt.Detectors {
+		if got.Detectors[id] != mode {
+			t.Errorf("guard.prompt.detectors[%q] = %q, want %q", id, got.Detectors[id], mode)
+		}
+	}
+
+	// The unrelated knob the section owns did land, confirming the save
+	// actually took effect rather than failing silently.
+	if reloaded.Guard.RetentionDays != 200 {
+		t.Errorf("retention_days not persisted: %d", reloaded.Guard.RetentionDays)
+	}
+}
+
+// TestHandleConfigSection_Guard_RejectsMissingPrompt pins the failure
+// mode a genuinely Prompt-less body now hits (PHASE-3b-DASHBOARD):
+// since [guard.prompt] is a real editable section, a body that omits
+// the "Prompt" key entirely decodes it to its Go zero value
+// (Mode:""), which fails the prompt.mode enum check at line ~825 —
+// the PUT is REJECTED with 400 rather than silently wiping the
+// configured section (the old preserve-on-omit behavior this
+// supersedes). This is the correct fail-loud posture for a caller
+// that isn't the real frontend (which always echoes the full object,
+// see TestHandleConfigSection_Guard_PromptFullObjectRoundTrips) — a
+// raw/scripted PUT missing Prompt gets a clear error instead of a
+// silent data loss, and the on-disk config is untouched by the
+// rejected write.
+func TestHandleConfigSection_Guard_RejectsMissingPrompt(t *testing.T) {
+	tdir := t.TempDir()
+	cfgPath := filepath.Join(tdir, "config.toml")
+	seed := `[guard]
+enabled = true
+mode = "observe"
+
+[guard.prompt]
+enabled = true
+mode = "block"
+hook_lane = true
+proxy_lane = false
+reconsider_ttl = "45m"
+allow = ["TESTKEY-[0-9]+"]
+suppress_in_code = false
+max_findings = 32
+
+[guard.prompt.detectors]
+credit_card = "block"
+email = "warn"
+`
+	if err := os.WriteFile(cfgPath, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	database, err := openTestDB(context.Background(), db.Options{Path: filepath.Join(tdir, "d.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	server, err := New(Options{DB: database, ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Body with no "Prompt" key at all — a raw/scripted caller, not the
+	// real frontend (which always echoes the full Prompt object).
+	body := `{"Enabled":true,"Mode":"enforce","Strict":false,"RetentionDays":200,` +
+		`"Proxy":{"EgressAction":"mask"},` +
+		`"Alerts":{"MinSeverity":"high"}}`
+	rr := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rr,
+		httptest.NewRequest(http.MethodPut, "/api/config/section/guard", strings.NewReader(body)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("PUT guard with no Prompt key: got %d, want 400 body=%s", rr.Code, rr.Body.String())
+	}
+
+	// The rejected write must not have touched the on-disk config.
+	reloaded, err := config.Load(config.LoadOptions{GlobalPath: cfgPath})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Guard.Mode != "observe" || reloaded.Guard.Prompt.Mode != "block" {
+		t.Errorf("a rejected PUT must not partially persist: guard.mode=%q guard.prompt.mode=%q",
+			reloaded.Guard.Mode, reloaded.Guard.Prompt.Mode)
 	}
 }
 

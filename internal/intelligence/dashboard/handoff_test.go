@@ -106,6 +106,9 @@ func TestHandleSessionHandoffEstimate(t *testing.T) {
 	if resp.SessionID != "sA" || resp.CarryUsed != "distilled_tail" || len(resp.Estimate.Rows) != 1 {
 		t.Errorf("response = %+v", resp)
 	}
+	if resp.FullCacheAvailable {
+		t.Errorf("full_cache_available = true, want false (handoffStubResult's Estimate leaves SourceHasFullReader unset)")
+	}
 	if len(resp.Boundaries) != 2 || !resp.Boundaries[1].Stable {
 		t.Errorf("boundaries = %+v", resp.Boundaries)
 	}
@@ -117,6 +120,22 @@ func TestHandleSessionHandoffEstimate(t *testing.T) {
 	for _, tg := range resp.Targets {
 		if !slices.Contains(tg.InjectLanes, "file") {
 			t.Errorf("target %s missing file lane: %v", tg.Tool, tg.InjectLanes)
+		}
+	}
+}
+
+// TestBuildHandoffResponse_FullCacheAvailable pins that both endpoints
+// (estimate GET and create POST share buildHandoffResponse) surface
+// full_cache_available straight from handoff.EstimateResult.SourceHasFullReader
+// — never re-derived a second way — for both the 4 adapters that implement
+// FullTranscriptReader and the 30 that don't.
+func TestBuildHandoffResponse_FullCacheAvailable(t *testing.T) {
+	for _, hasReader := range []bool{false, true} {
+		res := handoffStubResult()
+		res.Estimate.SourceHasFullReader = hasReader
+		resp := buildHandoffResponse("sA", "codex", res, true)
+		if resp.FullCacheAvailable != hasReader {
+			t.Errorf("SourceHasFullReader=%v: full_cache_available = %v, want %v", hasReader, resp.FullCacheAvailable, hasReader)
 		}
 	}
 }

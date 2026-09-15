@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/handoff"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/remoteauth"
@@ -70,6 +73,17 @@ type LaunchManager interface {
 	// returns the opaque handle AND the durable run id so the response carries
 	// both. P3.
 	CreateResume(spec ResumeLaunchSpec) (handle string, runID string, err error)
+	// CreateGUI spawns a DETACHED IDE / desktop application — no PTY, no
+	// handle, no terminal tab. The application service enforces the SAME
+	// [terminal.launch] opt-in as CreateFresh, keyed by the GUI id, plus its
+	// own "is this an ADVERTISED GUI row" gate. It returns a receipt (run id,
+	// pid, and the honest wrap verdict) rather than a terminal token, because
+	// there is nothing for the browser to attach to. T2.
+	CreateGUI(spec GUILaunchSpec) (GUILaunchResult, error)
+	// GUIRuns lists this daemon's GUI launches, newest first, including exited
+	// ones (bounded in-memory history). A detached app never appears in
+	// Snapshot — it owns no PTY — so this is the only live view of it.
+	GUIRuns() []GUIRunInfo
 	// CreateSetup spawns a fixed, server-derived local operator SETUP command
 	// (SetupSpec.Argv — e.g. the one-time Tailscale operator grant) in a PTY,
 	// bypassing the AI-launch policy / terminal_run identity / OOB channel. The
@@ -259,6 +273,29 @@ type FreshLaunchSpec struct {
 	WorkspaceBranch string
 }
 
+// SSHLaunchSpec is the dashboard's server-derived SSH remote-system request.
+// Profile is the ONLY client-influenced field, and it is a NAME the application
+// service must find in the operator's own config — see LaunchManager.CreateSSH.
+type SSHLaunchSpec struct {
+	Profile string
+	Rows    uint16
+	Cols    uint16
+}
+
+// SSHProfileInfo is one picker row. It carries what the UI needs to let an
+// operator recognise a system and nothing more: KeyHint is the key file's
+// BASENAME (so the dashboard never discloses the operator's filesystem layout)
+// and there is no field for key material, because none exists anywhere in this
+// feature.
+type SSHProfileInfo struct {
+	Name    string `json:"name"`
+	Label   string `json:"label"`
+	Target  string `json:"target"`
+	Jump    string `json:"jump,omitempty"`
+	HasKey  bool   `json:"has_key"`
+	KeyHint string `json:"key_hint,omitempty"`
+}
+
 // ResumeLaunchSpec is the dashboard's server-derived NATIVE-resume request
 // (P3). Tool is the client-chosen tool NAME (validated against the fresh-launch
 // allow-list by the application service); Subcommand is resolved server-side
@@ -383,6 +420,19 @@ var (
 	// like ErrLaunchUnsupported for the base PTY seam, never a silent
 	// fall-through to an unsandboxed launch.
 	ErrLaunchSandboxUnavailable = errors.New("sandboxed launch requested but the sandbox seam is not configured on this daemon")
+	// ErrLaunchSSHDisabled signals [terminal.ssh].enabled is off (403). An SSH
+	// shell runs arbitrary commands on ANOTHER machine, so it is a conscious
+	// opt-in separate from allow_shell (which grants only a local shell).
+	ErrLaunchSSHDisabled = errors.New("SSH remote-system launch is disabled (set [terminal.ssh].enabled)")
+	// ErrLaunchSSHProfileUnknown signals the requested profile name is not in
+	// the operator's [[terminal.ssh.profiles]] list (400). This is the gate
+	// that makes a client-supplied NAME safe: a destination the operator never
+	// wrote down can never be reached.
+	ErrLaunchSSHProfileUnknown = errors.New("no such SSH profile")
+	// ErrLaunchSSHProfileInvalid signals the named profile failed re-validation
+	// at launch — a malformed field, or a key_path that no longer resolves to a
+	// regular file (400).
+	ErrLaunchSSHProfileInvalid = errors.New("SSH profile is not valid")
 )
 
 // ControlDenialReason is the stable wire taxonomy for a refused remote writer
@@ -813,10 +863,12 @@ func (s *Server) sessionHasLiveSensitiveRun(sessionID string) bool {
 
 // launchSubcommand resolves a target tool name to its observer launcher
 // verb, or ("", false) when the tool is not launchable in the embedded
-// terminal. Branches on the Launch capability shape, never the tool name.
+// terminal. Branches on the Launch capability shape + the harness
+// lifecycle (integration.TerminalLaunchable), never the tool name: a
+// deprecated or dead row is never offered for launch.
 func launchSubcommand(tool string) (string, bool) {
 	cap, ok := integration.For(tool)
-	if !ok || !cap.Handoff.Launchable() {
+	if !ok || !integration.TerminalLaunchable(cap) {
 		return "", false
 	}
 	return cap.Handoff.Launch.Subcommand, true
@@ -854,21 +906,34 @@ func resumeInfoForTool(tool string) sessionResumeInfo {
 	if cap.Resume.Kind == integration.ResumeNative {
 		return sessionResumeInfo{Kind: "native", Subcommand: cap.Resume.Subcommand}
 	}
-	if cap.Handoff.Launchable() {
+	if integration.TerminalLaunchable(cap) {
 		return sessionResumeInfo{Kind: "handoff"}
 	}
 	return sessionResumeInfo{Kind: "none"}
 }
 
+// resumeInfoForSession excludes transcript partitions whose display ID is not
+// a vendor-resumable conversation. Their parent link and handoff stay usable.
+func resumeInfoForSession(tool, sessionID string) sessionResumeInfo {
+	info := resumeInfoForTool(tool)
+	if info.Kind == "native" && strings.Contains(sessionID, ":agent:") {
+		return sessionResumeInfo{Kind: "handoff"}
+	}
+	return info
+}
+
 // launchableTools returns every tool NAME launchable in the embedded terminal,
 // sorted, resolved from the capability registry (dispatch on capability shape,
-// never tool name). The fresh-launch dialog uses it to populate its picker
-// honestly; the operator's [terminal.launch].allowed_tools allow-list still
-// governs which of these actually launch (enforced server-side).
+// never tool name) through integration.TerminalLaunchable — so a row whose
+// product the vendor deprecated or killed is absent from the picker while its
+// existing sessions keep being captured. The fresh-launch dialog uses it to
+// populate its picker honestly; the operator's [terminal.launch].allowed_tools
+// allow-list still governs which of these actually launch (enforced
+// server-side).
 func launchableTools() []string {
 	var out []string
 	for _, c := range integration.Capabilities() {
-		if c.Handoff.Launchable() {
+		if integration.TerminalLaunchable(c) {
 			out = append(out, c.Tool)
 		}
 	}
@@ -921,7 +986,7 @@ func modelSuggestionsFor(ctx context.Context, recentModels func(context.Context,
 		return false, suggestions
 	}
 	cap, ok := integration.For(tool)
-	if !ok || !cap.Handoff.Launchable() || cap.Model.Kind == integration.ModelNone {
+	if !ok || !integration.TerminalLaunchable(cap) || cap.Model.Kind == integration.ModelNone {
 		return false, suggestions
 	}
 
@@ -976,16 +1041,19 @@ type launchResponse struct {
 }
 
 // hasProjectRoot reports whether a freshly-minted terminal token resolves to a
-// known, non-default project root — via the same ProjectRootResolver seam the
-// project panel uses. A nil resolver (panel unwired) or a rootless/unknown token
-// both yield false, so a POST response can honestly tell the dock up front
-// whether the Files/Git panels are available (finding 8).
+// BROWSABLE directory — via the same ProjectRootResolver seam the project panel
+// uses, so the button the dock enables and the endpoint that serves it can
+// never disagree. A nil resolver (panel unwired), an unknown token, or a run
+// with no local directory at all (SSH) yield false; a default-cwd launch yields
+// TRUE on its own working directory (operator ruling 2026-08-28), so the
+// Files/Git buttons are enabled by default rather than gated on the launch
+// allow-list.
 func (s *Server) hasProjectRoot(token string) bool {
 	if s.opts.ProjectRootResolver == nil {
 		return false
 	}
 	root, known := s.opts.ProjectRootResolver(token)
-	return known && root != ""
+	return known && root.Path != ""
 }
 
 // handleSessionLaunch serves POST /api/session/<id>/launch. It validates the
@@ -1169,7 +1237,7 @@ func (s *Server) handleSessionResume(w http.ResponseWriter, r *http.Request, ses
 	// with an honest message naming the handoff-fork fallback the Continue-in…
 	// card provides. Dispatch on capability SHAPE, never a tool-name switch.
 	cap, ok := integration.For(tool)
-	if !ok || cap.Resume.Kind != integration.ResumeNative {
+	if !ok || cap.Resume.Kind != integration.ResumeNative || resumeInfoForSession(tool, sessionID).Kind != "native" {
 		http.Error(w, "native resume not grounded for "+tool+"; use Continue in… to fork instead", http.StatusConflict)
 		return
 	}
@@ -1251,6 +1319,12 @@ func (s *Server) handleSessionResume(w http.ResponseWriter, r *http.Request, ses
 // than rejected, see handleTerminalLaunch. No argv, no session id (fresh
 // launch), no BinPath.
 type terminalLaunchRequest struct {
+	// Kind selects the launch SHAPE (integration.LaunchKind): "" or "terminal"
+	// is the PTY launch this endpoint has always served — that path is
+	// byte-identical when the field is absent — and "gui" dispatches to the
+	// detached IDE / desktop-app launch. The dashboard branches on this SHAPE,
+	// never on the tool name (CLAUDE.md #3). Any other value is a 400.
+	Kind        string `json:"kind"`
 	Tool        string `json:"tool"`
 	ProjectRoot string `json:"project_root"`
 	Model       string `json:"model"`
@@ -1310,6 +1384,20 @@ func (s *Server) handleTerminalLaunch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Launch-SHAPE dispatch (T2). An absent or "terminal" kind falls through to
+	// the PTY path below unchanged — every gate above it already ran, and
+	// nothing after this switch reads body.Kind — so a client that predates the
+	// field gets byte-identical behaviour. Only "gui" branches away.
+	switch integration.LaunchKind(strings.TrimSpace(body.Kind)) {
+	case "", integration.LaunchKindTerminal:
+		// fall through to the PTY launch
+	case integration.LaunchKindGUI:
+		s.handleGUILaunch(w, body)
+		return
+	default:
+		writeErrStatus(w, errors.New("unknown launch kind "+body.Kind), http.StatusBadRequest)
+		return
+	}
 	// The reserved pseudo-tool "shell" (termsvc.ShellTool) requests a fresh
 	// PLAIN SHELL — never a member of the launchable capability set, so it
 	// skips launchSubcommand entirely and is gated by [terminal.launch].
@@ -1355,42 +1443,8 @@ func (s *Server) handleTerminalLaunch(w http.ResponseWriter, r *http.Request) {
 	if workspaceSource == "" {
 		workspaceSource = "live"
 	}
-	if body.Sandbox {
-		if s.opts.SandboxProber == nil {
-			// A5: nil seam = feature absent = fail closed, exactly like the
-			// LaunchManager==nil 503 above but scoped to the sandbox
-			// sub-feature (501 — capability absent on this daemon build/
-			// config, distinct from LaunchManager's total absence).
-			http.Error(w, ErrLaunchSandboxUnavailable.Error(), http.StatusNotImplemented)
-			return
-		}
-		av := s.opts.SandboxProber.ProbeSandbox(r.Context())
-		if !av.Available {
-			http.Error(w, "sandbox unavailable ("+av.Verdict+"): "+av.Reason, statusForSandboxVerdict(av.Verdict))
-			return
-		}
-		src, ok := sandboxSourceByID(av.Sources, workspaceSource)
-		switch {
-		case !ok:
-			http.Error(w, "unknown workspace source "+workspaceSource, http.StatusBadRequest)
-			return
-		case !src.Available:
-			http.Error(w, "workspace source "+workspaceSource+" is not available: "+src.Reason, http.StatusBadRequest)
-			return
-		}
-		if workspaceSource == "live" && strings.TrimSpace(body.ProjectRoot) == "" {
-			http.Error(w, "a sandboxed terminal needs a project directory", http.StatusBadRequest)
-			return
-		}
-		toolAvail, ok := av.Tools[body.Tool]
-		switch {
-		case !ok:
-			http.Error(w, "tool "+body.Tool+" cannot be sandboxed: no grounded sandbox row for this tool", http.StatusBadRequest)
-			return
-		case !toolAvail.Available:
-			http.Error(w, "tool "+body.Tool+" cannot be sandboxed: "+toolAvail.Reason, http.StatusBadRequest)
-			return
-		}
+	if body.Sandbox && !s.sandboxRequestOK(w, r, body, workspaceSource) {
+		return
 	}
 	handle, err := s.opts.LaunchManager.CreateFresh(FreshLaunchSpec{
 		Tool:            body.Tool,
@@ -1441,6 +1495,57 @@ func (s *Server) handleTerminalLaunch(w http.ResponseWriter, r *http.Request) {
 	// at daemon start (just-installed Muse/Prime/…) is hot-added and
 	// scanned. Fire-and-forget; never blocks the launch response.
 	s.kickWatchRootsRefresh()
+}
+
+// sandboxRequestOK runs handleTerminalLaunch's FAIL-CLOSED sandbox validation
+// and reports whether the launch may proceed. It writes the refusal itself
+// (and returns false) on every miss, so the caller's whole sandbox branch is
+// one line. Extracted verbatim from handleTerminalLaunch — the checks, their
+// order, their status codes and their messages are unchanged; the extraction
+// exists to keep that handler under the gocyclo bound as the launch-kind
+// dispatch grows.
+//
+// Every arm refuses rather than degrading: the caller asked for isolation, and
+// silently handing back an unsandboxed process would be a safety regression,
+// not a graceful degrade (plan §7, "no unsandboxed fallback path exists in the
+// code").
+func (s *Server) sandboxRequestOK(w http.ResponseWriter, r *http.Request, body terminalLaunchRequest, workspaceSource string) bool {
+	if s.opts.SandboxProber == nil {
+		// A5: nil seam = feature absent = fail closed, exactly like the
+		// LaunchManager==nil 503 but scoped to the sandbox sub-feature (501 —
+		// capability absent on this daemon build/config, distinct from
+		// LaunchManager's total absence).
+		http.Error(w, ErrLaunchSandboxUnavailable.Error(), http.StatusNotImplemented)
+		return false
+	}
+	av := s.opts.SandboxProber.ProbeSandbox(r.Context())
+	if !av.Available {
+		http.Error(w, "sandbox unavailable ("+av.Verdict+"): "+av.Reason, statusForSandboxVerdict(av.Verdict))
+		return false
+	}
+	src, ok := sandboxSourceByID(av.Sources, workspaceSource)
+	switch {
+	case !ok:
+		http.Error(w, "unknown workspace source "+workspaceSource, http.StatusBadRequest)
+		return false
+	case !src.Available:
+		http.Error(w, "workspace source "+workspaceSource+" is not available: "+src.Reason, http.StatusBadRequest)
+		return false
+	}
+	if workspaceSource == "live" && strings.TrimSpace(body.ProjectRoot) == "" {
+		http.Error(w, "a sandboxed terminal needs a project directory", http.StatusBadRequest)
+		return false
+	}
+	toolAvail, ok := av.Tools[body.Tool]
+	switch {
+	case !ok:
+		http.Error(w, "tool "+body.Tool+" cannot be sandboxed: no grounded sandbox row for this tool", http.StatusBadRequest)
+		return false
+	case !toolAvail.Available:
+		http.Error(w, "tool "+body.Tool+" cannot be sandboxed: "+toolAvail.Reason, http.StatusBadRequest)
+		return false
+	}
+	return true
 }
 
 // kickWatchRootsRefresh invokes Options.RefreshWatchRoots when wired.
@@ -1496,16 +1601,79 @@ func sandboxSourceByID(sources []SandboxSourceAvail, id string) (src SandboxSour
 	return SandboxSourceAvail{}, false
 }
 
+// errTerminalUnavailable is the ONE honest sentence every 503 on the terminal
+// routes uses when Options.LaunchManager is nil (audit DI-16). A nil manager
+// means buildTerminalStack returned nothing, which has exactly two causes:
+// [handoff].allow_dashboard_launch = false, or no PTY backend on this OS.
+// The pre-ConPTY copy ("run the daemon under WSL/Linux") is WRONG since
+// 2026-07-04 — a native-Windows daemon runs these terminals.
+const errTerminalUnavailable = "the in-dashboard terminal is disabled on this daemon " +
+	"([handoff].allow_dashboard_launch = false) or unsupported on this OS " +
+	"(Windows before 10 version 1809 has no ConPTY)"
+
+// LaunchableTool annotates ONE entry of the New-Terminal picker with the two
+// independent allow-lists that decide what actually happens after the operator
+// hits Start (audit DI-06 / DI-07). It is a SIBLING of the plain
+// launchable_tools string list, never a replacement — existing clients keep
+// reading launchable_tools.
+//
+// Allowed and Watched are deliberately separate because the gates are
+// separate: a tool may be launchable-and-allowed yet produce no captured data,
+// or be watched yet refused at launch. "installed" is deliberately ABSENT —
+// answering it would run the binary resolver once per launchable tool on every
+// poll of this VIEW route; the per-tool /api/terminal/launch/preflight answers
+// it on demand.
+type LaunchableTool struct {
+	Tool string `json:"tool"`
+	// Allowed mirrors [terminal.launch].allowed_tools membership — the LAUNCH
+	// gate termsvc enforces at spawn time (default empty = deny-all).
+	Allowed bool `json:"allowed"`
+	// Watched mirrors [observer.watch].enabled_adapters membership — the
+	// CAPTURE gate. Computed through diag.AdapterWatched, the one owner of the
+	// list's nil-vs-empty rule (nil = every adapter watched; non-nil empty =
+	// none), so this flag and /api/terminal/policy's unwatched_allowed_tools
+	// can never disagree.
+	Watched bool `json:"watched"`
+}
+
+// launchableToolInfo annotates the launchable capability set with the two
+// independent allow-lists (DI-06). It is pure over the passed config — the
+// zero config is the honest floor (nothing allowed, everything watched),
+// matching what the launch + watch paths themselves do with a zero config.
+func launchableToolInfo(cfg config.Config) []LaunchableTool {
+	allowed := make(map[string]bool, len(cfg.Terminal.Launch.AllowedTools))
+	for _, t := range cfg.Terminal.Launch.AllowedTools {
+		allowed[strings.TrimSpace(t)] = true
+	}
+	tools := launchableTools()
+	out := make([]LaunchableTool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, LaunchableTool{
+			Tool:    t,
+			Allowed: allowed[t],
+			Watched: diag.AdapterWatched(cfg, t),
+		})
+	}
+	return out
+}
+
 // handleTerminalSessions serves GET /api/terminal/sessions — the live
 // terminal-session list (metadata only, no content). Classified VIEW (§9).
 // It generalizes /api/launch/sessions under the terminal route namespace.
+//
+// It is also the picker's annotation SOURCE (DI-06): a paired remote device
+// gets 403 on the Local /api/terminal/policy route, so the per-tool allowed /
+// watched flags must ride this VIEW route to be readable from a remote tab.
 func (s *Server) handleTerminalSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		http.Error(w, "launch unavailable", http.StatusServiceUnavailable)
+		// Two causes, both honest (DI-16): the operator turned the launch
+		// surface off, or this OS cannot build a PTY. JSON so the SPA can read
+		// the reason instead of rendering "no launchable tools" (DI-05).
+		writeErrStatus(w, errors.New(errTerminalUnavailable), http.StatusServiceUnavailable)
 		return
 	}
 	// Surface the operator's canonicalized [terminal.launch].allowed_project_roots
@@ -1519,15 +1687,26 @@ func (s *Server) handleTerminalSessions(w http.ResponseWriter, r *http.Request) 
 	// dialog uses it to decide whether to offer the plain-shell picker option
 	// honestly (rather than always showing it and failing at launch time).
 	var shellEnabled bool
-	if cfg, err := loadConfigForDashboard(s.opts.ConfigPath); err == nil {
+	// cfg stays the zero value when the config cannot be loaded — the same
+	// deny-all / watch-all floor every other read of an unloadable config uses.
+	var cfg config.Config
+	if loaded, err := loadConfigForDashboard(s.opts.ConfigPath); err == nil {
+		cfg = loaded
 		allowedRoots = resolveAllowedProjectRoots(cfg.Terminal.Launch.AllowedProjectRoots)
 		shellEnabled = cfg.Terminal.Enabled && cfg.Terminal.Launch.AllowShell
 	}
 	writeJSON(w, map[string]any{
 		"sessions":              s.visibleSnapshot(r.Context()),
 		"launchable_tools":      launchableTools(),
+		"launchable_tool_info":  launchableToolInfo(cfg),
 		"allowed_project_roots": allowedRoots,
 		"shell_enabled":         shellEnabled,
+		// The GUI launch surface (T2), strictly ADDITIVE: the picker's
+		// "IDE / desktop app" group and the live detached-app list. A GUI run
+		// owns no PTY, so it can never appear in "sessions" — the two lists
+		// describe disjoint things and neither shadows the other.
+		"gui_launchables": guiLaunchableInfo(cfg),
+		"gui_runs":        s.guiRuns(),
 	})
 }
 
@@ -1541,12 +1720,26 @@ func (s *Server) handleTerminalSessions(w http.ResponseWriter, r *http.Request) 
 // Options.ToolPreflight seam, so the dashboard package carries no dependency on
 // internal/toolresolve (CLAUDE.md #2).
 type ToolPreflight struct {
-	Tool           string   `json:"tool"`
+	Tool string `json:"tool"`
+	// Kind is the launch SHAPE this verdict describes: "gui" for an IDE /
+	// desktop-app row, omitted for the terminal (PTY) rows this endpoint has
+	// always served. It exists so the dialog can render the right affordances
+	// (no model picker, no sandbox, a project-root control only when the app
+	// takes one) from the preflight alone, without a second lookup — and so a
+	// client that predates GUI rows sees an unchanged payload.
+	Kind           string   `json:"kind,omitempty"`
 	Verdict        string   `json:"verdict"`
 	Bin            string   `json:"bin,omitempty"`
 	Notes          []string `json:"notes,omitempty"`
 	InstallCommand string   `json:"install_command,omitempty"`
 	CanInstall     bool     `json:"can_install"`
+	// InstallNote is the honest-zero companion to InstallCommand (audit
+	// DI-03): the grounded REASON there is no guided install for this tool on
+	// this OS, so the dialog's not-installed branch never dead-ends with a
+	// bare "X is not installed." and no next step. It is filled by the seam
+	// ONLY when no install plan exists — never alongside a usable
+	// InstallCommand — and is omitted from the wire when empty.
+	InstallNote string `json:"install_note,omitempty"`
 }
 
 // handleTerminalPreflight serves GET /api/terminal/launch/preflight?tool=<name>
@@ -1564,17 +1757,28 @@ func (s *Server) handleTerminalPreflight(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if s.opts.ToolPreflight == nil {
-		http.Error(w, "preflight unavailable — this dashboard runs without the tool-resolution seam (run via `observer start`)", http.StatusNotImplemented)
+		writeErrStatus(w, errors.New("preflight unavailable — this dashboard runs without the tool-resolution seam (run via `observer start`)"), http.StatusNotImplemented)
 		return
 	}
 	tool := strings.TrimSpace(r.URL.Query().Get("tool"))
 	if tool == "" {
-		http.Error(w, "missing tool query parameter", http.StatusBadRequest)
+		writeErrStatus(w, errors.New("missing tool query parameter"), http.StatusBadRequest)
+		return
+	}
+	// DI-18: the reserved plain-shell pseudo-tool LAUNCHES fine (handleTerminalLaunch
+	// special-cases termsvc.ShellTool and skips binary resolution entirely) but has
+	// no binary to preflight. Keep the 400 — there is genuinely no verdict to give —
+	// but say WHY, instead of the misleading "not launchable" the generic arm below
+	// produces. termsvc.ShellTool is the single owner of the sentinel's spelling
+	// (handleTerminalLaunch reads the same constant); the SPA mirrors it as
+	// SHELL_TOOL in NewTerminalDialog.tsx.
+	if tool == termsvc.ShellTool {
+		writeErrStatus(w, errors.New("the plain shell has no binary to preflight"), http.StatusBadRequest)
 		return
 	}
 	pf, ok := s.opts.ToolPreflight(tool)
 	if !ok {
-		http.Error(w, "tool "+tool+" is not launchable in the embedded terminal", http.StatusBadRequest)
+		writeErrStatus(w, errors.New("tool "+tool+" is not launchable in the embedded terminal"), http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, pf)
@@ -1636,35 +1840,48 @@ type terminalInstallRequest struct {
 // (or its seam nil) → 403; no grounded install command for the tool → 400. The
 // argv is a registry constant supplied by the Options.ToolInstallHint seam,
 // never request input, and the spawned session is SpecSetup → local-writer-only.
+//
+// DELIBERATELY NOT gated by [terminal.launch].allowed_tools or
+// allow_fresh_agent (audit DI-21, decision confirmed 2026-09-02): installing is
+// not launching. The argv is a compile-time constant, the route is Local +
+// confirm-token gated, and the operator who flipped allow_install on has
+// already consented to running vendor installers from here. Gating install on
+// the LAUNCH allow-list would force an operator to widen the launch policy just
+// to obtain a binary. The picker's per-tool `allowed` flag (LaunchableTool,
+// DI-06) closes the real UX gap instead. Pinned by
+// TestTerminalInstallIsNotGatedByAllowedTools.
+//
+// Every non-200 emits application/json {"error": …} via writeErrStatus (DI-05)
+// so the SPA can map status → copy instead of surfacing a raw body.
 func (s *Server) handleTerminalInstall(w http.ResponseWriter, r *http.Request) {
 	if !requireConfirmToken(w, r) {
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		http.Error(w, `{"error":"the in-dashboard terminal is not available on this platform — run the observer daemon under WSL/Linux to install tools from here"}`, http.StatusServiceUnavailable)
+		writeErrStatus(w, errors.New(errTerminalUnavailable), http.StatusServiceUnavailable)
 		return
 	}
 	if s.opts.AllowToolInstall == nil || !s.opts.AllowToolInstall() {
-		http.Error(w, `{"error":"guided install is disabled — set [terminal.launch].allow_install = true to enable the Install-in-terminal affordance"}`, http.StatusForbidden)
+		writeErrStatus(w, errors.New("guided install is disabled — set [terminal.launch].allow_install = true to enable the Install-in-terminal affordance"), http.StatusForbidden)
 		return
 	}
 	var body terminalInstallRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
-		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+		writeErrStatus(w, fmt.Errorf("invalid JSON body: %w", err), http.StatusBadRequest)
 		return
 	}
 	tool := strings.TrimSpace(body.Tool)
 	if tool == "" {
-		http.Error(w, "missing tool", http.StatusBadRequest)
+		writeErrStatus(w, errors.New("missing tool"), http.StatusBadRequest)
 		return
 	}
 	if s.opts.ToolInstallHint == nil {
-		http.Error(w, "no grounded install command for "+tool, http.StatusBadRequest)
+		writeErrStatus(w, errors.New("no grounded install command for "+tool), http.StatusBadRequest)
 		return
 	}
 	argv, display, ok := s.opts.ToolInstallHint(tool)
 	if !ok {
-		http.Error(w, "no grounded install command for "+tool, http.StatusBadRequest)
+		writeErrStatus(w, errors.New("no grounded install command for "+tool), http.StatusBadRequest)
 		return
 	}
 	handle, err := s.opts.LaunchManager.CreateSetup(SetupSpec{
@@ -1882,6 +2099,11 @@ type wsControl struct {
 	Expiry bool `json:"expiry,omitempty"`
 	// Reason carries the typed denial taxonomy on control_denied.
 	Reason ControlDenialReason `json:"reason,omitempty"`
+	// PolicyStop rides the {"t":"exit",…} frame ONLY, when this run's PTY
+	// child was stopped by an org-managed node's own node-intervention loop
+	// (policystop.go). Omitted when there is nothing to show — a bare exit
+	// still renders exactly as before this arc.
+	PolicyStop *PolicyStop `json:"policy_stop,omitempty"`
 }
 
 // ptyGeometry is the PTY dimension snapshot the on-open (and control-transition)
@@ -1889,6 +2111,14 @@ type wsControl struct {
 type ptyGeometry struct {
 	rows, cols, initialRows, initialCols uint16
 }
+
+// known reports whether this snapshot carries real dimensions. The launch
+// manager seeds a session's geometry from the launch Spec and adopts the first
+// successful resize when that Spec was 0×0, so an all-zero pair is its documented
+// "size not yet known" — never a legitimate window size (a 0-row or 0-col winsize
+// does not exist). Both axes must be known: a half-known pair describes no
+// terminal the client could fit to.
+func (g ptyGeometry) known() bool { return g.rows != 0 && g.cols != 0 }
 
 // ptySizeForHandle returns the PTY geometry the pty_size frame reports for handle
 // (Feature 2). It reads the ONE live snapshot the launch manager owns — never a
@@ -1914,6 +2144,77 @@ func writePTYSize(ctx context.Context, c *websocket.Conn, g ptyGeometry) {
 		T: "pty_size", Rows: g.rows, Cols: g.cols,
 		InitialRows: g.initialRows, InitialCols: g.initialCols,
 	})
+}
+
+// ptySizeAnnounceInterval / ptySizeAnnounceWindow bound the on-open wait for a
+// PTY geometry that is not known yet (Q1 probe, P4). The interval is short
+// because the gap it covers is short — the launch manager converges within a
+// spawn, and a client's own first resize lands in milliseconds — and the window
+// is small enough that a session which simply never acquires a size (a launch
+// that requested none and a client that never resizes) costs one idle goroutine
+// for a couple of seconds and then nothing, rather than a permanent poller.
+const (
+	ptySizeAnnounceInterval = 25 * time.Millisecond
+	ptySizeAnnounceWindow   = 2 * time.Second
+)
+
+// startPTYSizeAnnounce performs the bridge's on-open geometry announce and
+// returns the send closure the bridge reuses on control transitions.
+//
+// An UNKNOWN geometry is never announced: the launch manager reports all-zero
+// until the size is known (a launch that requested no dimensions, with no resize
+// yet), and {"t":"pty_size"} with every field stripped by omitempty tells the
+// client nothing it can restore — which is the frame's whole promise, and
+// exactly what the Q1 probe captured as the FIRST text frame of every session
+// (P4). So the returned closure reports whether it actually wrote, and an
+// on-open announce with nothing to say instead leaves a bounded waiter that
+// sends the first REAL geometry, off the bridge's own goroutine.
+//
+// nil geo (older call sites / tests) disables the frame entirely.
+func startPTYSizeAnnounce(ctx context.Context, c *websocket.Conn, geo func() ptyGeometry) func() bool {
+	send := func() bool {
+		if geo == nil {
+			return false
+		}
+		g := geo()
+		if !g.known() {
+			return false
+		}
+		writePTYSize(ctx, c, g)
+		return true
+	}
+	if !send() {
+		go awaitPTYSize(ctx, send, ptySizeAnnounceInterval, ptySizeAnnounceWindow)
+	}
+	return send
+}
+
+// awaitPTYSize retries send until it reports a frame actually went out, the
+// window elapses, or ctx is done — whichever comes first. send is the bridge's
+// geometry announce, which writes nothing while the size is unknown; this is the
+// only thing that turns "nothing to announce yet" into "announced once, with real
+// dimensions". It never sends more than one frame: the first successful send
+// ends the loop.
+//
+// Durations are parameters rather than the constants above so the behaviour is
+// testable without a real 2-second wait.
+func awaitPTYSize(ctx context.Context, send func() bool, interval, window time.Duration) {
+	deadline := time.NewTimer(window)
+	defer deadline.Stop()
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			return
+		case <-tick.C:
+			if send() {
+				return
+			}
+		}
+	}
 }
 
 // applyResizeFrame forwards ONE client {"t":"resize"} frame to a live writer
@@ -2165,7 +2466,7 @@ func (s *Server) handleLaunchWS(w http.ResponseWriter, r *http.Request) {
 		// the writer lease closes the socket (the device is no longer trusted); a
 		// lease takeover only demotes. The owner-local bridge below passes false
 		// so its revoke behaviour stays byte-identical (always demote).
-		s.bridgeTerminalWS(r.Context(), c, sub, nil, acquire, denied, true, func() ptyGeometry { return s.ptySizeForHandle(handle) })
+		s.bridgeTerminalWS(r.Context(), c, sub, nil, acquire, denied, true, handle, func() ptyGeometry { return s.ptySizeForHandle(handle) })
 		return
 	}
 
@@ -2191,7 +2492,7 @@ func (s *Server) handleLaunchWS(w http.ResponseWriter, r *http.Request) {
 	// closeOnHardRevoke=false: the local loopback path always DEMOTES on a
 	// revoke (byte-identical to prior behaviour) — the socket-closing branch is
 	// remote-only.
-	s.bridgeTerminalWS(r.Context(), c, sub, writer, localAcquire, nil, false, func() ptyGeometry { return s.ptySizeForHandle(handle) })
+	s.bridgeTerminalWS(r.Context(), c, sub, writer, localAcquire, nil, false, handle, func() ptyGeometry { return s.ptySizeForHandle(handle) })
 }
 
 // terminalPingInterval / terminalPingTimeout drive the WS liveness probe. Every
@@ -2269,7 +2570,7 @@ func SetTerminalPingPolicy(interval, timeout time.Duration, failuresAllowed int)
 // demotes, keeping that path byte-identical. A normal PTY-exit teardown never
 // reaches this branch: the exit notifier cancels the bridge context first, so
 // watchRevoke returns via ctx.Done rather than the revoked channel.
-func (s *Server) bridgeTerminalWS(parent context.Context, c *websocket.Conn, sub LaunchSubscription, writer LaunchWriter, acquire func(capTok, confirm string) (LaunchWriter, error), denied *deniedFrameCoalescer, closeOnHardRevoke bool, geo func() ptyGeometry) {
+func (s *Server) bridgeTerminalWS(parent context.Context, c *websocket.Conn, sub LaunchSubscription, writer LaunchWriter, acquire func(capTok, confirm string) (LaunchWriter, error), denied *deniedFrameCoalescer, closeOnHardRevoke bool, handle string, geo func() ptyGeometry) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
@@ -2279,12 +2580,10 @@ func (s *Server) bridgeTerminalWS(parent context.Context, c *websocket.Conn, sub
 	// re-fits when control changes hands). geo re-reads the manager's live size
 	// each call, so a control-transition re-send is never stale. nil geo (older
 	// call sites / tests) disables the frame.
-	sendPTYSize := func() {
-		if geo != nil {
-			writePTYSize(ctx, c, geo())
-		}
-	}
-	sendPTYSize()
+	//
+	// An UNKNOWN geometry is never announced — see startPTYSizeAnnounce, which
+	// performs the on-open announce and returns the closure reused below.
+	sendPTYSize := startPTYSizeAnnounce(ctx, c, geo)
 	// Flush the coalesced tail of dropped-frame drops on teardown so a viewer
 	// that floods then disconnects still yields a bounded final count (nil-safe:
 	// the owner-local path wires no coalescer).
@@ -2398,7 +2697,18 @@ func (s *Server) bridgeTerminalWS(parent context.Context, c *websocket.Conn, sub
 		}
 		<-readerDone // let the reader flush the final bytes first
 		_, code := sub.Exited()
-		_ = wsjson.Write(ctx, c, wsControl{T: "exit", Code: code})
+		frame := wsControl{T: "exit", Code: code}
+		// Resolve the policy-stop explanation ONCE, off a short bounded
+		// timeout independent of ctx (which this same goroutine cancels right
+		// below) — a slow/unavailable lookup must never delay the exit frame
+		// beyond a bounded budget. A nil PolicyStop seam or a not-found lookup
+		// both leave frame.PolicyStop nil, so a bare exit renders unchanged.
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if stop, ok := s.resolvePolicyStop(stopCtx, handle); ok {
+			frame.PolicyStop = &stop
+		}
+		stopCancel()
+		_ = wsjson.Write(ctx, c, frame)
 		cancel()
 	}()
 

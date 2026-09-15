@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/attachsock"
 )
 
 // TestDecideAttach walks every row of the default-on attach decision table
@@ -507,11 +509,25 @@ func TestNoAttachComposesWithResumeAndContinue(t *testing.T) {
 // path reports unreachable, and a live listener at the derived attach-socket path
 // reports reachable (reusing the same attachsock.Dial the interactive client
 // uses).
+//
+// The live-listener half is AF_UNIX-specific and is skipped on a host whose
+// attach transport is not the unix socket. attachSocketReachable probes
+// attachSocketPath — the ON-DISK path, which is the transport endpoint only on
+// unix — so on a named-pipe host it reports unreachable unconditionally. That
+// is currently the CORRECT answer there (the interactive `--attach` client is
+// still the honest non-unix stub, so default-on attach must resolve to a bare
+// launch), but it is a KNOWN residual to revisit together with a native console
+// client: at that point the probe must consult attachEndpoint, not
+// attachSocketPath.
 func TestAttachSocketReachable(t *testing.T) {
 	// Nonexistent daemon.
 	missing := filepath.Join(t.TempDir(), "observer.db")
 	if attachSocketReachable(missing) {
 		t.Errorf("attachSocketReachable(%q) = true, want false (no daemon)", missing)
+	}
+
+	if got := attachsock.DefaultTransport().Describe(); got != attachsock.TransportUnixSocket {
+		t.Skipf("attach transport is %q, not %q — the live-listener probe below pins AF_UNIX behaviour", got, attachsock.TransportUnixSocket)
 	}
 
 	// Live listener at the derived socket path.

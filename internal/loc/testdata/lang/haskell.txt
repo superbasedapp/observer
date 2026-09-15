@@ -1,0 +1,7 @@
+-- | A line comment
+module Main where
+
+{- Block
+   comment -}
+main :: IO ()
+main = putStrLn "-- not a comment"

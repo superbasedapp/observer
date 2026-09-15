@@ -145,9 +145,14 @@ var claudeCodeExpect = map[string]rowExpect{
 	"R-154": {entries: 12, deny: 12}, "R-155": {entries: 5, deny: 4}, "R-156": {entries: 2},
 	"R-157": {},
 	"R-160": {entries: 4, deny: 4}, "R-161": {}, "R-170": {}, "R-171": {}, "R-172": {},
-	"R-173": {}, "R-180": {}, "R-204": {}, "R-205": {}, "R-301": {}, "R-302": {}, "R-303": {},
+	"R-173": {}, "R-180": {}, "R-190": {}, "R-204": {}, "R-205": {}, "R-301": {}, "R-302": {}, "R-303": {},
 	"R-304": {entries: 8, deny: 8}, "R-305": {},
 	"B-603": {}, "B-604": {}, "B-610": {}, "B-611": {}, "B-612": {}, "B-613": {},
+	// Token-denominated budget rows (org-budget plan §3.3c): runtime state
+	// like their $ siblings, so no native dialect can express them either.
+	"B-621": {}, "B-622": {}, "B-623": {}, "B-624": {},
+	// The fail-closed row (org-budget ruling R2): daemon state, same reason.
+	"B-625": {},
 	"T-501": {}, "T-502": {}, "T-503": {}, "T-504": {}, "T-505": {},
 	"B-601": {}, "B-602": {}, "A-610": {},
 }
@@ -159,11 +164,16 @@ var openCodeExpect = map[string]rowExpect{
 	"R-150": {}, "R-151": {}, "R-152": {}, "R-153": {},
 	"R-154": {}, "R-155": {entries: 1}, "R-156": {}, "R-157": {},
 	"R-160": {}, "R-161": {}, "R-170": {}, "R-171": {}, "R-172": {},
-	"R-173": {}, "R-180": {}, "R-204": {}, "R-205": {}, "R-301": {}, "R-302": {}, "R-303": {},
+	"R-173": {}, "R-180": {}, "R-190": {}, "R-204": {}, "R-205": {}, "R-301": {}, "R-302": {}, "R-303": {},
 	"R-304": {}, "R-305": {},
 	"T-501": {}, "T-502": {}, "T-503": {}, "T-504": {}, "T-505": {},
 	"B-601": {}, "B-602": {}, "A-610": {},
 	"B-603": {}, "B-604": {}, "B-610": {}, "B-611": {}, "B-612": {}, "B-613": {},
+	// Token-denominated budget rows (org-budget plan §3.3c): runtime state
+	// like their $ siblings, so no native dialect can express them either.
+	"B-621": {}, "B-622": {}, "B-623": {}, "B-624": {},
+	// The fail-closed row (org-budget ruling R2): daemon state, same reason.
+	"B-625": {},
 }
 
 // TestCompile_PerRow runs the full built-in catalog through each

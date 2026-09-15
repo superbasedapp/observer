@@ -2,6 +2,7 @@ package orgclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 
@@ -98,5 +99,47 @@ func (c *Client) PolicyResourcePollLoop(ctx context.Context, opts PolicyResource
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	return c.runLoop(ctx, c.policyPollInterval(), cycle)
+	return c.runLoopKick(ctx, c.policyPollInterval(), c.policyResourceKick, cycle)
+}
+
+// maybeKickPolicyResourceFetch is the receiving half of the push-ack
+// policy-propagation nudge (2026-09-01; see orgcontract.PushResponse
+// .PolicyVersions). It decodes the version map from the RAW push response —
+// the same raw-body pattern as maybeApplyGrantReplacement, so no client
+// regeneration — and wakes PolicyResourcePollLoop when any family's latest
+// version advanced past what the previous acknowledgment reported. The very
+// first acknowledgment after boot never kicks: the poll loop's own immediate
+// first fetch already covered it. The kick carries NO policy content — the
+// woken cycle fetches, verifies, and gates acceptance exactly as a timed one
+// does.
+func (c *Client) maybeKickPolicyResourceFetch(body []byte) {
+	var ack struct {
+		PolicyVersions map[string]int64 `json:"policy_versions"`
+	}
+	if err := json.Unmarshal(body, &ack); err != nil || len(ack.PolicyVersions) == 0 {
+		return
+	}
+	c.policyVersMu.Lock()
+	prev := c.lastPolicyVersions
+	c.lastPolicyVersions = ack.PolicyVersions
+	c.policyVersMu.Unlock()
+	if prev == nil {
+		return
+	}
+	advanced := false
+	for family, v := range ack.PolicyVersions {
+		if v > prev[family] {
+			advanced = true
+			break
+		}
+	}
+	if !advanced {
+		return
+	}
+	select {
+	case c.policyResourceKick <- struct{}{}:
+		c.logger.Info("org policy resource: newer version published — fetching now (push-ack nudge)")
+	default:
+		// A kick is already pending; one cycle covers both.
+	}
 }

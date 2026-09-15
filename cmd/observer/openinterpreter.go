@@ -140,7 +140,7 @@ func newOpenInterpreterCmd() *cobra.Command {
 			if cfg, cErr := config.Load(config.LoadOptions{GlobalPath: configPath}); cErr == nil {
 				dbPath = cfg.Observer.DBPath
 			}
-			return runSeedOnlyLaunchSeeded(dbPath, "open-interpreter", "open-interpreter", bin, args, continueDir)
+			return runSeedOnlyLaunchSeeded(configPath, dbPath, "open-interpreter", "open-interpreter", bin, args, continueDir)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml); used to resolve the source session for --continue-from")

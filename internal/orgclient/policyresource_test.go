@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -750,7 +751,7 @@ func TestFetchAndAcceptPolicyResource_KeyPinEstablishment(t *testing.T) {
 			ps.resources[policyfamAdmissionInput] = &r
 			c, s, cacheDir := enrolledPRClient(t, ps.srv.URL)
 			if tc.prePin != "" {
-				pinned, established, err := s.EstablishOrgPolicyKeyPin(ctx, PolicyKeyPinPath(ps.srv.URL), tc.prePin)
+				pinned, established, err := s.EstablishOrgPolicyKeyPin(ctx, PolicyKeyPinPath(ps.srv.URL), tc.prePin, railPinProvenance)
 				if err != nil || !established || pinned != tc.prePin {
 					t.Fatalf("pre-pin: pinned=%q established=%v err=%v", pinned, established, err)
 				}
@@ -768,5 +769,48 @@ func TestFetchAndAcceptPolicyResource_KeyPinEstablishment(t *testing.T) {
 				t.Fatalf("pin row = %+v, want content_hash %q", row, tc.wantPin)
 			}
 		})
+	}
+}
+
+// TestMaybeKickPolicyResourceFetch pins the push-ack propagation-nudge
+// semantics (2026-09-01): the first acknowledgment after boot never kicks
+// (the poll loop's immediate first fetch covers it), a version advance kicks
+// exactly once (buffered-1 coalescing), an unchanged or absent map never
+// kicks, and a malformed body is ignored.
+func TestMaybeKickPolicyResourceFetch(t *testing.T) {
+	c := New(config.OrgClientConfig{}, nil, nil, "test", nil, nil)
+
+	kicked := func() bool {
+		select {
+		case <-c.policyResourceKick:
+			return true
+		default:
+			return false
+		}
+	}
+
+	c.maybeKickPolicyResourceFetch([]byte(`{"policy_versions":{"admission.input":7}}`))
+	if kicked() {
+		t.Fatal("first ack after boot must not kick")
+	}
+	c.maybeKickPolicyResourceFetch([]byte(`{"policy_versions":{"admission.input":7}}`))
+	if kicked() {
+		t.Fatal("unchanged versions must not kick")
+	}
+	c.maybeKickPolicyResourceFetch([]byte(`{"policy_versions":{"admission.input":8}}`))
+	if !kicked() {
+		t.Fatal("a version advance must kick")
+	}
+	c.maybeKickPolicyResourceFetch([]byte(`{"policy_versions":{"admission.input":8,"node.features":1}}`))
+	if !kicked() {
+		t.Fatal("a new family appearing must kick")
+	}
+	c.maybeKickPolicyResourceFetch([]byte(`not json`))
+	if kicked() {
+		t.Fatal("malformed body must not kick")
+	}
+	c.maybeKickPolicyResourceFetch([]byte(`{"accepted_rows":3}`))
+	if kicked() {
+		t.Fatal("an ack without policy_versions must not kick")
 	}
 }

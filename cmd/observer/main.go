@@ -51,7 +51,14 @@ func main() {
 	// the authenticated Hello + launcher_started up front and tool_exec_end on
 	// the way out. A no-op for every normal invocation.
 	endOOB := emitOOBLaunchHello()
-	err := newRootCmd().Execute()
+	root := newRootCmd()
+	executed, err := root.ExecuteC()
+	// Launcher commands deliberately silence Cobra because they render their
+	// own contextual failures. Restore only errors carrying a separately
+	// bounded safe message, and do so before the OOB end frame can announce
+	// process exit to a dashboard terminal. Ordinary Cobra errors and vendor
+	// exitErr values retain their existing behavior.
+	renderSuppressedLauncherError(os.Stderr, root, executed, err)
 	exitCode := 0
 	var ec exitErr
 	if errors.As(err, &ec) {
@@ -172,6 +179,7 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 	root.AddCommand(newZcodeCmd())
 	root.AddCommand(newVibeCmd())
 	root.AddCommand(newFreebuffCmd())
+	root.AddCommand(newLOCCmd())
 	root.AddCommand(newGuardCmd())
 	root.AddCommand(newBenchmarkCmd())
 	root.AddCommand(newHookCmd())
@@ -183,6 +191,7 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 	root.AddCommand(newServiceCmd())
 	root.AddCommand(newStartCmd())
 	root.AddCommand(newRemoteCmd())
+	root.AddCommand(newSSHCmd())
 	root.AddCommand(newEvalCmd())
 	root.AddCommand(newObsCmd())
 	root.AddCommand(newDigestCmd())
@@ -191,7 +200,10 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 	root.AddCommand(newOrgCmd())
 	root.AddCommand(newObserverAliasCmd())
 	root.AddCommand(newPrivacyCmd())
+	root.AddCommand(newUpdateCmd())
 	root.AddCommand(newWorkspacesCmd())
+	root.AddCommand(newCloudCmd())
+	root.AddCommand(newPricingCmd())
 	return root
 }
 
@@ -241,6 +253,8 @@ func observerSubcommandsWith(deps usageDeps) []*cobra.Command {
 		newRoutingCmd(),
 		newModelValueCmd(),
 		newPredictCmd(),
+		newTasksCmd(),
+		newArchiveCmd(),
 		newStatuslineCmd(),
 		newHandoffCmd(),
 		newVerbosityCmd(),
@@ -274,6 +288,7 @@ func newScanCmd() *cobra.Command {
 		configPath    string
 		force         bool
 		adapterFilter string
+		sessionFiles  []string
 	)
 	cmd := &cobra.Command{
 		Use:   "scan",
@@ -306,9 +321,19 @@ only.`,
 			}
 			defer cleanup()
 			var res watcher.ScanResult
-			if force {
+			switch {
+			case len(sessionFiles) > 0:
+				for _, path := range sessionFiles {
+					one, scanErr := w.ScanFile(cmd.Context(), path, force)
+					res.FilesProcessed += one.FilesProcessed
+					res.Errors += one.Errors
+					if scanErr != nil {
+						return scanErr
+					}
+				}
+			case force:
 				res, err = w.Rescan(cmd.Context())
-			} else {
+			default:
 				res, err = w.Scan(cmd.Context())
 			}
 			if err != nil {
@@ -327,6 +352,7 @@ only.`,
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().BoolVar(&force, "force", false, "Ignore saved parse cursors and re-walk every file from offset 0 (recovery path for watcher gaps)")
 	cmd.Flags().StringVar(&adapterFilter, "adapter", "", "Restrict to a single adapter (e.g. codex, claude-code). Overrides enabled_adapters in config for this invocation only.")
+	cmd.Flags().StringArrayVar(&sessionFiles, "file", nil, "Process only this recognized session file (repeatable); combine with --force for targeted recovery")
 	return cmd
 }
 
@@ -497,6 +523,35 @@ func buildWatcherWithOverride(ctx context.Context, configPath, adapterFilter str
 	// watcher runs unguarded; policy-file problems degrade inside the
 	// Guard (LoadIssues) rather than failing it.
 	wireGuard(ctx, cfg, st, logger)
+	// Task-tracking ingest seam (docs/task-tracking.md, [tasks].enabled,
+	// default true): gates Store.Ingest's post-hoc task_items/
+	// task_transitions decode. A pure config bool, so no acquire/
+	// construction step like guard/cache — see internal/store/taskflow.go.
+	st.SetTasksEnabled(cfg.Tasks.Enabled)
+	st.SetTasksOptions(cfg.Tasks.MatchMode, cfg.Tasks.ConcurrentAttribution, cfg.Tasks.IncludeSidechains)
+	// [tasks].backfill_on_start (FIX-4, default false): re-derive
+	// task_items/task_transitions from historical actions rows once,
+	// same work as `observer backfill --tasks` run automatically for an
+	// operator who just flipped [tasks].enabled on. Backgrounded — a
+	// large corpus must not delay the rest of daemon startup — and
+	// BackfillTaskItems is idempotent, so a daemon restart mid-backfill
+	// just resumes covering the same ground harmlessly.
+	if cfg.Tasks.BackfillOnStart {
+		go func() {
+			res, err := st.BackfillTaskItems(context.Background(), 0)
+			if err != nil {
+				logger.Warn("tasks.backfill_on_start failed", "error", err)
+				return
+			}
+			logger.Info("tasks.backfill_on_start complete",
+				"actions_scanned", res.ActionsScanned, "transitions_written", res.TransitionsWritten)
+		}()
+	}
+	// Enterprise message-content capture (2026-08-28 ruling): the producer
+	// that feeds adapter-parsed conversation text into otel_content. Inert
+	// unless the node's own share posture ships raw content — see
+	// wireContentCapture / internal/store/messagecontent.go.
+	wireContentCapture(cfg, st)
 	reg := adapter.NewRegistry()
 	for _, a := range adapterdefaults.Adapters() {
 		// Wire per-adapter config into adapters that support it.
@@ -689,6 +744,16 @@ func warnAntigravityCLIWithoutNetworkRecovery(logger *slog.Logger, networkRecove
 	}
 }
 
+// warnMissingDefaultsFromAllowList is Invariant #51's startup guard.
+// Config.Default() only seeds [observer.watch] enabled_adapters when
+// the key is ABSENT from config.toml — BurntSushi TOML decoding only
+// overwrites keys present in the file — so an operator with an
+// explicit list from an older release silently never runs any
+// adapter added to the registry since. This has recurred three times
+// (latest: 5 adapters, invisible sessions) precisely because the old
+// single-line warning was easy to miss in scrollback. The banner below
+// is deliberately loud: it names every missing adapter, states the
+// concrete consequence, and gives the one-command fix.
 func warnMissingDefaultsFromAllowList(logger *slog.Logger, defaults []adapter.Adapter, allow []string) {
 	if len(allow) == 0 {
 		return
@@ -706,10 +771,21 @@ func warnMissingDefaultsFromAllowList(logger *slog.Logger, defaults []adapter.Ad
 	if len(missing) == 0 {
 		return
 	}
+	missingList := strings.Join(missing, ", ")
+	banner := "" +
+		"##################################################################\n" +
+		fmt.Sprintf("# OBSERVER: %d default adapter(s) are NOT enabled in your config.toml.\n", len(missing)) +
+		"# Missing: " + missingList + "\n" +
+		"# Sessions from these tools will not be captured at all until you fix this.\n" +
+		"# Fix it now:   observer config adopt-defaults --write\n" +
+		"# Preview only: observer config adopt-defaults\n" +
+		"# Or edit by hand: " + remediationConfigHint() + "\n" +
+		"##################################################################"
 	logger.Warn(
-		"enabled_adapters is missing registered defaults — these adapters will not run; append the names below to your config.toml's [observer.watch] enabled_adapters list to enable them",
+		banner,
 		"missing", strings.Join(missing, ","),
-		"remediation", "edit "+remediationConfigHint()+" and add: "+strings.Join(missing, ", "),
+		"remediation_cmd", "observer config adopt-defaults --write",
+		"remediation", "edit "+remediationConfigHint()+" and add: "+missingList,
 	)
 }
 

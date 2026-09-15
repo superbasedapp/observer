@@ -34,13 +34,30 @@ import "sort"
 // sentinel are byte-identical after Phase 1b.
 //
 // Because the merge can only move a boolean true → false and never
-// false → true, shipsRawContent() can only go true → false. There is no code
-// path, under any org body, any grant, any authority token, or any
-// compromise of the org signing key, by which a node that has not locally
-// set full_content or admin_managed ships raw content. The CLAUDE.md
-// invariant — "privacy posture is node-side opt-in, never server-forced" —
-// therefore needs no amendment: 1b does not widen it, it adds an org-side
-// ability to NARROW what a consenting node ships.
+// false → true, shipsRawContent() can only go true → false THROUGH THIS
+// GOVERNANCE-BODY CHANNEL. There is no code path, under any governance body,
+// any LowerBool/RaiseList directive, or any compromise of the org signing
+// key, by which a node that has not locally set full_content or
+// admin_managed ships raw content via this merge. That part of the CLAUDE.md
+// invariant needs no amendment here: 1b does not widen it, it adds an
+// org-side ability to NARROW what a consenting node ships.
+//
+// This is a TEAMS-posture statement about ONE mechanism (the governance-body
+// merge above) and remains true and byte-identical under the teams posture.
+// It does NOT describe the Plane B dual-mode gateway / RBAC-IA design's
+// separate ENTERPRISE posture (2026-08-29, design §5), which authorizes raw
+// content through a structurally distinct channel: the node's own managed
+// enrolment grant, tested via govern.Effective.GrantsEnterpriseContent() and
+// surfaced as store.ShareOptions.EnterpriseGranted
+// (internal/store/orgpush.go). That channel is not a LowerBool/RaiseList
+// merge, is never set by a governance body, and is not a remote toggle — it
+// is minted once at enrolment under a chosen product_posture and is itself
+// auditable (see internal/store/orgpush.go's ShareOptions/shipsRawContent
+// doc comments for the full three-path invariant statement). CLAUDE.md's
+// "never server-forced" phrasing is therefore posture-conditional: true
+// without qualification for teams, true under enterprise only because the
+// grant itself is a node-consulted, audited, enrolment-time artifact rather
+// than a live remote command.
 
 // LowerBool merges the org's directive for a boolean share key with the
 // node's own local value. The result is never MORE sharing than local.
@@ -134,6 +151,124 @@ func (e Effective) RaiseBool(key string, current bool) bool {
 		return current
 	}
 	return org
+}
+
+// RaiseList is RaiseBool's list-valued sibling: the Enterprise-Managed
+// Tenancy lift for a []string share key, by UNION rather than the boolean
+// true/false lattice. It exists for keys like target_action_allowlist, where
+// the org's raise adds action types to the node's own allowlist rather than
+// flipping a single switch.
+//
+// Gating mirrors RaiseBool exactly: inert unless e.Managed, and the caller
+// (the push seam) additionally gates on the key's own GrantsXxxExtraction
+// predicate before this is reachable — RaiseList itself only re-checks
+// e.Managed, the same shape as RaiseBool. An absent or malformed directive,
+// or an org list that is empty/nil, leaves current unchanged. The result is
+// deduplicated and sorted so repeated calls are stable and order-independent,
+// matching LowerList's own output discipline.
+func (e Effective) RaiseList(key string, current []string) []string {
+	if !e.Managed {
+		return current
+	}
+	v, ok := e.Share[key]
+	if !ok {
+		return current
+	}
+	org, isList := v.([]string)
+	if !isList || len(org) == 0 {
+		return current
+	}
+	union := make(map[string]bool, len(current)+len(org))
+	for _, s := range current {
+		union[s] = true
+	}
+	for _, s := range org {
+		union[s] = true
+	}
+	if len(union) == 0 {
+		return current
+	}
+	out := make([]string, 0, len(union))
+	for s := range union {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// The scope lattice (design §5.2, Sol S13): [org_client.scope] carries
+// RESTRICTION lists — project/path allowlists and denylists that NARROW what
+// the node observes — so plain union is the WRONG raise semantics for them
+// (unioning an allowlist only shrinks what an org-raise can widen, and
+// unioning a denylist only ADDS restrictions, the opposite of a raise). Scope
+// keys get their own dedicated raise operations instead of RaiseList.
+//
+// Both operations are gated on e.Managed only, exactly like RaiseBool /
+// RaiseList; the push seam additionally requires GrantsScopeExtraction before
+// either is reachable.
+
+// scopeUnrestrictedSentinel is the wire spelling of "clear this scope
+// allowlist entirely" — the top value of the scope lattice, meaning
+// "unscoped: observe everything". It is a bool `true` (not a string), so a
+// managed union-style directive (a []string) can never be misread as this
+// sentinel and vice versa.
+const scopeUnrestrictedSentinel = true
+
+// RaiseScopeUnrestricted implements the explicit unscoped-override: when the
+// org directive for key is the literal sentinel `true`, the node's own
+// allowlist is cleared to nil — "no scoping, observe everything" — which is
+// the TOP of the scope lattice. Any other directive shape (a list, false, or
+// absent) leaves current unchanged; this is a narrow, explicit override, not
+// a general raise.
+func (e Effective) RaiseScopeUnrestricted(key string, current []string) []string {
+	if !e.Managed {
+		return current
+	}
+	v, ok := e.Share[key]
+	if !ok {
+		return current
+	}
+	if unrestricted, isBool := v.(bool); isBool && unrestricted == scopeUnrestrictedSentinel {
+		return nil
+	}
+	return current
+}
+
+// RaiseScopeDenylistRemoval implements the org-raise of a DENYLIST-shaped
+// scope key: since a denylist narrows by ADDING entries, raising it means
+// REMOVING org-named entries from the node's own denylist (the opposite
+// operation from RaiseList's union, and the opposite of LowerList's
+// intersection). The org directive is read as a []string of entries to
+// remove; an absent, malformed, or empty directive leaves current unchanged.
+// The result preserves the nil-vs-empty distinction the same way LowerList
+// does, and is sorted for stable, order-independent output.
+func (e Effective) RaiseScopeDenylistRemoval(key string, current []string) []string {
+	if !e.Managed {
+		return current
+	}
+	v, ok := e.Share[key]
+	if !ok {
+		return current
+	}
+	remove, isList := v.([]string)
+	if !isList || len(remove) == 0 {
+		return current
+	}
+	drop := make(map[string]bool, len(remove))
+	for _, s := range remove {
+		drop[s] = true
+	}
+	out := make([]string, 0, len(current))
+	for _, s := range current {
+		if !drop[s] {
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	if len(out) == 0 && current == nil {
+		return nil
+	}
+	return out
 }
 
 // ShareSource classifies who decided a share key's effective value, for the
@@ -264,4 +399,74 @@ func (e Effective) SourceForBoolGated(key string, local bool) ShareSource {
 		return ShareSourceLocal
 	}
 	return src
+}
+
+// LowerFloat and LowerInt are the NUMERIC analogues of LowerBool, added for
+// the org-budget rail (org-budget plan §3.3c). They exist because the share
+// block's algebra had only boolean and list primitives: a spend cap is a
+// number, and "restrictive only" for a number means MINIMUM, not "force the
+// one safe constant" (DirRestrictiveOnly's rule, which is why the numbers ride
+// a signed body rather than a settings pin).
+//
+// They are package-level functions rather than Effective methods on purpose:
+// the two operands do not come from e.Share. The org's number arrives on the
+// per-caller budget body (GET /api/agent/budget), not in a governance
+// directive map, so keying them on a share key would invent a lookup that has
+// no entry.
+//
+// THE "0 MEANS UNSET" RULE, stated once for both: every [guard.budget]
+// threshold uses 0 as "this window is off" (internal/config.GuardBudgetConfig),
+// so 0 is not a tighter cap — it is the absence of one. Therefore:
+//
+//   - both unset -> 0 (still off);
+//   - one unset  -> the other one (an org cap turns a window ON, which is the
+//     tightening direction; a local cap survives an org that set none);
+//   - both set    -> the smaller.
+//
+// A NEGATIVE value is treated as unset rather than as a very tight cap: config
+// validation already refuses negatives locally, and a negative arriving from a
+// remote body must never become a cap of "everything is over budget".
+//
+// Neither function can ever RAISE a node's own cap. That is the whole point:
+// on an individual node this is the only composition allowed, and the
+// org-authoritative replacement (managed tenancy + enforce.budget) is a
+// DIFFERENT code path that does not call these.
+func LowerFloat(local, org float64) float64 {
+	if local < 0 {
+		local = 0
+	}
+	if org < 0 {
+		org = 0
+	}
+	switch {
+	case local == 0:
+		return org
+	case org == 0:
+		return local
+	case org < local:
+		return org
+	default:
+		return local
+	}
+}
+
+// LowerInt is LowerFloat for an integer threshold (a token cap). Same rules,
+// same "0 means unset" sentinel.
+func LowerInt(local, org int64) int64 {
+	if local < 0 {
+		local = 0
+	}
+	if org < 0 {
+		org = 0
+	}
+	switch {
+	case local == 0:
+		return org
+	case org == 0:
+		return local
+	case org < local:
+		return org
+	default:
+		return local
+	}
 }

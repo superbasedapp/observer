@@ -92,8 +92,8 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
       const { status, data } = await postPolicy("/api/obs/egress/policy", draft, persist);
       setIssues(data.issues ?? []);
       if (status === 422 || !data.applied) {
-        setErr(data.error || "Policy rejected — fix the issues below.");
-        pushToast("Egress policy not applied — see issues", "danger");
+        setErr(data.error || "Policy rejected - fix the issues below.");
+        pushToast("Egress policy not applied - see issues", "danger");
         return;
       }
       if (persist && !data.persisted) {
@@ -102,7 +102,7 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
         markRestartPending("egress policy");
         pushToast("Saved. Restart the daemon to apply routing on the proxy.", "success");
       } else {
-        pushToast("Validated — dashboard preview updated (routing changes on Save & restart).", "success");
+        pushToast("Validated - dashboard preview updated (routing changes on Save & restart).", "success");
       }
       api.reload();
       onApplied?.();
@@ -121,7 +121,7 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
       {/* Targets */}
       <Card
         title="Upstream targets"
-        sub="Named upstreams a rule can route to. A declared shape (anthropic | openai) is required for any enforce-mode route — cross-shape routing is rejected at compile."
+        sub="Named upstreams a rule can route to. A declared shape (anthropic | openai) is required for any enforce-mode route - cross-shape routing is rejected at compile."
       >
         <div className="space-y-2">
           {draft.targets.length === 0 && <Muted>No targets. Add one before a route-to-upstream rule can reference it.</Muted>}
@@ -153,7 +153,7 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
       {/* Rules */}
       <Card
         title="Routing rules"
-        sub="First match wins — order matters (use ↑/↓). Each rule matches on the admission verdict, budget, cohort, or request shape, then takes exactly one action."
+        sub="First match wins - order matters (use ↑/↓). Each rule matches on the admission verdict, budget, cohort, or request shape, then takes exactly one action."
       >
         <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-3">
           <Labeled label="Mode">
@@ -179,7 +179,7 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
         )}
 
         <div className="space-y-3">
-          {draft.rules.length === 0 && <Muted>No rules — nothing is rerouted. Add one, or apply a Template.</Muted>}
+          {draft.rules.length === 0 && <Muted>No rules - nothing is rerouted. Add one, or apply a Template.</Muted>}
           {draft.rules.map((r, i) => (
             <RuleRow
               key={i}

@@ -89,6 +89,16 @@ var registryRowlessTaxonomyTools = map[string]string{
 		"capability\", never an inferred one). Contrast kilo-code, which DOES have a row " +
 		"because kilocode.NewLegacy() is a registered adapter with its own Name() and " +
 		"its own watch roots even though it wraps the same cline parser.",
+	"zoo-code": "zoo-code (ZooCode, ZooCodeOrganization.zoo-code — the community " +
+		"continuation of Roo Code after its 2026-04-21 shutdown) has the exact same " +
+		"shape of no-adapter-identity as roo-code, added 2026-09-03 (uncaptured-" +
+		"surfaces wiring plan, ticket U1): it is a row in the SAME clineExtensions " +
+		"table roo-code lives in (internal/adapter/cline/roots.go), retagged per-file " +
+		"by internal/adapter/cline.Adapter, whose own Name() stays models.ToolCline. " +
+		"There is no zoo-code entry in defaults.Adapters(), no zoo-code hook " +
+		"registrar, no zoo-code MCP registrar and no zoo-code proxy route or " +
+		"launcher — so every cell of a zoo-code Capability would either be zero or " +
+		"be copied from cline's row, which the registry's honesty rule forbids.",
 }
 
 // TestRegistryRowlessTaxonomyToolsAreFrozen makes the tooltax-vs-registry key-
@@ -605,6 +615,12 @@ func TestBinarySpecHonesty(t *testing.T) {
 			if filepath.IsAbs(p.Rel) {
 				t.Errorf("adapter %q: ProbeDirs[%d].Rel %q is absolute (must be HOME-relative)", c.Tool, i, p.Rel)
 			}
+			if strings.HasPrefix(p.Rel, "/") {
+				t.Errorf("adapter %q: ProbeDirs[%d].Rel %q has a leading '/' (must be HOME-relative, not rooted)", c.Tool, i, p.Rel)
+			}
+			if strings.Contains(p.Rel, "\\") {
+				t.Errorf("adapter %q: ProbeDirs[%d].Rel %q contains a backslash — Rel is always '/'-separated, even for a Windows-OS probe dir (2026-09-02 dashboard-install-gap-remediation research §1.3)", c.Tool, i, p.Rel)
+			}
 			for _, seg := range strings.Split(p.Rel, "/") {
 				if seg == ".." {
 					t.Errorf("adapter %q: ProbeDirs[%d].Rel %q contains a '..' segment", c.Tool, i, p.Rel)
@@ -850,6 +866,7 @@ var honestZeroPackages = map[string]string{
 	"gemini-web":     "../adapter/browserchat",
 	"copilot-web":    "../adapter/browserchat",
 	"junie":          "../adapter/junie",
+	"grokbot":        "../adapter/grokbot",
 }
 
 // TestHonestZeroVocabularyHasNoClassifier gives the honest-zero branch
@@ -1103,6 +1120,198 @@ func TestSandboxPathsWellFormed(t *testing.T) {
 		}
 		for i, p := range c.Sandbox.StateRO {
 			check(t, c.Tool, "StateRO", i, p)
+		}
+	}
+}
+
+// TestLifecycleVocabularyClosed pins that every registry row's Lifecycle is
+// one of the three closed-vocabulary values (lifecycle.go). A hand-typed
+// status ("sunset", "DEAD") would silently read as NOT active on every
+// Advertised() call — hiding the row from the picker, the guided install and
+// `observer init` — while rendering as itself on the matrix. Catching it here
+// makes the typo loud instead of invisible.
+func TestLifecycleVocabularyClosed(t *testing.T) {
+	for _, c := range integration.Capabilities() {
+		if !c.Lifecycle.Valid() {
+			t.Errorf("adapter %q: Lifecycle = %q is outside the closed vocabulary "+
+				"(active / deprecated / dead)", c.Tool, string(c.Lifecycle))
+		}
+	}
+	for _, p := range integration.ProductLifecycles() {
+		if !p.Lifecycle.Valid() {
+			t.Errorf("product %q: Lifecycle = %q is outside the closed vocabulary "+
+				"(active / deprecated / dead)", p.ID, string(p.Lifecycle))
+		}
+	}
+}
+
+// TestLifecycleNotesGrounded pins the EVIDENCE rule of the harness lifecycle
+// policy: a non-active status is a claim about a vendor, and a claim without
+// a dated, linked source is exactly the unsourced assertion the registry's
+// honesty rule forbids. So every non-active registry row AND every
+// productLifecycles entry must carry a Note containing a "20"-prefixed date
+// (e.g. "2026-04-21") and an "http" source. Active rows may carry a Note (an
+// alias / name-collision caveat) but are not required to — there is no claim
+// to ground.
+func TestLifecycleNotesGrounded(t *testing.T) {
+	grounded := func(t *testing.T, what, note string) {
+		t.Helper()
+		if strings.TrimSpace(note) == "" {
+			t.Errorf("%s: a non-active lifecycle requires a grounded Note (reason + date + URL)", what)
+			return
+		}
+		if !strings.Contains(note, "20") {
+			t.Errorf("%s: lifecycle Note carries no 20xx- date: %q", what, note)
+		}
+		if !strings.Contains(note, "http") {
+			t.Errorf("%s: lifecycle Note carries no http source: %q", what, note)
+		}
+	}
+	for _, c := range integration.Capabilities() {
+		if c.Lifecycle == integration.LifecycleActive {
+			continue
+		}
+		grounded(t, "adapter "+c.Tool, c.LifecycleNote)
+	}
+	for _, p := range integration.ProductLifecycles() {
+		grounded(t, "product "+p.ID, p.Note)
+	}
+}
+
+// TestProductLifecyclesReferenceRegistryAdapters pins the rowless-product
+// table's four structural rules:
+//
+//   - Adapter is "" (nothing reads this product's data) or a REAL registry
+//     tool — never a name that resolves to nothing, which would tell an
+//     operator their data is serviced by a parser that does not exist;
+//   - ID is NOT itself a registry tool — a product with a row carries its
+//     lifecycle ON the row (LifecycleFor prefers the row, so a colliding
+//     entry would be dead data);
+//   - Lifecycle is never active — an active product with no row is simply an
+//     unknown product, not a lifecycle fact worth shipping;
+//   - every id in registryRowlessTaxonomyTools (the FROZEN set of tools
+//     tooltax knows and the registry deliberately does not) has an entry
+//     here, so a retag identity can never be lifecycle-invisible.
+func TestProductLifecyclesReferenceRegistryAdapters(t *testing.T) {
+	tools := map[string]bool{}
+	for _, tool := range integration.Tools() {
+		tools[tool] = true
+	}
+	covered := map[string]bool{}
+	for _, p := range integration.ProductLifecycles() {
+		covered[p.ID] = true
+		if p.ID == "" {
+			t.Error("product lifecycle entry with an empty ID")
+		}
+		if p.Adapter != "" && !tools[p.Adapter] {
+			t.Errorf("product %q: Adapter %q is not a registry tool", p.ID, p.Adapter)
+		}
+		if tools[p.ID] {
+			t.Errorf("product %q also has a registry row — carry Lifecycle/LifecycleNote on the row instead "+
+				"(LifecycleFor prefers the row, so this entry is unreachable)", p.ID)
+		}
+		if p.Lifecycle == integration.LifecycleActive {
+			// An ACTIVE product with no registry row is normally just an
+			// unknown product. The one sanctioned exception is an
+			// acknowledged RETAG identity (registryRowlessTaxonomyTools):
+			// a live product whose data an existing adapter parses under
+			// a different sessions.tool value — it has no adapter identity
+			// to carry a row, but Observer must still be able to say the
+			// vendor ships it (zoo-code is the first; roo-code was the
+			// same shape while alive).
+			if _, retag := registryRowlessTaxonomyTools[p.ID]; !retag || p.Adapter == "" {
+				t.Errorf("product %q: Lifecycle is active — an active product with no registry row is just an "+
+					"unknown product unless it is an acknowledged retag (registryRowlessTaxonomyTools) naming "+
+					"its servicing Adapter; drop the entry or give it a row", p.ID)
+			}
+		}
+	}
+	for id := range registryRowlessTaxonomyTools {
+		if !covered[id] {
+			t.Errorf("rowless taxonomy tool %q has no product lifecycle entry — Observer parses its data but "+
+				"cannot say whether the vendor still ships it", id)
+		}
+	}
+}
+
+// TestUnadvertisedRowsAreNeverDispatched is the policy's teeth: a row the
+// vendor deprecated or killed must be invisible to every ADVERTISING surface
+// no matter how complete its capability shape is.
+//
+// Half one is synthetic: a Capability carrying a full Launch/Attach/Binary/
+// Hook/MCP/Proxy shape, flipped through each non-active lifecycle, must read
+// as neither TerminalLaunchable nor Advertised. Shape can never outvote
+// lifecycle.
+//
+// Half two sweeps the REAL registry: every non-active row must be absent from
+// the launch / install / init dispatch predicates. Today no shipped row is
+// non-active, so the loop body does not execute — that is intentional. It is
+// the tripwire that fires the moment the first row is flipped, rather than a
+// test written after the fact.
+func TestUnadvertisedRowsAreNeverDispatched(t *testing.T) {
+	full := func(l integration.Lifecycle) integration.Capability {
+		return integration.Capability{
+			Tool:        "synthetic-tool",
+			Lifecycle:   l,
+			Proxy:       &integration.ProxyRoute{Kind: integration.RouteEnvSettings, EnvVar: "SYNTHETIC_BASE_URL", Launcher: "observer synthetic"},
+			Routability: integration.RouteStatusRoutableNow,
+			Hook:        integration.HookSpec{Mechanism: integration.HookClaudeSettings, AutoWired: true, CrossOSBridge: true},
+			MCP:         &integration.MCPTarget{Format: integration.MCPServersJSON, Implemented: true},
+			TokenTier:   integration.TokenTier{Best: "proxy"},
+			Handoff: integration.HandoffCapability{
+				Transcript: integration.TranscriptFull,
+				Launch:     &integration.LaunchSpec{Subcommand: "synthetic", Mode: integration.LaunchSeeded},
+			},
+			Attach: &integration.AttachSpec{Subcommand: "synthetic"},
+			Binary: &integration.BinaryResolveSpec{
+				Names:    integration.BinaryNames{Unix: []string{"synthetic"}, Windows: []string{"synthetic.exe"}},
+				Installs: []integration.InstallHint{{OS: "linux", Channel: "npm", Argv: []string{"npm", "i", "-g", "synthetic"}, Display: "npm i -g synthetic"}},
+			},
+		}
+	}
+	for _, l := range []integration.Lifecycle{integration.LifecycleDeprecated, integration.LifecycleDead} {
+		t.Run("synthetic "+l.String(), func(t *testing.T) {
+			c := full(l)
+			// The shape itself is complete — if this stops holding, the test
+			// is no longer proving that lifecycle is what vetoed it.
+			if !c.Handoff.Launchable() {
+				t.Fatal("synthetic row is not shape-launchable — the fixture no longer isolates lifecycle")
+			}
+			if integration.TerminalLaunchable(c) {
+				t.Error("TerminalLaunchable = true for a fully-shaped row on an unadvertised lifecycle")
+			}
+			if c.Advertised() {
+				t.Error("Advertised = true on an unadvertised lifecycle")
+			}
+		})
+	}
+
+	// Real rows: launchable-set membership, guided-install eligibility and
+	// init-target eligibility are all downstream of these two predicates, so
+	// asserting them here covers every dispatch site without importing cmd.
+	for _, c := range integration.Capabilities() {
+		if c.Lifecycle.Advertised() {
+			continue
+		}
+		if integration.TerminalLaunchable(c) {
+			t.Errorf("adapter %q: lifecycle %q but TerminalLaunchable = true — it would still be offered "+
+				"in the New Terminal picker", c.Tool, string(c.Lifecycle))
+		}
+		if c.Advertised() {
+			t.Errorf("adapter %q: lifecycle %q but Advertised = true — it would still be offered for "+
+				"guided install and as an `observer init` target", c.Tool, string(c.Lifecycle))
+		}
+	}
+
+	// Same sweep over the GUI launch table, which composes the row lifecycle
+	// into GUILaunchable.Advertised (plan §2.1) — one policy, two surfaces.
+	for _, g := range integration.GUILaunchables() {
+		if g.Lifecycle.Advertised() {
+			continue
+		}
+		if g.Advertised() {
+			t.Errorf("GUI row %q (adapter %q): lifecycle %q but Advertised = true",
+				g.Spec.ID, g.Adapter, string(g.Lifecycle))
 		}
 	}
 }

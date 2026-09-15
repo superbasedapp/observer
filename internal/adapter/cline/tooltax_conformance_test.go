@@ -15,7 +15,7 @@ import (
 // subset of the tooltax table so drift is loud without a big-bang
 // rewrite".
 //
-// The private classifier here is the package-private actionMap (adapter.go); the SAME parser is retagged for roo-code and for kilo-code's legacy IDE extension, so all three tool ids are pinned here.
+// The private classifier here is the package-private actionMap (adapter.go); the SAME parser is retagged for roo-code, zoo-code (the community continuation of Roo Code, 2026-09-03), and for kilo-code's legacy IDE extension, so all four tool ids are pinned here.
 //
 // It is a SUBSET check, deliberately: tooltax is allowed to know MORE
 // native names than this adapter does (it also carries corpus-only natives
@@ -24,7 +24,7 @@ import (
 // canonical category and the ingested action_type describe different
 // things.
 func TestPrivateMappingAgreesWithTooltax(t *testing.T) {
-	for _, tool := range []string{models.ToolCline, models.ToolRooCode, models.ToolKiloCode} {
+	for _, tool := range []string{models.ToolCline, models.ToolRooCode, models.ToolZooCode, models.ToolKiloCode} {
 		checked := 0
 		for _, e := range tooltax.Table() {
 			if e.Tool != tool || e.IsGlob() {

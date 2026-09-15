@@ -67,22 +67,31 @@ type handoffEstimateJSON struct {
 // endpoint adds Boundaries + Targets (the modal's pickers); the create
 // endpoint adds DocPath/ShortID/HandoffID once something was written.
 type handoffResponse struct {
-	SessionID      string              `json:"session_id"`
-	TargetTool     string              `json:"target_tool,omitempty"`
-	TargetModel    string              `json:"target_model"`
-	CarryUsed      string              `json:"carry_used"`
-	DegradeReason  string              `json:"degrade_reason,omitempty"`
-	ContextWarning string              `json:"context_warning,omitempty"`
-	Fork           handoffForkJSON     `json:"fork"`
-	Estimate       handoffEstimateJSON `json:"estimate"`
-	Boundaries     []handoff.Boundary  `json:"boundaries,omitempty"`
-	Targets        []handoffTarget     `json:"targets,omitempty"`
-	Doc            string              `json:"doc,omitempty"`
-	DocPath        string              `json:"doc_path,omitempty"`
-	ShortID        string              `json:"short_id,omitempty"`
-	HandoffID      int64               `json:"handoff_id,omitempty"`
-	GitignoreHint  bool                `json:"gitignore_hint,omitempty"`
-	DryRun         bool                `json:"dry_run,omitempty"`
+	SessionID      string `json:"session_id"`
+	TargetTool     string `json:"target_tool,omitempty"`
+	TargetModel    string `json:"target_model"`
+	CarryUsed      string `json:"carry_used"`
+	DegradeReason  string `json:"degrade_reason,omitempty"`
+	ContextWarning string `json:"context_warning,omitempty"`
+	// FullCacheAvailable reports whether the source adapter implements the
+	// un-excerpted (FullTranscriptReader) read the full_cache carry needs —
+	// mirrored straight from handoffsvc.sourceHasFullReader via
+	// handoff.EstimateResult.SourceHasFullReader (the single source of
+	// truth; never re-derived here). Only claudecode/codex/kimicode/grok
+	// are true today. The modal greys out the "Full + cache" option when
+	// this is false instead of silently offering a choice that collapses to
+	// an identical-to-full doc (docs/session-handoff.md).
+	FullCacheAvailable bool                `json:"full_cache_available"`
+	Fork               handoffForkJSON     `json:"fork"`
+	Estimate           handoffEstimateJSON `json:"estimate"`
+	Boundaries         []handoff.Boundary  `json:"boundaries,omitempty"`
+	Targets            []handoffTarget     `json:"targets,omitempty"`
+	Doc                string              `json:"doc,omitempty"`
+	DocPath            string              `json:"doc_path,omitempty"`
+	ShortID            string              `json:"short_id,omitempty"`
+	HandoffID          int64               `json:"handoff_id,omitempty"`
+	GitignoreHint      bool                `json:"gitignore_hint,omitempty"`
+	DryRun             bool                `json:"dry_run,omitempty"`
 }
 
 // handleSessionHandoffEstimate serves GET /api/session/<id>/handoff/estimate
@@ -200,13 +209,14 @@ func buildHandoffResponse(sessionID, targetTool string, res handoffsvc.Result, d
 		fork.ForkTime = res.Fork.ForkTime.UTC().Format(time.RFC3339)
 	}
 	return handoffResponse{
-		SessionID:      sessionID,
-		TargetTool:     targetTool,
-		TargetModel:    res.TargetModel,
-		CarryUsed:      string(res.CarryUsed),
-		DegradeReason:  res.DegradeReason,
-		ContextWarning: res.ContextWarning,
-		Fork:           fork,
+		SessionID:          sessionID,
+		TargetTool:         targetTool,
+		TargetModel:        res.TargetModel,
+		CarryUsed:          string(res.CarryUsed),
+		DegradeReason:      res.DegradeReason,
+		ContextWarning:     res.ContextWarning,
+		FullCacheAvailable: res.Estimate.SourceHasFullReader,
+		Fork:               fork,
 		Estimate: handoffEstimateJSON{
 			TargetModel: res.Estimate.TargetModel,
 			ForkShare:   res.Estimate.ForkShare,
@@ -222,7 +232,9 @@ func buildHandoffResponse(sessionID, targetTool string, res handoffsvc.Result, d
 // capability registry, sorted by tool name. launchEnabled reflects whether
 // this dashboard process has the embedded-terminal launcher wired, so the
 // per-target Launchable flag is honest about BOTH the capability and the
-// runtime availability.
+// runtime availability. The capability half is integration.TerminalLaunchable
+// (grounded LaunchSpec AND an advertised lifecycle), so a deprecated/dead
+// product is still listed but never offered as a launch target.
 func handoffTargets(launchEnabled bool) []handoffTarget {
 	caps := integration.Capabilities()
 	sort.Slice(caps, func(i, j int) bool { return caps[i].Tool < caps[j].Tool })
@@ -237,7 +249,7 @@ func handoffTargets(launchEnabled bool) []handoffTarget {
 			Tool:           c.Tool,
 			TranscriptTier: string(c.Handoff.Transcript),
 			InjectLanes:    strs,
-			Launchable:     launchEnabled && c.Handoff.Launchable(),
+			Launchable:     launchEnabled && integration.TerminalLaunchable(c),
 			Note:           c.Handoff.Note,
 		})
 	}

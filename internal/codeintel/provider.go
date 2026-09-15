@@ -1,6 +1,10 @@
 package codeintel
 
-import "context"
+import (
+	"context"
+
+	"github.com/marmutapp/superbased-observer/internal/archive"
+)
 
 // Provider is the single seam every codeintel consumer depends on. The
 // MCP retrieval tools, the compression pipeline, and the CLI/dashboard
@@ -88,6 +92,18 @@ type Provider interface {
 	// engine itself stays free of those packages (no import cycle); the
 	// surface layer orchestrates them over this.
 	LoadGraph(ctx context.Context, project string) (Graph, error)
+
+	// ArchivedProject reports whether a project's index has been moved to
+	// cold storage, and the marker describing it
+	// (docs/plans/observer-corpus-archival-lazyload-design-2026-08-26.md
+	// §4.2). Every other method on this interface answers an archived
+	// project exactly like a never-indexed one — empty — and the two need
+	// completely different responses from a caller. This is the ONE cheap
+	// hot-database lookup that tells them apart; the archive file is never
+	// opened. Fails open: an error or an unavailable provider reports
+	// "not archived", so an archival fault degrades to today's behaviour
+	// rather than to a wrong claim.
+	ArchivedProject(ctx context.Context, project string) (archive.Marker, bool, error)
 
 	// Close releases the backing handle. Safe to call on an
 	// unavailable provider.

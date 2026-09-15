@@ -148,10 +148,12 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	lineNum := 0
 	for {
 		if ctx.Err() != nil {
+			adapter.ApplyProjectIdentity(&res, st.identity)
 			return res, ctx.Err()
 		}
 		lineStr, readErr := reader.ReadString('\n')
 		if readErr != nil && readErr != io.EOF {
+			adapter.ApplyProjectIdentity(&res, st.identity)
 			return res, fmt.Errorf("primeagent.ParseSessionFile: read: %w", readErr)
 		}
 		hasNewline := strings.HasSuffix(lineStr, "\n")
@@ -188,6 +190,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		}
 	}
 	st.deferUnpairedTail(&res)
+	adapter.ApplyProjectIdentity(&res, st.identity)
 	return res, nil
 }
 
@@ -211,6 +214,11 @@ type parseState struct {
 	// root (see projectRoot). Unlike branch, this comes ONLY from
 	// git.Resolve, not the header's own git block.
 	remote string
+	// identity is the Project Identity Resolver v2 bundle (2026-09-06,
+	// §3.1 / W1) resolved alongside branch/remote by projectRoot, applied
+	// to every event in the ParseResult via adapter.ApplyProjectIdentity
+	// before ParseSessionFile returns.
+	identity git.Identity
 	// rootCache memoizes cwd → resolved project root (git.Resolve walks
 	// the filesystem and one transcript shares one cwd throughout).
 	rootCache map[string]string
@@ -671,17 +679,19 @@ func (st *parseState) projectRoot() string {
 	if root, ok := st.rootCache[cwd]; ok {
 		return root
 	}
-	info, err := git.Resolve(cwd)
+	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
 		st.rootCache[cwd] = cwd
 		return cwd
 	}
-	st.rootCache[cwd] = info.Root
-	if info.Branch != "" {
-		st.branch = info.Branch
+	st.rootCache[cwd] = id.Root
+	if id.Branch != "" {
+		st.branch = id.Branch
 	}
-	st.remote = git.NormalizeRemote(info.Remote)
-	return info.Root
+	// id.Remote is already NormalizeRemote'd by ResolveIdentity.
+	st.remote = id.Remote
+	st.identity = id
+	return id.Root
 }
 
 // timestamp prefers the message's inner Unix-millisecond value and falls

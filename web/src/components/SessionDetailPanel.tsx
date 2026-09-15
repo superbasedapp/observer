@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { SlideOver, TabStrip, ToolBadge, TruncatedPath, type TabDef } from "@/components/primitives";
+import { SlideOver, SurfaceBadge, TabStrip, ToolBadge, TruncatedPath, type TabDef } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { CopyOnClick } from "@/components/CopyOnClick";
 import { SessionActionHeader } from "@/components/SessionActionHeader";
 import { fetchJSON } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
+import { fmtShortId } from "@/lib/format";
 import type {
   SessionDetail,
   SessionMessages,
@@ -16,9 +17,12 @@ import { CacheTab } from "@/components/sessiondetail/CacheTab";
 import { CostTab } from "@/components/sessiondetail/CostTab";
 import { KpiBand } from "@/components/sessiondetail/KpiBand";
 import { LineageBanner } from "@/components/sessiondetail/LineageBanner";
+import { LiveHeroBand } from "@/components/sessiondetail/LiveHeroBand";
 import { MessagesTab } from "@/components/sessiondetail/MessagesTab";
 import { OverviewTab } from "@/components/sessiondetail/OverviewTab";
+import { SessionEnrichmentHeader } from "@/components/sessiondetail/SessionEnrichmentHeader";
 import { SystemTab } from "@/components/sessiondetail/SystemTab";
+import { TasksTab } from "@/components/sessiondetail/TasksTab";
 import {
   DEFAULT_MSG_DIR,
   DEFAULT_MSG_SORT,
@@ -30,7 +34,7 @@ import {
   type MessageSortKey,
   type SortDir,
 } from "@/components/sessiondetail/messagesModel";
-import { sessionRecentlyActive } from "@/components/sessiondetail/shared";
+import { hasRecordedUsage, sessionRecentlyActive } from "@/components/sessiondetail/shared";
 
 // SessionDetailPanel — right-side slide-over showing one session.
 //
@@ -57,9 +61,16 @@ import { sessionRecentlyActive } from "@/components/sessiondetail/shared";
 
 // ----- Tab model ---------------------------------------------------
 
-type TabId = "overview" | "messages" | "cost" | "cache" | "system";
+type TabId = "overview" | "messages" | "cost" | "cache" | "tasks" | "system";
 
-const TAB_IDS: TabId[] = ["overview", "messages", "cost", "cache", "system"];
+const TAB_IDS: TabId[] = [
+  "overview",
+  "messages",
+  "cost",
+  "cache",
+  "tasks",
+  "system",
+];
 
 // TAB_PARAM is the deep-link key. Convention copied from Settings
 // (`/settings?section=<id>`): the URL is the source of truth, the default is
@@ -76,6 +87,10 @@ export function SessionDetailPanel({
   sessionId,
   open,
   watch = false,
+  liveHero = false,
+  urlTabState = true,
+  zIndex,
+  onPinVitals,
   onClose,
   onOpenSession,
   onFilterTag,
@@ -83,6 +98,35 @@ export function SessionDetailPanel({
 }: {
   sessionId: string | null;
   open: boolean;
+  // liveHero = prepend the four forward-looking "right now" tiles (context
+  // window used / % of limit spent / next-turn cost / process·network·memory)
+  // above the historical KPI band. Opt-in, because they only earn their space
+  // for a session that is still running: the terminal workspace opens the panel
+  // for exactly that case, the list pages do not. See LiveHeroBand.tsx.
+  liveHero?: boolean;
+  // urlTabState = this panel is the one the ROUTE addresses, so the active tab
+  // lives in `?tab=` (deep-linkable, back/forward-safe). True for every list
+  // page, which opens exactly one panel through its own `?session=`.
+  //
+  // FALSE for a host that is not route state. `?tab=` is a single slot per
+  // route, and a list page keeps its own panel mounted at all times (closed,
+  // `open={selected != null}`) with a cleanup effect that DELETES `?tab=`
+  // whenever the panel is closed. So a second panel floating over that route —
+  // the terminal workspace's session modal, which is opened by terminal token
+  // from wherever the operator happens to be — would write `?tab=messages`,
+  // have the page's closed panel delete it on the very next commit, and snap
+  // straight back to Overview. That was the 2026-08-28 "tabs flip back" defect.
+  // Such a panel keeps its tab in local state and never touches the URL.
+  urlTabState?: boolean;
+  // zIndex raises the whole slide-over above the terminal workspace's overlay
+  // stack. Omitted everywhere except the terminal, which is the one host that
+  // is itself an overlay — see the SlideOver prop doc.
+  zIndex?: number;
+  // onPinVitals, when given, offers "Pin vitals panel" alongside the live hero
+  // band: this slide-over is 1680px and covers the terminal it was opened from,
+  // so the terminal host uses this to hand the operator the small floating
+  // cockpit that docks BESIDE the terminal instead. Absent everywhere else.
+  onPinVitals?: () => void;
   // watch = open the panel in read-only "watch live" mode: the messages
   // stream tail-follows the newest page, polling faster (4s vs 8s), for
   // bare (non-attachable) live sessions. Poll-based v1 on the existing
@@ -123,16 +167,31 @@ export function SessionDetailPanel({
 
   // ----- Tab state ------------------------------------------------
   //
-  // The URL owns the active tab (see TAB_PARAM). The default is derived, not
-  // stored: opening in watch mode means the operator came to read the live
-  // stream, so Messages is the honest landing tab there; everything else
-  // lands on Overview. An explicit ?tab= always wins over both.
+  // The URL owns the active tab (see TAB_PARAM) for the ONE panel a route
+  // addresses through its own `?session=`. The default is derived, not stored:
+  // opening in watch mode means the operator came to read the live stream, so
+  // Messages is the honest landing tab there; everything else lands on
+  // Overview. An explicit ?tab= always wins over both.
+  //
+  // A panel that is NOT route-addressable keeps its tab in local state instead
+  // (urlTabState={false}) — see the prop doc. Both code paths must run their
+  // hooks unconditionally, so the URL pair and the local pair are always
+  // declared; `urlTabState` only decides which one is read and written.
   const [searchParams, setSearchParams] = useSearchParams();
+  const [localTab, setLocalTab] = useState<TabId | null>(null);
   const urlTab = searchParams.get(TAB_PARAM);
   const defaultTab: TabId = watch ? "messages" : "overview";
-  const activeTab: TabId = isTabId(urlTab) ? urlTab : defaultTab;
+  const activeTab: TabId = urlTabState
+    ? isTabId(urlTab)
+      ? urlTab
+      : defaultTab
+    : (localTab ?? defaultTab);
   const setTab = useCallback(
     (id: TabId) => {
+      if (!urlTabState) {
+        setLocalTab(id);
+        return;
+      }
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
@@ -149,13 +208,19 @@ export function SessionDetailPanel({
         { replace: true },
       );
     },
-    [setSearchParams, watch],
+    [urlTabState, setSearchParams, watch],
   );
   // Drop ?tab= when the panel closes. Without this, closing while on the Cache
   // tab leaves a dangling `?tab=cache` on a page with no open panel, and the
   // NEXT session opened would silently land on Cache. Runs as an effect (i.e.
   // in a later commit than the host page's own `?session=` removal) so the two
   // URL writes can't clobber each other.
+  //
+  // GATED ON urlTabState, which is what makes the cleanup safe now that this
+  // panel has more than one host. `?tab=` is route state, and this effect is a
+  // blind delete of it — so only the instance that OWNS the route's tab param
+  // may run it. A non-owning instance running this would delete a param written
+  // by a different, still-open panel (see the prop doc).
   //
   // GUARDED ON hasTabParam, not just on `open`. react-router does not
   // de-duplicate a replace-navigation to an identical URL, and
@@ -165,7 +230,7 @@ export function SessionDetailPanel({
   // is gone hasTabParam is false and the effect is inert.
   const hasTabParam = searchParams.has(TAB_PARAM);
   useEffect(() => {
-    if (open || !hasTabParam) return;
+    if (!urlTabState || open || !hasTabParam) return;
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -174,7 +239,7 @@ export function SessionDetailPanel({
       },
       { replace: true },
     );
-  }, [open, hasTabParam, setSearchParams]);
+  }, [urlTabState, open, hasTabParam, setSearchParams]);
 
   // ----- Mount policy: lazy-mount, then keep mounted ---------------
   //
@@ -443,6 +508,7 @@ export function SessionDetailPanel({
       },
       { id: "cost", label: "Cost & limits" },
       { id: "cache", label: "Cache" },
+      { id: "tasks", label: "Tasks" },
       { id: "system", label: "System" },
     ],
     [messages.data],
@@ -453,10 +519,14 @@ export function SessionDetailPanel({
       open={open}
       onClose={onClose}
       width={1680}
+      zIndex={zIndex}
       title={
         d ? (
           <span className="flex items-center gap-2">
             <ToolBadge tool={d.tool} />
+            {/* Capture surface (migration 107). Renders nothing when the
+                session carries no stamp — absence is UNKNOWN, never "cli". */}
+            <SurfaceBadge surface={d.surface} host={d.surface_host} />
             <CopyOnClick
               value={d.id}
               className="font-mono text-[12px] text-fg-2"
@@ -465,8 +535,8 @@ export function SessionDetailPanel({
             </CopyOnClick>
           </span>
         ) : sessionId ? (
-          <span className="font-mono text-[12px] text-fg-3">
-            {sessionId.slice(0, 8)}…
+          <span className="font-mono text-[12px] text-fg-3" title={sessionId}>
+            {fmtShortId(sessionId, 8)}
           </span>
         ) : (
           "Session detail"
@@ -497,6 +567,10 @@ export function SessionDetailPanel({
                   mapping table omitted this block entirely; above-the-tabs is
                   the call this implementation made. */}
               <div className="space-y-5">
+                {/* Cloud-enrichment title + description at the very top — the
+                    "what was this session about" summary. Collapses when the
+                    session has no enrichment result. */}
+                <SessionEnrichmentHeader sessionId={d.id} />
                 <SessionActionHeader
                   d={d}
                   watchable={watch === true || sessionRecentlyActive(d)}
@@ -505,7 +579,22 @@ export function SessionDetailPanel({
                   onAnnotationChange={onAnnotationChange}
                 />
                 <LineageBanner d={d} onOpenSession={onOpenSession} />
+                {/* Forward-looking band FIRST when the panel was opened from a
+                    live terminal: on a running session "how much room is left
+                    and what does the next message cost" outranks the totals. */}
+                {liveHero && (
+                  <LiveHeroBand
+                    sessionId={d.id}
+                    detail={d}
+                    onPinVitals={onPinVitals}
+                  />
+                )}
                 <KpiBand d={d} />
+                {(!hasRecordedUsage(d) || d.tokens_note) && (
+                  <p role="note" className="rounded-3 border border-line-2 bg-bg-2 px-4 py-3 text-[11.5px] text-fg-2">
+                    {d.tokens_note ?? "Token usage was not captured. Token counts and cost are unknown, not zero."}
+                  </p>
+                )}
               </div>
             </>
           )}
@@ -540,6 +629,9 @@ export function SessionDetailPanel({
         </TabPanel>
         <TabPanel id="cache" active={activeTab}>
           {d && <CacheTab d={d} />}
+        </TabPanel>
+        <TabPanel id="tasks" active={activeTab}>
+          {d && <TasksTab d={d} />}
         </TabPanel>
         <TabPanel id="messages" active={activeTab}>
           <MessagesTab

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"text/tabwriter"
 	"time"
 
@@ -15,7 +16,6 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/handoff"
 	"github.com/marmutapp/superbased-observer/internal/handoffsvc"
 	"github.com/marmutapp/superbased-observer/internal/integration"
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/predict"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -48,7 +48,7 @@ func messageReader(cfg config.Config, database *sql.DB) func(context.Context, ha
 // closure — the dashboard and MCP surfaces). One seam, no adapter imports
 // leaking past cmd.
 func handoffDeps(cfg config.Config, database *sql.DB) handoffsvc.Deps {
-	engine := cost.NewEngine(cfg.Intelligence)
+	engine := acquireProcessCostEngine(context.Background(), cfg, database, slog.Default())
 	scrubber := scrub.New()
 	return handoffsvc.Deps{
 		Store:    store.New(database),
@@ -73,7 +73,7 @@ func handoffDeps(cfg config.Config, database *sql.DB) handoffsvc.Deps {
 // (internal/cachewarmsvc). Each half is grounded independently; ok=false
 // only when neither has data.
 func stayResolver(cfg config.Config, database *sql.DB) func(context.Context, string) (handoff.StayEstimate, bool) {
-	engine := cost.NewEngine(cfg.Intelligence)
+	engine := acquireProcessCostEngine(context.Background(), cfg, database, slog.Default())
 	st := store.New(database)
 	return func(ctx context.Context, sessionID string) (handoff.StayEstimate, bool) {
 		var out handoff.StayEstimate

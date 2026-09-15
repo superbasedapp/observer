@@ -42,7 +42,11 @@ func (m *leaseAuditManager) CreateFresh(FreshLaunchSpec) (string, error) { retur
 func (m *leaseAuditManager) CreateResume(ResumeLaunchSpec) (string, string, error) {
 	return m.handle, "R", nil
 }
-func (m *leaseAuditManager) CreateSetup(SetupSpec) (string, error)        { return m.handle, nil }
+func (m *leaseAuditManager) CreateSetup(SetupSpec) (string, error) { return m.handle, nil }
+func (m *leaseAuditManager) CreateGUI(GUILaunchSpec) (GUILaunchResult, error) {
+	return GUILaunchResult{}, ErrLaunchGUIUnsupported
+}
+func (m *leaseAuditManager) GUIRuns() []GUIRunInfo                        { return nil }
 func (m *leaseAuditManager) Subscribe(string) (LaunchSubscription, error) { return m.sub, nil }
 
 func (m *leaseAuditManager) SubscribeRemote(string) (LaunchSubscription, error) { return m.sub, nil }

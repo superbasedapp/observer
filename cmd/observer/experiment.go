@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -10,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard"
 )
 
@@ -217,7 +217,7 @@ func newExperimentReportCmd() *cobra.Command {
 			if exp == nil {
 				return fmt.Errorf("unknown experiment %q", args[0])
 			}
-			rep, err := dashboard.ComputeExperimentReport(cmd.Context(), database, cost.NewEngine(cfg.Intelligence), *exp)
+			rep, err := dashboard.ComputeExperimentReport(cmd.Context(), database, acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default()), *exp)
 			if err != nil {
 				return err
 			}

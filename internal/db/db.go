@@ -373,6 +373,35 @@ func isBusy(err error) bool {
 	return false
 }
 
+// IsTransientWriteError reports whether err is a SQLite failure that the SAME
+// statement is expected to survive on a later attempt with no change to the
+// data — lock contention, and nothing else.
+//
+// It is the exported, structured answer to "should this write be retried
+// rather than dropped", and it exists so callers outside this package do not
+// re-derive it by matching on message text (which has been reworded across
+// driver versions). Two primary codes qualify, and deliberately no others:
+//
+//	SQLITE_BUSY   (5) — another CONNECTION holds the write lock; also covers
+//	                    the extended busy codes (SQLITE_BUSY_SNAPSHOT,
+//	                    SQLITE_BUSY_RECOVERY, …) whose low byte is 5.
+//	SQLITE_LOCKED (6) — a conflicting lock within the SAME connection/cache.
+//
+// Everything else — constraint violations, schema drift, read-only handles,
+// I/O errors, a full disk — is left to the caller. Some of those are
+// genuinely permanent and some are merely ambiguous, and this function
+// refuses to flatten that distinction into a bare false.
+func IsTransientWriteError(err error) bool {
+	var se *sqlite.Error
+	if errors.As(err, &se) {
+		switch se.Code() & 0xff {
+		case 5, 6:
+			return true
+		}
+	}
+	return false
+}
+
 // integrityCheckTimeout bounds a single `PRAGMA quick_check` run (T2.2,
 // 2026-08-26 disk/compute remediation plan, P1-D). quick_check has no
 // built-in deadline of its own — it just keeps checksumming pages — so a

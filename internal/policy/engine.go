@@ -31,6 +31,77 @@ func ParseMode(s string) (Mode, error) {
 	}
 }
 
+// BudgetProtection identifies the exact effective budget rows authorized by a
+// managed organization's hard cap. The zero value grants no native process
+// intervention authority.
+type BudgetProtection struct {
+	SessionUSD bool
+	DailyUSD   bool
+	WeeklyUSD  bool
+	MonthlyUSD bool
+
+	SessionTokens bool
+	DailyTokens   bool
+	WeeklyTokens  bool
+	MonthlyTokens bool
+}
+
+// ProtectsRule reports whether the managed organization authored the hard
+// ceiling represented by ruleID. B-625 is controlled separately by
+// Config.BudgetRequired because it represents a missing required document.
+func (p BudgetProtection) ProtectsRule(ruleID string) bool {
+	switch ruleID {
+	case "B-601":
+		return p.SessionUSD
+	case "B-602":
+		return p.DailyUSD
+	case "B-603":
+		return p.MonthlyUSD
+	case "B-604":
+		return p.WeeklyUSD
+	case "B-621":
+		return p.SessionTokens
+	case "B-622":
+		return p.DailyTokens
+	case "B-623":
+		return p.MonthlyTokens
+	case "B-624":
+		return p.WeeklyTokens
+	default:
+		return false
+	}
+}
+
+func (p BudgetProtection) protectsUSD(scope string) bool {
+	switch scope {
+	case "session":
+		return p.SessionUSD
+	case "daily":
+		return p.DailyUSD
+	case "weekly":
+		return p.WeeklyUSD
+	case "monthly":
+		return p.MonthlyUSD
+	default:
+		return false
+	}
+}
+
+func (p BudgetProtection) protectsTokens(scope string) bool {
+	switch scope {
+	case "session":
+		return p.SessionTokens
+	case "daily":
+		return p.DailyTokens
+	case "weekly":
+		return p.WeeklyTokens
+	case "monthly":
+		return p.MonthlyTokens
+	default:
+		return false
+	}
+}
+
 // Config is everything the engine needs from the outside world,
 // injected at construction (purity: this package never reads the
 // environment or filesystem itself). Nil slice fields mean "use the
@@ -84,6 +155,20 @@ type Config struct {
 	// rows compare against (spec §12.1). 0 disables the row.
 	BudgetWeeklyUSD  float64
 	BudgetMonthlyUSD float64
+	// BudgetSessionTokens / BudgetDailyTokens / BudgetWeeklyTokens /
+	// BudgetMonthlyTokens are the TOKEN-denominated ceilings the B-621..B-624
+	// rows compare against (org-budget plan §3.3c), one for one with the four
+	// $ fields above. 0 disables the row, exactly like the $ fields — 0 is
+	// "unset", never a ceiling of zero.
+	//
+	// The value may be the node's own [guard.budget].*_tokens or an
+	// ORGANIZATION cap already composed onto it at the boundary
+	// (internal/orgbudget). This package cannot tell the two apart and must
+	// not: it sees a configured number, exactly like every other threshold.
+	BudgetSessionTokens int64
+	BudgetDailyTokens   int64
+	BudgetWeeklyTokens  int64
+	BudgetMonthlyTokens int64
 	// LimitUtil* are the [guard.budget.window] utilization thresholds
 	// (0..1) the B-610..B-613 provider-usage-window rows compare
 	// against. warn flags, deny blocks; 0 disables the threshold.
@@ -93,6 +178,24 @@ type Config struct {
 	LimitUtil5hDeny     float64
 	LimitUtilWeeklyWarn float64
 	LimitUtilWeeklyDeny float64
+	// BudgetRequired is the FAIL-CLOSED budget posture (org-budget ruling
+	// R2): this node may not run without the organization's budget, and none
+	// has ever been verified here. It arms B-625, the one budget row that
+	// compares no number — every other row in this file needs a stamped
+	// value AND a configured ceiling, and "we have no ceiling" is precisely
+	// the state that must block.
+	//
+	// Like every other field here it is a plain configured fact: this package
+	// cannot tell whether it came from a grant, a tenancy or a test, and must
+	// not (CLAUDE.md #3). The boundary (internal/orgbudget through the guard)
+	// resolves it.
+	BudgetRequired bool
+	// BudgetProtection marks the exact effective ceilings that came from a
+	// managed organization's hard budget. It is runtime provenance supplied by
+	// the composition boundary, never a user-authored config key. A preserved
+	// local ceiling remains unprotected even when another window or unit is
+	// organization-authoritative.
+	BudgetProtection BudgetProtection
 	// BudgetHard is [guard.budget].hard: upgrade the B-601/B-602
 	// ENFORCE-mode decision to deny (§12.1 "deny-on-proxy" — only the
 	// proxy channel can actually block an api_request; watcher
@@ -170,7 +273,7 @@ func New(cfg Config) (*Engine, error) {
 		off := setOf(cfg.Disabled...)
 		kept := rules[:0]
 		for _, r := range rules {
-			if !off[r.ID] {
+			if !off[r.ID] || protectedBudgetRuleID(cfg, r.ID) {
 				kept = append(kept, r)
 			}
 		}
@@ -188,6 +291,15 @@ func New(cfg Config) (*Engine, error) {
 				continue
 			}
 			matched = true
+			if ov.Decision != nil && ov.Source != SourceOrgBudget &&
+				protectedBudgetRuleID(cfg, rules[i].ID) &&
+				*ov.Decision < rules[i].Enforce {
+				// A local/user/project override cannot weaken an
+				// organization-authoritative hard budget. The internal
+				// org-budget soft-window override is the one exception:
+				// it carries the administrator-authored per-window mode.
+				continue
+			}
 			if ov.Decision != nil {
 				rules[i].Observe = *ov.Decision
 				rules[i].Enforce = *ov.Decision
@@ -225,6 +337,8 @@ func builtinRules() []Rule {
 	rules = append(rules, mcpRules()...)
 	rules = append(rules, taintRules()...)
 	rules = append(rules, budgetRules()...)
+	rules = append(rules, tokenBudgetRules()...)
+	rules = append(rules, requiredBudgetRules()...)
 	rules = append(rules, limitRules()...)
 	return append(rules, anomalyRules()...)
 }
@@ -237,6 +351,37 @@ func (e *Engine) Mode() Mode { return e.cfg.Mode }
 // surfaces.
 func (e *Engine) RuleCount() int { return len(e.rules) }
 
+// BudgetRuleProtected reports whether ruleID is a currently blocking budget
+// row whose decision came from the managed organization budget boundary.
+// B-625 is protected whenever armed. Soft organization windows finish at flag
+// and therefore report false, preserving their advisory behavior.
+func (e *Engine) BudgetRuleProtected(ruleID string) bool {
+	if e == nil || !protectedBudgetRuleID(e.cfg, ruleID) {
+		return false
+	}
+	for i := range e.rules {
+		if e.rules[i].ID == ruleID && e.rules[i].Enforce >= DecisionDeny {
+			return true
+		}
+	}
+	return false
+}
+
+// SourceOrgBudget identifies the guard's internal per-window budget override.
+// Policy files cannot author this source; their layer source is assigned by
+// the guard parser.
+const SourceOrgBudget = "org_budget"
+
+func protectedBudgetRuleID(cfg Config, id string) bool {
+	if id == "B-625" {
+		return cfg.BudgetRequired
+	}
+	if !cfg.BudgetHard {
+		return false
+	}
+	return cfg.BudgetProtection.ProtectsRule(id)
+}
+
 // Evaluate is THE evaluation seam (spec §17.2): one Event in, one
 // Verdict out. It is deterministic and pure — no I/O, no recover()
 // (the Q2 fail-open/fail-closed wrapper lives at the guard
@@ -245,6 +390,48 @@ func (e *Engine) RuleCount() int { return len(e.rules) }
 // then by earlier table position. No hits (or ModeOff) yields the
 // allow verdict.
 func (e *Engine) Evaluate(ev Event) Verdict {
+	return e.evaluate(ev, false, false)
+}
+
+// EvaluateBudget evaluates only the built-in budget and utilization admission
+// rows. The proxy admission seam uses it so an unrelated, stricter custom
+// api_request rule cannot win the shared decision ordering and hide a budget
+// breach. Ordinary Evaluate continues to consider the full table.
+func (e *Engine) EvaluateBudget(ev Event) Verdict {
+	return e.evaluate(ev, true, false)
+}
+
+// EvaluateManagedBudget evaluates only organization-authorized hard budget
+// rows. Filtering occurs before verdict ordering so a stricter local budget
+// row cannot hide an applicable managed stop decision.
+func (e *Engine) EvaluateManagedBudget(ev Event) Verdict {
+	return e.evaluate(ev, true, true)
+}
+
+// EvaluateMissingManagedBudget evaluates only the built-in B-625 row with
+// the missing-document posture armed. The guard uses it when the proxy
+// engine's enrollment binding no longer matches the current local identity;
+// it preserves the engine's off/observe/enforce behavior without mixing in
+// stale numeric rows or duplicating B-625's reason text outside this package.
+func (e *Engine) EvaluateMissingManagedBudget(ev Event) Verdict {
+	allow := Verdict{Decision: DecisionAllow, Source: SourceBuiltin}
+	if e == nil || e.cfg.Mode == ModeOff {
+		return allow
+	}
+	clone := *e
+	clone.cfg.BudgetRequired = true
+	rule := requiredBudgetRules()[0]
+	if !rule.appliesTo(ev.Kind) {
+		return allow
+	}
+	hit, detail := applyRule(&rule, clone.buildContext(&ev))
+	if !hit {
+		return allow
+	}
+	return clone.verdictFor(&rule, detail)
+}
+
+func (e *Engine) evaluate(ev Event, budgetOnly, managedOnly bool) Verdict {
 	allow := Verdict{Decision: DecisionAllow, Source: SourceBuiltin}
 	if e.cfg.Mode == ModeOff {
 		return allow
@@ -253,6 +440,12 @@ func (e *Engine) Evaluate(ev Event) Verdict {
 	best := allow
 	for i := range e.rules {
 		r := &e.rules[i]
+		if budgetOnly && !budgetAdmissionRuleID(r.ID) {
+			continue
+		}
+		if managedOnly && !protectedBudgetRuleID(e.cfg, r.ID) {
+			continue
+		}
 		if !r.appliesTo(ev.Kind) {
 			continue
 		}
@@ -266,6 +459,66 @@ func (e *Engine) Evaluate(ev Event) Verdict {
 		}
 	}
 	return best
+}
+
+// ManagedBudgetRequired reports whether this policy snapshot contains a
+// protected budget row whose enforce decision can deny. Unlike the runtime
+// admission cache predicate, it remains true in off/observe mode: disabling
+// enforcement cannot make the organization's control requirement disappear.
+func (e *Engine) ManagedBudgetRequired() bool {
+	if e == nil {
+		return false
+	}
+	// Ask the existing matchers which configured windows would refuse an
+	// unverifiable request. Compiled rows with a zero limit are inactive, and
+	// soft org overrides must not create a process-intervention requirement.
+	unavailable := BudgetUnavailableWindows{Session: true, Daily: true, Weekly: true, Monthly: true}
+	ev := Event{Kind: KindAPIRequest, USDUnavailable: unavailable, TokensUnavailable: unavailable}
+	ctx := e.buildContext(&ev)
+	for i := range e.rules {
+		r := &e.rules[i]
+		if protectedBudgetRuleID(e.cfg, r.ID) && r.Enforce >= DecisionDeny {
+			if hit, _ := applyRule(r, ctx); hit {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// BudgetAdmissionRequiresFresh reports whether an organization-protected
+// budget row can currently deny. Managed blocking admission must read current
+// accounting rather than the advisory TTL cache; local and soft-only engines
+// retain the established cache behavior.
+func (e *Engine) BudgetAdmissionRequiresFresh() bool {
+	if e == nil || e.cfg.Mode == ModeOff {
+		return false
+	}
+	for i := range e.rules {
+		r := &e.rules[i]
+		if !protectedBudgetRuleID(e.cfg, r.ID) {
+			continue
+		}
+		d := r.Observe
+		if e.cfg.Mode == ModeEnforce || r.Enforced {
+			d = r.Enforce
+		}
+		if d >= DecisionDeny {
+			return true
+		}
+	}
+	return false
+}
+
+func budgetAdmissionRuleID(id string) bool {
+	switch id {
+	case "B-601", "B-602", "B-603", "B-604",
+		"B-610", "B-611", "B-612", "B-613",
+		"B-621", "B-622", "B-623", "B-624", "B-625":
+		return true
+	default:
+		return false
+	}
 }
 
 // buildContext does the per-event work exactly once (latency

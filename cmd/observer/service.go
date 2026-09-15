@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/service"
+	"github.com/marmutapp/superbased-observer/internal/toolresolve"
 )
 
 // errNoSystemd is returned when the host has no systemd manager. The
@@ -24,6 +27,69 @@ var errNoSystemd = errors.New(
 		"  - On macOS, run `observer start` under launchd, or use a tmux/screen session.\n" +
 		"  - On Windows, the daemon runs inside WSL; install the service there.",
 )
+
+// unitPathEnv joins the merged PATH dirs (toolresolve.MergedPathDirs —
+// process PATH followed by the login-shell-only entries) into the value
+// for the unit's Environment=PATH= line, colon-joined because the
+// systemd unit is always Linux (never os.PathListSeparator, which would
+// render ";" on a Windows build of this binary). It returns "" when there
+// is nothing to join, so the caller can fall back to
+// service.DefaultPath rather than write an empty/malformed Environment=
+// line — the same "pass through or fall back" shape as
+// UnitOptions.Path itself.
+func unitPathEnv(dirs []string) string {
+	if len(dirs) == 0 {
+		return ""
+	}
+	return strings.Join(dirs, ":")
+}
+
+// lingerRunner executes `loginctl show-user <user> -p Linger --value` and
+// returns its raw stdout. A package var so tests can fake loginctl's
+// answer without a live systemd --user manager (or on a non-Linux dev
+// box where loginctl does not exist at all).
+var lingerRunner = func(username string) (string, error) {
+	out, err := exec.Command("loginctl", "show-user", username, "-p", "Linger", "--value").Output() //nolint:gosec // fixed program name; username comes from os/user.Current, not request input
+	return string(out), err
+}
+
+// lingerAdvice decides the note to print (or "" for none) given the raw
+// result of a `loginctl show-user <user> -p Linger --value` lookup. It
+// never execs anything itself — lingerNoticeFor below is the only caller
+// that talks to loginctl — so the decision is a pure, table-testable
+// function with three outcomes: Linger=yes prints nothing, Linger=no (or
+// anything else loginctl might print) prints the actionable
+// `loginctl enable-linger` note, and a lookup error (no loginctl, no
+// systemd --user manager, permission denied) prints a softer warning
+// that names the same command as a fallback rather than asserting the
+// unit needs it — the install already detected no systemd --user
+// manager and refused (runServiceInstall's systemdAvailable gate), so a
+// lookup error here means loginctl itself is missing or misbehaving, not
+// that linger is confirmed off.
+func lingerAdvice(username, out string, err error) string {
+	if err != nil {
+		return fmt.Sprintf(
+			"Warning: could not check linger status for %s (%v) — if `systemctl --user start\n"+
+				"observer.service` stops working after you log out, run: loginctl enable-linger %s\n",
+			username, err, username)
+	}
+	if strings.TrimSpace(out) == "yes" {
+		return ""
+	}
+	return fmt.Sprintf(
+		"Note: linger is not enabled for %s — a --user unit only starts at login and stops\n"+
+			"at logout without it, and `systemctl --user` needs the user bus that linger keeps\n"+
+			"alive across logout. Run:\n    loginctl enable-linger %s\n",
+		username, username)
+}
+
+// lingerNoticeFor is the impure wrapper: run lingerRunner, hand the
+// result to lingerAdvice. Never runs loginctl enable-linger itself — the
+// operator runs the printed command.
+func lingerNoticeFor(username string) string {
+	out, err := lingerRunner(username)
+	return lingerAdvice(username, out, err)
+}
 
 // newServiceCmd implements `observer service` — install and manage the
 // observer daemon as a long-running systemd service instead of
@@ -155,7 +221,23 @@ func runServiceInstall(opts serviceInstallOptions) error {
 		args = append(args, "--port", strconv.Itoa(opts.port))
 	}
 
-	unit := service.RenderUnit(service.UnitOptions{ExecPath: exe, Args: args, Scope: opts.scope})
+	// The unit's PATH is the daemon's own merged (process + login-shell)
+	// PATH, not systemd's bare manager default — a fresh systemd unit
+	// otherwise reproduces the DI-04/DI-23 class of bug where every
+	// npm-shim AI-tool exits 127 because ~/.local/bin and the npm global
+	// prefix were never on it. resolveEnv() is the same memoized
+	// toolresolve.Env every launcher in this process uses (launch.go);
+	// reusing it here means `install` pays the up-to-~6s login-shell
+	// capture at most once even if a future caller resolves a tool first.
+	pathDirs, _ := toolresolve.MergedPathDirs(resolveEnv())
+	pathEnv := unitPathEnv(pathDirs)
+	if pathEnv == "" {
+		fmt.Fprintf(opts.stdout, "unit PATH = %s (fallback: could not resolve the operator's PATH)\n", service.DefaultPath)
+	} else {
+		fmt.Fprintf(opts.stdout, "unit PATH = %s\n", pathEnv)
+	}
+
+	unit := service.RenderUnit(service.UnitOptions{ExecPath: exe, Args: args, Scope: opts.scope, Path: pathEnv})
 
 	home, err := os.UserHomeDir()
 	if err != nil && opts.scope == service.ScopeUser {
@@ -169,6 +251,22 @@ func runServiceInstall(opts serviceInstallOptions) error {
 		return fmt.Errorf("write unit %s: %w", unitPath, wErr)
 	}
 	fmt.Fprintf(opts.stdout, "Wrote %s\n", unitPath)
+
+	// A --user unit's bus (/run/user/<uid>/bus) and its systemd --user
+	// manager only start automatically at login when linger is enabled;
+	// without it, `systemctl --user` below can already be running on
+	// borrowed time (this interactive session's own bus), and the
+	// Windows-companion schtasks logon trigger in the redeploy recipe
+	// (docs/handovers/devbox-daemon-redeploy-recipe-2026-09-02.md) will
+	// fail outright. Detected, never run — the operator runs the printed
+	// command themselves.
+	if opts.scope == service.ScopeUser {
+		if u, uerr := user.Current(); uerr == nil {
+			if note := lingerNoticeFor(u.Username); note != "" {
+				fmt.Fprint(opts.stdout, "\n"+note)
+			}
+		}
+	}
 
 	if rErr := runServiceCommand(service.Systemctl(opts.scope, "daemon-reload")); rErr != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w", rErr)

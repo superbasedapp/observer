@@ -15,7 +15,6 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/learn"
 	"github.com/marmutapp/superbased-observer/internal/mcp"
 	"github.com/marmutapp/superbased-observer/internal/mcp/audit"
@@ -83,8 +82,9 @@ func newServeCmd() *cobra.Command {
 				ServerName:      "observer",
 				ServerVersion:   version,
 				ToolCallTimeout: serveToolCallTimeout,
-				CostEngine:      cost.NewEngine(cfg.Intelligence),
+				CostEngine:      acquireProcessCostEngine(cmd.Context(), cfg, database, logger),
 				CacheWarm:       cfg.CacheWarm,
+				Tasks:           cfg.Tasks,
 				SignalRecorder:  learn.NewSignalRecorder(database),
 				// Session handoff (docs/session-handoff.md P2): the shared
 				// handoffsvc runner behind the continue_session tool.

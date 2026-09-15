@@ -57,6 +57,16 @@ type Result struct {
 	// chain checkpoint keeps the audit chain verifiable across the
 	// prune). Zero when [guard].retention_days is ≤ 0.
 	GuardRowsDeleted int
+	// PromptReconsiderRowsDeleted is the count of guard_prompt_reconsider
+	// rows removed by the prompt-submit "reconsider-once" sweep (migration
+	// 097, docs/plans/prompt-submit-intervention-exploration-2026-09-07.md
+	// §5.4). Unlike CacheRowsDeleted/GuardRowsDeleted this sweep has no
+	// config-gated retention-days knob: the table's own expires_at column
+	// IS its prune horizon (a short-lived reconsider-once grant, default
+	// 30 minutes), so runRetention calls store.PrunePromptReconsider
+	// unconditionally on every pass — an expired-only age sweep with
+	// nothing left to configure.
+	PromptReconsiderRowsDeleted int
 	// ProcessRowsDeleted is the count of process_runs + process_events rows
 	// removed by the process-observability sweep
 	// ([observer.process].retention_days, docs/process-observability.md §11).
@@ -86,6 +96,38 @@ type Result struct {
 	// runRetention calls store.CodeIntelPruneStaleProjects and sets this
 	// field. Zero when [codeintel].retention_days is ≤ 0.
 	CodeIntelProjectsDeleted int
+	// CodeIntelProjectsArchived is the count of code-intelligence projects
+	// MOVED to cold storage (~/.observer/archive.db) this pass by the
+	// [archive] sweep, rather than deleted
+	// (docs/plans/observer-corpus-archival-lazyload-design-2026-08-26.md).
+	// Same orchestration pattern as CacheRowsDeleted: the retention package
+	// never touches the tables; runRetention drives internal/archivesvc and
+	// sets this field.
+	//
+	// This is a SIBLING of CodeIntelProjectsDeleted, deliberately not a reuse
+	// of it: "deleted" and "archived" are different fates for the operator —
+	// one is gone, one is one rehydrate away — and a report that conflates
+	// them would make the whole arc invisible in the numbers it should be
+	// most visible in. Exactly one of the two is non-zero on any given pass,
+	// because [archive].enabled selects which sweep runs.
+	CodeIntelProjectsArchived int
+	// CodeIntelRowsArchived is the total verified row count moved to cold
+	// storage this pass — the useful magnitude behind
+	// CodeIntelProjectsArchived, since projects vary by orders of magnitude.
+	CodeIntelRowsArchived int64
+	// ProcessWindowsArchived is the count of process-capture day-windows
+	// moved to cold storage this pass (corpus archival Bucket B). Like
+	// CodeIntelProjectsArchived it is a SIBLING of ProcessRowsDeleted, never
+	// a repurposing of it: "moved, still readable" and "deleted, gone" are
+	// different operator-visible outcomes and a report that conflated them
+	// would be lying about the only-copy bucket.
+	ProcessWindowsArchived int
+	// ProcessRowsArchived is the total verified row count moved to cold
+	// storage this pass.
+	ProcessRowsArchived int64
+	// ProcessWindowsExpired is the count of day-windows deleted from the
+	// ARCHIVE FILE by its own (later) retention horizon.
+	ProcessWindowsExpired int
 	// IncrementalVacuumRun is set when Run issued a bounded PRAGMA
 	// incremental_vacuum(N) at the end of the pass — possible only once
 	// the DB has been converted to auto_vacuum=INCREMENTAL (the
@@ -93,6 +135,13 @@ type Result struct {
 	// DB (auto_vacuum=NONE) freed pages stay on the freelist until a full
 	// VACUUM; this flag reports which regime applied.
 	IncrementalVacuumRun bool
+	// OrgIntelCacheDeleted is the count of node-local org_intel_cache rows
+	// (org-served-cloud-intelligence, migration 112/114) removed this pass:
+	// orphans whose session is gone, plus rows older than max_age_days. Same
+	// orchestration pattern as CacheRowsDeleted — the retention package never
+	// touches the table; runRetention calls store.PruneOrgIntelCache and sets
+	// this field (finding 7).
+	OrgIntelCacheDeleted int
 }
 
 // Options parameterize Run.
@@ -327,6 +376,9 @@ func (p *Pruner) deleteActionsOlder(ctx context.Context, cutoff string, res *Res
 		}
 	}
 
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tool_account_observations WHERE observed_at < ?`, cutoff); err != nil {
+		return fmt.Errorf("retention: delete account observations: %w", err)
+	}
 	a, err := tx.ExecContext(ctx, `DELETE FROM actions WHERE timestamp < ?`, cutoff)
 	if err != nil {
 		return fmt.Errorf("retention: delete actions: %w", err)

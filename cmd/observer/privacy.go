@@ -251,9 +251,21 @@ func prewarmTargetsList(targets []string) string {
 // on-by-default startup HEAD request against [proxy].prewarm_targets that
 // carries no session data (see the "TLS pre-warm" row).
 func buildPrivacyEgress(cfg config.Config) []privacyEgress {
-	orgPushDetail := "Pushes rollup rows (hashed by default; raw content only under a local [org_client.share].full_content/admin_managed opt-in — the org admin can never flip this remotely) and polls the org policy bundle. The same poll also fetches the org's dashboard announcement, if any — a GET on the connection this cycle already opens, no extra request and nothing sent about you; it can only put dismissible text in your dashboard banner, there is no acknowledgment wire back, and [dashboard].org_announcements = false silences it locally. Stated plainly, because it is inherent to any fetch and not something a client-side switch can remove: the server can SEE the request — that your enrolled node polled, and when — exactly as it sees the push. There is no read receipt (whether a banner was shown or dismissed is never reported), but the poll itself is observable to the org you enrolled with."
-	if cfg.OrgClient.Enabled && cfg.OrgClient.OrgServerURL != "" {
+	orgPushDetail := "Pushes rollup rows (hashed by default; raw content only under a local [org_client.share].full_content/admin_managed opt-in — the org admin can never flip this remotely) and polls the org policy bundle. The same poll also fetches the org's dashboard announcement, if any — a GET on the connection this cycle already opens, no extra request and nothing sent about you; it can only put dismissible text in your dashboard banner, there is no acknowledgment wire back, and [dashboard].org_announcements = false silences it locally. Stated plainly, because it is inherent to any fetch and not something a client-side switch can remove: the server can SEE the request — that your enrolled node polled, and when — exactly as it sees the push. There is no read receipt (whether a banner was shown or dismissed is never reported), but the poll itself is observable to the org you enrolled with. The same cycle also fetches this node's own signed BUDGET policy (GET /api/agent/budget) when [org_client] is on — one more conditional GET on the same already-open connection to the same already-enrolled host, sending nothing about you beyond the bearer that identifies the node. What comes BACK is your effective cap; what goes back UP is an enum-only posture row (enforcement point / guard mode / where the numbers came from / last fetch state / proxy-only coverage) carrying no cap value and no team label. Set [guard.budget].from_org = false and the org's numbers are never applied."
+	switch {
+	case cfg.OrgClient.Enabled && cfg.OrgClient.ConfiguredServerURL():
 		orgPushDetail += fmt.Sprintf(" For this config: enrolled against %s.", cfg.OrgClient.OrgServerURL)
+	case cfg.OrgClient.Enabled:
+		// BLOCK-1 (code review): this report is deliberately DB-free and
+		// network-free (defaultPrivacyDeps loads only config), so it
+		// cannot see whether a persisted org_enrolment row exists — a
+		// blank org_server_url here does NOT mean this node is inactive.
+		// cmd/observer/start.go's orgClientShouldStart starts the org
+		// client whenever EITHER the config carries a URL OR a persisted
+		// row does; the push/announcement/routing-policy loops then dial
+		// that row's own server, never this config field. Say so honestly
+		// instead of guessing either way.
+		orgPushDetail += " For this config: [org_client].enabled = true but org_server_url is empty in config. This report cannot see whether a persisted enrolment record exists (it reads config only, by design) — if one does, the org rail is still ACTIVE against that record's own server; if this node was never enrolled, it is inactive. Run `observer doctor` for the definitive state."
 	}
 
 	guardCloudArmed := guardCloudSweepArmed(cfg)
@@ -271,11 +283,20 @@ func buildPrivacyEgress(cfg config.Config) []privacyEgress {
 		},
 		{
 			Name: "Teams org push + policy poll",
-			// F9: the config flag is all this report can check; whether
-			// the push actually goes anywhere also depends on a live
-			// enrollment bearer credential this report makes no network
-			// call to verify.
-			Gate:   "[org_client].enabled = true (Active reflects only this config flag) AND a valid enrollment bearer credential (not checked by this report — run `observer org status`)",
+			// F9: the config flags are all this report can check; whether
+			// the push actually goes anywhere ALSO depends on (a) a
+			// persisted org_enrolment DB row — a blank org_server_url in
+			// config does NOT disable an already-enrolled node, since the
+			// push/policy loops dial that row's own server URL instead
+			// (config.OrgClientConfig.ConfiguredServerURL / cmd/observer/
+			// start.go::orgClientShouldStart) — and (b) a valid enrollment
+			// bearer credential. Neither is checked by this report: it is
+			// deliberately config-only, no DB open and no network call (see
+			// defaultPrivacyDeps). Active therefore reflects only `enabled`
+			// — the necessary but not sufficient condition this report CAN
+			// see — rather than pretending precision it doesn't have; run
+			// `observer doctor` for the definitive state.
+			Gate:   "[org_client].enabled = true AND (org_server_url is non-empty OR a persisted enrolment record exists) (Active reflects only this config flag) AND a valid enrollment bearer credential (neither the DB row nor the credential is checked by this report — run `observer doctor` or `observer org status`)",
 			Active: cfg.OrgClient.Enabled,
 			Detail: orgPushDetail,
 		},
@@ -284,6 +305,22 @@ func buildPrivacyEgress(cfg config.Config) []privacyEgress {
 			Gate:   "the operator clicks \"Check for updates\" in Settings → Health",
 			Active: false,
 			Detail: "A GET to registry.npmjs.org for the latest published version number. That same response — the published package.json of our own npm package — may also carry an optional release announcement, which the dashboard shows as a dismissible banner. It is read from this one response: no second request, no other host, and nothing is sent about you. Never automatic — no background timer, no fetch on tab load. See web/src/lib/version.ts.",
+		},
+		{
+			Name: "org update manifest + artifact fetch",
+			// The manifest GET rides the push cycle the node ALREADY makes,
+			// to the host it is ALREADY enrolled with — so it adds no new
+			// egress CLASS. The artifact fetch is the same host and the same
+			// credential. A node never contacts GitHub, npm or a CDN as part
+			// of an update (ruling R8), which is what makes this design
+			// air-gap-native rather than air-gap-capable.
+			Gate: "[update].enabled = true AND [org_client].enabled = true (Active reflects only these two config flags) AND a valid enrolment bearer credential AND a manifest published ahead of this node",
+			// BOTH flags, because ruling R8 makes the org server the ONLY
+			// host a node fetches update bytes from: with no enrolment there
+			// is no rail at all, so reporting this row active on a solo
+			// install would claim an egress capability that cannot fire.
+			Active: cfg.Update.Enabled && cfg.OrgClient.Enabled,
+			Detail: "Two GETs to the org server this node is already enrolled with, on the connection the push loop already opens: the signed update manifest, and — only when an apply actually runs — the artifact bytes. What it DISCLOSES is inherent to any fetch: that this node asked for version X at time T, exactly as the announcement rail already states. Nothing is sent about the developer, and no other host is contacted. The node's own update state rides the existing push envelope as an enum-only row (version / channel / os / arch / state / target / error class / install method) with no hostname, no path and no free-text error.",
 		},
 		{
 			Name:   "observer summarize",

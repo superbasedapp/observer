@@ -1,5 +1,13 @@
 # mistralcode fixtures
 
+> **Two layouts live here.** Everything at the top level
+> (`session_*/`, `growth-snapshots/`) is the **vibe CLI** layout,
+> hand-built from shapes confirmed against a real install. The
+> `ide/` subtree is the **Mistral Code IDE (Continue-fork) layout**
+> and is **FULLY SYNTHETIC** — see
+> ["ide/ — synthetic Continue-fork fixtures"](#ide--synthetic-continue-fork-fixtures)
+> at the bottom of this file before trusting anything in it.
+
 Captured/derived: 2026-08-24, against a real Mistral Code (`vibe` 2.24.0)
 install on this machine (WSL2, `~/.vibe/logs/session/`). One genuine live
 session was inspected read-only (never committed) to confirm shapes, key
@@ -52,3 +60,38 @@ yourself: run a `vibe` session, then inspect
 `go test ./internal/adapter/mistralcode/... -run TestLiveVerify_RealStore -v`,
 which walks a real store read-only and logs parsed sessions/models/tokens
 without ever touching `testdata/`).
+
+## `ide/` — synthetic Continue-fork fixtures
+
+Added: 2026-09-02, for the Mistral Code **IDE** layout (audit finding
+IDE-09; `docs/plans/ide-surface-capture-remediation-plan-2026-09-02.md`
+ticket F). Operator reference:
+[`docs/mistral-code-adapter.md`](../../docs/mistral-code-adapter.md)
+§"Mistral Code IDE layout (Continue fork)".
+
+**These fixtures are SYNTHETIC — no live store was ever observed.**
+The IDE store (`$MISTRALCODE_GLOBAL_DIR ?? ~/.mistralcode/sessions/`) is
+written by the VS Code extension `mistralai.mistral-code` and the
+JetBrains "Mistral Code Enterprise" plugin, both of which are
+login-gated and were **not installed / not reachable** on the machine
+this layout was written on. The shape below is Continue's own `Session`
+type (`continuedev/continue`, `core/index.d.ts` — the upstream both
+plugins fork), cross-read against the Mistral Code extension bundle.
+Field names, nesting and the `usage` sub-objects come from that schema;
+every value — session ids, prompts, paths, tool arguments, token counts
+— is invented.
+
+| Path | Purpose | Use in tests |
+| --- | --- | --- |
+| `ide/sessions/sessions.json` | The session INDEX: two entries, one with an epoch-ms NUMBER `dateCreated`, one with an ISO-8601 STRING, so both index-timestamp spellings are exercised. | `ideIndexDate` / `parseFlexTime`; the document carries no timestamps, so entry 0's timestamp comes from here. |
+| `ide/sessions/11111111-2222-4333-8444-555555555555.json` | A 6-entry `history[]`: user prompt → assistant with 2 tool calls + full `usage` (cached + cacheWrite + reasoning) → two `role:"tool"` results (one clean, one `Error: …`) → assistant with 4 tool calls and NO prose (edit / terminal / an `mcp__*` call / an unmapped name) + a bare `usage` → closing assistant prose whose `usage` is cache-read-only and whose entry has NO `promptLogs`. | Every row of the IDE mapping table: the `ideToolActions` lookup, the MCP-name fallthrough, `unknown` for an unlisted name, target extraction from `filepath`/`query`/`command`/`name`, tool-role outcome folding + `Error:` failure detection, the assistant-with-empty-content case minting no `assistant_message`, gross→net input math, and the `promptLogs[0].modelTitle` → `chatModelTitle` model ladder. |
+
+### Replacing these with real-shape fixtures
+
+Follow the operator checklist in
+[`docs/mistral-code-adapter.md`](../../docs/mistral-code-adapter.md)
+§"Operator checklist — confirming the IDE layout on a real install".
+When a real store is finally captured, anonymize it, replace the two
+files above, and **update this section's "SYNTHETIC" labelling** —
+leaving it stale would be the exact honesty failure the label exists
+to prevent.

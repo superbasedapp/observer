@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/termsvc"
 )
 
@@ -52,6 +53,15 @@ func (s *Server) handleTerminalPolicy(w http.ResponseWriter, r *http.Request) {
 // launchable-tool SOURCE for the picker (from the capability registry, never a
 // free-text field), and honest state flags. It mints a fresh confirm token so
 // the PUT can echo it (§10).
+//
+// It ALSO reports the second, independent allow-list that decides whether a
+// launched tool is ever captured — [observer.watch].enabled_adapters — plus the
+// server-derived cross-check unwatched_allowed_tools (audit DI-07). Both are
+// READ-ONLY here: enabled_adapters belongs to a different config section and is
+// NOT part of the PUT payload. The cross-check is derived server-side by
+// diag.AllowedToolsNotWatched so the SPA never reimplements the list's
+// nil-vs-empty rule (nil = every adapter watched; non-nil empty = watch
+// nothing) — one owner, two readers (this route and /api/terminal/sessions).
 func (s *Server) handleTerminalPolicyGet(w http.ResponseWriter, r *http.Request) {
 	confirmTok := setConfirmCookie(w, r)
 	resp := map[string]any{
@@ -71,6 +81,14 @@ func (s *Server) handleTerminalPolicyGet(w http.ResponseWriter, r *http.Request)
 		// from the capability registry (dispatch on capability shape, never a
 		// hardcoded tool list).
 		"launchable_tools": launchableTools(),
+		// [observer.watch].enabled_adapters AS LOADED: null = the key is absent
+		// (default: every adapter watched), [] = the explicit "watch nothing"
+		// intent. The distinction is load-bearing, so it is carried onto the
+		// wire rather than normalized away.
+		"enabled_adapters": []string(nil),
+		// The DI-07 cross-check: allow-listed launchable tools an explicit
+		// enabled_adapters list omits. They launch happily and record nothing.
+		"unwatched_allowed_tools": []string{},
 		// A [terminal.launch] write binds only on the next daemon start: the
 		// launch policy is captured into the termsvc service at construction
 		// (cmd terminalLaunchPolicy), never hot-reloaded — so the UI states the
@@ -89,6 +107,10 @@ func (s *Server) handleTerminalPolicyGet(w http.ResponseWriter, r *http.Request)
 		resp["max_concurrent"] = cfg.Terminal.MaxConcurrent
 		resp["idle_timeout"] = cfg.Terminal.IdleTimeout
 		resp["allow_shell"] = cfg.Terminal.Launch.AllowShell
+		resp["enabled_adapters"] = cfg.Observer.Watch.EnabledAdapters
+		if gap := diag.AllowedToolsNotWatched(cfg); len(gap) > 0 {
+			resp["unwatched_allowed_tools"] = gap
+		}
 	}
 	writeJSON(w, resp)
 }

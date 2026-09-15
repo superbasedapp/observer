@@ -1,0 +1,16 @@
+{
+  "Name": "Cloudintel Evidence Blob Writer (<SBCI_ENV>)",
+  "IsCustom": true,
+  "Description": "Least-privilege blob data role for the sbci-API managed identity on the 'evidence' container (plan §6 CI-P6 IaC #3/#4). Grants read + write + delete on blobs ONLY — this SPLITS the built-in 'Storage Blob Data Contributor', which additionally carries add/action, move/action, and permanent-delete plus container-management actions the API never needs. Scope the ASSIGNMENT to the evidence container (see ensure_storage_role_assignments in cloudintel-azure.sh); the AssignableScopes below is subscription-wide only because Azure role DEFINITIONS cannot themselves be resource-scoped. NOTE: data-action custom roles can lag RBAC propagation (~5min) on first assignment.",
+  "Actions": [],
+  "NotActions": [],
+  "DataActions": [
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete"
+  ],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/<SUBSCRIPTION_ID>"
+  ]
+}

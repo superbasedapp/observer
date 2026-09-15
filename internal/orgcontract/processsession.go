@@ -50,6 +50,16 @@ type SessionProcessRow struct {
 	ActionID  int64  `json:"action_id,omitempty"`
 	TurnIndex int64  `json:"turn_index,omitempty"`
 
+	// MessageID is the id of the assistant MESSAGE that spawned this run,
+	// resolved node-side from the correlated action (actions.message_id by
+	// ActionID; process_runs itself has no message_id column) — the value the
+	// node's own System tab uses to jump from a process row back to the message
+	// that issued the command. Empty when the run was never action-correlated
+	// or the correlated action carries no message id. CONTENT-FREE (an opaque
+	// provider id like an Anthropic "msg_…"), so it ships alongside the other
+	// process metadata; additive/omitempty both directions.
+	MessageID string `json:"message_id,omitempty"`
+
 	// ExePath / ExeBasename / ExeHash / CWD / ArgvPreview / ArgvArgc are the
 	// node's process_runs identity columns, RAW (§0.1 — the admin sees all).
 	// ArgvPreview is already a scrubbed/capped preview on the node (never the
@@ -80,14 +90,32 @@ type SessionProcessRow struct {
 	ExitSignal int64 `json:"exit_signal,omitempty"`
 	DurationMs int64 `json:"duration_ms,omitempty"`
 
-	// Resource metrics — key figures only (cumulative CPU time, peak RSS,
-	// disk I/O); per-sample sparkline history (processobs.MetricSample) is
-	// node-only polling detail, deferred.
+	// Resource metrics — cumulative CPU time, peak RSS, current working set,
+	// live thread count, disk I/O. All content-free numeric counters (never a
+	// path or a command), so they ship alongside the other process metadata.
 	CPUUserMs   int64 `json:"cpu_user_ms,omitempty"`
 	CPUSystemMs int64 `json:"cpu_system_ms,omitempty"`
 	MaxRSSBytes int64 `json:"max_rss_bytes,omitempty"`
-	ReadBytes   int64 `json:"read_bytes,omitempty"`
-	WriteBytes  int64 `json:"write_bytes,omitempty"`
+	// WorkingSetBytes is the current (instantaneous) RSS at last poll, distinct
+	// from MaxRSSBytes (the peak). ThreadCount is the live OS thread count.
+	// Both are the node's process_runs.working_set_bytes / thread_count
+	// (migration 045), 0 when the node never captured them (non-Windows poll
+	// capturer, pre-feature rows) — additive/omitempty both directions.
+	WorkingSetBytes int64 `json:"working_set_bytes,omitempty"`
+	ThreadCount     int64 `json:"thread_count,omitempty"`
+	ReadBytes       int64 `json:"read_bytes,omitempty"`
+	WriteBytes      int64 `json:"write_bytes,omitempty"`
+
+	// MetricSamplesJSON is the node's per-process sparkline ring
+	// (process_runs.metric_samples_json, migration 045): a compact JSON array
+	// of recent {t,cpu_ms,ws,rb,wb,…} samples driving the working-set trend
+	// chart. It is HIGH-VOLUME, so unlike the other columns it is CAPPED on the
+	// wire (the node-side SELECT keeps only the most-recent samples under a
+	// fixed byte ceiling, and the push loop drops the whole ring for a row
+	// rather than let the samples overrun the envelope budget). Content-free
+	// numeric counters; empty when the node captured no samples or the cap
+	// dropped them. Additive/omitempty both directions.
+	MetricSamplesJSON string `json:"metric_samples_json,omitempty"`
 
 	// EventCount is the number of process_events rows attributed to this run
 	// (network/file/privilege/etc — event TYPE and TARGET stay node-local; a

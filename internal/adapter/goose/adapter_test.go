@@ -328,10 +328,10 @@ func TestIdempotentSourceEventIDs(t *testing.T) {
 
 func TestResolveProjectRoot(t *testing.T) {
 	a := newTestAdapter()
-	if got, remote := a.resolveProjectRoot(""); got != "[goose]" || remote != "" {
+	if got, remote, _ := a.resolveProjectRoot(""); got != "[goose]" || remote != "" {
 		t.Errorf("empty cwd => (%q, %q) want ([goose], \"\")", got, remote)
 	}
-	if got, _ := a.resolveProjectRoot(`C:\Users\dev\project`); strings.Contains(got, "superbased-observer") {
+	if got, _, _ := a.resolveProjectRoot(`C:\Users\dev\project`); strings.Contains(got, "superbased-observer") {
 		t.Errorf("foreign windows cwd misfiled under observer repo: %q", got)
 	}
 }

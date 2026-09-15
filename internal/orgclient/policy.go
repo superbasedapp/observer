@@ -390,11 +390,29 @@ func (c *Client) applyBundleGates(ctx context.Context, b gen.PolicyBundle, enr *
 	if err != nil {
 		return PolicyResult{}, false, fmt.Errorf("orgclient.FetchPolicyBundle: read key pin: %w: %w", errPolicyLocalPreResponse, err)
 	}
+	offered := base64.StdEncoding.EncodeToString(pub)
 	switch {
 	case pinned == "":
+		// C1: this rail's trust-on-first-fetch writes the SAME `#policy-key`
+		// row the enrolment channel writes, so before establishing one it must
+		// agree with every trust the node already holds. Without this check a
+		// network attacker who reaches an unpinned node can plant his key here
+		// and have another rail promote it to the trust root.
+		if err := c.checkOrgKeyIdentity(ctx, policyBundleRail, offered); err != nil {
+			if errors.Is(err, errPinStoreRead) {
+				return PolicyResult{}, false, fmt.Errorf("orgclient.FetchPolicyBundle: pin key: %w: %w", errPolicyLocalPreResponse, err)
+			}
+			return PolicyResult{
+				Status: PolicyRejected, Version: b.Version, RejectCode: RejectKeyPinMismatch,
+				Detail: err.Error(),
+			}, true, nil
+		}
+		// Stamped railPinProvenance: this row was established by a FETCH,
+		// not by the enrolment channel, and must never promote (C1).
 		if _, err := c.store.RecordGuardPolicyState(ctx, store.GuardPolicyStateRow{
 			Layer:       "org",
 			Path:        PolicyKeyPinPath(enr.OrgServerURL),
+			Version:     railPinProvenance,
 			ContentHash: keyHash,
 			LoadedAt:    time.Now().UTC(),
 		}); err != nil {
@@ -406,6 +424,14 @@ func (c *Client) applyBundleGates(ctx context.Context, b gen.PolicyBundle, enr *
 			Status: PolicyRejected, Version: b.Version, RejectCode: RejectKeyPinMismatch,
 			Detail: "signing key does not match the enrolment pin (re-enrol if the org key legitimately rotated)",
 		}, true, nil
+	default:
+		// M4: this rail holds the PROVEN key bytes behind the pin hash — the
+		// bundle's own signature verified under them. A node whose enrolment
+		// stored only the hash can therefore learn its key here, without
+		// waiting for a routing or announcement document. adoptEnrolmentKeyMaterial
+		// re-checks provenance (C1), so a hash this rail itself TOFU-established
+		// is never promoted.
+		c.adoptEnrolmentKeyMaterial(ctx, offered)
 	}
 
 	// Gate 3: monotonic version. The baseline is the MAX of the

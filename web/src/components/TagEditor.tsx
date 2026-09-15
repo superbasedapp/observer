@@ -7,14 +7,25 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { postSessionTags, fetchTagRollup } from "@/lib/api";
+import {
+  postSessionTags,
+  fetchTagRollup,
+  fetchTagDefinitions,
+  postTagDefinition,
+} from "@/lib/api";
 import {
   CLASSIFY_REMOTE_BLOCKED_MSG,
   canClassifySessions,
 } from "@/lib/remote";
 import type { TagRollup } from "@/lib/types";
+import {
+  isStandardTag,
+  standardTag,
+  standardTagsByCategory,
+} from "@/lib/tagTaxonomy";
 import { TagPill } from "@/components/TagPill";
 import { useCompanionRegistry } from "@/components/primitives/companion";
+import { AnchoredPopover } from "@/components/primitives/AnchoredPopover";
 
 // TagEditor — the popover that adds/removes a session's tags, plus the
 // favorite star that shares its POST endpoint.
@@ -84,17 +95,17 @@ function utf8Length(s: string): number {
 // Returns null when the tag would be accepted.
 export function tagInputError(normalized: string): string | null {
   if (normalized === "") {
-    return "Nothing usable left after normalization — a tag needs at least one of a-z, 0-9, dot, underscore or dash.";
+    return "Nothing usable left after normalization - a tag needs at least one of a-z, 0-9, dot, underscore or dash.";
   }
   const bytes = utf8Length(normalized);
   if (bytes > MAX_TAG_LENGTH) {
-    return `Too long — the limit is ${MAX_TAG_LENGTH} characters (this is ${bytes}).`;
+    return `Too long - the limit is ${MAX_TAG_LENGTH} characters (this is ${bytes}).`;
   }
   const bad = Array.from(
     new Set(Array.from(normalized).filter((c) => !TAG_CHAR.test(c))),
   );
   if (bad.length > 0) {
-    return `Can't use ${bad.map((c) => `“${c}”`).join(" ")} — tags may contain only a-z, 0-9, dot, underscore and dash.`;
+    return `Can't use ${bad.map((c) => `“${c}”`).join(" ")} - tags may contain only a-z, 0-9, dot, underscore and dash.`;
   }
   return null;
 }
@@ -129,7 +140,7 @@ export function FavoriteStar({
         blocked
           ? CLASSIFY_REMOTE_BLOCKED_MSG
           : favorite
-            ? "Favorited — click to unstar"
+            ? "Favorited - click to unstar"
             : "Mark as favorite"
       }
       onClick={(e) => {
@@ -214,7 +225,7 @@ export function RatingStars({
               blocked
                 ? CLASSIFY_REMOTE_BLOCKED_MSG
                 : rating === value
-                  ? `Rated ${value}/${MAX_RATING} — click to clear`
+                  ? `Rated ${value}/${MAX_RATING} - click to clear`
                   : `Rate ${value}/${MAX_RATING}`
             }
             onMouseEnter={() => {
@@ -259,6 +270,109 @@ export function RatingStars({
   );
 }
 
+// RatingChip is the COLLAPSED rating control: a compact chip showing the score
+// (or "rate") that opens the full RatingStars picker in a popover on click.
+// It replaces the always-visible 10-star row everywhere it was used inline (the
+// detail header + the sessions-table column), so a wide star row no longer eats
+// horizontal space by default. Purely presentational: the caller owns the POST
+// via onRate, exactly like RatingStars.
+export function RatingChip({
+  rating,
+  onRate,
+  className,
+  compact = false,
+}: {
+  rating: number;
+  onRate: (next: number) => void;
+  className?: string;
+  // compact drops the border/background chrome and the "rate" label — just
+  // the star glyph (plus the number once rated). Used inline next to the
+  // favorite star in the Sessions table, where the dedicated Rating column
+  // was removed (issue: rating reachable via a click-popover only, not a
+  // whole column).
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const blocked = !canClassifySessions();
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={rating > 0 ? `Rated ${rating} out of ${MAX_RATING}` : "Rate this session"}
+        disabled={blocked}
+        title={
+          blocked
+            ? CLASSIFY_REMOTE_BLOCKED_MSG
+            : rating > 0
+              ? `Rated ${rating}/${MAX_RATING} - click to change`
+              : `Rate this session (1-${MAX_RATING})`
+        }
+        onClick={(e) => {
+          e.stopPropagation();
+          if (blocked) return;
+          setOpen((o) => !o);
+        }}
+        className={clsx(
+          "inline-flex items-center transition-colors",
+          compact
+            ? "gap-0.5 rounded-1 p-0.5"
+            : "gap-1 rounded-2 border px-1.5 py-0.5 text-[10.5px]",
+          open
+            ? compact
+              ? "text-accent"
+              : "border-accent bg-accent-soft text-accent"
+            : rating > 0
+              ? compact
+                ? "text-fg-2 hover:text-accent"
+                : "border-line-2 bg-bg-2 text-fg-2 hover:bg-bg-3"
+              : compact
+                ? "text-fg-4 hover:text-fg-2"
+                : "border-line-2 bg-bg-2 text-fg-4 hover:bg-bg-3 hover:text-fg-2",
+          blocked && "cursor-not-allowed opacity-50",
+          className,
+        )}
+      >
+        <svg
+          width={compact ? 10 : 12}
+          height={compact ? 10 : 12}
+          viewBox="0 0 16 16"
+          fill={rating > 0 ? "currentColor" : "none"}
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinejoin="round"
+          aria-hidden
+          className={rating > 0 ? "text-warn" : undefined}
+        >
+          <path d="M8 1.8 10 6l4.4.5-3.3 3 .9 4.4L8 11.7 4 13.9l.9-4.4-3.3-3L6 6z" />
+        </svg>
+        {rating > 0 ? (
+          <span className="font-mono text-[10px] tabular-nums">{rating}</span>
+        ) : (
+          !compact && <span>rate</span>
+        )}
+      </button>
+      <AnchoredPopover
+        open={open}
+        anchorRef={triggerRef}
+        ariaLabel="Session rating"
+        width={260}
+        onDismiss={() => setOpen(false)}
+      >
+        <div className="px-3 py-2.5">
+          <p className="mb-1.5 text-[10px] uppercase tracking-[0.06em] text-fg-4">
+            Overall rating - how well this session performed
+          </p>
+          <RatingStars rating={rating} onRate={onRate} size={16} />
+        </div>
+      </AnchoredPopover>
+    </>
+  );
+}
+
 // TagEditor renders its own trigger button and an anchored popover. It
 // portals to <body> (the Sessions table's overflow-x-auto wrapper would
 // otherwise clip it) and registers the portal root with the terminal
@@ -284,6 +398,14 @@ export function TagEditor({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [vocab, setVocab] = useState<TagRollup[] | null>(null);
+  // customDefs holds user-authored definitions for CUSTOM tags (standard tags
+  // carry their definitions in the in-code taxonomy). Keyed by tag slug.
+  const [customDefs, setCustomDefs] = useState<
+    Record<string, { definition: string; category?: string }>
+  >({});
+  // defDraft is an OPTIONAL one-line definition offered while creating a brand
+  // new custom tag, so a user can standardize their own vocabulary as they go.
+  const [defDraft, setDefDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Execute-class POST → unreachable from a paired remote device.
@@ -314,6 +436,12 @@ export function TagEditor({
         // A failed vocabulary load must not block free entry: the input
         // still works, we just show the starter suggestions instead.
         if (!ac.signal.aborted) setVocab([]);
+      });
+    // Custom tag definitions (standard defs are in-code). Best-effort.
+    fetchTagDefinitions(ac.signal)
+      .then((d) => setCustomDefs(d.definitions ?? {}))
+      .catch(() => {
+        if (!ac.signal.aborted) setCustomDefs({});
       });
     return () => ac.abort();
   }, [open, sessionId]);
@@ -384,20 +512,43 @@ export function TagEditor({
   const atCap = tags.length >= MAX_TAGS_PER_SESSION;
   const duplicate = previewError === null && tags.includes(preview);
 
-  // Suggestions: the operator's own vocabulary, minus what this session
-  // already carries, filtered by whatever they're typing. Falls back to the
-  // starter list only while the vocabulary is genuinely empty (§0).
-  const suggestions = useMemo(() => {
-    const own = (vocab ?? []).map((v) => v.tag);
-    const pool = own.length > 0 ? own : vocab === null ? [] : STARTER_TAGS;
-    const q = preview;
-    return pool
-      .filter((t) => !tags.includes(t))
-      .filter((t) => (q ? t.includes(q) : true))
-      .slice(0, 40);
-  }, [vocab, tags, preview]);
+  // defFor resolves a tag's definition: the in-code standard vocabulary first,
+  // then the user's own custom definitions.
+  const defFor = (slug: string): string =>
+    standardTag(slug)?.definition ?? customDefs[slug]?.definition ?? "";
 
-  const usingStarters = (vocab?.length ?? 0) === 0 && vocab !== null;
+  // Suggestion model: the user's OWN custom tags (those NOT in the standard
+  // vocabulary) plus the full standard taxonomy grouped by category — all minus
+  // what this session already carries, filtered by the current query. The
+  // standard taxonomy is always offered (not just as an empty-vocab fallback),
+  // so the curated vocabulary is discoverable with definitions.
+  const suggestionModel = useMemo(() => {
+    const applied = new Set(tags);
+    const q = preview;
+    const match = (t: string) => (q ? t.includes(q) : true);
+    const counts = new Map((vocab ?? []).map((v) => [v.tag, v.sessions]));
+    const ownCustom = (vocab ?? [])
+      .map((v) => v.tag)
+      .filter((t) => !isStandardTag(t) && !applied.has(t) && match(t))
+      .slice(0, 40);
+    const groups = standardTagsByCategory()
+      .map(({ category, tags: ts }) => ({
+        category,
+        tags: ts.filter((t) => !applied.has(t.slug) && match(t.slug)),
+      }))
+      .filter((g) => g.tags.length > 0);
+    const total =
+      ownCustom.length + groups.reduce((n, g) => n + g.tags.length, 0);
+    return { ownCustom, groups, total, counts };
+  }, [vocab, tags, preview, customDefs]);
+
+  // A brand-new custom tag = a valid, non-standard, not-yet-applied preview that
+  // isn't already in the user's vocab. Only then do we offer a definition box.
+  const creatingCustom =
+    previewError === null &&
+    preview !== "" &&
+    !isStandardTag(preview) &&
+    !tags.includes(preview);
 
   // mutate is SINGLE-FLIGHT: a second call while one is in flight is refused
   // outright rather than queued. Both the optimistic value and the revert value
@@ -439,8 +590,20 @@ export function TagEditor({
     }
   }
 
+  // saveDefinition persists an optional custom-tag definition. Non-fatal: the
+  // tag is added regardless; only its definition is best-effort.
+  async function saveDefinition(tag: string, definition: string) {
+    try {
+      await postTagDefinition(tag, definition);
+      setCustomDefs((m) => ({ ...m, [tag]: { definition } }));
+    } catch {
+      /* the tag still applied; the optional definition just didn't persist */
+    }
+  }
+
   function addDraft(value?: string) {
     if (blocked || busyRef.current) return;
+    const isDraftEntry = value === undefined;
     const t = normalizeTag(value ?? draft);
     // Validate against the SERVER's rules and refuse to submit rather than
     // silently sending something it will reject (or, worse, quietly reshaping
@@ -460,6 +623,13 @@ export function TagEditor({
     }
     setDraft("");
     void mutate([t], []);
+    // Only a typed-from-scratch entry carries an optional definition; picking a
+    // suggestion never does.
+    if (isDraftEntry) {
+      const def = defDraft.trim();
+      setDefDraft("");
+      if (def && !isStandardTag(t)) void saveDefinition(t, def);
+    }
   }
 
   return (
@@ -503,9 +673,9 @@ export function TagEditor({
               width: 300,
               visibility: anchor ? "visible" : "hidden",
             }}
-            className="overflow-hidden rounded-3 border border-line-2 bg-bg-1 shadow-drawer"
+            className="flex max-h-[calc(100vh-16px)] flex-col overflow-hidden rounded-3 border border-line-2 bg-bg-1 shadow-drawer"
           >
-            <div className="flex items-baseline justify-between gap-2 border-b border-line-1 bg-bg-2/60 px-3 py-1.5">
+            <div className="flex shrink-0 items-baseline justify-between gap-2 border-b border-line-1 bg-bg-2/60 px-3 py-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-3">
                 Tags
               </span>
@@ -522,7 +692,7 @@ export function TagEditor({
               // latch is still the hard backstop.
               <div
                 className={clsx(
-                  "flex flex-wrap gap-1 border-b border-line-1 px-3 py-2",
+                  "flex shrink-0 flex-wrap gap-1 border-b border-line-1 px-3 py-2",
                   busy && "pointer-events-none opacity-60",
                 )}
               >
@@ -536,7 +706,7 @@ export function TagEditor({
               </div>
             )}
 
-            <div className="border-b border-line-1 px-3 py-2">
+            <div className="shrink-0 border-b border-line-1 px-3 py-2">
               <input
                 ref={inputRef}
                 type="text"
@@ -577,42 +747,83 @@ export function TagEditor({
                   )}
                 </p>
               )}
+              {creatingCustom && (
+                // Optional one-line definition for a brand-new CUSTOM tag, so a
+                // user can standardize their own vocabulary as they add it.
+                <input
+                  type="text"
+                  value={defDraft}
+                  placeholder="definition for this custom tag (optional)…"
+                  disabled={busy}
+                  onChange={(e) => setDefDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addDraft();
+                    }
+                  }}
+                  className="mt-1.5 h-6 w-full appearance-none rounded-2 border border-line-2 bg-bg-1 px-2 text-[10.5px] text-fg-1 placeholder:text-fg-4 focus:border-accent focus:outline-none disabled:opacity-50"
+                />
+              )}
             </div>
 
-            <div className="max-h-[220px] overflow-y-auto py-1">
-              {usingStarters && (
-                <p className="px-3 pb-1 pt-1 text-[10px] text-fg-4">
-                  No tags yet — start with one of these:
-                </p>
-              )}
-              {suggestions.length === 0 ? (
+            {/*
+              60vh, not the old 200px — browsing the full 56-tag grouped
+              taxonomy was cramped. min-h-0 + flex-1 lets it shrink under
+              the panel's own max-h-[calc(100vh-16px)] cap on short
+              viewports rather than pushing the popover off screen; the
+              search input above stays outside this scroll region, so it
+              never scrolls out of view.
+            */}
+            <div className="max-h-[60vh] min-h-0 flex-1 overflow-y-auto py-1">
+              {suggestionModel.total === 0 ? (
                 <p className="px-3 py-2 text-[11px] text-fg-3">
                   {previewError !== null
                     ? "Fix the tag above before it can be created."
                     : preview
-                      ? "No matching tag — press Enter to create it."
-                      : "No other tags yet."}
+                      ? "No matching standard tag - press Enter to add it as a custom tag."
+                      : "No tags to suggest."}
                 </p>
               ) : (
-                suggestions.map((t) => {
-                  const count = vocab?.find((v) => v.tag === t)?.sessions;
-                  return (
-                    <button
-                      key={t}
-                      type="button"
-                      disabled={atCap || busy}
-                      onClick={() => addDraft(t)}
-                      className="flex w-full items-center gap-2 px-2.5 py-1 text-left transition-colors hover:bg-bg-2 disabled:opacity-40"
-                    >
-                      <TagPill tag={t} />
-                      {count != null && (
-                        <span className="ml-auto shrink-0 font-mono text-[10px] text-fg-4">
-                          {count}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })
+                <>
+                  {suggestionModel.ownCustom.length > 0 && (
+                    <div>
+                      <p className="px-3 pb-0.5 pt-1 text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-4">
+                        Your tags
+                      </p>
+                      {suggestionModel.ownCustom.map((t) => (
+                        <SuggestionRow
+                          key={t}
+                          tag={t}
+                          definition={defFor(t)}
+                          count={suggestionModel.counts.get(t)}
+                          disabled={atCap || busy}
+                          onPick={() => addDraft(t)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {suggestionModel.groups.map((g) => (
+                    <div key={g.category.key}>
+                      <p
+                        className="px-3 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-4"
+                        title={g.category.description}
+                      >
+                        {g.category.label}
+                      </p>
+                      {g.tags.map((t) => (
+                        <SuggestionRow
+                          key={t.slug}
+                          tag={t.slug}
+                          definition={t.definition}
+                          count={suggestionModel.counts.get(t.slug)}
+                          disabled={atCap || busy}
+                          onPick={() => addDraft(t.slug)}
+                        />
+                      ))}
+                    </div>
+                  ))}
+                </>
               )}
             </div>
 
@@ -625,5 +836,44 @@ export function TagEditor({
           document.body,
         )}
     </>
+  );
+}
+
+// SuggestionRow is one pickable tag in the editor's suggestion list: the pill,
+// its definition (standard or custom, truncated with a full-text tooltip), and
+// the usage count when the tag is already in the vocabulary.
+function SuggestionRow({
+  tag,
+  definition,
+  count,
+  disabled,
+  onPick,
+}: {
+  tag: string;
+  definition: string;
+  count?: number;
+  disabled: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onPick}
+      title={definition || undefined}
+      className="flex w-full items-center gap-2 px-2.5 py-1 text-left transition-colors hover:bg-bg-2 disabled:opacity-40"
+    >
+      <TagPill tag={tag} />
+      {definition ? (
+        <span className="min-w-0 flex-1 truncate text-[10px] text-fg-4">
+          {definition}
+        </span>
+      ) : (
+        <span className="flex-1" />
+      )}
+      {count != null && (
+        <span className="shrink-0 font-mono text-[10px] text-fg-4">{count}</span>
+      )}
+    </button>
   );
 }

@@ -22,7 +22,8 @@ func TestSupportedFamiliesDriveDispatch(t *testing.T) {
 		// governs none of the four features (every seam stays fail-open)
 		// is valid and meaningful, mirroring node.governance's minimal
 		// body above.
-		FamilyNodeFeatures: `{}`,
+		FamilyNodeFeatures:    `{}`,
+		FamilyPlaneBAdmission: `{"admission":{"mode":"enforce"}}`,
 	}
 
 	if len(minimalBody) != len(SupportedFamilies) {

@@ -79,15 +79,56 @@ func (s *Store) SelectCodeintelDevRows(ctx context.Context) ([]orgcontract.Codei
 			// is shipsRawContent()-gated, and the enterprise posture
 			// carries raw paths to the admin (plan §0.1).
 			ProjectRoot: project,
-			Language:    lang,
-			Files:       files,
-			Symbols:     symbols,
-			Edges:       edges,
-			LastIndexed: indexedAt,
+			// ...and the PROJECT-IDENTITY hash rides alongside both, so the
+			// server can join this row to sessions / org projects at all.
+			// ProjectHash above is domain-separated into its own hash space
+			// (that is the point of it) and can never match a
+			// project_root_hash; projectRootHashForPath is the one that can.
+			ProjectRootHash: projectRootHashForPath(project),
+			Language:        lang,
+			Files:           files,
+			Symbols:         symbols,
+			Edges:           edges,
+			LastIndexed:     indexedAt,
 		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store.SelectCodeintelDevRows: %w", err)
 	}
 	return out, nil
+}
+
+// probeCodeintel is the Track R2 change-detection probe SHARED by both wires
+// fed from the code index: codeintel_dev (this file) and codeintel_summary
+// (codeintelsummary.go). It lives here — with the other codeintel_* SQL — so
+// orgsnapgate.go and orgpush.go stay free of the table names the privacy
+// sentinel forbids there.
+//
+// PROBE: (MAX(id), COUNT(*), MAX(indexed_at)) over codeintel_files, plus a
+// bare MAX(id) on codeintel_nodes and codeintel_edges.
+//
+// WHY THAT REFLECTS MUTATION: an index pass DELETEs and reinserts a file's
+// symbols and edges, and AUTOINCREMENT never reuses ids, so ANY reindex
+// advances the node/edge maxima — which is why the (much larger) child tables
+// need only an O(1) endpoint seek. codeintel_files carries the file COUNT (so a
+// deleted file is seen even with no reinsert) and MAX(indexed_at) (so a
+// re-index that happens to reproduce identical counts is still seen); it is the
+// small parent table, one row per source file.
+//
+// RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: the resolver's in-place
+// `UPDATE codeintel_edges SET dst_id` passes change no count and no id — but
+// this wire ships STRUCTURE COUNTS only (files / symbols / edges per project ×
+// language), which call resolution does not alter, so that update is invisible
+// to the wire by construction rather than merely deferred. A file status
+// UPDATE is likewise not shipped. snapGate's maxSkipAge remains the backstop.
+//
+// This is finding F1's wire — the Cartesian recompute that dominated the first
+// pprof profile — so skipping it on an unchanged index is the second-largest
+// saving the gate makes.
+func (s *Store) probeCodeintel(ctx context.Context) (string, error) {
+	return s.snapProbeScalar(ctx, `
+		SELECT 'cf' || (SELECT COALESCE(MAX(id), 0) || '/' || COUNT(*) || '/' || COALESCE(MAX(indexed_at), 0)
+		                  FROM codeintel_files) ||
+		       ':cn' || (SELECT COALESCE(MAX(id), 0) FROM codeintel_nodes) ||
+		       ':ce' || (SELECT COALESCE(MAX(id), 0) FROM codeintel_edges)`)
 }

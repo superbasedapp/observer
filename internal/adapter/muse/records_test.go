@@ -1,6 +1,7 @@
 package muse
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -212,6 +213,75 @@ func TestFailedOutcomePolarity(t *testing.T) {
 		if !failedOutcomes[k] {
 			t.Errorf("%q should mark a call failed", k)
 		}
+	}
+}
+
+// TestEffectOutcomeUnmarshalJSON pins the two shapes record.outcome is
+// observed to carry: the documented object and the bare string a
+// 2026-08-07 live capture emitted on an unrelated `voice.capture.observed`
+// record (real line-6 payload shape, session
+// acd8fa06-acdc-431c-87bf-71edfe3ae016: `"outcome":"error"`, alongside
+// `audio_ms`, `failure_class`, `mode`, `schema_version`, `session_id` —
+// none of which this struct declares, so they must decode as no-ops
+// rather than failing the whole record). A strict-object-only decoder
+// broke json.Unmarshal for that ENTIRE line, not just this field, because
+// every JSONL line is fully decoded regardless of payload_type.
+func TestEffectOutcomeUnmarshalJSON(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		want    effectOutcome
+		wantErr bool
+	}{
+		{"object shape", `{"kind":"completed"}`, effectOutcome{Kind: "completed"}, false},
+		{"object shape failed", `{"kind":"failed"}`, effectOutcome{Kind: "failed"}, false},
+		{"string shape (real line 6)", `"error"`, effectOutcome{Kind: "error"}, false},
+		{"string shape other value", `"cancelled"`, effectOutcome{Kind: "cancelled"}, false},
+		{"null", `null`, effectOutcome{}, false},
+		{"malformed — number", `42`, effectOutcome{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got effectOutcome
+			err := got.UnmarshalJSON([]byte(tc.raw))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("UnmarshalJSON(%s): want error, got nil", tc.raw)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("UnmarshalJSON(%s): %v", tc.raw, err)
+			}
+			if got != tc.want {
+				t.Errorf("UnmarshalJSON(%s) = %+v, want %+v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEffectOutcomeInMetaRecordStringShape reproduces the real defect:
+// decoding a full rawRecord whose payload.record.outcome is a bare string
+// (the voice_capture_observed shape) must succeed, not report "malformed
+// JSON", even though this payload_type is never dispatched by handle().
+func TestEffectOutcomeInMetaRecordStringShape(t *testing.T) {
+	raw := `{"schema_version":1,"id":"00000000-0000-0000-0000-000000000009",` +
+		`"stream":{"kind":"session","id":"11111111-2222-3333-4444-555555555555"},` +
+		`"sequence":6,"recorded_at":1786118148982274,"record_type":"event",` +
+		`"durability":"durable","causation_id":null,` +
+		`"payload_type":"voice.capture.observed","payload_schema_version":1,` +
+		`"payload":{"kind":"voice_capture_observed","record":{"audio_ms":0,` +
+		`"failure_class":"engine","mode":"record","outcome":"error",` +
+		`"schema_version":1,"session_id":"11111111-2222-3333-4444-555555555555"}}}`
+	var rec rawRecord
+	if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+		t.Fatalf("json.Unmarshal must tolerate the string outcome shape: %v", err)
+	}
+	if rec.Payload == nil || rec.Payload.Record == nil {
+		t.Fatal("expected a decoded payload.record")
+	}
+	if rec.Payload.Record.Outcome == nil || rec.Payload.Record.Outcome.Kind != "error" {
+		t.Errorf("Outcome = %+v, want Kind=\"error\"", rec.Payload.Record.Outcome)
 	}
 }
 

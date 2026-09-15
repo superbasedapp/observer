@@ -99,6 +99,29 @@ func checkProcessObservability(ctx context.Context, database *sql.DB, cfg config
 		}
 	}
 
+	// Runs the daemon captured and then THREW AWAY because the sink kept
+	// refusing writes. This outranks every accounting warning below it: an
+	// unmeasured byte total is a missing column on a row that exists, whereas
+	// this is the row itself never landing — process history that cannot be
+	// reconstructed from anything else on the box.
+	//
+	// It fires only on the exhausted counter, never on a non-zero retention:
+	// retained runs are BUFFERED, not lost, and warning about a sink that is
+	// successfully riding out a busy database would train the operator to
+	// ignore the line that means real loss.
+	if haveHealth && health.Dropped[string(processobs.DropSinkRetryExhausted)] > 0 {
+		lost := health.Dropped[string(processobs.DropSinkRetryExhausted)]
+		return Check{
+			Name:   "process observability",
+			Status: StatusWarn,
+			Message: staleQualified(health, now, fmt.Sprintf(
+				"enabled (%s backend), %d process runs retained — %d captured run(s) were LOST: the sink kept failing and the retry retention overflowed. Process history for that window is gone; check for a competing writer holding the SQLite write lock (another daemon, a long backfill, a hook storm)",
+				p.Backend, runs, lost,
+			)),
+			Details: details,
+		}
+	}
+
 	// A backend that was ASKED for per-process network bytes and could not
 	// attach is the loudest thing this check knows: the charts silently show
 	// nothing, and only the reason makes it actionable. It outranks the
@@ -163,6 +186,11 @@ func processHealthDetails(h ProcessHealth, ok bool, now time.Time) []string {
 		fmt.Sprintf("daemon health: pid %d, backend %s (%s), queue %d, %s",
 			h.PID, h.Backend, up, h.QueueDepth, stamp),
 		fmt.Sprintf("network bytes: %s", h.NetworkAccountingLine()),
+		// Always rendered, zeroes included — see ProcessHealth.CaptureLine.
+		// The row count above says what SURVIVED; this says what the running
+		// daemon resolved and discarded, which is the only way to tell an idle
+		// box from one whose every batch is being thrown away.
+		fmt.Sprintf("capture:       %s", h.CaptureLine()),
 	}
 	// Only rendered when a dial-in transport actually exists — an install
 	// without one must not grow a line about a capturer it never configured.

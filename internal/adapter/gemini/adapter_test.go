@@ -844,7 +844,7 @@ func TestResolveProjectRootRecordedTiers(t *testing.T) {
 				t.Fatalf("mkdir: %v", err)
 			}
 			want := c.setup(t, home)
-			if got, _ := resolveProjectRoot(session, ""); got != want {
+			if got, _, _ := resolveProjectRoot(session, ""); got != want {
 				t.Errorf("resolveProjectRoot = %q, want %q", got, want)
 			}
 		})
@@ -876,7 +876,7 @@ func TestResolveProjectRootPromotesToGitRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "tmp", key, ".project_root"), []byte(sub), 0o644); err != nil {
 		t.Fatalf("write sidecar: %v", err)
 	}
-	got, _ := resolveProjectRoot(session, "")
+	got, _, _ := resolveProjectRoot(session, "")
 	want, err := filepath.EvalSymlinks(repo)
 	if err != nil {
 		t.Fatalf("evalsymlinks: %v", err)

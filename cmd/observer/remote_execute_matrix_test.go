@@ -50,6 +50,7 @@ type nopRunRecorder struct{}
 func (nopRunRecorder) RecordRun(context.Context, termrun.Run) error                 { return nil }
 func (nopRunRecorder) EndRun(context.Context, string, time.Time, int, string) error { return nil }
 func (nopRunRecorder) RecordCorrelation(context.Context, termrun.Correlation) error { return nil }
+func (nopRunRecorder) RecordGUISpawn(context.Context, termrun.Run) error            { return nil }
 
 type mgrLauncher struct{ mgr *termsession.Manager }
 

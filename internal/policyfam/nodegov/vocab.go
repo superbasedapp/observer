@@ -22,13 +22,14 @@ var NavSectionIDs = []string{
 }
 
 // SettingsSectionIDs is the closed set of node-dashboard Settings
-// sub-sections (28 today).
+// sub-sections (30 today; "tasks" joined with the 2026-09-10 merge of the
+// session task-tracking Settings section from origin/main).
 var SettingsSectionIDs = []string{
 	"pricing", "backfill", "tools", "health", "storage", "enrolment", "intelligence",
 	"observer", "watcher", "freshness", "retention", "hooks", "proxy", "dashboard",
 	"compression", "profiles", "org", "guard", "routing", "otel", "mcp", "advisor",
 	"cachetrack", "observability", "secrets", "antigravity", "process", "browser",
-	"terminal",
+	"terminal", "cloud", "tasks",
 }
 
 // UnhideableNavSectionIDs is threat T8's structural floor: the nav sections

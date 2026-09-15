@@ -3,6 +3,7 @@ package orgclient
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -448,8 +449,22 @@ func (c *Client) acceptPolicyResourceGates(
 	// and both proceed). Either way the verification below runs against the
 	// authoritative pin, never against this goroutine's own snapshot.
 	racedPin := false
+	offeredKey := base64.StdEncoding.EncodeToString(pub)
 	if pinned == "" {
-		authoritative, established, pinErr := c.store.EstablishOrgPolicyKeyPin(ctx, PolicyKeyPinPath(enr.OrgServerURL), keyHash)
+		// C1: establishing the shared `#policy-key` row is a trust decision
+		// this rail must not make alone — it writes the very row the enrolment
+		// channel writes. Cross-check against every pin the node already holds
+		// first; a disagreement is refused, not TOFU'd.
+		if idErr := c.checkOrgKeyIdentity(ctx, policyResourceRail, offeredKey); idErr != nil {
+			if errors.Is(idErr, errPinStoreRead) {
+				return nil, false, "", PolicyResourceResult{}, false, fmt.Errorf("orgclient.FetchAndAcceptPolicyResource: pin key: %w: %w", errPolicyResourceIndeterminate, idErr)
+			}
+			return nil, false, "", PolicyResourceResult{
+				Status: PRRejected, Version: resource.Version, RejectCode: PRRejectKeyPinMismatch,
+				Detail: idErr.Error(),
+			}, true, nil
+		}
+		authoritative, established, pinErr := c.store.EstablishOrgPolicyKeyPin(ctx, PolicyKeyPinPath(enr.OrgServerURL), keyHash, railPinProvenance)
 		if pinErr != nil {
 			return nil, false, "", PolicyResourceResult{}, false, fmt.Errorf("orgclient.FetchAndAcceptPolicyResource: pin key: %w: %w", errPolicyResourceIndeterminate, pinErr)
 		}
@@ -458,6 +473,12 @@ func (c *Client) acceptPolicyResourceGates(
 		if established {
 			c.logger.Info("org policy resource: signing key pinned on first fetch", "key_sha256", keyHash, "family", family)
 		}
+	}
+	if pinned == keyHash {
+		// M4: the resource's signature verified under these key BYTES and they
+		// match the pin, so a hash-only enrolment can learn its key here too.
+		// Provenance is re-checked inside (C1).
+		c.adoptEnrolmentKeyMaterial(ctx, offeredKey)
 	}
 	if pinned != keyHash {
 		detail := "signing key does not match the enrolment pin (re-enrol if the org key legitimately rotated)"

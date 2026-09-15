@@ -288,12 +288,12 @@ func TestBudgetBasis_Rows(t *testing.T) {
 			wantReasons: []ReasonCode{ReasonBudgetBand95, ReasonBudgetExhausted},
 		},
 		{
-			name:        "exhausted_hard_stop_flagged_not_blocking",
+			name:        "exhausted_hard_stop_flagged_and_recorded",
 			snap:        scope(1.05, BudgetHardStop),
 			wantCap:     TierHaikuClass,
 			wantAll:     true,
 			wantStop:    true,
-			wantReasons: []ReasonCode{ReasonBudgetBand95, ReasonBudgetExhausted},
+			wantReasons: []ReasonCode{ReasonBudgetBand95, ReasonBudgetExhausted, ReasonBudgetHardStop},
 		},
 	}
 	for _, tc := range cases {

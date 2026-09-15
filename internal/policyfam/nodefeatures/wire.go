@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // BodyV1 is the org-wire v1 body for the node.features family
@@ -18,18 +19,20 @@ import (
 //	  "terminals": {"enabled": true, "max_concurrent": 2, "sandbox_required": true},
 //	  "remote": {"enabled": false},
 //	  "routing_apply": {"enabled": true},
-//	  "patterns_write": {"enabled": true}
+//	  "patterns_write": {"enabled": true},
+//	  "tools": {"disallow": ["codex", "opencode"]}
 //	}
 //
 // Every top-level key is optional: a body may govern any subset of the
-// four features, leaving the rest ungoverned (fail-open) on the node —
-// this is what makes the family incrementally adoptable rather than
+// five stanzas, leaving the rest ungoverned (fail-open) on the node — this
+// is what makes the family incrementally adoptable rather than
 // all-or-nothing.
 type BodyV1 struct {
 	Terminals     *TerminalsBodyV1 `json:"terminals,omitempty"`
 	Remote        *FeatureBodyV1   `json:"remote,omitempty"`
 	RoutingApply  *FeatureBodyV1   `json:"routing_apply,omitempty"`
 	PatternsWrite *FeatureBodyV1   `json:"patterns_write,omitempty"`
+	Tools         *ToolsBodyV1     `json:"tools,omitempty"`
 }
 
 // FeatureBodyV1 is the wire shape of a simple enabled-only governed
@@ -46,6 +49,17 @@ type TerminalsBodyV1 struct {
 	Enabled         *bool `json:"enabled"`
 	MaxConcurrent   *int  `json:"max_concurrent,omitempty"`
 	SandboxRequired *bool `json:"sandbox_required,omitempty"`
+}
+
+// ToolsBodyV1 is the wire shape of the tools disallow-list stanza.
+// Presence of the stanza (a non-nil *ToolsBodyV1 on BodyV1) governs the
+// feature regardless of whether Disallow is empty — an org can publish an
+// empty list to explicitly assert "nothing is disallowed" as a positive
+// fact, distinct from never having opined at all. Unlike the enabled-only
+// stanzas above, there is no required field here: an empty/absent
+// Disallow is a valid, meaningful state on its own.
+type ToolsBodyV1 struct {
+	Disallow []string `json:"disallow,omitempty"`
 }
 
 // DecodeBody strictly decodes raw org-wire JSON bytes into a BodyV1:
@@ -125,6 +139,17 @@ func Compile(b BodyV1) (PolicySpec, error) {
 		return PolicySpec{}, err
 	}
 	spec.PatternsWrite = rule
+	if b.Tools != nil {
+		disallow := make(map[string]bool, len(b.Tools.Disallow))
+		for _, t := range b.Tools.Disallow {
+			t = strings.ToLower(strings.TrimSpace(t))
+			if t == "" {
+				continue
+			}
+			disallow[t] = true
+		}
+		spec.Tools = ToolsRule{Governed: true, Disallow: disallow}
+	}
 	spec.Hash = hashBody(b)
 	return spec, nil
 }

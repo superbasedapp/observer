@@ -4,6 +4,7 @@ import { HelpInd, TitleWithHelp } from "@/components/HelpInd";
 import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
 import { markRestartPending } from "@/lib/restartPending";
+import { fmtClock, fmtDateTime, fmtShortId } from "@/lib/format";
 import {
   LaunchTerminal,
   type Status as LaunchTerminalStatus,
@@ -304,7 +305,7 @@ export function RemotePage() {
 
   async function arm(action: "enable" | "disable" | "rotate" | "add-device") {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setBusy(action);
@@ -335,7 +336,7 @@ export function RemotePage() {
   // revokes any live remote terminal writer immediately.
   async function saveAllowTerminal(next: boolean) {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setBusy("allow-terminal");
@@ -353,8 +354,8 @@ export function RemotePage() {
       if (res.restart_required) markRestartPending("remote-allow-terminal");
       setTermMsg(
         saved
-          ? "Allow terminal is now on. Live now — no restart needed; this expands the remote execution authority."
-          : "Allow terminal is now off. Live now — no restart needed. Any live remote terminal was revoked immediately and new control is refused.",
+          ? "Allow terminal is now on. Live now - no restart needed; this expands the remote execution authority."
+          : "Allow terminal is now off. Live now - no restart needed. Any live remote terminal was revoked immediately and new control is refused.",
       );
       cfg.reload();
     } catch (e) {
@@ -379,7 +380,7 @@ export function RemotePage() {
   // any already-open remote view of an attach/resume terminal at once.
   async function saveAllowTerminalView(next: boolean) {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setBusy("allow-terminal-view");
@@ -396,8 +397,8 @@ export function RemotePage() {
       if (res.restart_required) markRestartPending("remote-allow-terminal-view");
       setTermViewMsg(
         saved
-          ? "Allow terminal view is now on (this is the default). Live now — no restart needed. Paired devices can SEE attach/resume terminals like Claude Code and Codex (read-only); driving them still needs Allow terminal + a per-terminal Grant."
-          : "Allow terminal view is now off. Live now — no restart needed. Any open remote view of an attach/resume terminal was closed immediately.",
+          ? "Allow terminal view is now on (this is the default). Live now - no restart needed. Paired devices can SEE attach/resume terminals like Claude Code and Codex (read-only); driving them still needs Allow terminal + a per-terminal Grant."
+          : "Allow terminal view is now off. Live now - no restart needed. Any open remote view of an attach/resume terminal was closed immediately.",
       );
       cfg.reload();
     } catch (e) {
@@ -436,7 +437,7 @@ export function RemotePage() {
     const n = sessions.data?.sessions.length ?? 0;
     const msg =
       n > 0
-        ? `Reset the pairing secret and unpair all devices?\n\nThis DISCONNECTS all ${n} currently-paired device${n === 1 ? "" : "s"} — each must scan a new QR to reconnect.\n\nOnly do this if a secret leaked. To pair another device WITHOUT disconnecting these, use "Pair a device" instead.`
+        ? `Reset the pairing secret and unpair all devices?\n\nThis DISCONNECTS all ${n} currently-paired device${n === 1 ? "" : "s"} - each must scan a new QR to reconnect.\n\nOnly do this if a secret leaked. To pair another device WITHOUT disconnecting these, use "Pair a device" instead.`
         : `Reset the pairing secret?\n\nThe previous QR stops working and a fresh one is minted.`;
     if (!window.confirm(msg)) return;
     void arm("rotate");
@@ -444,7 +445,7 @@ export function RemotePage() {
 
   async function setupServe() {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setServeBusy(true);
@@ -465,7 +466,7 @@ export function RemotePage() {
   // on exit we auto-retry serve, which then works unprivileged.
   async function runOperatorGrant() {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setGrantBusy(true);
@@ -502,7 +503,7 @@ export function RemotePage() {
   // user opens it on their phone/browser to finish login.
   async function runLogin() {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setLoginBusy(true);
@@ -535,7 +536,7 @@ export function RemotePage() {
   // off-Linux or when tailscale is already present.
   async function runInstall() {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setInstallBusy(true);
@@ -631,7 +632,7 @@ export function RemotePage() {
           </h1>
           <p className="mt-0.5 text-[12px] text-fg-3">
             Open this dashboard on your phone or laptop over your tailnet (Tailscale HTTPS, read-only).
-            Turning it on/off and pairing devices are owner actions — they only work from this machine.
+            Turning it on/off and pairing devices are owner actions - they only work from this machine.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -656,17 +657,17 @@ export function RemotePage() {
         </div>
       )}
 
-      {/* Pairing reveal (§11) — one-time, in-memory, masked after ~60s. */}
+      {/* Pairing reveal (§11) - one-time, in-memory, masked after ~60s. */}
       {pairing?.pairing_url && (
         <div id="pairing-reveal">
         <ChartShell
           title="Scan to pair this device"
-          sub="Open this on the new phone or laptop — scan the QR, or copy the link and open it there. It works once and isn’t shown again (click “Pair a device” for a fresh one). Devices you’ve already paired are unaffected."
+          sub="Open this on the new phone or laptop - scan the QR, or copy the link and open it there. It works once and isn’t shown again (click “Pair a device” for a fresh one). Devices you’ve already paired are unaffected."
         >
           <div className="flex flex-col gap-4 p-1 sm:flex-row sm:items-start">
             <div className="flex-1 space-y-2">
               <div className="break-all rounded-2 border border-line-2 bg-bg-1 px-3 py-2 font-mono text-[12px] text-fg-2">
-                {masked ? "•••••••••••••• (hidden — click Reveal)" : pairing.pairing_url}
+                {masked ? "•••••••••••••• (hidden - click Reveal)" : pairing.pairing_url}
               </div>
               <div className="flex gap-2">
                 {masked ? (
@@ -694,11 +695,11 @@ export function RemotePage() {
                   Done
                 </button>
               </div>
-              {/* Device-side prerequisite reminder — the QR is useless unless
+              {/* Device-side prerequisite reminder - the QR is useless unless
                   the scanning device is on the same tailnet. */}
               <p className="text-[11px] leading-relaxed text-fg-3">
                 Scan from a device that has Tailscale installed and is signed
-                into the same tailnet — otherwise this link won’t load. Get the
+                into the same tailnet - otherwise this link won’t load. Get the
                 app: <DeviceTailscaleLinks />.
               </p>
               {pairing.tailscale_serve && (
@@ -739,7 +740,7 @@ export function RemotePage() {
         title={<TitleWithHelp text="Configuration" helpId="card.remote_config" />}
         sub={
           c?.enabled
-            ? "Remote access is on. Pair a device to connect a phone or laptop — that takes effect immediately. Turning remote access off needs a daemon restart to unbind the listener."
+            ? "Remote access is on. Pair a device to connect a phone or laptop - that takes effect immediately. Turning remote access off needs a daemon restart to unbind the listener."
             : "Turn on tailnet remote access. This mints a pairing secret and writes [remote] config; the listener binds on the next daemon restart."
         }
       >
@@ -748,13 +749,13 @@ export function RemotePage() {
             <>
               <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 <Field label="mode" value={c.mode} />
-                <Field label="backend" value={c.backend_addr || "—"} />
+                <Field label="backend" value={c.backend_addr || "-"} />
                 <Field label="require TLS" value={String(c.require_tls)} />
                 <div>
                   <div className="text-[10px] uppercase tracking-wide text-fg-3">allow terminal</div>
                   <label
                     className="mt-0.5 inline-flex items-center gap-1.5"
-                    title="Enables the execute-tier remote terminal — expands the remote execution authority. Takes effect after a daemon restart."
+                    title="Enables the execute-tier remote terminal - expands the remote execution authority. Takes effect after a daemon restart."
                   >
                     <input
                       type="checkbox"
@@ -776,7 +777,7 @@ export function RemotePage() {
                   <div className="text-[10px] uppercase tracking-wide text-fg-3">allow terminal view</div>
                   <label
                     className="mt-0.5 inline-flex items-center gap-1.5"
-                    title="On by default — a switch you can turn OFF. Lets a paired device SEE (read-only) attach/resume terminals like Claude Code and Codex. Strictly weaker than Allow terminal: driving still needs Allow terminal + a per-terminal Grant. Hot-reloads; no restart."
+                    title="On by default - a switch you can turn OFF. Lets a paired device SEE (read-only) attach/resume terminals like Claude Code and Codex. Strictly weaker than Allow terminal: driving still needs Allow terminal + a per-terminal Grant. Hot-reloads; no restart."
                   >
                     <input
                       type="checkbox"
@@ -794,7 +795,7 @@ export function RemotePage() {
                     </span>
                   </label>
                 </div>
-                <Field label="rate limit/min" value={String(c.rate_limit_per_min ?? "—")} />
+                <Field label="rate limit/min" value={String(c.rate_limit_per_min ?? "-")} />
                 <Field label="secret" value={c.secret_present ? c.secret_fingerprint : "none"} />
               </dl>
               {termMsg && (
@@ -825,7 +826,7 @@ export function RemotePage() {
                   onClick={pairDevice}
                   title={
                     pairKnownUnreachable
-                      ? `Pairing is unavailable until you ${pairMissingStep} — this dashboard isn't reachable over your tailnet yet.`
+                      ? `Pairing is unavailable until you ${pairMissingStep} - this dashboard isn't reachable over your tailnet yet.`
                       : undefined
                   }
                   className="rounded-2 border border-accent/50 bg-accent/15 px-3 py-1 text-[12px] font-medium text-accent hover:bg-accent/25 disabled:opacity-50"
@@ -855,7 +856,7 @@ export function RemotePage() {
               {pairKnownUnreachable && (
                 <p className="text-[11px] leading-relaxed text-warn">
                   Pairing is unavailable until this dashboard is reachable over
-                  your tailnet — finish the Tailscale step:{" "}
+                  your tailnet - finish the Tailscale step:{" "}
                   <span className="font-medium">{pairMissingStep}</span>.{" "}
                   <button
                     type="button"
@@ -868,7 +869,7 @@ export function RemotePage() {
               )}
               {!serveReachable && serveIndeterminate && (
                 <p className="text-[11px] leading-relaxed text-fg-3">
-                  Serve status can’t be verified on this Tailscale version — if
+                  Serve status can’t be verified on this Tailscale version - if
                   the pairing link doesn’t load on the device, finish the
                   Tailscale serve step.{" "}
                   <button
@@ -882,7 +883,7 @@ export function RemotePage() {
               )}
               <p className="text-[11px] leading-relaxed text-fg-3">
                 <span className="font-medium text-fg-2">Pair a device</span> shows
-                a one-time QR to connect a new phone or laptop — devices you’ve
+                a one-time QR to connect a new phone or laptop - devices you’ve
                 already paired stay connected (up to {c.max_sessions ?? 5} at
                 once).{" "}
                 <span className="font-medium text-fg-2">
@@ -908,8 +909,8 @@ export function RemotePage() {
                 {!host.trim() && (
                   <span className="mt-1 block text-[11px] text-warn">
                     {tailscale.data?.present
-                      ? "No tailnet host detected — run `tailscale up`, or type the HTTPS host tailscale serve exposes."
-                      : "Tailscale not detected — install it and run `tailscale up`, or type the HTTPS host manually."}
+                      ? "No tailnet host detected - run `tailscale up`, or type the HTTPS host tailscale serve exposes."
+                      : "Tailscale not detected - install it and run `tailscale up`, or type the HTTPS host manually."}
                   </span>
                 )}
               </label>
@@ -920,7 +921,7 @@ export function RemotePage() {
                   onChange={(e) => setAllowTerminal(e.target.checked)}
                 />
                 <span className="text-[12px] text-fg-2">
-                  Also enable the execute-tier remote terminal (expands execution authority — leave off unless
+                  Also enable the execute-tier remote terminal (expands execution authority - leave off unless
                   you need it)
                 </span>
               </label>
@@ -934,7 +935,7 @@ export function RemotePage() {
               </button>
               <p className="text-[11px] text-fg-3">
                 Turning on remote access writes config and mints a secret, but the listener binds only on
-                the next daemon restart. After that, pairing a device takes effect instantly — no restart.
+                the next daemon restart. After that, pairing a device takes effect instantly - no restart.
               </p>
             </>
           )}
@@ -942,7 +943,7 @@ export function RemotePage() {
       </ChartShell>
       </div>
 
-      {/* Terminal control for paired devices — grant a paired device control of
+      {/* Terminal control for paired devices - grant a paired device control of
           a live terminal (mints a one-time capability + confirm code scoped to
           ONE device AND ONE terminal), revoke it, or take control back. Depends
           on the "allow terminal" enablement in Configuration above. Owner-local
@@ -965,12 +966,12 @@ export function RemotePage() {
         }}
       />
 
-      {/* Standing terminal-control access — opt-in, off by default, owner-local.
+      {/* Standing terminal-control access - opt-in, off by default, owner-local.
           Rendered below the single-use grant flow so the safer per-terminal path
           reads as the primary one. */}
       <StandingTerminalAccess confirmToken={confirmToken} />
 
-      {/* Tailscale setup + detection (§D) — a guided state machine: install →
+      {/* Tailscale setup + detection (§D) - a guided state machine: install →
           log in → arm → serve → pair, each step naming what's next + the
           expected outcome. When serve needs the operator grant it runs in an
           embedded terminal (the sudo password is typed here, not in a bounced
@@ -1007,7 +1008,7 @@ export function RemotePage() {
       {/* Live device sessions. */}
       <ChartShell
         title="Paired devices"
-        sub="Live device sessions. Revoke takes effect instantly — no restart."
+        sub="Live device sessions. Revoke takes effect instantly - no restart."
         right={
           <button
             type="button"
@@ -1022,7 +1023,7 @@ export function RemotePage() {
         <div className="p-1 text-[12px]">
           {!sessions.data?.controller_live ? (
             <div className="text-fg-3">
-              No live controller — the remote listener binds on the next daemon restart. Existing sessions
+              No live controller - the remote listener binds on the next daemon restart. Existing sessions
               will appear here once it is running.
             </div>
           ) : (sessions.data?.sessions.length ?? 0) === 0 ? (
@@ -1041,8 +1042,8 @@ export function RemotePage() {
                 {sessions.data?.sessions.map((s) => (
                   <tr key={s.fingerprint} className="border-t border-line-1">
                     <td className="py-1">{s.fingerprint}…</td>
-                    <td className="py-1">{new Date(s.created_at).toLocaleString()}</td>
-                    <td className="py-1">{new Date(s.last_seen).toLocaleString()}</td>
+                    <td className="py-1">{fmtDateTime(s.created_at)}</td>
+                    <td className="py-1">{fmtDateTime(s.last_seen)}</td>
                     <td className="py-1 text-right">
                       <button
                         type="button"
@@ -1063,7 +1064,7 @@ export function RemotePage() {
       {/* Audit tail. */}
       <ChartShell
         title="Access audit"
-        sub="Recent remote-access + management events (metadata only). Not compliance-immutable — a local owner can edit the underlying SQLite."
+        sub="Recent remote-access + management events (metadata only). Not compliance-immutable - a local owner can edit the underlying SQLite."
       >
         <div className="max-h-[280px] overflow-auto p-1 text-[11px]">
           {(audit.data?.events.length ?? 0) === 0 ? (
@@ -1083,7 +1084,7 @@ export function RemotePage() {
               <tbody className="text-fg-2">
                 {audit.data?.events.map((e, i) => (
                   <tr key={i} className="border-t border-line-1">
-                    <td className="py-1 pr-2">{new Date(e.ts).toLocaleString()}</td>
+                    <td className="py-1 pr-2">{fmtClock(e.ts)}</td>
                     <td className="py-1 pr-2">{e.kind}</td>
                     <td className="py-1 pr-2">{e.principal}</td>
                     <td className="py-1 pr-2">{e.decision}</td>
@@ -1112,7 +1113,7 @@ function Field({ label, value }: { label: string; value: string }) {
 // TailscaleCard is the §D detect + guide surface. It is honest about the three
 // first-class states (not installed / installed-but-logged-out / up) and about
 // the fact that Observer never runs `tailscale up` or `tailscale serve` itself
-// (daemon privileged-exec + the WSL-vs-Windows tailscaled split) — it only
+// (daemon privileged-exec + the WSL-vs-Windows tailscaled split) - it only
 // generates the command for the operator to run.
 function TailscaleCard({
   data,
@@ -1189,7 +1190,7 @@ function TailscaleCard({
           <p>The `tailscale` CLI wasn't found on this machine.</p>
 
           {/* Primary (Linux): run the official install script in an embedded
-              local-only terminal — the sudo password is typed here, not in a
+              local-only terminal - the sudo password is typed here, not in a
               bounced shell. */}
           {!installHandle && (
             <div className="space-y-2 rounded-2 border border-accent/40 bg-accent/10 px-3 py-2">
@@ -1203,7 +1204,7 @@ function TailscaleCard({
                 >
                   official install script
                 </a>{" "}
-                with <code>sudo</code> — enter your password when prompted. The command is fixed
+                with <code>sudo</code> - enter your password when prompted. The command is fixed
                 (<code>curl -fsSL https://tailscale.com/install.sh | sh</code>); SuperBased never runs a
                 command you didn't start.
               </p>
@@ -1224,7 +1225,7 @@ function TailscaleCard({
             <SetupTerminalEmbed
               handle={installHandle}
               label="tailscale install"
-              hint="Enter your sudo password below. This terminal runs only the Tailscale install script and closes itself when done — the card then re-detects."
+              hint="Enter your sudo password below. This terminal runs only the Tailscale install script and closes itself when done - the card then re-detects."
               onStatus={onInstallStatus}
               onCancel={onCancelInstall}
             />
@@ -1241,7 +1242,7 @@ function TailscaleCard({
           </a>
           <p className="text-[11px] text-fg-3">
             On WSL2 the tailnet may be owned by a Windows-side Tailscale, but SuperBased needs the Linux binary
-            the daemon itself lives beside — so installing here (in Linux) is still what SuperBased needs.
+            the daemon itself lives beside - so installing here (in Linux) is still what SuperBased needs.
           </p>
         </div>
       </ChartShell>
@@ -1258,13 +1259,13 @@ function TailscaleCard({
       >
         <div className="space-y-2 p-1 text-[12px]">
           {/* Primary: run `tailscale up` in an embedded local-only terminal.
-              The auth URL it prints appears right here — open it on your phone
+              The auth URL it prints appears right here - open it on your phone
               to finish login. */}
           {!loginHandle && (
             <div className="space-y-2 rounded-2 border border-accent/40 bg-accent/10 px-3 py-2">
               <p className="text-[11px] text-fg-2">
                 Log in here: this opens a terminal and runs <code>tailscale up</code>. It prints an
-                authentication link — open it on your phone or browser to approve this machine. (The
+                authentication link - open it on your phone or browser to approve this machine. (The
                 daemon runs it with <code>sudo</code> unless it is already root; enter your password if
                 prompted.)
               </p>
@@ -1285,7 +1286,7 @@ function TailscaleCard({
             <SetupTerminalEmbed
               handle={loginHandle}
               label="tailscale login"
-              hint="This terminal runs `tailscale up`. When it prints an authentication link, open it on your phone/browser to approve — the card then re-detects."
+              hint="This terminal runs `tailscale up`. When it prints an authentication link, open it on your phone/browser to approve - the card then re-detects."
               onStatus={onLoginStatus}
               onCancel={onCancelLogin}
             />
@@ -1301,7 +1302,7 @@ function TailscaleCard({
               <CopyButton text="tailscale up" />
             </div>
             <p className="mt-1 text-[11px] text-fg-3">
-              On WSL2 the tailnet may be owned by a Windows-side Tailscale — run it on the side that owns
+              On WSL2 the tailnet may be owned by a Windows-side Tailscale - run it on the side that owns
               your tailnet if the embedded login doesn't apply.
             </p>
           </details>
@@ -1335,7 +1336,7 @@ function TailscaleCard({
     >
       <div className="space-y-3 p-1 text-[12px]">
         <dl className="grid grid-cols-2 gap-2">
-          <Field label="tailnet host" value={data.host || "—"} />
+          <Field label="tailnet host" value={data.host || "-"} />
           <Field label="backend" value={data.backend_addr || "(turn on first)"} />
         </dl>
 
@@ -1343,7 +1344,7 @@ function TailscaleCard({
         {serveActive && (
           <div className="space-y-2 rounded-2 border border-success/40 bg-success/10 px-3 py-2">
             <p className="text-[12px] text-success">
-              ✅ Serve is active — the dashboard is reachable over your tailnet at{" "}
+              ✅ Serve is active - the dashboard is reachable over your tailnet at{" "}
               <a href={tailnetURL} target="_blank" rel="noreferrer" className="font-mono underline">
                 {tailnetURL || "your tailnet host"}
               </a>
@@ -1352,7 +1353,7 @@ function TailscaleCard({
             <p className="text-[11px] text-fg-3">
               <strong className="text-fg-2">Next:</strong> click{" "}
               <span className="font-medium text-fg-2">Pair a device</span> to
-              generate a one-time QR, then scan it on your phone — you’ll land on
+              generate a one-time QR, then scan it on your phone - you’ll land on
               the read-only view of this dashboard. It takes effect immediately;
               devices you’ve already paired stay connected.
             </p>
@@ -1371,7 +1372,7 @@ function TailscaleCard({
                 ) : (
                   " account as this machine"
                 )}{" "}
-                — otherwise the dashboard URL simply won’t load. Get the app:{" "}
+                - otherwise the dashboard URL simply won’t load. Get the app:{" "}
                 <DeviceTailscaleLinks />.
               </p>
             </div>
@@ -1400,7 +1401,7 @@ function TailscaleCard({
           <div className="space-y-2">
             <p className="text-[11px] text-fg-3">
               <strong className="text-fg-2">Step:</strong> expose SuperBased over tailnet HTTPS. This runs{" "}
-              <code>tailscale serve</code> for you — no terminal needed if the daemon has permission.
+              <code>tailscale serve</code> for you - no terminal needed if the daemon has permission.
             </p>
             <button
               type="button"
@@ -1417,7 +1418,7 @@ function TailscaleCard({
                 <p className="text-[11px] text-fg-2">
                   One-time permission needed. The daemon runs unprivileged, so Tailscale needs a{" "}
                   <em>one-time operator grant</em>. Click below to open a terminal right here and run{" "}
-                  <code>sudo tailscale set --operator</code> — enter your password when prompted. After that,
+                  <code>sudo tailscale set --operator</code> - enter your password when prompted. After that,
                   serve works with no sudo, forever.
                 </p>
                 <button
@@ -1437,7 +1438,7 @@ function TailscaleCard({
               <SetupTerminalEmbed
                 handle={grantHandle}
                 label="tailscale setup"
-                hint="Type your sudo password below. This terminal runs only the operator grant, and closes itself when done — serve then retries automatically."
+                hint="Type your sudo password below. This terminal runs only the operator grant, and closes itself when done - serve then retries automatically."
                 onStatus={onGrantStatus}
                 onCancel={onCancelGrant}
               />
@@ -1451,7 +1452,7 @@ function TailscaleCard({
             {serveResult?.enable_url && (
               <div className="space-y-1.5 rounded-2 border border-warn/40 bg-warn/10 px-3 py-2">
                 <p className="text-[11px] text-warn">
-                  One-time step SuperBased can't do for you — enable Serve in your Tailscale account:{" "}
+                  One-time step SuperBased can't do for you - enable Serve in your Tailscale account:{" "}
                   <a
                     href={serveResult.enable_url}
                     target="_blank"
@@ -1463,7 +1464,7 @@ function TailscaleCard({
                 </p>
                 <p className="text-[11px] text-fg-2">
                   After you approve HTTPS in the Tailscale admin console, click{" "}
-                  <span className="font-medium">Set up Tailscale serve for me</span> again —
+                  <span className="font-medium">Set up Tailscale serve for me</span> again -
                   approval alone does not start serving.
                 </p>
                 <button
@@ -1477,7 +1478,7 @@ function TailscaleCard({
               </div>
             )}
             {serveResult?.ok && (
-              <p className="text-[11px] text-success">Serve is set — reachable over your tailnet.</p>
+              <p className="text-[11px] text-success">Serve is set - reachable over your tailnet.</p>
             )}
             {serveResult?.error && !needsPriv && (
               <p className="text-[11px] text-danger">serve failed: {serveResult.error}</p>
@@ -1502,7 +1503,7 @@ function TailscaleCard({
 }
 
 // SetupTerminalEmbed renders the shared in-dashboard xterm for a local-only
-// setup PTY — the operator grant, `tailscale up` login, or the Tailscale
+// setup PTY - the operator grant, `tailscale up` login, or the Tailscale
 // install script. All three spawn a SpecSetup session server-side, which is
 // local-writer-only: a paired remote principal can never acquire its writer
 // lease, so the sudo password / auth flow is driven only from the owner-trusted
@@ -1644,11 +1645,11 @@ function RemoteTerminalControl({
   async function approve(handle: string) {
     const device = pickDevice[handle] || devices[0]?.fingerprint || "";
     if (!device) {
-      setErr("No paired device to grant — pair one in Configuration above first.");
+      setErr("No paired device to grant - pair one in Configuration above first.");
       return;
     }
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setBusy("approve:" + handle);
@@ -1704,7 +1705,7 @@ function RemoteTerminalControl({
   return (
     <ChartShell
       title={<TitleWithHelp text="Terminal control for paired devices" helpId="card.terminal_control" />}
-      sub="Grant a paired remote device control of a live terminal, revoke it, or take control back. Granting mints a ONE-TIME capability + confirm code scoped to ONE device AND ONE terminal (execute tier) — shown once; held only in memory (never written to disk) until it is consumed or expires. Depends on “allow terminal” enablement in Configuration above. Owner-local only."
+      sub="Grant a paired remote device control of a live terminal, revoke it, or take control back. Granting mints a ONE-TIME capability + confirm code scoped to ONE device AND ONE terminal (execute tier) - shown once; held only in memory (never written to disk) until it is consumed or expires. Depends on “allow terminal” enablement in Configuration above. Owner-local only."
       right={
         <Pill variant={controllerLive ? "success" : "neutral"}>
           {controllerLive ? "remote live" : "remote off"}
@@ -1752,8 +1753,8 @@ function RemoteTerminalControl({
                   <tr className="border-t border-line-1 align-top">
                     <td className="py-1.5">
                       <span className="font-mono text-fg-1">{s.subcommand || "terminal"}</span>
-                      <span className="ml-1 font-mono text-[10.5px] text-fg-3">
-                        {s.token.slice(0, 8)}…
+                      <span className="ml-1 font-mono text-[10.5px] text-fg-3" title={s.token}>
+                        {fmtShortId(s.token, 8)}
                       </span>
                     </td>
                     <td className="py-1.5">
@@ -1799,7 +1800,7 @@ function RemoteTerminalControl({
                           title={
                             remoteHeld
                               ? "Revoke this device's control of this terminal now"
-                              : "No remote device is currently controlling this terminal — writer control is single-use and ends when the device's socket closes (e.g. a phone refresh). To revoke a device entirely, use “Paired devices” below."
+                              : "No remote device is currently controlling this terminal - writer control is single-use and ends when the device's socket closes (e.g. a phone refresh). To revoke a device entirely, use “Paired devices” below."
                           }
                           onClick={() => revoke(s.writer_holder as string)}
                           className="rounded-2 border border-danger/40 bg-danger/10 px-2 py-0.5 text-[11px] text-danger hover:bg-danger/20 disabled:opacity-40"
@@ -1811,7 +1812,7 @@ function RemoteTerminalControl({
                           onClick={() =>
                             onTakeOver(s.token, s.subcommand || "terminal", s.session_id || "", !!s.has_project_root)
                           }
-                          title="Open this terminal locally — you take control back (demotes any remote writer)"
+                          title="Open this terminal locally - you take control back (demotes any remote writer)"
                           className="rounded-2 border border-line-2 bg-bg-2 px-2 py-0.5 text-[11px] text-fg-2 hover:bg-bg-3"
                         >
                           Take over
@@ -1826,9 +1827,9 @@ function RemoteTerminalControl({
                       <td colSpan={5} className="py-2">
                         <div className="space-y-2 rounded-2 border border-accent/40 bg-accent/10 p-3">
                           <div className="text-[11px] text-fg-2">
-                            Convey BOTH values to device <span className="font-mono">{reveal.device}</span> —
+                            Convey BOTH values to device <span className="font-mono">{reveal.device}</span> -
                             they grant that ONE device control of THIS terminal{" "}
-                            <span className="font-mono">{reveal.handle.slice(0, 8)}…</span> (execute tier),
+                            <span className="font-mono" title={reveal.handle}>{fmtShortId(reveal.handle, 8)}</span> (execute tier),
                             once. Shown only now.
                           </div>
                           <CopyField label="capability" value={reveal.capability} masked={masked} />
@@ -1946,12 +1947,12 @@ function StandingTerminalAccess({
     : !st?.remote_enabled
       ? "Remote access is off. Arm it in Configuration above first."
       : !st?.allow_terminal
-        ? "“Allow terminal” is off. Turn it on in Configuration above first — standing access only grants what allow terminal permits."
+        ? "“Allow terminal” is off. Turn it on in Configuration above first - standing access only grants what allow terminal permits."
         : "";
 
   async function mint() {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setBusy("mint");
@@ -1973,7 +1974,7 @@ function StandingTerminalAccess({
 
   async function revoke() {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     if (
@@ -2001,7 +2002,7 @@ function StandingTerminalAccess({
   // revoke the standing secret. Default off (seamless). Live immediately.
   async function saveRevokeOnTakeover(next: boolean) {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setBusy("revoke-on-takeover");
@@ -2022,7 +2023,7 @@ function StandingTerminalAccess({
   // policy. Credential validation is unchanged; the live controller hot-reloads.
   async function saveAllowRemoteTakeover(next: boolean) {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setBusy("allow-remote-takeover");
@@ -2042,7 +2043,7 @@ function StandingTerminalAccess({
   return (
     <ChartShell
       title={<TitleWithHelp text="Standing terminal-control access (advanced)" helpId="card.standing_terminal" />}
-      sub="Opt-in: a single durable secret that lets a paired device keep terminal control across page refreshes, without re-granting each terminal. Off by default — the per-terminal single-use grants above are the safer path. Owner-local only."
+      sub="Opt-in: a single durable secret that lets a paired device keep terminal control across page refreshes, without re-granting each terminal. Off by default - the per-terminal single-use grants above are the safer path. Owner-local only."
       right={
         <Pill variant={st?.enabled ? "warn" : "neutral"}>
           {st?.enabled ? "standing access ON" : "standing access off"}
@@ -2069,9 +2070,9 @@ function StandingTerminalAccess({
         {secret && (
           <div className="space-y-2 rounded-2 border border-accent/40 bg-accent/10 p-3">
             <div className="text-[11px] text-fg-2">
-              Standing secret — shown ONCE. Convey it to the device you want to grant standing control. A
+              Standing secret - shown ONCE. Convey it to the device you want to grant standing control. A
               device may store it in its browser localStorage so control survives a refresh; that means the
-              secret lives on that device — treat it like a password and revoke it if the device is lost.
+              secret lives on that device - treat it like a password and revoke it if the device is lost.
             </div>
             <CopyField label="standing secret" value={secret} masked={masked} />
             <div className="flex gap-2">
@@ -2098,7 +2099,7 @@ function StandingTerminalAccess({
         {st?.enabled && st?.secret_present && (
           <div className="text-[11px] text-fg-3">
             A standing secret is provisioned (<span className="font-mono">{st.secret_fingerprint}</span>). The
-            raw secret is never re-shown — rotate to issue a fresh one, or revoke to turn standing access off.
+            raw secret is never re-shown - rotate to issue a fresh one, or revoke to turn standing access off.
           </div>
         )}
 
@@ -2136,9 +2137,9 @@ function StandingTerminalAccess({
             <span>
               <span className="font-medium text-fg-2">Revoke standing access when this desktop takes over</span>
               <span className="block text-[11px] text-fg-3">
-                Off (default): taking over a remote writer only revokes its live control — the paired device
+                Off (default): taking over a remote writer only revokes its live control - the paired device
                 can re-take control later (seamless). On: a desktop takeover of a writer that held control
-                through the standing secret ALSO revokes the secret itself — the device must be granted a
+                through the standing secret ALSO revokes the secret itself - the device must be granted a
                 fresh secret to regain standing control. Live immediately; no restart.
               </span>
             </span>
@@ -2192,7 +2193,7 @@ function CopyField({
       <div className="mb-0.5 text-[10px] uppercase tracking-wide text-fg-3">{label}</div>
       <div className="flex items-center gap-2">
         <code className="flex-1 break-all rounded-2 border border-line-2 bg-bg-1 px-2 py-1 font-mono text-[11px] text-fg-2">
-          {masked ? "•••••••••••••• (hidden — click Reveal)" : value}
+          {masked ? "•••••••••••••• (hidden - click Reveal)" : value}
         </code>
         <button
           type="button"

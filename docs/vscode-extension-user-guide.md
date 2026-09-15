@@ -192,6 +192,32 @@ In `managed` and `auto` modes, daemon crashes trigger automatic
 restart with backoff `[1 s, 2 s, 5 s]`. After three failed
 restarts, an error toast offers **Open Output Channel** / **Retry**.
 
+### Binary resolution when the daemon can update itself
+
+`observer` can now update its own binary in place, so the copy on your
+`$PATH` may become newer than the one this extension shipped with.
+That changes one thing about how the extension picks which `observer` to
+run: **it re-checks on every activation, and it never lets its own bundled
+copy override a newer one already installed on your machine.**
+
+Concretely - the extension bundles a matching `observer` binary at build
+time (so it works with nothing else installed), and by default checks that
+bundled copy before your `$PATH` (`observer.binary.preferPathBinary` flips
+the order). But every time VS Code activates the extension, it probes
+`$PATH` once more even when the bundled copy would otherwise win, and
+switches to the on-PATH binary if - and only if - it reports a **strictly
+newer** version. An equal, older, or unparseable version changes nothing:
+the bundled copy still wins ties and any uncertainty. This is what keeps
+the extension from fighting a daemon that just updated itself - without
+the check, a stale bundled binary would silently relaunch on top of the
+newer one your org just rolled out to you.
+
+The extension also tells the daemon which version of *itself* is running
+(a loopback POST after every reconcile), so an org admin's Fleet →
+Versions board can show extension/daemon skew across a team - this never
+leaves your machine any differently than the rest of the extension's
+`/api/*` traffic (see [Privacy + local-first](#privacy--local-first)).
+
 ### Terminal profile + proxy env vars
 
 Two ways to route an AI CLI through SuperBased's reverse proxy
@@ -299,6 +325,58 @@ the extension integrates with the five most common ones.
 | `observer.dashboard.port` | `8081` | Where the dashboard listens. |
 | `observer.proxy.port` | `8820` | Where the API reverse proxy listens. |
 | `observer.statusBar.enabled` | `true` | Today-spend status bar item. |
+| `observer.loc.reportSaves` | `true` | Report line COUNTS on each save so the dashboard can show human-written lines next to AI-written ones. Counts only, never content — see [Human line counts on save](#human-line-counts-on-save). |
+| `observer.apiToken` | empty | Sent as `X-Observer-Token` on requests to the local daemon. Leave empty unless your daemon requires one. |
+
+### Human line counts on save
+
+SuperBased already counts the lines your AI tools write. It cannot see
+the lines you type, so the extension measures those and reports the
+COUNTS - never the content - to the local daemon each time you save.
+
+Two numbers go out per save:
+
+- **human** - what changed between the file's last clean state (your
+  last save, or the moment an agent's write was reloaded from disk) and
+  the file as you left it when the save began.
+- **system** - what changed between that and the bytes actually written.
+  That gap is your formatter's, so a format-on-save reflow is never
+  counted as lines you wrote.
+
+In-editor agents (Copilot Chat's agent mode, Cline, Kilo, Cursor) edit the
+buffer through a `WorkspaceEdit`, which dirties it exactly like typing
+does, so their edits would otherwise land as your own. A shape-only
+heuristic (no text inspected - just how many ranges changed and how many
+lines were replaced or inserted) flags a save that looks agent-made and
+the daemon books it as unclassified rather than human, since there is no
+VS Code signal that names who authored a change. The same threshold also
+catches a genuine large paste (30+ lines), which books unclassified too;
+a small in-editor-agent append under that size can still land as human.
+
+What never leaves the editor is the file itself. The request carries the
+workspace-relative path, the workspace folder path, the language, and
+the buckets (added / modified / deleted code, added / deleted comments,
+whitespace-only, blank, unclassifiable). There is no field for text.
+Generated and vendored files - lockfiles, `node_modules`, `dist`,
+`*.pb.go`, minified bundles, binaries - are skipped outright, as is
+anything that is not a real file on disk.
+
+It posts to `http://127.0.0.1:<dashboard.port>/api/loc/editor-change` on
+the workspace host and nowhere else. With no daemon running the post
+fails silently: no notification, no retry, no queue.
+
+Two honesty notes. First, these are **editor-reported saves, not a
+filesystem measurement**: they exist only while VS Code is running with
+this extension active, and only for files you save in VS Code - work in
+another editor, in a terminal, or via `git checkout` never appears, which
+is why the dashboard labels them "editor-reported". Second, the endpoint
+is an unauthenticated loopback POST by default, so any local process
+could post counts to it. They are an observability signal only; nothing
+in the product uses line counts for enforcement or for rating anybody's
+work.
+
+Turn it off with `"observer.loc.reportSaves": false` - it takes effect
+immediately, no reload.
 
 ### Common configurations
 
@@ -487,6 +565,13 @@ The extension is **strictly local-first**:
 - **No data leaves your machine.** Every byte SuperBased captures is
   written to `~/.observer/observer.db` (or
   `$OBSERVER_HOME/observer.db`) and stays there.
+- **Line counts on save are counts, not content.** The one thing the
+  extension sends rather than reads is the per-save line count described
+  in [Human line counts on save](#human-line-counts-on-save) - how many
+  lines changed, in which buckets, for which workspace-relative path. No
+  file text is read, sent, or stored, and the destination is the same
+  `127.0.0.1:<dashboard.port>` daemon. Disable it with
+  `"observer.loc.reportSaves": false`.
 
 The same guarantees apply to the binary itself — SuperBased is
 Apache-2.0 and the source for everything captured + computed is in

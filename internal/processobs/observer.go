@@ -114,8 +114,42 @@ type Options struct {
 	ExcludeOwnBasenames []string
 	BatchSize           int // store batch (spec §15: 100–500); default 250
 	MaxTracked          int // live-tree cap for never-exiting procs; 0 = unbounded
-	FlushInterval       time.Duration
-	Now                 func() time.Time
+	// MaxRetainedRuns bounds how many runs may be HELD BACK across flush ticks
+	// after the sink failed transiently (see runFlusher). It is
+	// the memory ceiling on retention, not a retry count: the observer keeps
+	// re-offering the held rows every flush tick for as long as they fit, and
+	// releases the OLDEST beyond this cap as DropSinkRetryExhausted.
+	//
+	// Default DefaultMaxRetainedRuns. A NEGATIVE value disables retention
+	// entirely and restores the pre-2026-08-27 behaviour (any sink error drops
+	// the whole batch at once) — it exists so that behaviour can be tested and
+	// mutation-proven, not because any install should want it. Zero means
+	// "default", matching every other size knob on this struct.
+	MaxRetainedRuns int
+	FlushInterval   time.Duration
+	// ShutdownFlushTimeout bounds the flushes that run AFTER Run's context has
+	// been cancelled — the buffered hand-off drain plus the final flush.
+	//
+	// It exists because those flushes must NOT use the cancelled context. The
+	// sink is a real database: a cancelled context makes every PersistRuns fail
+	// instantly with context.Canceled, so on the ordinary shutdown path
+	// (SIGINT, `observer stop`, a daemon restart) the last batch of process
+	// capture was never written at all — it was counted as sink_shutdown and
+	// discarded. The counter was honest; the loss was avoidable. Shutdown
+	// therefore flushes on a context DETACHED from the cancellation, and this
+	// value is what keeps "detached" from meaning "unbounded": the deadline
+	// starts at the first post-cancel flush and covers the whole drain, so the
+	// shutdown barrier in Run stays bounded even against a wedged sink.
+	//
+	// Default DefaultShutdownFlushTimeout. ≤ 0 applies the default; there is no
+	// "unlimited" sentinel, because an unbounded shutdown is the failure mode
+	// the bound exists to prevent.
+	ShutdownFlushTimeout time.Duration
+	// Now is the clock. It is called from BOTH the drain and the flusher
+	// goroutine (the flush duration is measured on the latter), so an injected
+	// clock must be safe for concurrent use — a plain closure over a constant,
+	// or an atomically-read value, never an unguarded mutable field.
+	Now func() time.Time
 	// LateSeed governs the late-seed re-resolution pass (lateseed.go): the
 	// deferred re-probe that upgrades a live run whose pidbridge seed arrived
 	// AFTER exec — the 30–266s `discovered` correlation lag that exec-time
@@ -156,8 +190,14 @@ type Options struct {
 }
 
 // Observer is the orchestrator: it drains the backend, enriches, attributes,
-// applies the capture policy, batches to the sink, and tracks health. The
-// run loop is single-goroutine, so the Attributor needs no locking.
+// applies the capture policy, batches to the sink, and tracks health.
+//
+// It runs on exactly TWO goroutines, split at one seam. The DRAIN loop (Run)
+// owns the backend channel, the Attributor and the current batch, and is
+// single-goroutine, so the Attributor still needs no locking. The FLUSHER
+// (runFlusher) owns the sink, the retained slice and the retention decision,
+// and never touches the Attributor. They meet only at a buffered channel of
+// completed batches — see Run for why the flush cannot live on the drain.
 type Observer struct {
 	backend             Backend
 	enricher            Enricher
@@ -170,10 +210,19 @@ type Observer struct {
 	excludeOwn          map[string]bool
 	batchSize           int
 	maxTracked          int
-	flushInterval       time.Duration
-	lateSeed            LateSeedPolicy
-	now                 func() time.Time
-	health              *Health
+	maxRetainedRuns     int
+	// handoffBatches is the capacity, in BATCHES, of the drain→flusher
+	// hand-off channel, and maxBacklogRuns bounds the rows the DRAIN side may
+	// hold when that channel is full. Both are derived from maxRetainedRuns in
+	// NewObserver so the whole pipeline stays inside one memory budget — see
+	// handoffCapacity.
+	handoffBatches       int
+	maxBacklogRuns       int
+	flushInterval        time.Duration
+	shutdownFlushTimeout time.Duration
+	lateSeed             LateSeedPolicy
+	now                  func() time.Time
+	health               *Health
 
 	// activeRoots is the set of NORMALIZED project roots of currently-active
 	// sessions, refreshed out-of-band by the daemon (SetActiveSessionRoots).
@@ -185,13 +234,77 @@ type Observer struct {
 	activeRoots atomic.Pointer[map[string]struct{}]
 }
 
+// DefaultMaxRetainedRuns is the default ceiling on runs held back across
+// flush ticks while the sink is failing transiently (Options.MaxRetainedRuns).
+//
+// It is sized as a MULTIPLE of the default batch — 20 × 250 — so the default
+// retention covers roughly 40 s of a busy box at the 2 s flush interval, which
+// comfortably outlasts SQLite's 30 s busy_timeout and therefore the entire
+// window in which a competing writer can hold the lock. A ProcessRun snapshot
+// is small (the metric ring is downsampled at the persist boundary), so the
+// whole ceiling is single-digit MB — bounded, and cheap next to losing the
+// capture history it protects.
+const DefaultMaxRetainedRuns = 5000
+
+// DefaultShutdownFlushTimeout bounds the post-cancellation flushes
+// (Options.ShutdownFlushTimeout).
+//
+// Sized against the thing it has to outlast: SQLite's busy_timeout is 30 s, and
+// the worst flush ever measured on the live node was 31,179 ms under lock
+// contention (2026-08-26). A shorter budget would reintroduce the very loss
+// this deadline exists to prevent — the batch would be abandoned mid-write
+// exactly when the database is contended. It is a CEILING on a path that
+// normally completes in milliseconds, not a delay anyone pays on a healthy
+// shutdown: the flusher returns as soon as the sink does.
+const DefaultShutdownFlushTimeout = 45 * time.Second
+
+// minHandoffBatches / maxHandoffBatches clamp the drain→flusher hand-off
+// channel. The FLOOR matters more than it looks: a deployment that shrinks
+// MaxRetainedRuns must still leave the drain somewhere to put a batch while
+// the flusher is inside a slow PersistRuns, or the decoupling buys nothing.
+// With a small BatchSize the floor is a handful of rows, so it costs nothing.
+const (
+	minHandoffBatches = 8
+	maxHandoffBatches = 64
+)
+
+// handoffCapacity derives the drain→flusher channel depth (in batches) and the
+// bound on rows the DRAIN may hold while that channel is full, from the single
+// memory knob the operator actually sets (Options.MaxRetainedRuns).
+//
+// The budget is deliberately SPLIT rather than duplicated: the hand-off buffer
+// and the drain-side backlog together get one MaxRetainedRuns, so the whole
+// pipeline holds at most ~2× that ceiling (the flusher's own retention, plus
+// everything still upstream of it) instead of multiplying the bound by the
+// number of places a run can sit. A negative MaxRetainedRuns disables the
+// SINK RETENTION (see the field doc), not the hand-off — those are different
+// decisions — so it falls back to the default for this sizing.
+func handoffCapacity(maxRetainedRuns, batchSize int) (batches, backlogRuns int) {
+	budget := maxRetainedRuns
+	if budget < 0 {
+		budget = DefaultMaxRetainedRuns
+	}
+	batches = budget / (2 * batchSize)
+	batches = max(min(batches, maxHandoffBatches), minHandoffBatches)
+	// At least one whole batch, or a tiny cap would truncate the very first
+	// overflow down to nothing.
+	backlogRuns = max(budget/2, batchSize)
+	return batches, backlogRuns
+}
+
 // NewObserver builds an Observer from Options, applying defaults.
 func NewObserver(opts Options) *Observer {
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 250
 	}
+	if opts.MaxRetainedRuns == 0 {
+		opts.MaxRetainedRuns = DefaultMaxRetainedRuns
+	}
 	if opts.FlushInterval <= 0 {
 		opts.FlushInterval = 2 * time.Second
+	}
+	if opts.ShutdownFlushTimeout <= 0 {
+		opts.ShutdownFlushTimeout = DefaultShutdownFlushTimeout
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -241,22 +354,27 @@ func NewObserver(opts Options) *Observer {
 			}
 		}
 	}
+	handoffBatches, maxBacklogRuns := handoffCapacity(opts.MaxRetainedRuns, opts.BatchSize)
 	return &Observer{
-		backend:             opts.Backend,
-		enricher:            opts.Enricher,
-		deepEnricher:        opts.DeepEnricher,
-		attr:                opts.Attributor,
-		sink:                opts.Sink,
-		eventSink:           opts.EventSink,
-		captureUnattributed: opts.CaptureUnattributed,
-		captureAISubtree:    opts.CaptureUnattributedAISubtree,
-		excludeOwn:          excludeOwn,
-		batchSize:           opts.BatchSize,
-		maxTracked:          opts.MaxTracked,
-		flushInterval:       opts.FlushInterval,
-		lateSeed:            opts.LateSeed.withDefaults(),
-		now:                 opts.Now,
-		health:              newHealth(name, opts.NetworkAccounting, transport, transportUnavailable),
+		backend:              opts.Backend,
+		enricher:             opts.Enricher,
+		deepEnricher:         opts.DeepEnricher,
+		attr:                 opts.Attributor,
+		sink:                 opts.Sink,
+		eventSink:            opts.EventSink,
+		captureUnattributed:  opts.CaptureUnattributed,
+		captureAISubtree:     opts.CaptureUnattributedAISubtree,
+		excludeOwn:           excludeOwn,
+		batchSize:            opts.BatchSize,
+		maxTracked:           opts.MaxTracked,
+		maxRetainedRuns:      opts.MaxRetainedRuns,
+		handoffBatches:       handoffBatches,
+		maxBacklogRuns:       maxBacklogRuns,
+		flushInterval:        opts.FlushInterval,
+		shutdownFlushTimeout: opts.ShutdownFlushTimeout,
+		lateSeed:             opts.LateSeed.withDefaults(),
+		now:                  opts.Now,
+		health:               newHealth(name, opts.NetworkAccounting, transport, transportUnavailable),
 	}
 }
 
@@ -295,8 +413,22 @@ func (o *Observer) cwdInActiveRoot(cwd string) bool {
 }
 
 // Run drains the backend until the channel closes or ctx is cancelled,
-// flushing batches as it goes. A backend Start error is returned after
-// recording degraded health; callers log it and keep the daemon running.
+// handing completed batches to the flusher goroutine as it goes. A backend
+// Start error is returned after recording degraded health; callers log it and
+// keep the daemon running.
+//
+// Run OWNS the drain half only. Persistence runs on a SEPARATE goroutine
+// (runFlusher) because the flush used to be synchronous here, and its duration
+// was therefore also the length of a capture BLACKOUT: a 31,179 ms flush was
+// measured on the live node (SQLite busy_timeout contention, 2026-08-26), and
+// for those 31 s nothing read the backend channel — a snapshot-diff backend
+// that blocks on send stops ENUMERATING, so processes born and gone inside the
+// window were never observed at all. No drop counter can see that loss, which
+// is why the coupling had to go rather than be measured better.
+//
+// Run does not return until the flusher has exited (the shutdown barrier), so
+// a caller that sees Run return knows the final batch has been offered to the
+// sink and every drop has been counted.
 func (o *Observer) Run(ctx context.Context) error {
 	ch, err := o.backend.Start(ctx)
 	if err != nil {
@@ -308,6 +440,22 @@ func (o *Observer) Run(ctx context.Context) error {
 	defer func() {
 		o.health.setBackendUp(false)
 		_ = o.backend.Close()
+	}()
+
+	// handoff carries completed batches to the single flusher goroutine. ONE
+	// flusher, FIFO channel: process_runs upserts on process_key, so a later
+	// snapshot of a run must be applied after the earlier one, and a second
+	// flusher would race two snapshots of the same key into the sink.
+	handoff := make(chan []ProcessRun, o.handoffBatches)
+	flusherDone := make(chan struct{})
+	go o.runFlusher(ctx, handoff, flusherDone)
+	// The shutdown BARRIER. Registered after the backend-close defer so it runs
+	// FIRST (LIFO): closing the hand-off is what tells the flusher to perform
+	// its final flush, and Run must not return before that has finished — a
+	// leaked flusher would keep writing after the daemon believed it stopped.
+	defer func() {
+		close(handoff)
+		<-flusherDone
 	}()
 
 	ticker := time.NewTicker(o.flushInterval)
@@ -325,27 +473,70 @@ func (o *Observer) Run(ctx context.Context) error {
 	}
 
 	batch := make([]ProcessRun, 0, o.batchSize)
-	flush := func() {
+
+	// handOff offers the current batch to the flusher WITHOUT blocking. That
+	// non-blocking property is the entire point of this task: whatever the
+	// sink is doing, the next line of this goroutine runs now and the backend
+	// keeps being drained.
+	//
+	// A full hand-off buffer does NOT discard the batch — it keeps it and
+	// retries on the next append or tick, so a brief flusher stall costs
+	// nothing at all. Only when the drain-side backlog exceeds maxBacklogRuns
+	// does anything go, and then the OLDEST rows go under a named counter
+	// (DropFlushBacklog): the newest snapshot of a run carries its exit status
+	// and can still land a usable row, so dropping the newest would leave the
+	// row looking permanently live — the same reasoning as the sink retention.
+	handOff := func() {
 		if len(batch) == 0 {
 			return
 		}
-		// Best-effort: a sink error is recorded as a drop, never fatal
-		// (fail-open). The backend keeps draining.
-		if _, err := o.sink.PersistRuns(ctx, batch); err != nil {
-			o.health.addDropped(DropReason("sink_error"), int64(len(batch)))
+		select {
+		case handoff <- batch:
+			// A FRESH slice, never batch[:0]: the flusher now owns the array
+			// that was just sent, and reusing it would rewrite rows it has not
+			// persisted yet.
+			batch = make([]ProcessRun, 0, o.batchSize)
+			o.health.observeHandoffDepth(int64(len(handoff)))
+		default:
+			o.health.incFlushBacklog()
+			o.health.observeHandoffDepth(int64(cap(handoff)))
+			if over := len(batch) - o.maxBacklogRuns; over > 0 {
+				o.health.addDropped(DropFlushBacklog, int64(over))
+				// Copy rather than reslice, so a repeatedly-overflowing
+				// backlog cannot pin an ever-growing backing array.
+				kept := make([]ProcessRun, len(batch)-over, max(len(batch)-over, o.batchSize))
+				copy(kept, batch[over:])
+				batch = kept
+			}
 		}
-		batch = batch[:0]
+		// The live-tree cap stays on THIS goroutine: the Attributor is
+		// drain-owned and single-threaded by construction, and touching it
+		// from the flusher would need locking the whole design avoids. It runs
+		// on every hand-off attempt (and every tick) rather than only on a
+		// successful flush; it is a no-op below the cap, so running it more
+		// often can only bound memory sooner.
 		o.attr.EvictOldestLive(o.maxTracked)
+	}
+	// handOffFinal is the shutdown path, and here the send DOES block — on
+	// purpose. There is no next tick to retry on, so the last batch must reach
+	// the flusher; the flusher only ever receives from this channel and Run
+	// closes it only after this returns, so the send always completes.
+	handOffFinal := func() {
+		if len(batch) == 0 {
+			return
+		}
+		handoff <- batch
+		batch = nil
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			flush()
+			handOffFinal()
 			return ctx.Err()
 		case ev, ok := <-ch:
 			if !ok {
-				flush()
+				handOffFinal()
 				return nil
 			}
 			if ev.Type == EventNetworkConnect {
@@ -360,7 +551,7 @@ func (o *Observer) Run(ctx context.Context) error {
 				// mutated by subsequent in-place ring refreshes.
 				batch = append(batch, o.attr.SnapshotForPersist(run))
 				if len(batch) >= o.batchSize {
-					flush()
+					handOff()
 				}
 			}
 		case <-lateSeedC:
@@ -372,12 +563,178 @@ func (o *Observer) Run(ctx context.Context) error {
 			for _, run := range o.lateSeedPass() {
 				batch = append(batch, o.attr.SnapshotForPersist(run))
 				if len(batch) >= o.batchSize {
-					flush()
+					handOff()
 				}
 			}
 		case <-ticker.C:
-			flush()
+			if len(batch) == 0 {
+				// handOff would no-op, but the live-tree cap must not become
+				// contingent on capture volume — an idle box with a huge tree
+				// of never-exiting processes is exactly when it matters.
+				o.attr.EvictOldestLive(o.maxTracked)
+				continue
+			}
+			handOff()
 		}
+	}
+}
+
+// runFlusher is the SINGLE owner of persistence: it drains the hand-off
+// channel, calls the sink, and owns the retained slice and the
+// retainAfterSinkFailure decision (CLAUDE.md rule 4 — the retention decision
+// must not split across goroutines). Nothing else may call PersistRuns.
+//
+// It is deliberately a plain FIFO consumer with no concurrency inside: the
+// sink upserts on process_key, so ordering is a correctness property, not a
+// performance nicety. When the channel closes it performs ONE final flush with
+// final=true, releasing whatever is still retained under DropSinkShutdown, and
+// only then closes done — that is the barrier Run waits on.
+//
+// Every sink call goes through shutdownAwareContext, which is what makes the
+// shutdown path actually WRITE instead of merely counting its losses honestly
+// (task 9g follow-up). See that function for why the cancelled context must
+// not reach PersistRuns.
+func (o *Observer) runFlusher(ctx context.Context, in <-chan []ProcessRun, done chan<- struct{}) {
+	defer close(done)
+	flushCtx, cancel := o.shutdownAwareContext(ctx)
+	defer cancel()
+	// retained holds the runs a TRANSIENT sink failure could not persist. They
+	// are re-offered, oldest first, on every subsequent flush — the fix for the
+	// drop class where one momentary `database is locked` silently destroyed a
+	// whole 250-row batch of process history (task 9c). Bounded by
+	// o.maxRetainedRuns; see retainAfterSinkFailure.
+	var retained []ProcessRun
+	for pending := range in {
+		retained = o.flushPending(flushCtx(), retained, pending, false)
+	}
+	o.flushPending(flushCtx(), retained, nil, true)
+}
+
+// shutdownAwareContext returns the context every flush should use, plus one
+// cleanup func. While ctx is live it hands back ctx unchanged — normal
+// operation is untouched. Once ctx is cancelled it hands back a DETACHED
+// context carrying a fresh o.shutdownFlushTimeout deadline, created lazily on
+// the first post-cancel call and reused for every flush after it.
+//
+// The bug this closes: Run's context is also the flusher's, so on the ordinary
+// shutdown path (SIGINT, `observer stop`, a restart) the buffered hand-off
+// drain and the final flush all called PersistRuns with an ALREADY-CANCELLED
+// context. Against a real store that fails immediately — database/sql checks
+// ctx before it touches the driver — so the last batch of process capture was
+// never attempted, and everything landed in the DropSinkShutdown counter. The
+// counter was accurate and the loss was entirely avoidable: nothing about a
+// cancelled shutdown makes a 250-row upsert impossible, it just made it
+// forbidden.
+//
+// Detaching is therefore the fix, and the deadline is what keeps detaching
+// safe. The deadline is created ONCE and shared, not per flush, so a wedged
+// sink cannot extend the shutdown one batch at a time: the whole post-cancel
+// drain fits inside a single budget, and Run's barrier stays bounded.
+//
+// The returned cancel is always safe to call and releases the timer.
+func (o *Observer) shutdownAwareContext(ctx context.Context) (func() context.Context, context.CancelFunc) {
+	var (
+		shutdown       context.Context
+		cancelShutdown context.CancelFunc
+	)
+	next := func() context.Context {
+		if ctx.Err() == nil {
+			return ctx
+		}
+		if shutdown == nil {
+			shutdown, cancelShutdown = context.WithTimeout(
+				context.WithoutCancel(ctx), o.shutdownFlushTimeout,
+			)
+		}
+		return shutdown
+	}
+	cleanup := func() {
+		if cancelShutdown != nil {
+			cancelShutdown()
+		}
+	}
+	return next, cleanup
+}
+
+// flushPending offers retained-then-incoming to the sink and returns what is
+// still held. Best-effort: a sink failure is never fatal (fail-open) — the
+// drain keeps running either way, and the only question is whether the rows
+// get another chance.
+//
+// The flush DURATION is still measured here even though it no longer stalls
+// capture, because it remains the signal that the database is contended (and
+// the number the bounded-flush-deadline decision will be taken against).
+func (o *Observer) flushPending(ctx context.Context, retained, incoming []ProcessRun, final bool) []ProcessRun {
+	if len(retained) == 0 && len(incoming) == 0 {
+		return nil
+	}
+	// Oldest first: the sink upserts on process_key, so a later snapshot of
+	// the same run must be applied after the earlier one.
+	pending := retained
+	retained = nil
+	pending = append(pending, incoming...)
+
+	flushStart := o.now()
+	if _, err := o.sink.PersistRuns(ctx, pending); err != nil {
+		retained = o.retainAfterSinkFailure(pending, err, final)
+	}
+	o.health.observeFlush(o.now().Sub(flushStart))
+	o.health.setSinkRetained(int64(len(retained)))
+	return retained
+}
+
+// retainAfterSinkFailure decides what survives a failed PersistRuns, and is
+// the single owner of that decision (CLAUDE.md rule 4). It returns the runs to
+// re-offer on the next flush and COUNTS everything it releases, so no run ever
+// disappears without a named reason in the health snapshot — the property that
+// made the original drop anomaly undiagnosable from outside the daemon.
+//
+// Three outcomes, in the order they are tested:
+//
+//   - final flush — there is no next tick to retry on, so anything still
+//     unpersisted is a real loss: DropSinkShutdown (transient/unknown) or
+//     DropSinkError (permanent, which names the actual cause).
+//   - permanent failure — no retry can change the outcome, and holding the
+//     rows would only occupy the retention against runs that could still
+//     land: DropSinkError, released immediately. This preserves the
+//     pre-existing behaviour for the failures that genuinely deserve it.
+//   - transient or unknown failure — RETAIN, oldest released first if the
+//     batch exceeds the cap (DropSinkRetryExhausted).
+//
+// Releasing the OLDEST rather than the newest is deliberate: process_runs is
+// upserted on process_key with COALESCE-style column merging, so the newest
+// snapshot of a run carries its exit status and final metrics and can still
+// land a usable row on its own. Dropping the newest would leave the row
+// looking permanently live.
+func (o *Observer) retainAfterSinkFailure(pending []ProcessRun, err error, final bool) []ProcessRun {
+	class := o.classifySinkError(err)
+	switch {
+	case final:
+		reason := DropSinkShutdown
+		if class == SinkErrorPermanent {
+			reason = DropSinkError
+		}
+		o.health.addDropped(reason, int64(len(pending)))
+		return nil
+	case !class.Retain():
+		o.health.addDropped(DropSinkError, int64(len(pending)))
+		return nil
+	case o.maxRetainedRuns < 0:
+		// Retention explicitly disabled (see Options.MaxRetainedRuns): the
+		// rows are lost now, and counted as the plain sink error they are.
+		o.health.addDropped(DropSinkError, int64(len(pending)))
+		return nil
+	case len(pending) > o.maxRetainedRuns:
+		over := len(pending) - o.maxRetainedRuns
+		o.health.addDropped(DropSinkRetryExhausted, int64(over))
+		// Copy rather than reslice: pending[over:] would pin the whole
+		// backing array, so a repeatedly-overflowing retention would keep
+		// growing the very memory this cap exists to bound.
+		kept := make([]ProcessRun, o.maxRetainedRuns)
+		copy(kept, pending[over:])
+		return kept
+	default:
+		return pending
 	}
 }
 
@@ -447,7 +804,7 @@ func (o *Observer) handleNetworkConnect(ctx context.Context, ev *RawEvent) {
 		Details:      details,
 	}
 	if _, err := o.eventSink.PersistProcessEvents(ctx, []ProcessEvent{event}); err != nil {
-		o.health.addDropped(DropReason("event_sink_error"), 1)
+		o.health.addDropped(DropEventSinkError, 1)
 	}
 }
 
@@ -562,6 +919,29 @@ type Health struct {
 	// `discovered`-lag gap this pass closes.
 	lateSeedRoots       int64
 	lateSeedReinherited int64
+	// sinkRetained is a GAUGE, not a counter: the number of runs currently
+	// held back after a transient sink failure. Non-zero means the sink is
+	// refusing writes right now and capture is being buffered rather than
+	// lost; a value pinned at Options.MaxRetainedRuns alongside a rising
+	// DropSinkRetryExhausted means the retention has been overrun.
+	sinkRetained int64
+	// sinkFlushMaxMs is the LONGEST single sink flush observed, and
+	// queueDepthMax the high-water mark of the backend queue. Both are
+	// WATERMARKS, not samples: the health record is republished every 30 s and
+	// the queue gauge is only re-read when an event arrives, so a stall that
+	// begins and ends between two publishes is invisible to a sampled value —
+	// which is precisely the shape of the starvation this pair exists to
+	// measure (see the flush closure in Run).
+	sinkFlushMaxMs int64
+	queueDepthMax  int64
+	// handoffDepthMax is the high-water mark of the drain→flusher hand-off
+	// buffer (in BATCHES) and flushBacklogHits counts how often the drain
+	// found it full. Together they say how close the decoupling came to its
+	// bound: a hand-off that never fills means the flusher kept up, while hits
+	// climbing without any DropFlushBacklog means the drain absorbed a slow
+	// sink exactly as intended — capture delayed, none lost.
+	handoffDepthMax  int64
+	flushBacklogHits int64
 	// net is the READ-ONLY handle onto the capture backend's network-accounting
 	// status (the backend is its only writer). Nil = off.
 	net *NetworkAccounting
@@ -591,11 +971,51 @@ func newHealth(backendName string, net *NetworkAccounting, transport func() (Tra
 	}
 }
 
-func (h *Health) setBackendUp(up bool)  { h.mu.Lock(); h.backendUp = up; h.mu.Unlock() }
-func (h *Health) setError(e string)     { h.mu.Lock(); h.lastError = e; h.mu.Unlock() }
-func (h *Health) setQueueDepth(d int64) { h.mu.Lock(); h.queueDepth = d; h.mu.Unlock() }
-func (h *Health) incEvent(t EventType)  { h.mu.Lock(); h.eventsTotal[t]++; h.mu.Unlock() }
-func (h *Health) incUnattributed()      { h.mu.Lock(); h.unattributed++; h.mu.Unlock() }
+func (h *Health) setBackendUp(up bool) { h.mu.Lock(); h.backendUp = up; h.mu.Unlock() }
+func (h *Health) setError(e string)    { h.mu.Lock(); h.lastError = e; h.mu.Unlock() }
+func (h *Health) setQueueDepth(d int64) {
+	h.mu.Lock()
+	h.queueDepth = d
+	if d > h.queueDepthMax {
+		h.queueDepthMax = d
+	}
+	h.mu.Unlock()
+}
+
+// observeFlush records one sink-flush duration, keeping the maximum. A
+// negative duration (a clock that went backwards, or an injected test clock)
+// is ignored rather than recorded as a wild watermark.
+func (h *Health) observeFlush(d time.Duration) {
+	if d < 0 {
+		return
+	}
+	ms := d.Milliseconds()
+	h.mu.Lock()
+	if ms > h.sinkFlushMaxMs {
+		h.sinkFlushMaxMs = ms
+	}
+	h.mu.Unlock()
+}
+
+// observeHandoffDepth records the drain→flusher hand-off occupancy, keeping
+// the maximum. A watermark for the same reason observeFlush is one: the health
+// record is republished every 30 s, so a buffer that filled and drained between
+// two publishes would be invisible to a sampled gauge.
+func (h *Health) observeHandoffDepth(d int64) {
+	h.mu.Lock()
+	if d > h.handoffDepthMax {
+		h.handoffDepthMax = d
+	}
+	h.mu.Unlock()
+}
+
+// incFlushBacklog records one hand-off that found the buffer full. Not a loss
+// on its own — the drain keeps the batch and retries — so it is counted apart
+// from DropFlushBacklog, which is the loss.
+func (h *Health) incFlushBacklog() { h.mu.Lock(); h.flushBacklogHits++; h.mu.Unlock() }
+
+func (h *Health) incEvent(t EventType) { h.mu.Lock(); h.eventsTotal[t]++; h.mu.Unlock() }
+func (h *Health) incUnattributed()     { h.mu.Lock(); h.unattributed++; h.mu.Unlock() }
 func (h *Health) incAttributed(tool string) {
 	h.mu.Lock()
 	if tool == "" {
@@ -612,6 +1032,10 @@ func (h *Health) addLateSeedUpgrades(roots, reinherited int64) {
 	h.lateSeedReinherited += reinherited
 	h.mu.Unlock()
 }
+
+// setSinkRetained records the CURRENT retained-run depth (a gauge — the flush
+// path assigns it, never accumulates into it).
+func (h *Health) setSinkRetained(n int64) { h.mu.Lock(); h.sinkRetained = n; h.mu.Unlock() }
 
 func (h *Health) addDropped(reason DropReason, n int64) {
 	h.mu.Lock()
@@ -633,6 +1057,24 @@ type HealthSnapshot struct {
 	// re-resolution pass recovered (see Health.lateSeedRoots).
 	LateSeedRoots       int64
 	LateSeedReinherited int64
+	// SinkRetained is the CURRENT number of runs held back after a transient
+	// sink failure (see Health.sinkRetained). Zero is the healthy steady
+	// state; non-zero says capture is being buffered, not lost.
+	SinkRetained int64
+	// SinkFlushMaxMs / QueueDepthMax are the sink-contention watermarks (see
+	// Health.sinkFlushMaxMs). A large SinkFlushMaxMs was the evidence for the
+	// capture-STARVATION half of the 2026-08-26 anomaly, when the flush ran on
+	// the only goroutine draining the backend. Since task 9g it no longer
+	// does, so a long flush now means "the database was contended", NOT "the
+	// backend went unread" — read it beside FlushBacklogHits, which is what
+	// says the stall reached the drain at all.
+	SinkFlushMaxMs int64
+	QueueDepthMax  int64
+	// HandoffDepthMax / FlushBacklogHits report how the drain→flusher hand-off
+	// coped (see Health.handoffDepthMax). Hits > 0 with no
+	// Dropped[flush_backlog] means a slow sink was absorbed with nothing lost.
+	HandoffDepthMax  int64
+	FlushBacklogHits int64
 	// NetworkAccountingMode is one of the NetworkAccounting* constants and
 	// NetworkAccountingReason explains a non-live mode ("missing CAP_BPF", …).
 	// This is the honest-degradation surface: "unavailable" means per-process
@@ -686,6 +1128,11 @@ func (h *Health) Snapshot() HealthSnapshot {
 		Unattributed:            h.unattributed,
 		LateSeedRoots:           h.lateSeedRoots,
 		LateSeedReinherited:     h.lateSeedReinherited,
+		SinkRetained:            h.sinkRetained,
+		SinkFlushMaxMs:          h.sinkFlushMaxMs,
+		QueueDepthMax:           h.queueDepthMax,
+		HandoffDepthMax:         h.handoffDepthMax,
+		FlushBacklogHits:        h.flushBacklogHits,
 		EventsTotal:             make(map[EventType]int64, len(h.eventsTotal)),
 		Dropped:                 make(map[DropReason]int64, len(h.dropped)),
 		AttributedByTool:        make(map[string]int64, len(h.attributedByTool)),

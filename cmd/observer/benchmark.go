@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -78,6 +79,14 @@ func newBenchmarkRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Preserve the originating node identity before an ephemeral
+			// benchmark daemon replaces configPath with its isolated config.
+			budgetConfigPath := configPath
+			if confirmSpend {
+				if err := enforceBenchmarkBudget(ctx, budgetConfigPath); err != nil {
+					return err
+				}
+			}
 			exe, err := os.Executable()
 			if err != nil {
 				return fmt.Errorf("resolve observer binary: %w", err)
@@ -113,7 +122,7 @@ func newBenchmarkRunCmd() *cobra.Command {
 			defer cleanup()
 			st := store.New(database)
 
-			engine := cost.NewEngine(cfg.Intelligence)
+			engine := acquireProcessCostEngine(ctx, cfg, database, slog.Default())
 			resolved := resolveProxyURL(cfg.Proxy.Port, proxyURL)
 			if rootDir == "" {
 				rootDir, err = os.MkdirTemp("", "sbo-benchmark-")
@@ -124,11 +133,14 @@ func newBenchmarkRunCmd() *cobra.Command {
 
 			runner := &benchmarkRunner{
 				store:       st,
-				drivers:     newBenchmarkDrivers(exe, cfg.Observer.DBPath),
+				drivers:     budgetControlledBenchmarkDrivers(exe, cfg.Observer.DBPath, budgetConfigPath),
 				provisioner: gitCloneProvisioner{},
 				homePrep:    attemptHomePrep{binaryPath: exe, configPath: configPath},
-				scorer:      benchmarkScorer{judgeModel: judgeModel, evalScore: newBenchmarkEvalScoreFn(cfg)},
-				scrubber:    scrub.New(),
+				scorer: budgetControlledBenchmarkScorer{
+					inner:      benchmarkScorer{judgeModel: judgeModel, evalScore: newBenchmarkEvalScoreFn(cfg)},
+					configPath: budgetConfigPath,
+				},
+				scrubber: scrub.New(),
 				estimateTurnUSD: func(ctx context.Context, model string) (float64, bool) {
 					return st.AvgTurnCostUSD(ctx, model, 30)
 				},

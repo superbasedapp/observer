@@ -306,12 +306,17 @@ var minCacheableTable = []minCacheableEntry{
 	// when the provider caches nothing.
 	{"mythos-preview", 2048},
 
-	// 512 tier — Opus 5, Fable 5, Mythos 5. Opus 5 HALVED
+	// 512 tier — Opus 5, Fable 5/5.1, Mythos 5/5.1. Opus 5 HALVED
 	// the Opus 4.8 minimum from 1,024 to 512, so a 512–1,023-token
-	// prefix on these three DOES cache upstream; before these rows
+	// prefix on these DOES cache upstream; before these rows
 	// existed the walk fell through to defaultMinCacheable and
 	// mislabelled those turns kind='below_min' /
-	// cause='below_min_cacheable'.
+	// cause='below_min_cacheable'. Fable 5.1 / Mythos 5.1
+	// (released 2026-09-01) are also 512 per the vendor page
+	// (re-verified 2026-09-02) and resolve via the SAME
+	// "fable-5" / "mythos-5" substring rows — "fable-5" is a
+	// substring of "claude-fable-5-1", so no new entry is needed
+	// (pinned by TestMinCacheableTokens).
 	//
 	// Match-string choice (the walk is a substring scan over the
 	// lowercased id, first match wins, so both shadow directions

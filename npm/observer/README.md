@@ -10,7 +10,7 @@
 **Claude Code cost tracking. Cursor token usage. Codex spend.
 AI coding agent observability — one local tool, proxy-accurate.**
 SuperBased captures, normalizes, and analyzes every AI
-coding tool call across **33 adapters** — Claude Code, Codex, Cursor,
+coding tool call across **40 adapters** — Claude Code, Codex, Cursor,
 Cline + Cline CLI, GitHub Copilot (VS Code) + Copilot CLI, Gemini CLI,
 OpenCode, Google Antigravity, Cowork, Nous Research's Hermes Agent,
 Kilo Code (legacy IDE extension + CLI), Aider, Goose, Devin, OpenClaw,
@@ -18,8 +18,8 @@ Pi, Factory Droid, Open Interpreter, Command Code, and more — in one
 local single-binary tool. An optional API proxy
 reconciles the *exact* tokens your provider billed (net input, cache
 5m/1h splits, reasoning tokens, long-context surcharges) instead of a
-JSONL-derived estimate. No telemetry, no cloud, no data leaves your
-machine.
+JSONL-derived estimate. No telemetry and no cloud by default - nothing
+leaves your machine unless you explicitly opt in to the sign-in beta.
 
 **One local binary.** SuperBased captures, normalizes, and analyzes
 every AI coding tool call on your machine: proxy-accurate cost,
@@ -797,10 +797,11 @@ two people type at once.
 
 ### Launch any supported AI CLI as a real terminal
 
-Twenty-two CLI launchers — claude, codex, opencode, cursor, copilot-cli,
+Twenty-seven CLI launchers — claude, codex, opencode, cursor, copilot-cli,
 kilo, cline-cli, hermes, gemini, openclaw, pi, antigravity, qwen,
 kiro, grok, kimi, devin, qoder, goose, droid, open-interpreter,
-command-code — start from the dashboard's
+command-code, muse, prime-agent, zcode, vibe (mistral-code), freebuff —
+start from the dashboard's
 **Launch here** control or from the command line as `observer <verb>`
 (`observer claude`, `observer codex`, and so on). Each opens a **real
 PTY** — a native pseudo-terminal on Linux and macOS, and a native
@@ -809,8 +810,8 @@ tool's binary isn't on your `$PATH`, the launcher offers a guided
 one-click install rather than failing. Dashboard launching is gated by
 `[handoff].allow_dashboard_launch` (default `true`).
 
-(The count is twenty-two *launchers*, not the adapter count — observer
-tracks 33 adapters in total, but only these twenty-two ship a
+(The count is twenty-seven *launchers*, not the adapter count — observer
+tracks 40 adapters in total, but only these twenty-seven ship a
 first-class terminal launcher.)
 
 ### Attach-by-default
@@ -886,14 +887,14 @@ paired remote device the grid is read-only.
 
 ### Restarts & continuity
 
-Twenty-one of the twenty-two launchers **auto-resume the same
+Twenty-six of the twenty-seven launchers **auto-resume the same
 transcript** after a daemon restart — a verified native resume, so the
 conversation continues where it left off. openclaw is the sole holdout:
 its resume is picker-only, so its attached session ends when the daemon
 restarts. To pick any session back up — including openclaw's — fork it
 with `observer <verb> --continue-from <session-id>`. That opens a new
 session id and seeds a distilled handover of the prior session as its
-first prompt — it works for all twenty-two launchers.
+first prompt — it works for all twenty-seven launchers.
 
 ### Remote posture
 
@@ -956,6 +957,23 @@ with Claude Code AND Cursor (and Codex…), all of them call the same
 tools against the same database. Cursor's `get_last_test_result`
 returns Claude Code's last test run; Codex's `check_file_freshness`
 reflects edits made by Cursor.
+
+
+## Sign in and Cloud Intelligence (beta, experimental)
+
+Optional, opt-in, and **beta (experimental)**. Nothing is sent anywhere
+unless you run `observer cloud login` and enrol a session yourself -
+the `observer cloud` CLI is the only outbound trigger, and it touches
+the network only while one of its commands is running. **Signed-in
+Free** gives up to 20 session enrichments per day (100 per month) on
+GPT-5.6 Luna (xhigh reasoning). **Plus (beta)** runs enrichments on
+GPT-5.6 Sol (xhigh reasoning), capped at 120 per month, USD 15/month
+with a 7-day trial. An enrichment returns a narrative summary of the
+session: what was done, which plans were implemented, which issues or
+bugs were found, what failed, and what to do next. Behaviour,
+allowances, and pricing may change. The local daemon - proxy, watcher,
+dashboard, MCP - needs no account and is unaffected by any of it. Full
+detail: [`docs/cloud-intelligence.md`](https://github.com/superbasedapp/observer/blob/main/docs/cloud-intelligence.md).
 
 
 ## Compression mechanisms

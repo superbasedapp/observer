@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0.0",
+  "dataModelVersion": 1,
+  "id": "sess_0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+  "title": "Create and Modify Hello World Python",
+  "agentMode": "vibe",
+  "workspacePaths": [
+    "c:\\Users\\dev\\workspace\\demo"
+  ],
+  "rootPaths": [
+    "c:\\Users\\dev\\workspace\\demo"
+  ],
+  "createdAt": "2026-09-03T11:59:19.000Z",
+  "lastModifiedAt": "2026-09-03T12:01:11.881Z",
+  "modelId": "auto",
+  "autopilot": false,
+  "semanticReviewEnabled": true,
+  "disableAutoCompaction": false,
+  "ftaEnabled": false,
+  "workflowsEnabled": false,
+  "specPlanEnabled": false,
+  "specSkipClarificationEnabled": true,
+  "specWorkflow": "quick",
+  "status": "idle",
+  "_meta": {
+    "kiro": {
+      "policyPreset": [
+        "edit-workspace"
+      ],
+      "shellType": "powershell"
+    }
+  }
+}

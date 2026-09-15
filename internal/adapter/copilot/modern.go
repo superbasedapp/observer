@@ -133,6 +133,9 @@ func (a *Adapter) parseModern(ctx context.Context, path string) (adapter.ParseRe
 	}
 
 	if session == nil {
+		// No snapshot line: nothing to emit, but the session still
+		// exists and is still an IDE chat.
+		a.finishModern(path, nil, &res)
 		return res, nil
 	}
 
@@ -160,12 +163,85 @@ func (a *Adapter) parseModern(ctx context.Context, path string) (adapter.ParseRe
 		}
 	}
 
+	a.finishModern(path, session, &res)
+	return res, nil
+}
+
+// parseModernDocument parses the `.json` empty-window session DOCUMENT
+// (`<globalStorage>/emptyWindowChatSessions/<sessId>.json`). The whole file
+// IS the session state — byte-for-byte the same object a `.jsonl` log
+// carries as a kind=0 snapshot's `v` payload (`version`,
+// `requesterUsername`, `responderUsername`, `initialLocation`, `requests[]`,
+// `sessionId`, `creationDate`, `isImported`, `lastMessageDate`) — so it
+// decodes straight into the same map the snapshot+patches path assembles
+// and runs through the same emitter (audit finding IDE-10). There are no
+// patches to apply and no snapshot to pick.
+//
+// fromOffset is ignored for the same reason parseModern ignores it: VS Code
+// REWRITES this document in place, so a byte cursor has no meaning. The
+// store's (source_file, source_event_id) UNIQUE constraint dedupes
+// re-emitted turns, and NewOffset is the file size so the watcher's
+// stat-only short-circuit still keeps steady-state cost bounded.
+//
+// DOUBLE-INGEST GUARD (C1). That UNIQUE constraint is keyed on
+// (source_file, source_event_id), and SourceEventID here is derived from
+// the request id — the SAME value the `.jsonl` path derives. So the two
+// shapes of one session id collide on the event id but NOT on the source
+// file (they differ by extension), which means a session that somehow had
+// both a `<sid>.json` and a `<sid>.jsonl` on disk would be ingested TWICE:
+// double actions, double tokens.
+//
+// VS Code's writer is not documented either way, and no live install here
+// has been observed producing both, so the honest posture is to defend
+// against it rather than assert it cannot happen: when a `.jsonl` log
+// exists for this session id, the log WINS and the document emits nothing
+// but its watermark. The log is the strictly better source — it is
+// append-structured, so it carries the session's history across rewrites
+// that the in-place document only ever shows the latest state of. Same
+// shape as cursor's stateDBAlreadyCaptured / cursorSiblingExists gate.
+func (a *Adapter) parseModernDocument(ctx context.Context, path string) (adapter.ParseResult, error) {
+	body, err := os.ReadFile(path) //nolint:gosec // watched session file
+	if err != nil {
+		return adapter.ParseResult{}, fmt.Errorf("copilot.parseModernDocument: read %s: %w", path, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return adapter.ParseResult{}, err
+	}
+
+	if a.modernLogSiblingExists(sessionIDFromPath(path), path) {
+		// Cursor advances so the watcher does not re-read the file every
+		// tick; the surface stamp is still emitted (it is idempotent and
+		// says the same thing the log's stamp would).
+		res := adapter.ParseResult{NewOffset: int64(len(body))}
+		appendSessionSurface(&res, sessionIDFromPath(path), path)
+		return res, nil
+	}
+
+	res := adapter.ParseResult{NewOffset: int64(len(body))}
+	var session map[string]any
+	if err := json.Unmarshal(body, &session); err != nil {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("document decode: %v", err))
+		a.finishModern(path, nil, &res)
+		return res, nil
+	}
+	a.finishModern(path, session, &res)
+	return res, nil
+}
+
+// finishModern is the single emission tail shared by both modern shapes:
+// it resolves the session context from the path, emits the snapshot's
+// requests (when there is one), and stamps the session's capture surface.
+// Keeping it in one place is what makes the `.json` document and the
+// `.jsonl` snapshot produce identical rows for identical content.
+func (a *Adapter) finishModern(path string, session map[string]any, res *adapter.ParseResult) {
 	state := sessionContext{
 		SessionID:   sessionIDFromPath(path),
 		ProjectRoot: projectRootFromPath(path),
 	}
-	a.emitModernEvents(path, session, &state, &res)
-	return res, nil
+	if session != nil {
+		a.emitModernEvents(path, session, &state, res)
+	}
+	appendSessionSurface(res, state.SessionID, path)
 }
 
 // applyPatch writes v into session at the location named by the JSON-pointer
@@ -702,13 +778,20 @@ func asInt64(x any) int64 {
 	return 0
 }
 
-// dispatchParse is the shared entry point that routes between the legacy
-// debug-log scanner and the modern snapshot+patches parser.
+// dispatchParse is the shared entry point that routes between the three
+// on-disk shapes: the legacy debug-log scanner, the modern
+// snapshot+patches log, and the modern empty-window `.json` document.
+// Dispatch is on the file's SHAPE, never on a tool/source identity
+// (CLAUDE.md Module Boundaries #3).
 func (a *Adapter) dispatchParse(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
-	if isModernSessionPath(path) {
+	switch {
+	case isEmptyWindowDocumentPath(path):
+		return a.parseModernDocument(ctx, path)
+	case isModernSessionPath(path):
 		return a.parseModern(ctx, path)
+	default:
+		return a.parseLegacy(ctx, path, fromOffset)
 	}
-	return a.parseLegacy(ctx, path, fromOffset)
 }
 
 // parseLegacy preserves the existing forward-only debug-log scanner as a
@@ -756,6 +839,9 @@ func (a *Adapter) parseLegacy(ctx context.Context, path string, fromOffset int64
 	if err := scanner.Err(); err != nil {
 		return res, fmt.Errorf("copilot.parseLegacy: scan: %w", err)
 	}
+	// The debug-log's own `sid` overrides the path-derived id when the
+	// stream carried one, so stamp after the scan, not before.
+	appendSessionSurface(&res, state.SessionID, path)
 	return res, nil
 }
 

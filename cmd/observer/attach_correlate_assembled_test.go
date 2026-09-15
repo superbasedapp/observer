@@ -94,6 +94,8 @@ func (assembledRecorder) EndRun(context.Context, string, time.Time, int, string)
 
 func (assembledRecorder) RecordCorrelation(context.Context, termrun.Correlation) error { return nil }
 
+func (assembledRecorder) RecordGUISpawn(context.Context, termrun.Run) error { return nil }
+
 func TestAttachCorrelationAssembledThroughHTTP(t *testing.T) {
 	const wantSession = "sess-assembled-oob"
 

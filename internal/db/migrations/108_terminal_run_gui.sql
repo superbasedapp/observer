@@ -1,0 +1,47 @@
+-- 108_terminal_run_gui.sql — record what a DETACHED GUI launch actually did
+-- (docs/plans/ide-desktop-launch-plan-2026-09-03.md T2 / §2.4).
+--
+-- A GUI run (terminal_run.kind = 'gui') is structurally unlike every other
+-- kind: the daemon spawns an IDE / desktop app OUTSIDE any PTY so it owns its
+-- own window and outlives the daemon. There is therefore no PTY handle, no
+-- correlation nonce, and no terminal bytes — the whole value of the row is the
+-- three facts these columns add:
+--
+--   pid           — the detached child's process id. NULL for every non-GUI
+--                   kind by construction (a PTY run's identity is its handle;
+--                   its child pid belongs to the termsession manager, not
+--                   here) and NULL for a GUI run until the spawn returns. It
+--                   is what lets a later correlation pass ask "which sessions
+--                   did this launch produce?" and what an operator reads to
+--                   confirm the app is still up.
+--   wrap_applied  — whether Observer's routing wrap ACTUALLY reached the
+--                   child. The whole point of wrapping a GUI launcher is that
+--                   the in-app agent inherits the proxy base URL and its
+--                   traffic becomes metered; several grounded cases cannot
+--                   deliver it (a WSL→Windows interop launch does not carry
+--                   the environment across the boundary; an explorer-launched
+--                   packaged app inherits none; a config-file route is written
+--                   by `observer init`, not at launch). Recording 0 there is
+--                   the honesty rule applied to the launch itself — never a
+--                   claim that metering is on when it is not.
+--   wrap_note     — the grounded REASON for that verdict, or the caveat that
+--                   qualifies an applied wrap (a cold-start-only app whose
+--                   already-running instance never re-reads its environment).
+--                   Composed by internal/guilaunch; free text, no path, no
+--                   command, no content.
+--
+-- CONTENT DISCIPLINE (CLAUDE.md): metadata only, exactly like the base table.
+-- A pid is a number, wrap_applied a flag, and wrap_note a server-composed
+-- sentence from a compile-time vocabulary — no argv, no environment VALUES, no
+-- filesystem path.
+--
+-- NODE-LOCAL: terminal_run never leaves the machine (pinned by
+-- tests/invariant/privacy_test.go's forbidden-table sentinel + the
+-- SelectUnpushedSince end-to-end assertion, and excluded from
+-- internal/store/orgpush.go by construction). Adding columns touches no wire
+-- shape — no paired orgserver migration exists, same posture as the base table
+-- and as migration 072.
+
+ALTER TABLE terminal_run ADD COLUMN pid INTEGER;
+ALTER TABLE terminal_run ADD COLUMN wrap_applied INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE terminal_run ADD COLUMN wrap_note TEXT NOT NULL DEFAULT '';

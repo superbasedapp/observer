@@ -157,14 +157,15 @@ func newClineCLICmd() *cobra.Command {
 			// baseUrl, NOT an env var — so select that provider and forward the
 			// (possibly seeded) user's args. No env injection.
 			return runEnvLauncher(envLauncherSpec{
-				tool:     "cline-cli",
-				bin:      bin,
-				args:     append([]string{"-P", clineCompatProvider}, args...),
-				dir:      continueDir,
-				proxyURL: resolved,
-				env:      nil,
-				dbPath:   cfg.Observer.DBPath,
-				stderr:   cmd.ErrOrStderr(),
+				tool:       "cline-cli",
+				bin:        bin,
+				args:       append([]string{"-P", clineCompatProvider}, args...),
+				configPath: configPath,
+				dir:        continueDir,
+				proxyURL:   resolved,
+				env:        nil,
+				dbPath:     cfg.Observer.DBPath,
+				stderr:     cmd.ErrOrStderr(),
 			})
 		},
 	}

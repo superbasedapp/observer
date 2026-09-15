@@ -98,6 +98,7 @@ var actionMap = map[string]string{
 	"Edit":            models.ActionEditFile,
 	"MultiEdit":       models.ActionEditFile,
 	"NotebookEdit":    models.ActionEditFile,
+	"SearchReplace":   models.ActionEditFile, // Qoder IDE edit tool (transcript/*.session.execution.jsonl)
 	"Bash":            models.ActionRunCommand,
 	"PowerShell":      models.ActionRunCommand,
 	"powershell":      models.ActionRunCommand,
@@ -163,10 +164,16 @@ func authoredBytes(actionType string, input json.RawMessage) int64 {
 		return 0
 	}
 	var in struct {
-		Content   string `json:"content"`
-		NewString string `json:"new_string"`
-		Command   string `json:"command"`
-		Edits     []struct {
+		Content string `json:"content"`
+		// FileContent is the Qoder IDE's spelling of the Write tool's
+		// body (GROUNDED 2026-09-03: the in-editor agent emits
+		// `{"file_content": …, "file_path": …}` where the terminal
+		// binary emits Claude-Code's `content`). Without it every
+		// IDE-authored write reported zero authored bytes.
+		FileContent string `json:"file_content"`
+		NewString   string `json:"new_string"`
+		Command     string `json:"command"`
+		Edits       []struct {
 			NewString string `json:"new_string"`
 		} `json:"edits"`
 	}
@@ -175,6 +182,9 @@ func authoredBytes(actionType string, input json.RawMessage) int64 {
 	}
 	switch actionType {
 	case models.ActionWriteFile:
+		if in.Content == "" {
+			return int64(len(in.FileContent))
+		}
 		return int64(len(in.Content))
 	case models.ActionEditFile:
 		n := int64(len(in.NewString))

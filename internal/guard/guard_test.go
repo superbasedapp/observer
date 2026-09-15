@@ -259,7 +259,7 @@ func TestEvaluate_FailureWrapper(t *testing.T) {
 		}
 		// same-package injection: the public API can't build a panicking
 		// engine, so swap a snapshot whose base is the panic engine.
-		g.set.Store(newEngineSet(eng, nil, nil, nil, map[string]policy.Category{}))
+		g.set.Store(newEngineSet(eng, nil, nil, nil, map[string]policy.Category{}, ""))
 		return g
 	}
 

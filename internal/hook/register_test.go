@@ -603,7 +603,7 @@ func TestRegisterClaudeCodeCrossBinaryPathRefresh(t *testing.T) {
 // binary refresh: when settings.json holds an observer-shaped hook
 // entry pointing at a DIFFERENT binary path (e.g. npm-bundled
 // observer in node_modules) and the user uninstalls from the
-// current binary, filterClaudeGroups MUST recognise the stale
+// current binary, filterClaudeGroupsRaw MUST recognise the stale
 // entry as ours via isObserverClaudeEntry and remove it — NOT
 // leave it orphaned because the byte-exact prefix-match misses.
 func TestUnregisterClaudeCodeRemovesCrossBinaryEntries(t *testing.T) {
@@ -1821,28 +1821,43 @@ func TestInstalledDetectsCodex(t *testing.T) {
 	}
 }
 
-// TestObserverEntryHeuristicsAreDisjoint pins the contract that the
-// Linux/default and Windows-bridge heuristics match disjoint command
-// shapes — so if both registrar paths write to the same settings.json
-// (rare but possible after switching observer modes on the same
-// host), `observer start` from one mode does not silently rewrite
-// the other mode's entries. Without the wsl.exe-prefix guard added
-// in v1.6.26, isObserverClaudeEntry / isObserverCursorEntry matched
-// wsl-wrapped commands too, causing the Linux/default refresh path
-// to overwrite WSL-bridge entries into native shape.
-func TestObserverEntryHeuristicsAreDisjoint(t *testing.T) {
+// TestObserverEntryHeuristicsAreOneWay pins the contract between the
+// Linux/default and Windows-bridge ownership heuristics. It is
+// deliberately ASYMMETRIC (it was symmetric — and named
+// TestObserverEntryHeuristicsAreDisjoint — until the class-C2 fix in
+// docs/plans/ide-surface-capture-remediation-plan-2026-09-02.md §1):
+//
+//   - the NATIVE heuristics (isObserverClaudeEntry /
+//     isObserverCursorEntry) still REJECT wsl.exe-wrapped commands.
+//     That is the load-bearing direction, added in v1.6.26: if both
+//     registrar paths write the same settings.json (possible after
+//     switching observer modes on one host), the native refresh path
+//     must not rewrite the bridge's entries into native shape.
+//   - the WINDOWS heuristics now ACCEPT the native shape as ours, so
+//     the bridge can REPLACE a stale native `observer.exe hook <tool>`
+//     entry — written by an earlier Windows-native npm install — without
+//     --force. Before this, that entry read as a foreign third-party
+//     hook, registration errored, and the stale native entry kept
+//     writing the stranded Windows DB (audit IDE-11 / the split-brain
+//     class in CLAUDE.md).
+//
+// Conversion is therefore one-way: native → bridge, never the reverse.
+func TestObserverEntryHeuristicsAreOneWay(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name        string
 		cmd         string
 		wantNative  bool // Linux/default heuristic
-		wantWindows bool // wsl-bridge heuristic
+		wantWindows bool // Windows-target heuristic (bridge OR native)
 	}{
 		{
+			// C2: ours on BOTH targets. The native registrar refreshes
+			// it in place; the Windows registrar replaces it with the
+			// bridge command.
 			name:        "claude native",
 			cmd:         "/usr/local/bin/observer hook claude-code pre-tool",
 			wantNative:  true,
-			wantWindows: false,
+			wantWindows: true,
 		},
 		{
 			name:        "claude wsl bare",
@@ -1882,8 +1897,22 @@ func TestObserverEntryHeuristicsAreDisjoint(t *testing.T) {
 		wantWindows bool
 	}{
 		{
+			// C2: ours on BOTH targets — see the claude row above.
 			name:        "cursor native",
 			cmd:         "/usr/local/bin/observer hook cursor beforeShellExecution",
+			wantNative:  true,
+			wantWindows: true,
+		},
+		{
+			// A third-party binary invoked with our argument shape. The
+			// NATIVE heuristic is a deliberately loose substring test and
+			// accepts it (the documented trade-off in
+			// isObserverClaudeEntry); the widened WINDOWS heuristic is
+			// TOKEN-based and does not — argv[0] must name an observer
+			// binary. So C2 made the Windows side stricter here, not
+			// looser.
+			name:        "cursor third-party binary with our argument shape",
+			cmd:         "/opt/acme/acme hook cursor beforeShellExecution",
 			wantNative:  true,
 			wantWindows: false,
 		},

@@ -16,11 +16,11 @@ import (
 // package dir. Their names come from the generator itself (jsonName /
 // typesName / vectorsName), so a fourth artifact cannot be added without
 // this test covering it.
-const committedDir = "../src/lib"
+const committedDir = "../../shared/lib"
 
 // tokensPath is the stylesheet that must define an --act-* var for every
 // canonical category, in both themes.
-const tokensPath = "../src/styles/tokens.css"
+const tokensPath = "../../shared/styles/tokens.css"
 
 // The two theme blocks in tokens.css. A category colour missing from
 // either one renders as the meta gray in that theme only — the kind of

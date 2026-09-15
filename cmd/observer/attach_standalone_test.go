@@ -59,7 +59,7 @@ func TestBuildTerminalSurfacesGating(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			surfaces, err := buildTerminalSurfaces(surfaceTestConfig(tc.allowLaunch, tc.attach), openStackTestDB(t), slog.Default())
+			surfaces, err := buildTerminalSurfaces(context.Background(), surfaceTestConfig(tc.allowLaunch, tc.attach), openStackTestDB(t), slog.Default(), nil)
 			if err != nil {
 				t.Fatalf("buildTerminalSurfaces: %v", err)
 			}
@@ -92,7 +92,7 @@ func TestAttachServesWithoutDashboardLaunchGate(t *testing.T) {
 	}
 	// (1) Decoupling: attach is wired off the shared stack even though the
 	// dashboard-launch gate is off (so no launch manager exists).
-	surfaces, err := buildTerminalSurfaces(surfaceTestConfig(false, true), openStackTestDB(t), slog.Default())
+	surfaces, err := buildTerminalSurfaces(context.Background(), surfaceTestConfig(false, true), openStackTestDB(t), slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("buildTerminalSurfaces: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestAttachDisabledNoHost(t *testing.T) {
 	if !termsession.PTYSupported() {
 		t.Skip("no in-process PTY backend on this OS")
 	}
-	surfaces, err := buildTerminalSurfaces(surfaceTestConfig(true, false), openStackTestDB(t), slog.Default())
+	surfaces, err := buildTerminalSurfaces(context.Background(), surfaceTestConfig(true, false), openStackTestDB(t), slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("buildTerminalSurfaces: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestTerminalStackSharesOneManager(t *testing.T) {
 	if !termsession.PTYSupported() {
 		t.Skip("no in-process PTY backend on this OS")
 	}
-	stack, err := buildTerminalStack(surfaceTestConfig(true, true), openStackTestDB(t), slog.Default())
+	stack, err := buildTerminalStack(context.Background(), surfaceTestConfig(true, true), openStackTestDB(t), slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("buildTerminalStack: %v", err)
 	}

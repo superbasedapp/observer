@@ -1,0 +1,27 @@
+-- 116_session_title.sql — the developer's own session title.
+--
+-- A fifth session-classification primitive alongside tags / favorite / note /
+-- rating (migrations 075, 080): a short, single-line title the developer
+-- writes for a session, distinct from the AI-generated title Cloud
+-- Intelligence may attach to the same session (internal/store/cloudlocal.go's
+-- cloud_results). The two are NOT the same field and are not merged at write
+-- time — a title is DERIVED from content (the AI reads the transcript; the
+-- developer just knows), so this column holds only what a human typed, and it
+-- wins over the AI title on every surface that renders an "effective title"
+-- (Sessions list, the session detail header).
+--
+-- This is a COLUMN on session_annotations, not a new table, for the same
+-- reason `rating` (migration 080) is: one-per-session review metadata with no
+-- vocabulary, no assignment fan-out, and no reason to invent a second join.
+-- The store seam (internal/store/sessiontags.go) already garbage-collects the
+-- row once every field returns to its zero value; this migration folds title
+-- into that same rule (favorite=0 AND note='' AND rating=0 AND title='').
+--
+-- NODE-LOCAL, like the rest of session_annotations: pinned out of the org-push
+-- wire in tests/invariant/privacy_test.go's forbiddenCacheTables sentinel. A
+-- developer-authored title is the same privacy class as a tag name or a
+-- note — it can encode client names, codenames, and ticket ids — so it never
+-- ships, admin_managed included. No paired orgserver migration exists, by
+-- design.
+
+ALTER TABLE session_annotations ADD COLUMN title TEXT NOT NULL DEFAULT '';

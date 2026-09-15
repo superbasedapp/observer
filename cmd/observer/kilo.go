@@ -137,7 +137,7 @@ func newKiloCmd() *cobra.Command {
 			if cfg, cErr := config.Load(config.LoadOptions{GlobalPath: configPath}); cErr == nil {
 				dbPath = cfg.Observer.DBPath
 			}
-			return runKiloLauncher(dbPath, bin, args, continueDir)
+			return runKiloLauncher(configPath, dbPath, bin, args, continueDir)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
@@ -171,12 +171,23 @@ func kiloAttachPassthrough(kiloPath string) []string {
 // is native-exempt. dbPath (cfg.Observer.DBPath, "" to disable) records a
 // best-effort launch_seeds row for the started child so the daemon's
 // correlation sweep can attribute the session directly.
-func runKiloLauncher(dbPath, bin string, args []string, dir string) error {
+func runKiloLauncher(configPath, dbPath, bin string, args []string, dir string) error {
+	// Executable + argv are what make process-cutoff recovery reachable for a
+	// native-exempt tool: kilo can never prove a proxy route, so the daemon's
+	// attested cutoff over this exact installed surface is its only admission
+	// path (budgetlaunch_direct_linux.go).
+	if err := enforceBudgetControlledLaunch(context.Background(), configPath, "kilo-code-cli",
+		budgetLaunchEvidence{
+			Route: budgetLaunchRouteDirect, Executable: bin, Arguments: args,
+		}); err != nil {
+		return err
+	}
 	child := exec.Command(bin, args...) //nolint:gosec // user-launched tool, args are theirs
 	child.Dir = dir                     // "" inherits the caller's cwd; set by --continue-from to the source project root
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
+	discovery := prepareGenericDiscovery(context.Background(), "kilo-code-cli", dir)
 	if rErr := child.Start(); rErr != nil {
 		return fmt.Errorf("exec kilo: %w", rErr)
 	}
@@ -191,7 +202,7 @@ func runKiloLauncher(dbPath, bin string, args []string, dir string) error {
 	// the instant the child exits so a window cut short by exit never
 	// announces a candidate that only looked unique because the scan stopped
 	// early.
-	discoverCancel := maybeStartGenericDiscovery(context.Background(), "kilo-code-cli", dir)
+	discoverCancel := discovery.start()
 	if discoverCancel != nil {
 		defer discoverCancel()
 	}

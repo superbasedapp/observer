@@ -170,7 +170,7 @@ export function SessionsFiltersDrawer({
       onClose={onClose}
       width={520}
       title="Filter sessions"
-      subtitle="Narrows the loaded page below — widen Window for more results"
+      subtitle="Narrows the loaded page below - widen Window for more results"
     >
       <div className="flex h-full flex-col">
         <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4 text-[12px]">
@@ -178,7 +178,7 @@ export function SessionsFiltersDrawer({
             {availableModels.length === 0 ? (
               <p className="text-[11px] text-fg-3">
                 No model strings in the loaded page. Sessions captured before
-                the proxy / JSONL model field landed render as Models = —.
+                the proxy / JSONL model field landed render as Models = -.
               </p>
             ) : (
               <div className="flex flex-wrap gap-1.5">
@@ -216,7 +216,7 @@ export function SessionsFiltersDrawer({
                 onChange={(v) => set("minCostUsd", v)}
                 placeholder="min"
               />
-              <span className="text-fg-4">—</span>
+              <span className="text-fg-4">-</span>
               <RangeInput
                 value={draft.maxCostUsd}
                 onChange={(v) => set("maxCostUsd", v)}
@@ -232,7 +232,7 @@ export function SessionsFiltersDrawer({
                 onChange={(v) => set("minActions", v)}
                 placeholder="min"
               />
-              <span className="text-fg-4">—</span>
+              <span className="text-fg-4">-</span>
               <RangeInput
                 value={draft.maxActions}
                 onChange={(v) => set("maxActions", v)}

@@ -39,7 +39,7 @@ export function ExperimentsCard() {
   return (
     <ChartShell
       title={<TitleWithHelp text="Profile experiments" helpId="card.experiments" />}
-      sub="A/B two profiles on one traffic class — sessions split by hash, both arms live simultaneously"
+      sub="A/B two profiles on one traffic class - sessions split by hash, both arms live simultaneously"
       right={
         <button
           type="button"
@@ -62,7 +62,7 @@ export function ExperimentsCard() {
       {exps.length === 0 && !showStart ? (
         <p className="py-3 text-center text-[12px] text-fg-3">
           No experiments yet. Try a candidate profile against its control on
-          live traffic — the report gives $/session, CV, turns, cache causes,
+          live traffic - the report gives $/session, CV, turns, cache causes,
           and compression savings per arm.
         </p>
       ) : (
@@ -247,13 +247,13 @@ function ReportView({ name }: { name: string }) {
               <td className="py-1 text-right tabular-nums">{fmtInt(a.sessions)}</td>
               <td className="py-1 text-right tabular-nums">{fmtUSD(a.mean_cost_usd)}</td>
               <td className="py-1 text-right tabular-nums">
-                {a.sessions >= 2 ? a.cv_pct.toFixed(1) + "%" : "—"}
+                {a.sessions >= 2 ? a.cv_pct.toFixed(1) + "%" : "-"}
               </td>
               <td className="py-1 text-right tabular-nums">{a.mean_turns.toFixed(1)}</td>
               <td className="py-1 text-right tabular-nums">
                 {a.cache_write_tokens > 0
                   ? (a.cache_read_tokens / a.cache_write_tokens).toFixed(1) + "×"
-                  : "—"}
+                  : "-"}
               </td>
               <td
                 className="py-1 text-right tabular-nums"

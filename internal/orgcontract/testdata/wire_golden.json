@@ -28,6 +28,51 @@
     "user_email": "dev@acme.example",
     "org_policy_public_key": "cHViLWtleS1ieXRlcw"
   },
+  "intel_result_row": {
+    "session_id": "sess-abc123",
+    "job_id": "ij-0001",
+    "title": "Fix the push cursor re-enrol regression",
+    "taxonomy_tags": [
+      "bugfix",
+      "org-server"
+    ],
+    "suggested_tags": [
+      "push-cursor",
+      "cas"
+    ],
+    "description": "Diagnosed and fixed a blind cursor save that replayed pre-enrol history.",
+    "confidence": "high",
+    "limitations": [
+      "no test run observed"
+    ],
+    "schema_version": "session_enrichment.v2-candidate",
+    "generated_at": "2026-09-11T10:00:00Z"
+  },
+  "intel_results_response": {
+    "results": [
+      {
+        "session_id": "sess-abc123",
+        "job_id": "ij-0001",
+        "title": "Fix the push cursor re-enrol regression",
+        "confidence": "high",
+        "schema_version": "session_enrichment.v2-candidate",
+        "generated_at": "2026-09-11T10:00:00Z"
+      }
+    ],
+    "next_cursor": "2026-09-11T10:00:00Z"
+  },
+  "loc_day_row": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "day": "2026-09-06",
+    "project_root_hash": "sha256:proj-root-aaa",
+    "ai_code_lines": 449,
+    "human_code_lines": 28,
+    "system_code_lines": 18,
+    "files": 21,
+    "human_capture": "vscode",
+    "classifier_version": 1
+  },
   "policy_bundle": {
     "version": 3,
     "bundle_toml": "[[override]]\nrule = \"R-110\"\ndecision = \"deny\"\n",
@@ -52,7 +97,16 @@
         "ended_at": "2026-05-25T10:42:00Z",
         "total_actions": 37,
         "org_id": "org-acme",
-        "user_email": "dev@acme.example"
+        "user_email": "dev@acme.example",
+        "git_upstream_remote_hash": "sha256:git-upstream-remote-ccc",
+        "git_remote_owner_hash": "sha256:git-remote-owner-ddd",
+        "git_upstream_owner_hash": "sha256:git-upstream-owner-eee",
+        "root_commit_hash": "sha256:root-commit-fff",
+        "content_fingerprint_hash": "sha256:content-fingerprint-ggg",
+        "workspace_hash": "sha256:workspace-hhh",
+        "is_worktree": true,
+        "surface": "ide",
+        "surface_host": "vscode"
       }
     ],
     "actions": [
@@ -96,7 +150,10 @@
         "stop_reason": "end_turn",
         "http_status": 200,
         "org_id": "org-acme",
-        "user_email": "dev@acme.example"
+        "user_email": "dev@acme.example",
+        "route": "gateway",
+        "routing_generation": 7,
+        "authority_source": "gateway"
       }
     ],
     "token_usage": [
@@ -118,6 +175,7 @@
         "reliability": "reliable",
         "source_file_hash": "sha256:src-eee",
         "source_event_id": "tok-9",
+        "is_sidechain": true,
         "org_id": "org-acme",
         "user_email": "dev@acme.example"
       }
@@ -141,9 +199,222 @@
       }
     ]
   },
+  "push_envelope_managed_node": {
+    "agent_version": "1.30.0",
+    "machine_identity": "3f2a1b0c9d8e7f60514233445566778899aabbccddeeff00112233445566778a",
+    "cursor_from": 90210,
+    "cursor_to": 90477,
+    "sessions": null,
+    "actions": null,
+    "api_turns": null,
+    "token_usage": null,
+    "codeintel_dev": [
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "project_hash": "sha256:codeintel-proj-aaa",
+        "project_root": "/home/dev/work/acme-api",
+        "project_root_hash": "sha256:proj-root-aaa",
+        "language": "go",
+        "files": 412,
+        "symbols": 9130,
+        "edges": 21877,
+        "last_indexed": 1789430400
+      }
+    ]
+  },
+  "push_envelope_with_update_posture": {
+    "agent_version": "1.30.0",
+    "update_posture": {
+      "version": "v1.30.0",
+      "channel": "stable",
+      "os": "linux",
+      "arch": "amd64",
+      "state": "blocked",
+      "reason": "install_method",
+      "target_version": "v1.33.0",
+      "manifest_version": 17,
+      "install_method": "npm",
+      "extension_version": "1.30.0"
+    },
+    "cursor_from": 90477,
+    "cursor_to": 90501,
+    "sessions": null,
+    "actions": null,
+    "api_turns": null,
+    "token_usage": null
+  },
   "push_response": {
     "accepted_rows": 118,
     "deduped_rows": 7,
     "next_cursor": 90210
+  },
+  "push_response_with_break_glass": {
+    "accepted_rows": 118,
+    "deduped_rows": 7,
+    "next_cursor": 90210,
+    "break_glass_leases": [
+      {
+        "lease_id": "bgl-1",
+        "request_id": "bgr-1",
+        "org_id": "org-acme",
+        "org_server_url": "https://org.acme.example",
+        "key_pin_sha256": "sha256:pin-aaa",
+        "user_id": "scim-42",
+        "upstream_id": "anthropic-prod",
+        "rung": "break_glass",
+        "seal_scheme": "opaque-v1",
+        "sealed_credential": "c2VhbGVkLWJ5dGVz",
+        "public_key": "cHViLWtleS1ieXRlcw",
+        "approved_by": "super-admin-1",
+        "granted_at": "2026-08-30T10:00:00Z",
+        "expires_at": "2026-08-30T11:00:00Z",
+        "signature": "c2lnLWJ5dGVzLWhlcmU"
+      }
+    ]
+  },
+  "push_response_with_update_versions": {
+    "accepted_rows": 118,
+    "deduped_rows": 7,
+    "next_cursor": 90210,
+    "update_versions": {
+      "lts": 12,
+      "stable": 17
+    }
+  },
+  "session_loc_row": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "session_id": "sess-1",
+    "project_root_hash": "sha256:proj-root-aaa",
+    "ai_added_code": 412,
+    "ai_modified_code": 37,
+    "ai_deleted_code": 91,
+    "ai_added_comment": 44,
+    "ai_deleted_comment": 6,
+    "ai_whitespace": 210,
+    "ai_blank": 63,
+    "ai_unknown": 0,
+    "ai_sidechain_added_code": 128,
+    "ai_sidechain_modified_code": 9,
+    "ai_sidechain_deleted_code": 14,
+    "human_added_code": 23,
+    "human_modified_code": 5,
+    "human_deleted_code": 2,
+    "system_added_code": 0,
+    "system_modified_code": 18,
+    "system_deleted_code": 0,
+    "unknown_lines": 7,
+    "docs_lines": 96,
+    "config_lines": 12,
+    "files": 21,
+    "low_confidence_files": 2,
+    "overwrite_files": 1,
+    "human_capture": "vscode",
+    "classifier_version": 1
+  },
+  "session_loc_row_full_content": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "session_id": "sess-1",
+    "project_root_hash": "sha256:proj-root-aaa",
+    "ai_added_code": 412,
+    "ai_modified_code": 37,
+    "ai_deleted_code": 91,
+    "ai_added_comment": 0,
+    "ai_deleted_comment": 0,
+    "ai_whitespace": 0,
+    "ai_blank": 0,
+    "ai_unknown": 0,
+    "ai_sidechain_added_code": 0,
+    "ai_sidechain_modified_code": 0,
+    "ai_sidechain_deleted_code": 0,
+    "human_added_code": 0,
+    "human_modified_code": 0,
+    "human_deleted_code": 0,
+    "system_added_code": 0,
+    "system_modified_code": 0,
+    "system_deleted_code": 0,
+    "unknown_lines": 0,
+    "docs_lines": 0,
+    "config_lines": 0,
+    "files": 21,
+    "low_confidence_files": 0,
+    "overwrite_files": 0,
+    "human_capture": "none",
+    "classifier_version": 1,
+    "language_mix_json": "[{\"language\":\"go\",\"category\":\"code\",\"files\":18,\"lines\":449}]"
+  },
+  "session_task_item_row": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "session_id": "sess-1",
+    "tool": "claude-code",
+    "key": "task-7",
+    "key_kind": "native_id",
+    "raw_status": "in_progress",
+    "status": "in_progress",
+    "order_index": 2,
+    "first_seen_at": "2026-09-10T10:00:00Z",
+    "last_seen_at": "2026-09-10T10:42:00Z"
+  },
+  "session_task_item_row_full_content": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "session_id": "sess-1",
+    "tool": "claude-code",
+    "key": "task-7",
+    "key_kind": "native_id",
+    "content": "Wire the W2 task rows into the org drawer",
+    "active_form": "Wiring the W2 task rows into the org drawer",
+    "owner": "dev@acme.example",
+    "raw_status": "in_progress",
+    "status": "in_progress",
+    "order_index": 2,
+    "first_seen_at": "2026-09-10T10:00:00Z",
+    "last_seen_at": "2026-09-10T10:42:00Z",
+    "unmatched": true
+  },
+  "session_task_transition_row": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "session_id": "sess-1",
+    "key": "task-7",
+    "from_status": "pending",
+    "to_status": "in_progress",
+    "ts": "2026-09-10T10:05:00Z",
+    "action_id": 4211,
+    "source_event_id": "toolu_01abc"
+  },
+  "session_tool_account_row": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "session_id": "sess-1",
+    "tool": "claude-code",
+    "binding_kind": "message",
+    "binding_id": "msg_01xyz",
+    "role": "assistant",
+    "account_key": "ak_9f3c",
+    "source": "hook",
+    "scope": "session",
+    "stage": "start",
+    "observed_at": "2026-09-10T10:00:03Z"
+  },
+  "session_tool_account_row_full_content": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "session_id": "sess-1",
+    "tool": "claude-code",
+    "binding_kind": "message",
+    "binding_id": "msg_01xyz",
+    "role": "assistant",
+    "account_key": "ak_9f3c",
+    "email": "dev@acme.example",
+    "name": "Dev Example",
+    "account_id": "acct_4417",
+    "source": "hook",
+    "scope": "session",
+    "stage": "start",
+    "observed_at": "2026-09-10T10:00:03Z"
   }
 }

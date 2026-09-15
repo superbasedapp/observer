@@ -118,6 +118,11 @@ func TestTerminalBridgeLivePeerSurvivesPings(t *testing.T) {
 // lease-less viewer closes the socket and reaches NO PTY side effect.
 func TestOversizedViewerFrameRejected(t *testing.T) {
 	lm := newRecordingLaunchManager(nil) // no remote writer ⇒ never a lease
+	// Give the handle a KNOWN geometry so the bridge's on-open pty_size frame
+	// (Feature 2) actually fires: an all-zero snapshot is the manager's "size
+	// not yet known" sentinel, for which the bridge deliberately announces
+	// NOTHING, and the drain below would then read the cap-close instead.
+	lm.snapshot = []LaunchInfo{{ID: "HANDLE-abc", Rows: 40, Cols: 120, InitialRows: 24, InitialCols: 80}}
 	t.Cleanup(func() { close(lm.sub.release) })
 	s := newLaunchTestServer(t, lm)
 	ts := remoteExposedWSServer(t, s)

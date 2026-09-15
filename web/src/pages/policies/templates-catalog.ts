@@ -87,7 +87,7 @@ export const TEMPLATE_CATALOG: PolicyTemplate[] = [
     id: "coding-assistant-scope",
     group: "Scope",
     title: "Coding-assistant only",
-    blurb: "Denies non-coding requests outright — for an internal dev assistant.",
+    blurb: "Denies non-coding requests outright - for an internal dev assistant.",
     criteria: [crit({ id: "coding-only", type: "valid_use_case", name: "coding-only", definition: "Allow only software-engineering requests: writing, explaining, reviewing, or debugging code and related tooling. Deny anything unrelated.", decision: "deny", severity: "warn" })],
   },
 

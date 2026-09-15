@@ -1,20 +1,65 @@
 // Package openclaw parses OpenClaw's local agent state into observer
 // ToolEvents / TokenEvents.
 //
+// Operator reference: docs/openclaw-adapter.md.
+//
 // # Storage layout
 //
-// Three formats, one adapter (dispatched in ParseSessionFile):
+// Two generations, four formats, one adapter (dispatched in
+// ParseSessionFile on the file's SHAPE, never on a version number):
 //
 //	~/.openclaw/tasks/runs.sqlite                        task lifecycle rows
 //	~/.openclaw/agents/<agent>/sessions/sessions.json    the session INDEX
 //	~/.openclaw/agents/<agent>/sessions/<id>.jsonl       the message log
 //	~/.openclaw/agents/<agent>/sessions/<id>.trajectory.jsonl  the trace
+//	~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite      OpenClaw 2.0
 //
 // A single run therefore writes TWO files that both describe it: the message
 // log (`<id>.jsonl`) and the trajectory trace (`<id>.trajectory.jsonl`). They
 // are parsed by separate ParseSessionFile calls, so everything below exists
 // to keep the two halves landing on ONE observer session and counting each
 // model call ONCE.
+//
+// # OpenClaw 2.0 — the per-agent SQLite store
+//
+// OpenClaw 2.0 (~2026-08-30) moved live sessions and their transcripts
+// into ONE SQLite store per agent, `agents/<agentId>/agent/
+// openclaw-agent.sqlite`; the `sessions/` tree becomes a legacy archive
+// that `openclaw doctor --fix` imports. agentdb.go reads it, and the
+// two generations converge on two deliberate choices:
+//
+//   - `transcript_events.event_json` is ONE entry in exactly the shape
+//     the pre-2.0 `<id>.jsonl` LINES carry — 2.0 moved the bytes, not
+//     the schema. So both layouts run through the SAME entry handler
+//     (handleTranscriptEntry / transcriptScope) and cannot drift in
+//     what they extract.
+//   - Events parsed out of the store are stamped with the CANONICAL
+//     LEGACY message-log path (`agents/<agentId>/sessions/
+//     <sessionId>.jsonl`, see legacySourceFile), never the DB path.
+//     Because the shared handler derives the same SourceEventID from
+//     the same entry id, a session that exists in BOTH layouts — the
+//     normal state after `openclaw doctor --fix` — collides on the
+//     store's UNIQUE(source_file, source_event_id) index instead of
+//     being ingested twice. It also keeps the sibling sessions.json /
+//     trajectory lookups resolving, since they live in that directory.
+//
+// Live-grounded 2026-09-03 against openclaw@2026.8.2 (schema_version 19,
+// testdata/openclaw/agentdb): transcript_events.seq is 0-based,
+// created_at is epoch milliseconds, and a message's `content` is EITHER a
+// bare string (user turns) or an array of typed blocks (assistant turns).
+// messageContentList decodes both — a string becomes a single text block
+// — so a live user turn is no longer reported as a malformed event.
+//
+// Session-level token counters on `session_nodes.entry_json`
+// (inputTokens/outputTokens/totalTokens) are deliberately NOT read:
+// per-call usage already arrives on the `message` entries, and a
+// session total on top would double-count every turn.
+//
+// Surface attribution: the adapter emits NO SessionSurface for either
+// layout. Nothing on disk grounds one — `session_windows.channel` is a
+// MESSAGING channel (cli, a room, a space), not the client surface that
+// produced the run. An honest gap, per the internal/integration honesty
+// rule.
 //
 // # Session identity
 //

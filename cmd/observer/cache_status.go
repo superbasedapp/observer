@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"text/tabwriter"
 	"time"
 
@@ -10,7 +11,6 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/cachewarm"
 	"github.com/marmutapp/superbased-observer/internal/cachewarmsvc"
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -52,7 +52,7 @@ func newCacheStatusCmd() *cobra.Command {
 				return nil
 			}
 
-			engine := cost.NewEngine(cfg.Intelligence)
+			engine := acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default())
 			statuses, err := cachewarmsvc.Load(cmd.Context(), store.New(database), engine.Lookup, cfg.CacheWarm, cachewarmsvc.LoadOpts{
 				SessionID:   session,
 				IncludeCold: true,

@@ -1,0 +1,156 @@
+{
+  "version": 3,
+  "requesterUsername": "",
+  "responderUsername": "GitHub Copilot",
+  "initialLocation": "panel",
+  "requests": [
+    {
+      "requestId": "request_11111111-2222-4333-8444-555555555501",
+      "timestamp": 1777720090607,
+      "agent": {
+        "id": "github.copilot.editsAgent",
+        "name": "agent",
+        "fullName": "GitHub Copilot"
+      },
+      "modelId": "copilot/auto",
+      "completionTokens": 137,
+      "elapsedMs": 21514,
+      "timeSpentWaiting": 14403,
+      "message": {
+        "text": "What is being shown here?",
+        "parts": [{ "kind": "text", "text": "What is being shown here?" }]
+      },
+      "response": [
+        {
+          "kind": "toolInvocationSerialized",
+          "toolCallId": "call_69930240__vscode-1",
+          "toolId": "list_dir",
+          "isComplete": true,
+          "isConfirmed": true,
+          "invocationMessage": "Listing directory",
+          "pastTenseMessage": "Listed directory",
+          "source": { "type": "internal" }
+        },
+        { "kind": "thinking", "value": "The user wants a directory listing first." },
+        {
+          "kind": "toolInvocationSerialized",
+          "toolCallId": "call_00449406__vscode-2",
+          "toolId": "view_image",
+          "isComplete": true,
+          "isConfirmed": true,
+          "invocationMessage": "Viewing image",
+          "pastTenseMessage": "Viewed image",
+          "source": { "type": "internal" }
+        },
+        {
+          "value": "I cannot describe images directly.",
+          "baseUri": { "scheme": "file", "path": "/c:/fixture/demo" }
+        }
+      ],
+      "result": {
+        "timings": { "firstProgress": 14403, "totalElapsed": 21514 },
+        "metadata": {
+          "promptTokens": 30401,
+          "outputTokens": 137,
+          "resolvedModel": "claude-haiku-4-5-20251001",
+          "modelMessageId": "d3f9356a-84f9-40e9-98a8-59d1019502ac",
+          "cacheKey": "file:///c%3A/fixture/demo",
+          "toolCallRounds": [
+            {
+              "id": "round-1",
+              "timestamp": 1777720107698,
+              "response": "",
+              "thinking": { "tokens": 42 },
+              "toolCalls": [
+                {
+                  "name": "list_dir",
+                  "arguments": "{\"path\":\"c:\\\\fixture\\\\demo\\\\screenshots\"}",
+                  "id": "call_69930240__vscode-1"
+                }
+              ],
+              "toolInputRetry": 0
+            },
+            {
+              "id": "round-2",
+              "timestamp": 1777720109695,
+              "response": "",
+              "thinking": { "tokens": 11 },
+              "toolCalls": [
+                {
+                  "name": "view_image",
+                  "arguments": "{\"filePath\":\"c:\\\\fixture\\\\demo\\\\screenshots\\\\capture-2026-03-31T17-48-57-302Z.png\"}",
+                  "id": "call_00449406__vscode-2"
+                }
+              ],
+              "toolInputRetry": 0
+            },
+            {
+              "id": "round-3",
+              "timestamp": 1777720114670,
+              "response": "I cannot describe images directly.",
+              "thinking": { "tokens": 0 },
+              "toolCalls": [],
+              "toolInputRetry": 0
+            }
+          ],
+          "toolCallResults": {
+            "call_69930240__vscode-1": {
+              "content": [
+                {
+                  "value": {
+                    "text": "capture-2026-03-31T17-48-57-302Z.png\ncapture-2026-03-31T17-49-05-276Z.png"
+                  }
+                }
+              ]
+            },
+            "call_00449406__vscode-2": {
+              "content": [{ "mimeType": "image/png", "data": "<<elided-base64-image-bytes>>" }]
+            }
+          }
+        }
+      },
+      "isComplete": true
+    },
+    {
+      "requestId": "request_11111111-2222-4333-8444-555555555502",
+      "timestamp": 1777720200000,
+      "agent": {
+        "id": "github.copilot.editsAgent",
+        "name": "agent",
+        "fullName": "GitHub Copilot"
+      },
+      "modelId": "copilot/auto",
+      "completionTokens": 18,
+      "elapsedMs": 1200,
+      "message": {
+        "text": "Thanks, that is all.",
+        "parts": [{ "kind": "text", "text": "Thanks, that is all." }]
+      },
+      "response": [{ "value": "Happy to help." }],
+      "result": {
+        "timings": { "firstProgress": 300, "totalElapsed": 1200 },
+        "metadata": {
+          "promptTokens": 31000,
+          "outputTokens": 18,
+          "resolvedModel": "claude-haiku-4-5-20251001",
+          "toolCallRounds": [],
+          "toolCallResults": {}
+        }
+      },
+      "isComplete": true
+    }
+  ],
+  "pendingRequests": [],
+  "sessionId": "49182160-5508-4f15-be59-53d14169a21a",
+  "creationDate": 1777720080000,
+  "isImported": false,
+  "lastMessageDate": 1777720201200,
+  "inputState": {
+    "attachments": [],
+    "mode": { "id": "agent", "kind": "agent" },
+    "selectedModel": {
+      "identifier": "copilot/auto",
+      "metadata": { "name": "Auto", "maxInputTokens": 127805, "maxOutputTokens": 32000 }
+    }
+  }
+}

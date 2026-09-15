@@ -13,11 +13,16 @@ var (
 	opusRates = RatePair{
 		Input: 15e-6, Output: 75e-6,
 		CacheRead: 1.5e-6, CacheCreation: 18.75e-6,
-		FastMultiplier: 2.0,
+		// 1h tier = 2 × input, the Anthropic ratio fillDefaults
+		// derives. Strictly above the 5m rate, which is what marks a
+		// provider as pricing writes BY TTL.
+		CacheCreation1h: 30e-6,
+		FastMultiplier:  2.0,
 	}
 	haikuRates = RatePair{
 		Input: 0.8e-6, Output: 4e-6,
 		CacheRead: 0.08e-6, CacheCreation: 1e-6,
+		CacheCreation1h: 1.6e-6,
 	}
 )
 
@@ -191,6 +196,40 @@ func TestForecast_OneHourTierSuggestion(t *testing.T) {
 	}
 	if !saw {
 		t.Errorf("WarningTryOneHourTier must fire when HasGapsOver5Min=true and candidate has cache_creation")
+	}
+}
+
+// TestForecast_NoOneHourTierSuggestionWithoutATier pins the capability
+// gate on the 1h-tier advice: a candidate whose write rate does not vary
+// by TTL has no 1h tier to move to, so the advice must stay silent even
+// with gaps over 5 minutes.
+//
+// This is the Gemini shape as of 2026-09-03: Google publishes no
+// cache-write line (a write is an ordinary input token), so the cost
+// table derives CacheCreation == CacheCreation1h == Input. The older
+// "CacheCreation > 0" gate would have offered a tier Google does not
+// sell.
+func TestForecast_NoOneHourTierSuggestionWithoutATier(t *testing.T) {
+	t.Parallel()
+	flatWrite := RatePair{
+		Input: 2e-6, Output: 12e-6, CacheRead: 0.2e-6,
+		// TTL-independent write rate: 5m == 1h == input.
+		CacheCreation: 2e-6, CacheCreation1h: 2e-6,
+	}
+	in := ForecastInput{
+		CurrentPrefixTokens: 50000,
+		AvgSuffixTokens:     500,
+		AvgOutputTokens:     800,
+		Current:             "gemini-3-pro-high",
+		Candidate:           "gemini-3-flash-agent",
+		CurrentRates:        flatWrite,
+		CandidateRates:      flatWrite,
+		HasGapsOver5Min:     true,
+	}
+	for _, w := range Forecast(in).Warnings {
+		if w == WarningTryOneHourTier {
+			t.Fatal("WarningTryOneHourTier must NOT fire for a candidate whose write rate is TTL-independent — there is no 1h tier to switch to")
+		}
 	}
 }
 

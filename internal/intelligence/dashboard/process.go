@@ -175,6 +175,13 @@ func (s *Server) handleSessionProcesses(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, fmt.Sprintf("load process runs: %v", err), http.StatusInternalServerError)
 		return
 	}
+	// Cold-storage fallback (corpus archival P3.5). Only on a hot MISS: a
+	// session with live rows is answered entirely from the hot database, and
+	// an archived one is answered from the archive file for this one request,
+	// with no write-back. The endpoint's shape is unchanged either way.
+	if len(runs) == 0 {
+		runs = s.archivedProcessRuns(ctx, sessionID)
+	}
 	cmds, err := st.ActionCommandsForSession(ctx, sessionID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("load action commands: %v", err), http.StatusInternalServerError)

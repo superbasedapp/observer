@@ -99,7 +99,8 @@ func IsAncestor(ctx context.Context, repoRoot, ancestor, descendant string) (boo
 	if err == nil {
 		return true, nil
 	}
-	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
 		return false, nil
 	}
 	return false, fmt.Errorf("git.IsAncestor: %w: %s", err, strings.TrimSpace(string(out)))
@@ -163,13 +164,15 @@ func WorktreeAdd(ctx context.Context, repoRoot, path, branch, startPoint string)
 }
 
 func localBranchExists(ctx context.Context, repoRoot, branch string) (bool, error) {
+	//nolint:gosec // G204: fixed git argv; branch is interpolated into a ref NAME argument (not a flag position) and show-ref only reads refs
 	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	cmd.Dir = repoRoot
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
 	}
-	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
 		return false, nil
 	}
 	return false, fmt.Errorf("git branch existence: %w", err)

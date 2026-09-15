@@ -241,6 +241,34 @@ the directory `observer start` / `observer dashboard` was launched from — not 
 guessed project. Allow-list a root under `[terminal.launch].allowed_project_roots`
 (Terminals page → launch policy) to launch elsewhere.
 
+Such a launch still **correlates to its agent session**: run→session discovery
+matches on the directory the child actually runs in (the daemon's cwd), not on
+the authorized project root, so the Session panel links and the live vitals fill
+in exactly as they do for an allow-listed launch.
+
+It also gets the **Files / Git** panel. Since **2026-08-28** (operator ruling,
+reversing the earlier conservative gating) those buttons are **enabled by
+default** for any dashboard-launched terminal that has a directory on this
+machine: they follow the run's *factual* working directory when the launch
+requested no root, and the allow-listed project root when it did. The launch
+allow-list governs which roots a dashboard client may **request at launch time**;
+it was never a statement about which directory an already-running, owner-local
+terminal may browse. Nothing about *who* may browse changed: the panel is still
+token-scoped and server-resolved (the browser never sends a path), still applies
+its per-request traversal/symlink containment checks, and a remote-exposed viewer
+still needs `[remote].allow_terminal_view`.
+
+The panel says which kind of directory it is showing. When it is serving the
+terminal's working directory rather than an allow-listed project root, the header
+reads `<tool> · working dir` and the path is labelled **working directory**.
+
+Files/Git stay disabled only when there is genuinely nothing local to browse:
+an **SSH remote-system terminal** (its files live on the remote host, and the
+local directory its `ssh` client runs in is not the terminal's working
+directory), or a daemon whose own working directory could not be read. If a
+terminal shows a live session but greyed-out Files/Git buttons, that is one of
+those two states, not a failure.
+
 ## Security notes & residuals
 
 - A paired remote viewer sees the **full, unscrubbed local `observer.db`** —

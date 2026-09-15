@@ -5,9 +5,10 @@ import { NAV_GROUPS } from "@/lib/nav";
 import { useApi } from "@/lib/useApi";
 import { fmtDuration } from "@/lib/format";
 import { useTheme, type ThemeMode } from "@/lib/theme";
-import type { EnrolmentStatus, SetupClaude, StatusSnapshot } from "@/lib/types";
+import type { CloudStatusResponse, EnrolmentStatus, SetupClaude, StatusSnapshot } from "@/lib/types";
 import { isUpdateAvailable, useUpdateCheck } from "@/lib/version";
 import { Tooltip } from "@/components/primitives";
+import { InstanceSwitcher } from "@/components/InstanceSwitcher";
 
 // `dashboard-refresh` is a window-level CustomEvent that useApi
 // listens for to re-fire its fetch. TopBar's Refresh button is the
@@ -90,7 +91,7 @@ export function TopBar({
           <div className="flex min-w-0 items-center gap-2">
             <span className="hidden sm:inline">{group.label}</span>
             <span className="hidden sm:inline">/</span>
-            <b className="truncate text-fg-1">{item?.label ?? "—"}</b>
+            <b className="truncate text-fg-1">{item?.label ?? "-"}</b>
           </div>
         )}
       </div>
@@ -101,7 +102,12 @@ export function TopBar({
           <LastActivity iso={lastSeen} />
           <UpdateAvailablePill current={status.data?.version} />
           <EnrolmentBadge />
+          <CloudAccountBadge />
           <CaptureStatePill setup={setup.data} />
+          {/* Instance switcher — renders nothing unless the operator has
+              configured [[terminal.ssh.profiles]], so a solo install's header
+              is unchanged. */}
+          <InstanceSwitcher />
           <div className="mx-1 h-4 w-px bg-line-2" />
           <Tooltip content="Export the current page's data as JSON">
             <button
@@ -245,7 +251,7 @@ function UpdateAvailablePill({ current }: { current?: string }) {
     <Tooltip
       content={
         <>
-          Running v{current} — v{latest} is on npm. Click to view the release
+          Running v{current} - v{latest} is on npm. Click to view the release
           notes. Update with <kbd>npm i -g @superbased/observer</kbd> or{" "}
           <kbd>pipx upgrade superbased-observer</kbd>.
         </>
@@ -301,6 +307,43 @@ function EnrolmentBadge() {
   );
 }
 
+// CloudAccountBadge is the compact "Cloud: signed in / not signed in"
+// indicator beside the enrolment chip, linking to Settings → Cloud
+// Intelligence where the Sign in button lives. It renders nothing when the
+// dashboard has no cloud-account seam wired (`sign_in` absent — an embedder
+// without `observer start`), so such a header stays byte-identical. The
+// state is a LOCAL keychain read the daemon does on our behalf; it never
+// reflects hosted-service state.
+function CloudAccountBadge() {
+  const status = useApi<CloudStatusResponse>("/api/cloud/status", undefined, [], {
+    refreshMs: 30000,
+  });
+  const si = status.data?.sign_in;
+  if (!si) return null;
+  const signingIn = si.login_running;
+  const signedIn = si.known && si.signed_in;
+  const label = signingIn ? "Cloud: signing in…" : signedIn ? "Cloud: signed in" : "Cloud: not signed in";
+  const tip = signedIn
+    ? "A device-bound cloud credential is stored on this machine. Manage in Settings → Cloud Intelligence."
+    : "Optional cloud enrichment is off until you sign in. Sign in from Settings → Cloud Intelligence.";
+  return (
+    <Tooltip content={tip}>
+      <a
+        href="/settings?section=cloud"
+        className={
+          "flex h-6 items-center gap-1.5 rounded-pill border px-2 text-[10.5px] font-medium " +
+          (signedIn
+            ? "border-success/30 bg-success-soft text-success hover:bg-success/20"
+            : "border-line-2 bg-bg-2 text-fg-3 hover:bg-bg-3")
+        }
+      >
+        <span className={"h-1.5 w-1.5 rounded-full " + (signedIn ? "bg-success" : signingIn ? "bg-info" : "bg-fg-4")} />
+        {label}
+      </a>
+    </Tooltip>
+  );
+}
+
 function CaptureStatePill({ setup }: { setup: SetupClaude | null }) {
   const active =
     setup?.status === "oauth_ready" || setup?.status === "api_key_ready";
@@ -308,7 +351,7 @@ function CaptureStatePill({ setup }: { setup: SetupClaude | null }) {
     <Tooltip
       content={
         active
-          ? "Proxy active — capturing"
+          ? "Proxy active - capturing"
           : `Proxy ${setup?.status ?? "unknown"}`
       }
     >

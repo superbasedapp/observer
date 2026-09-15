@@ -36,6 +36,25 @@ func hashCodeintelProject(project string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// projectRootHashForPath mints the PROJECT-IDENTITY hash for a codeintel
+// project path — the same digest `projects.root_path_hash` holds and therefore
+// the same value orgcontract.SessionRow.ProjectRootHash ships for that root.
+//
+// It is deliberately the composition upsertProjectBase performs, in the same
+// order (normalize, THEN hash), and reuses those two functions rather than
+// re-implementing either: the org server resolves /projects/{id} by a 16-char
+// prefix of this digest (rollup.ProjectIDFromHash), so a codeintel row whose
+// hash disagreed by one byte — a trailing "/.git" left on, say — would link to
+// a project that does not exist. codeintelsummary_test.go pins the equality
+// against what UpsertProject actually wrote.
+//
+// This is NOT hashCodeintelProject's replacement: that one is domain-separated
+// and stays the codeintel wire's own grouping/dedup key. The two hashes answer
+// different questions and both ship on CodeintelDevRow.
+func projectRootHashForPath(project string) string {
+	return sha256Hex(normalizeProjectRoot(project))
+}
+
 // codeintelSummaryQuery is the SelectCodeintelSummaries read, held as a const
 // so codeintelsummary_test.go can assert its EXPLAIN QUERY PLAN against the
 // exact string production runs (a copy in the test would silently drift away

@@ -149,10 +149,12 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	lineNum := 0
 	for {
 		if ctx.Err() != nil {
+			st.applyIdentities(&res)
 			return res, ctx.Err()
 		}
 		lineStr, readErr := reader.ReadString('\n')
 		if readErr != nil && readErr != io.EOF {
+			st.applyIdentities(&res)
 			return res, fmt.Errorf("grok.ParseSessionFile: read: %w", readErr)
 		}
 		hasNewline := strings.HasSuffix(lineStr, "\n")
@@ -183,7 +185,26 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			break
 		}
 	}
+	st.applyIdentities(&res)
 	return res, nil
+}
+
+// applyIdentities backfills the Project Identity Resolver v2 bundle onto
+// every event in res, keyed by resolved project root. A grok session
+// carries at most one sessionMeta in the non-unified case (st.summary)
+// but the unified log shape can multiplex several sessions (and thus
+// several distinct project roots) into one file, hence metaCache.
+func (st *parseState) applyIdentities(res *adapter.ParseResult) {
+	byRoot := map[string]git.Identity{}
+	if st.summary != nil && st.summary.projectRoot != "" {
+		byRoot[st.summary.projectRoot] = st.summary.identity
+	}
+	for _, m := range st.metaCache {
+		if m != nil && m.projectRoot != "" {
+			byRoot[m.projectRoot] = m.identity
+		}
+	}
+	adapter.ApplyProjectIdentityByRoot(res, byRoot)
 }
 
 // parseState carries the per-call mutable bookkeeping the handlers need.
@@ -221,6 +242,11 @@ type sessionMeta struct {
 	projectRoot string
 	gitBranch   string
 	gitRemote   string
+	// identity is the Project Identity Resolver v2 bundle (2026-09-06,
+	// §3.1 / W1) resolved alongside gitBranch/gitRemote by
+	// resolveProjectRoot, applied to every event in the ParseResult via
+	// adapter.ApplyProjectIdentity before ParseSessionFile returns.
+	identity git.Identity
 	// effortLevel is the session's reasoning-effort SETTING
 	// (summary.json's `reasoning_effort`, e.g. "low"/"medium"/"high") —
 	// a session-wide config knob, not per-turn reasoning content.
@@ -252,7 +278,7 @@ func (a *Adapter) resolveMeta(summaryPath string) *sessionMeta {
 		return nil
 	}
 	m := &sessionMeta{model: s.CurrentModelID, gitBranch: s.HeadBranch, effortLevel: strings.TrimSpace(s.ReasoningEffort)}
-	m.projectRoot, m.gitRemote = resolveProjectRoot(s.GitRootDir, s.Info.Cwd)
+	m.projectRoot, m.gitRemote, m.identity = resolveProjectRoot(s.GitRootDir, s.Info.Cwd)
 	return m
 }
 
@@ -270,26 +296,27 @@ func effortMetadata(effort string) *models.ActionMetadata {
 // resolveProjectRoot resolves a session's project root (and its normalized
 // git remote) from its git_root_dir (primary) or cwd (fallback),
 // translating a foreign-OS path and stat-gating it before git.Resolve.
-func resolveProjectRoot(gitRootDir, cwd string) (root, remote string) {
+func resolveProjectRoot(gitRootDir, cwd string) (root, remote string, id git.Identity) {
 	candidate := strings.TrimSpace(gitRootDir)
 	if candidate == "" {
 		candidate = strings.TrimSpace(cwd)
 	}
 	if candidate == "" {
-		return "", ""
+		return "", "", git.Identity{}
 	}
 	candidate = crossmount.TranslateForeignPath(candidate)
 	if _, err := os.Stat(candidate); err != nil {
 		// The path doesn't exist on this host (a foreign path we couldn't
 		// translate): return it verbatim rather than letting git.Resolve
 		// CWD-prefix the observer's own root onto it.
-		return filepath.Clean(candidate), ""
+		return filepath.Clean(candidate), "", git.Identity{}
 	}
-	info, err := git.Resolve(candidate)
+	identity, err := git.ResolveIdentity(candidate, git.IdentityOptions{})
 	if err != nil {
-		return filepath.Clean(candidate), ""
+		return filepath.Clean(candidate), "", git.Identity{}
 	}
-	return info.Root, git.NormalizeRemote(info.Remote)
+	// identity.Remote is already NormalizeRemote'd by ResolveIdentity.
+	return identity.Root, identity.Remote, identity
 }
 
 // meta returns the resolved metadata for the current updates.jsonl parse,

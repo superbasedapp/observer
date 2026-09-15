@@ -11,9 +11,24 @@ import (
 
 // InsertOTelContent persists scrubbed native-OTel content bodies (migration
 // 045). Callers MUST have already scrubbed Content for secrets; this method
-// computes ContentHash (sha256-hex of the stored content) when empty and
+// computes ContentHash (sha256-hex, via [HashOTelContent]) when empty and
 // inserts idempotently — re-delivered OTLP exports collide on the UNIQUE key
 // and are ignored. Returns the number of rows newly inserted.
+//
+// ContentHash semantics: it is the dedup/idempotency anchor
+// (UNIQUE(content_hash, kind, request_id, tool_use_id) — see migration
+// 048_otel_content.sql), and the org-push wire shape ships it UNCONDITIONALLY
+// (content-free identity) while Content ships only under the node's
+// content-sharing opt-in. A caller that bounds Content to a storage cap
+// (cmd/observer/otlp_ingest.go::ingestOTelContent, 32 KiB default) MUST hash
+// the FULL pre-truncation text and pass it explicitly via r.ContentHash —
+// never leave it empty for this method to derive from r.Content once Content
+// has been truncated. Two distinct large bodies that share an identical
+// prefix up to the truncation cutoff would otherwise hash identically post-
+// truncation, collide on the UNIQUE key, and the second row would be
+// silently dropped by ON CONFLICT DO NOTHING — real data loss, not just a
+// cosmetic dedup quirk. The empty-hash fallback below exists for callers
+// (tests, any future untruncated caller) that pass full, unbounded Content.
 func (s *Store) InsertOTelContent(ctx context.Context, rows []models.OTelContent) (int, error) {
 	if len(rows) == 0 {
 		return 0, nil
@@ -31,8 +46,7 @@ func (s *Store) InsertOTelContent(ctx context.Context, rows []models.OTelContent
 		}
 		hash := r.ContentHash
 		if hash == "" {
-			sum := sha256.Sum256([]byte(r.Content))
-			hash = hex.EncodeToString(sum[:])
+			hash = HashOTelContent(r.Content)
 		}
 		res, err := tx.ExecContext(ctx,
 			`INSERT INTO otel_content
@@ -57,4 +71,13 @@ func (s *Store) InsertOTelContent(ctx context.Context, rows []models.OTelContent
 		return inserted, fmt.Errorf("store.InsertOTelContent: commit: %w", err)
 	}
 	return inserted, nil
+}
+
+// HashOTelContent returns the sha256-hex content_hash for an otel_content
+// row's body. Callers that truncate Content for storage must hash the FULL
+// pre-truncation text and pass the result via models.OTelContent.ContentHash
+// — see the ContentHash semantics note on [Store.InsertOTelContent].
+func HashOTelContent(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
 }

@@ -1,0 +1,2 @@
+{"tool":"kiro-cli","raw_tool_name":"todo_list","raw_tool_input":"{\"command\":\"create\",\"task_list_description\":\"Ship the CLI update\",\"tasks\":{\"0\":{\"task_description\":\"Bump the version\"},\"1\":{\"task_description\":\"Update the install docs\"},\"2\":{\"task_description\":\"Publish to the registry\"}}}","raw_tool_output":""}
+{"tool":"kiro-cli","raw_tool_name":"todo_list","raw_tool_input":"{\"command\":\"complete\",\"completed_task_ids\":{\"0\":\"1\"},\"context_update\":\"version bumped in package.json\"}","raw_tool_output":""}

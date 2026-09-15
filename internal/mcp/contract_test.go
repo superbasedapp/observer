@@ -226,6 +226,7 @@ var contractRequiredParams = map[string][]string{
 	"continue_session":       {},
 	"get_output_composition": {"session_id"},
 	"get_session_message":    {"session_id"},
+	"get_session_tasks":      {"session_id"},
 }
 
 // listToolSchemas returns the `inputSchema` object tools/list advertises for

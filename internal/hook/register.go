@@ -19,12 +19,13 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/marmutapp/superbased-observer/internal/claudeplugin"
+	"github.com/marmutapp/superbased-observer/internal/hook/commandcodemod"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 )
 
 // RegistrationResult summarizes a single tool registration.
 type RegistrationResult struct {
-	Tool       string   // claude-code | cursor | codex
+	Tool       string   // claude-code[-windows] | cursor[-windows] | codex[-windows]
 	ConfigPath string   // absolute path to the patched config file
 	HooksAdded []string // event names that now point at the observer binary
 	AlreadySet []string // events that already pointed at the observer (skipped)
@@ -84,10 +85,11 @@ type Options struct {
 	ConfigPath string
 
 	// WSLDistro names the WSL distribution to invoke via wsl.exe when
-	// registering cursor hooks against a Windows-side ~/.cursor (the
-	// "cursor-windows" tool). Required for that registration target;
-	// ignored elsewhere. Empty defaults to $WSL_DISTRO_NAME at
-	// registration time when running inside WSL.
+	// registering hooks against a Windows-side config dir — the
+	// "cursor-windows", "claude-code-windows" and "codex-windows"
+	// targets. Required for those registration targets; ignored
+	// elsewhere. Empty defaults to $WSL_DISTRO_NAME at registration
+	// time when running inside WSL.
 	WSLDistro string
 
 	// WindowsCursorHome, when non-empty, overrides the auto-detected
@@ -103,6 +105,41 @@ type Options struct {
 	// appends `.claude` itself. Default: the first crossmount-detected
 	// Windows home with a `.claude/` subdirectory.
 	WindowsClaudeHome string
+
+	// WindowsCodexHome, when non-empty, overrides the auto-detected
+	// Windows-side .codex directory used by the codex-windows
+	// registration target. Same shape as WindowsCursorHome /
+	// WindowsClaudeHome: pass the Windows USER home (e.g.
+	// /mnt/c/Users/<u>) — the registrar appends `.codex` itself.
+	// Default: the first crossmount-detected Windows home with a
+	// `.codex/` subdirectory.
+	//
+	// Note the name collision with proxyroute.RegisterOptions'
+	// identically-named field: they name the same Windows home for two
+	// DIFFERENT writers (that one writes config.toml's base_url, this
+	// one writes hooks.json + [features].hooks). Callers that set both
+	// must pass the same value so the two Windows writers agree.
+	WindowsCodexHome string
+
+	// WindowsGeminiHome / WindowsQwenHome / WindowsFactoryHome /
+	// WindowsQoderHome / WindowsPoolsideHome / WindowsCommandCodeHome
+	// mirror WindowsCodexHome for the six Part B item 1/2 long-tail
+	// vendors' own cross-OS bridge targets (gemini-cli-windows,
+	// qwen-code-windows, droid-windows, qoder-windows, poolside-windows,
+	// command-code-windows) — pass the Windows USER home (e.g.
+	// /mnt/c/Users/<u>); the registrar appends the tool's own subdir
+	// itself (.gemini, .qwen, .factory, .qoder, .config/poolside,
+	// .commandcode respectively). Default: the first crossmount-detected
+	// Windows home carrying that subdir. Windsurf/Devin Desktop Cascade
+	// has NO Windows counterpart here — its only grounded install
+	// channel is the macOS Homebrew cask (internal/integration's devin
+	// row), so a cross-OS bridge would have nothing to bridge to.
+	WindowsGeminiHome      string
+	WindowsQwenHome        string
+	WindowsFactoryHome     string
+	WindowsQoderHome       string
+	WindowsPoolsideHome    string
+	WindowsCommandCodeHome string
 }
 
 // Registry is the per-tool registration dispatcher.
@@ -134,11 +171,13 @@ func NewRegistry(opts Options) (*Registry, error) {
 }
 
 // Installed reports which supported tools appear to be installed, based on
-// the presence of their config directories. "cursor-windows" surfaces
-// when crossmount detects a Windows-side .cursor/ directory (the
-// observer is running in WSL while Cursor IDE runs on Windows) — it
-// registers wsl.exe-launched hooks at that Windows path so the
-// Windows-Cursor process can invoke the WSL-side observer binary.
+// the presence of their config directories. The "<tool>-windows" entries
+// surface when crossmount detects an owned Windows-side .cursor/ /
+// .claude/ / .codex/ directory (the observer is running in WSL while the
+// AI client runs on Windows) — those targets register wsl.exe-launched
+// hooks at the Windows path so the Windows process can invoke the
+// WSL-side observer binary and its hook writes land in the daemon's own
+// DB.
 func (r *Registry) Installed() []string {
 	var tools []string
 	if r.dirExists(filepath.Join(r.opts.HomeDir, ".claude")) {
@@ -150,11 +189,68 @@ func (r *Registry) Installed() []string {
 	if r.dirExists(filepath.Join(r.opts.HomeDir, ".codex")) {
 		tools = append(tools, "codex")
 	}
+	// Part B item 1: Gemini CLI, Qwen Code, Factory Droid — probed the
+	// same way as every other native dir-based install (no vendor
+	// binary probe here; Installed() has never shelled out to a
+	// tool's own CLI, it only checks for the config directory).
+	if r.dirExists(filepath.Join(r.opts.HomeDir, ".gemini")) {
+		tools = append(tools, "gemini-cli")
+	}
+	if r.dirExists(filepath.Join(r.opts.HomeDir, ".qwen")) {
+		tools = append(tools, "qwen-code")
+	}
+	if r.dirExists(filepath.Join(r.opts.HomeDir, ".factory")) {
+		tools = append(tools, "droid")
+	}
+	// Part B item 2 (phase-3a): Qoder, Poolside, Devin Desktop/Cascade —
+	// same convention, config-directory presence only, no vendor binary
+	// probe. zcode and commandcode are deliberately absent here: zcode's
+	// writer doesn't exist (AutoWired:false pending a liveness probe)
+	// and commandcode's registration target (~/.commandcode/mods/) is a
+	// mods directory this repo creates itself on registration, not a
+	// pre-existing install signal worth probing.
+	if r.dirExists(filepath.Join(r.opts.HomeDir, ".qoder")) {
+		tools = append(tools, "qoder")
+	}
+	if r.dirExists(filepath.Join(r.opts.HomeDir, ".config", "poolside")) {
+		tools = append(tools, "poolside")
+	}
+	if r.dirExists(filepath.Join(r.opts.HomeDir, ".codeium", "windsurf")) {
+		tools = append(tools, "devin")
+	}
+	if r.dirExists(filepath.Join(r.opts.HomeDir, ".commandcode")) {
+		tools = append(tools, "command-code")
+	}
 	if r.detectWindowsCursorHome() != "" {
 		tools = append(tools, "cursor-windows")
 	}
 	if r.detectWindowsClaudeHome() != "" {
 		tools = append(tools, "claude-code-windows")
+	}
+	if r.detectWindowsCodexHome() != "" {
+		tools = append(tools, "codex-windows")
+	}
+	// Part B item 1/2 cross-OS bridges: the same detection convention as
+	// the three above, one per long-tail vendor that plausibly ships a
+	// Windows-native client. Windsurf/Devin Desktop Cascade has no row
+	// here — see Options.WindowsCommandCodeHome's doc comment.
+	if r.detectWindowsGeminiHome() != "" {
+		tools = append(tools, "gemini-cli-windows")
+	}
+	if r.detectWindowsQwenHome() != "" {
+		tools = append(tools, "qwen-code-windows")
+	}
+	if r.detectWindowsFactoryHome() != "" {
+		tools = append(tools, "droid-windows")
+	}
+	if r.detectWindowsQoderHome() != "" {
+		tools = append(tools, "qoder-windows")
+	}
+	if r.detectWindowsPoolsideHome() != "" {
+		tools = append(tools, "poolside-windows")
+	}
+	if r.detectWindowsCommandCodeHome() != "" {
+		tools = append(tools, "command-code-windows")
 	}
 	return tools
 }
@@ -198,6 +294,49 @@ func WindowsClaudeDir(override string) string {
 // crossmount-ownership-verified.
 func (r *Registry) detectWindowsCursorHome() string {
 	return r.detectWindowsHome(r.opts.WindowsCursorHome, ".cursor")
+}
+
+// detectWindowsCodexHome returns the resolved Windows-side .codex
+// directory used by the codex-windows registration target, or "" if
+// none. Honors Options.WindowsCodexHome when set; otherwise accepts an
+// auto-detected OS=windows home carrying `.codex/` only when
+// crossmount-ownership-verified. Same contract as
+// detectWindowsClaudeHome / detectWindowsCursorHome.
+func (r *Registry) detectWindowsCodexHome() string {
+	return r.detectWindowsHome(r.opts.WindowsCodexHome, ".codex")
+}
+
+// detectWindowsGeminiHome / detectWindowsQwenHome / detectWindowsFactoryHome
+// / detectWindowsQoderHome / detectWindowsPoolsideHome /
+// detectWindowsCommandCodeHome resolve the Windows-side config directory
+// for each of the six Part B item 1/2 long-tail vendors' own cross-OS
+// bridge target, or "" if none. Same contract as detectWindowsClaudeHome
+// / detectWindowsCursorHome / detectWindowsCodexHome — honors the
+// matching Options override when set, otherwise an auto-detected
+// OS=windows home carrying the subdir ONLY when crossmount proves it
+// belongs to the current Windows user.
+func (r *Registry) detectWindowsGeminiHome() string {
+	return r.detectWindowsHome(r.opts.WindowsGeminiHome, ".gemini")
+}
+
+func (r *Registry) detectWindowsQwenHome() string {
+	return r.detectWindowsHome(r.opts.WindowsQwenHome, ".qwen")
+}
+
+func (r *Registry) detectWindowsFactoryHome() string {
+	return r.detectWindowsHome(r.opts.WindowsFactoryHome, ".factory")
+}
+
+func (r *Registry) detectWindowsQoderHome() string {
+	return r.detectWindowsHome(r.opts.WindowsQoderHome, ".qoder")
+}
+
+func (r *Registry) detectWindowsPoolsideHome() string {
+	return r.detectWindowsHome(r.opts.WindowsPoolsideHome, filepath.Join(".config", "poolside"))
+}
+
+func (r *Registry) detectWindowsCommandCodeHome() string {
+	return r.detectWindowsHome(r.opts.WindowsCommandCodeHome, ".commandcode")
 }
 
 // detectWindowsHome resolves the Windows-side <subdir> directory for a
@@ -286,7 +425,7 @@ func (r *Registry) sandboxSkipResult(res *RegistrationResult, subdir, optionName
 
 // Register installs observer hooks into the config file for tool. Supported
 // values: "claude-code", "claude-code-windows", "cursor", "cursor-windows",
-// "codex". Unknown tools return an error.
+// "codex", "codex-windows". Unknown tools return an error.
 func (r *Registry) Register(tool string) RegistrationResult {
 	switch tool {
 	case "claude-code":
@@ -299,6 +438,34 @@ func (r *Registry) Register(tool string) RegistrationResult {
 		return r.registerCursorWindows()
 	case "codex":
 		return r.registerCodex()
+	case "codex-windows":
+		return r.registerCodexWindows()
+	case "gemini-cli":
+		return r.registerGeminiCLI()
+	case "gemini-cli-windows":
+		return r.registerGeminiCLIWindows()
+	case "qwen-code":
+		return r.registerQwenCode()
+	case "qwen-code-windows":
+		return r.registerQwenCodeWindows()
+	case "droid":
+		return r.registerFactoryDroid()
+	case "droid-windows":
+		return r.registerFactoryDroidWindows()
+	case "qoder":
+		return r.registerQoder()
+	case "qoder-windows":
+		return r.registerQoderWindows()
+	case "poolside":
+		return r.registerPoolside()
+	case "poolside-windows":
+		return r.registerPoolsideWindows()
+	case "devin":
+		return r.registerCascade()
+	case "command-code":
+		return r.registerCommandCode()
+	case "command-code-windows":
+		return r.registerCommandCodeWindows()
 	default:
 		return RegistrationResult{
 			Tool:   tool,
@@ -367,6 +534,117 @@ type claudeHookCommand struct {
 	Command string `json:"command"`
 }
 
+// claudeHookGroupRaw mirrors claudeHookGroup's JSON shape
+// (`{"matcher":...,"hooks":[...]}`) but keeps each entry in Hooks as
+// raw JSON rather than decoding it into claudeHookCommand (B5). A
+// group observer appends to may already hold a SIBLING entry this
+// repo doesn't own — another tool's own hook, or one the user
+// hand-authored — that carries fields claudeHookCommand doesn't model
+// (Claude Code's documented per-entry `timeout`, for one). Decoding
+// that entry into claudeHookCommand and re-encoding it would silently
+// drop those fields the moment observer registers/refreshes/removes
+// its own neighboring entry in the same list. Only observer's OWN
+// entry is ever constructed directly (via claudeHookCommand, then
+// marshaled) since observer fully controls and knows that shape;
+// every other entry round-trips as opaque json.RawMessage.
+type claudeHookGroupRaw struct {
+	Matcher string            `json:"matcher,omitempty"`
+	Hooks   []json.RawMessage `json:"hooks"`
+}
+
+// claudeHookCommandProbe decodes just the two fields
+// isObserverClaudeEntry/isObserverWindowsClaudeEntry need to recognise
+// an entry as observer's own, from an otherwise-opaque raw hook entry.
+// Used instead of the full claudeHookCommand so a sibling entry's
+// unknown fields are never routed through — and so truncated by — a
+// typed decode/re-encode round-trip.
+type claudeHookCommandProbe struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+}
+
+// findClaudeGroupWithObserverRaw is findClaudeGroupWithObserver's
+// raw-entry counterpart (B5): it probes each entry's `type`/`command`
+// fields without decoding (and thereby truncating) any other field
+// the entry carries.
+func findClaudeGroupWithObserverRaw(groups []claudeHookGroupRaw) int {
+	for i, g := range groups {
+		for _, raw := range g.Hooks {
+			var probe claudeHookCommandProbe
+			if err := json.Unmarshal(raw, &probe); err != nil {
+				continue
+			}
+			if probe.Type == "command" && isObserverClaudeEntry(probe.Command) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// hasConflictingClaudeHookRaw is hasConflictingClaudeHook's raw-entry
+// counterpart (B5) — see findClaudeGroupWithObserverRaw.
+func hasConflictingClaudeHookRaw(groups []claudeHookGroupRaw) bool {
+	for _, g := range groups {
+		if g.Matcher != "" && g.Matcher != "*" {
+			continue
+		}
+		for _, raw := range g.Hooks {
+			var probe claudeHookCommandProbe
+			if err := json.Unmarshal(raw, &probe); err != nil {
+				continue
+			}
+			if probe.Type != "command" {
+				continue
+			}
+			if !isObserverClaudeEntry(probe.Command) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// observerCmdMatchesRaw is observerCmdMatches's raw-entry counterpart
+// (B5) — see findClaudeGroupWithObserverRaw.
+func observerCmdMatchesRaw(group claudeHookGroupRaw, want string) bool {
+	if len(group.Hooks) != 1 {
+		return false
+	}
+	var probe claudeHookCommandProbe
+	if err := json.Unmarshal(group.Hooks[0], &probe); err != nil {
+		return false
+	}
+	return probe.Type == "command" && probe.Command == want
+}
+
+// filterClaudeGroupsRaw is filterClaudeGroups's raw-entry counterpart
+// (B5): it drops observer-owned entries by probing just their
+// `type`/`command` fields, and keeps every surviving entry as the
+// exact json.RawMessage bytes it was read as — so a sibling entry's
+// undocumented-to-us fields (e.g. `timeout`) survive byte-identical
+// even when observer's own entry in the SAME group is removed
+// alongside it.
+func filterClaudeGroupsRaw(groups []claudeHookGroupRaw) (out []claudeHookGroupRaw, removed, kept int) {
+	for _, g := range groups {
+		var survivors []json.RawMessage
+		for _, raw := range g.Hooks {
+			var probe claudeHookCommandProbe
+			if err := json.Unmarshal(raw, &probe); err == nil && probe.Type == "command" && isObserverClaudeEntry(probe.Command) {
+				removed++
+				continue
+			}
+			survivors = append(survivors, raw)
+		}
+		if len(survivors) == 0 {
+			continue
+		}
+		kept += len(survivors)
+		out = append(out, claudeHookGroupRaw{Matcher: g.Matcher, Hooks: survivors})
+	}
+	return out, removed, kept
+}
+
 func (r *Registry) registerClaudeCode() RegistrationResult {
 	res := RegistrationResult{Tool: "claude-code", DryRun: r.opts.DryRun}
 	settingsDir := filepath.Join(r.opts.HomeDir, ".claude")
@@ -419,15 +697,19 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 			return res
 		}
 	}
-	var hooks map[string][]claudeHookGroup
+	// Per-event hooks value is kept as json.RawMessage (B5) so an event
+	// this loop never touches — and, within an event it DOES touch, a
+	// sibling entry it doesn't own — round-trips byte-for-byte instead
+	// of being decoded into (and truncated by) a typed struct.
+	var hooksRaw map[string]json.RawMessage
 	if existing, ok := settings["hooks"]; ok {
-		if err := json.Unmarshal(existing, &hooks); err != nil {
+		if err := json.Unmarshal(existing, &hooksRaw); err != nil {
 			res.Error = fmt.Errorf("hook.registerClaudeCode: parse hooks: %w", err)
 			return res
 		}
 	}
-	if hooks == nil {
-		hooks = map[string][]claudeHookGroup{}
+	if hooksRaw == nil {
+		hooksRaw = map[string]json.RawMessage{}
 	}
 
 	for _, event := range claudeCodeEvents {
@@ -455,10 +737,16 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 		// survives without escape interpretation.
 		binPath := forwardSlashPath(r.opts.BinaryPath)
 		cmd := shellQuoteIfNeeded(binPath) + " hook claude-code " + hookEventArg(event) + r.configFlagSuffixForwardSlash()
-		groups := hooks[event]
-		idx := findClaudeGroupWithObserver(groups)
+		var groups []claudeHookGroupRaw
+		if raw, ok := hooksRaw[event]; ok && len(raw) > 0 {
+			if err := json.Unmarshal(raw, &groups); err != nil {
+				res.Error = fmt.Errorf("hook.registerClaudeCode: parse hooks[%s]: %w", event, err)
+				return res
+			}
+		}
+		idx := findClaudeGroupWithObserverRaw(groups)
 		if idx >= 0 {
-			if observerCmdMatches(groups[idx], cmd) {
+			if observerCmdMatchesRaw(groups[idx], cmd) {
 				res.AlreadySet = append(res.AlreadySet, event)
 				continue
 			}
@@ -473,19 +761,29 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 		}
 		// Conflict check: a non-observer hook command on "*" matcher
 		// counts as an unmanaged entry.
-		if !r.opts.Force && hasConflictingClaudeHook(groups) {
+		if !r.opts.Force && hasConflictingClaudeHookRaw(groups) {
 			res.Error = fmt.Errorf("hook.registerClaudeCode: event %s already has a non-observer hook; pass --force to overwrite", event)
 			return res
 		}
-		groups = append(groups, claudeHookGroup{
+		entryJSON, err := json.Marshal(claudeHookCommand{Type: "command", Command: cmd})
+		if err != nil {
+			res.Error = fmt.Errorf("hook.registerClaudeCode: marshal entry: %w", err)
+			return res
+		}
+		groups = append(groups, claudeHookGroupRaw{
 			Matcher: "*",
-			Hooks:   []claudeHookCommand{{Type: "command", Command: cmd}},
+			Hooks:   []json.RawMessage{entryJSON},
 		})
-		hooks[event] = groups
+		groupsJSON, err := json.Marshal(groups)
+		if err != nil {
+			res.Error = fmt.Errorf("hook.registerClaudeCode: marshal hooks[%s]: %w", event, err)
+			return res
+		}
+		hooksRaw[event] = groupsJSON
 		res.HooksAdded = append(res.HooksAdded, event)
 	}
 
-	patched, err := json.Marshal(hooks)
+	patched, err := json.Marshal(hooksRaw)
 	if err != nil {
 		res.Error = fmt.Errorf("hook.registerClaudeCode: marshal hooks: %w", err)
 		return res
@@ -507,25 +805,1170 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 }
 
 // findClaudeGroupWithObserver returns the index of a group whose
-// single hook command is recognised as observer-written by
-// isObserverClaudeEntry, or -1. Detection is content-based (matches
-// the ` hook claude-code ` token sequence) rather than binary-path-
-// prefix, so an entry left behind by a differently-installed
-// observer (e.g. an npm-bundled binary in node_modules, a Linux
-// build under a renamed home dir) is still recognised as ours and
-// silently refreshed on the next register pass. The Windows
-// registrar's findClaudeGroupWithObserverWindows has the same shape;
-// this is its Linux/default counterpart added in the v1.6.25
-// drift-refresh fix.
-func findClaudeGroupWithObserver(groups []claudeHookGroup) int {
+// genericSettingsHookTarget parameterizes registerGenericSettingsHooks
+// (Part B item 1, docs/plans/prompt-submit-intervention-exploration-2026-09-07.md
+// §6.7): a single-event, Claude-Code-shaped
+// {"hooks":{<event>:[{"hooks":[{"type":"command","command":…}]}]}}
+// settings.json writer — generalized from registerClaudeCode's own
+// body via the ALREADY tool-parameterized isObserverAnyHookEntry
+// (the C2/IDE-11 cross-OS-ownership fix). Reused for every tool whose
+// registration file matches this exact shape and needs only ONE event
+// registered — Gemini CLI (BeforeAgent) and Qwen Code (UserPromptSubmit)
+// today. Unlike registerClaudeCode's 21-event lifecycle registration,
+// these two tools have no OTHER hook this repo captures, so a single
+// event is the complete, honest scope — not a partial implementation
+// of a larger one.
+type genericSettingsHookTarget struct {
+	// tool is the hookReceivers/`hook <tool>` dispatch token embedded in
+	// the registered command — the BASE tool name (e.g. "gemini-cli"),
+	// never a "-windows" suffix, because the hook receiver on the far
+	// end (cmd/observer/hook.go's hookReceivers map) is keyed by base
+	// tool name regardless of which config file wrote the command.
+	tool string
+	// resultTool is the RegistrationResult.Tool label. Empty means
+	// "same as tool" (the native target); the cross-OS bridge targets
+	// set this to the "-windows" name so callers can tell which config
+	// file a result came from while the wire command still names the
+	// base tool.
+	resultTool string
+	// dir is the settings directory (e.g. ~/.gemini, ~/.qwen).
+	dir string
+	// event is the ONE hook event this tool registers.
+	event string
+	// errPrefix names the calling registrar in wrapped errors.
+	errPrefix string
+	// wrapper prefixes every registered command; "" for the native
+	// target, `MSYS_NO_PATHCONV=1 wsl.exe -d <distro> -- ` for the
+	// cross-OS bridge — same convention as registerClaudeCodeWindows /
+	// registerCursorWindows (these tools spawn hooks through Git Bash
+	// on Windows too, per the same vendor-doc precedent those two
+	// registrars already established), NOT codex's cmd.exe convention.
+	wrapper string
+}
+
+// label returns t.resultTool when set, else t.tool — the
+// RegistrationResult.Tool value for both registerGenericSettingsHooks
+// and unregisterGenericSettingsHooks.
+func (t genericSettingsHookTarget) label() string {
+	if t.resultTool != "" {
+		return t.resultTool
+	}
+	return t.tool
+}
+
+// registerGenericSettingsHooks is the shared writer behind
+// registerGeminiCLI and registerQwenCode. Conflict/refresh discipline
+// mirrors registerClaudeCode exactly, simplified to one event: an
+// entry isObserverAnyHookEntry recognises as ours is refreshed
+// silently on drift; anything else blocks without --force.
+func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) RegistrationResult {
+	res := RegistrationResult{Tool: t.label(), DryRun: r.opts.DryRun}
+	path := filepath.Join(t.dir, "settings.json")
+	res.ConfigPath = path
+
+	unlock, err := r.lockSettings(path)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
+		return res
+	}
+	defer unlock()
+
+	// Pin the write target now, before the read — see pinnedTarget (F6).
+	pinned := pinWriteTarget(path)
+
+	raw, err := readSettingsFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		res.Error = fmt.Errorf("%s: read: %w", t.errPrefix, err)
+		return res
+	}
+	// Preserve unknown top-level fields (model config, MCP servers, …)
+	// via map[string]json.RawMessage — same discipline as
+	// registerClaudeCode.
+	settings := map[string]json.RawMessage{}
+	if len(raw) > 0 {
+		settings, err = decodeSettingsObject(path, raw)
+		if err != nil {
+			res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
+			return res
+		}
+	}
+	var hooks map[string][]claudeHookGroup
+	if existing, ok := settings["hooks"]; ok {
+		if err := json.Unmarshal(existing, &hooks); err != nil {
+			res.Error = fmt.Errorf("%s: parse hooks: %w", t.errPrefix, err)
+			return res
+		}
+	}
+	if hooks == nil {
+		hooks = map[string][]claudeHookGroup{}
+	}
+
+	binPath := forwardSlashPath(r.opts.BinaryPath)
+	cmd := t.wrapper + shellQuoteIfNeeded(binPath) + " hook " + t.tool + " " + t.event + r.configFlagSuffixForwardSlash()
+	groups := hooks[t.event]
+	idx := -1
 	for i, g := range groups {
 		for _, h := range g.Hooks {
-			if h.Type == "command" && isObserverClaudeEntry(h.Command) {
-				return i
+			if h.Type == "command" && isObserverAnyHookEntry(h.Command, t.tool) {
+				idx = i
 			}
 		}
 	}
-	return -1
+	if idx >= 0 {
+		if len(groups[idx].Hooks) == 1 && groups[idx].Hooks[0].Type == "command" && groups[idx].Hooks[0].Command == cmd {
+			res.AlreadySet = append(res.AlreadySet, t.event)
+			return res
+		}
+		// Stale-observer-args / cross-binary refresh. Drop the stale
+		// group; the fresh append below restores.
+		groups = append(groups[:idx], groups[idx+1:]...)
+	}
+	if !r.opts.Force {
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				if h.Type == "command" && !isObserverAnyHookEntry(h.Command, t.tool) {
+					res.Error = fmt.Errorf("%s: event %s already has a non-observer hook; pass --force to overwrite", t.errPrefix, t.event)
+					return res
+				}
+			}
+		}
+	}
+	groups = append(groups, claudeHookGroup{Hooks: []claudeHookCommand{{Type: "command", Command: cmd}}})
+	hooks[t.event] = groups
+	res.HooksAdded = append(res.HooksAdded, t.event)
+
+	patched, err := json.Marshal(hooks)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: marshal hooks: %w", t.errPrefix, err)
+		return res
+	}
+	settings["hooks"] = patched
+
+	if r.opts.DryRun {
+		return res
+	}
+	if err := writeJSONIndented(t.dir, pinned, settings); err != nil {
+		res.Error = err
+		return res
+	}
+	if err := r.recordChecksum(path); err != nil {
+		res.Error = err
+		return res
+	}
+	return res
+}
+
+// registerGeminiCLI installs the prompt-submit hook into
+// ~/.gemini/settings.json's "hooks" block (contract §6.7: new
+// HookGeminiSettings mechanism). Single event: BeforeAgent — the ONLY
+// hook this repo has a wired dialect/receiver for on this tool.
+func (r *Registry) registerGeminiCLI() RegistrationResult {
+	return r.registerGenericSettingsHooks(genericSettingsHookTarget{
+		tool:      "gemini-cli",
+		dir:       filepath.Join(r.opts.HomeDir, ".gemini"),
+		event:     "BeforeAgent",
+		errPrefix: "hook.registerGeminiCLI",
+	})
+}
+
+// registerQwenCode installs the prompt-submit hook into
+// ~/.qwen/settings.json's "hooks" block (contract §6.7: new
+// HookQwenSettings mechanism). Single event: UserPromptSubmit.
+func (r *Registry) registerQwenCode() RegistrationResult {
+	return r.registerGenericSettingsHooks(genericSettingsHookTarget{
+		tool:      "qwen-code",
+		dir:       filepath.Join(r.opts.HomeDir, ".qwen"),
+		event:     "UserPromptSubmit",
+		errPrefix: "hook.registerQwenCode",
+	})
+}
+
+// registerQoder installs the prompt-submit hook into
+// ~/.qoder/settings.json's "hooks" block (Part B item 2, phase-3a:
+// new HookQoderJSON mechanism). Live-fetched 2026-09-07
+// (docs.qoder.com/en/cli/hooks): Qoder's settings.json hooks schema
+// ({"hooks":{"UserPromptSubmit":[{"matcher":…,"hooks":[{"type":
+// "command","command":…,"timeout":…}]}]}}) is byte-identical to
+// Claude Code's own — the same shape registerGenericSettingsHooks
+// already generalizes for Gemini CLI/Qwen Code. Single event:
+// UserPromptSubmit (NIT, phase-3a review: re-counted 2026-09-07 —
+// Qoder's own Event Reference overview table lists 23 distinct hook
+// event names, not 24 as an earlier pass here miscounted; this repo
+// has no receiver for any of the other 22).
+func (r *Registry) registerQoder() RegistrationResult {
+	return r.registerGenericSettingsHooks(genericSettingsHookTarget{
+		tool:      "qoder",
+		dir:       filepath.Join(r.opts.HomeDir, ".qoder"),
+		event:     "UserPromptSubmit",
+		errPrefix: "hook.registerQoder",
+	})
+}
+
+// poolsideHookEntry is one entry of Poolside's settings.yaml "hooks"
+// list (Part B item 2, phase-3a; live-fetched 2026-09-07,
+// docs.poolside.ai/hooks):
+//
+//	hooks:
+//	  UserPromptSubmit:
+//	    - name: hook-name
+//	      matcher: "*"
+//	      command: "/path/to/script.sh"
+//	      timeout: 60
+//
+// matcher is documented as required for every event ("Provide this
+// field for every event... other events ignore it, so use
+// matcher: \"*\"") even though UserPromptSubmit itself doesn't
+// consult it.
+//
+// B5: this type is now used ONLY to construct observer's OWN entry
+// when appending it to the (otherwise raw, generic
+// map[string]any-decoded) entries list — see decodePoolsideHooksRaw
+// and poolsideEntryCommand below. A sibling entry already in the list
+// is never decoded into this struct, so an undocumented-to-us field
+// on it (e.g. `timeout`) is never routed through — and truncated by —
+// a typed decode/re-encode round-trip.
+type poolsideHookEntry struct {
+	Name    string `yaml:"name"`
+	Matcher string `yaml:"matcher"`
+	Command string `yaml:"command"`
+}
+
+const observerPoolsideHookName = "observer-guard"
+
+// poolsideHookTarget parameterizes registerPoolsideAt for its two
+// registration targets: the native `~/.config/poolside` on the
+// daemon's own OS, and the cross-OS Windows-side directory the
+// poolside-windows bridge writes. Mirrors codexHookTarget/
+// droidHookTarget.
+type poolsideHookTarget struct {
+	// tool is the RegistrationResult.Tool label ("poolside" /
+	// "poolside-windows").
+	tool string
+	// dir is the directory holding settings.yaml.
+	dir string
+	// wrapper prefixes every registered command; "" for the native
+	// target, `MSYS_NO_PATHCONV=1 wsl.exe -d <distro> -- ` for the
+	// cross-OS bridge.
+	wrapper string
+	// errPrefix names the calling registrar in wrapped errors.
+	errPrefix string
+}
+
+// registerPoolside installs the prompt-submit hook into
+// ~/.config/poolside/settings.yaml's "hooks" block (Part B item 2,
+// phase-3a: new HookPoolsideYAML mechanism — this repo's FIRST
+// YAML-format hook registration writer, distinct from every
+// JSON-format settings/hooks.json writer above). Reuses the
+// readYAMLMap/writeYAMLMap helpers already built for Hermes'
+// config.yaml (internal/hook/hermes_mcp.go) UNCHANGED — the lock/pin/
+// checksum hardening below (F8, phase-3a review) wraps the CALL SITE,
+// the same way every JSON writer's own lock/pin/checksum trio wraps
+// writeJSONIndented rather than living inside it.
+//
+// F8's second finding: this doc comment used to claim the round-trip
+// preserves "everything else... untouched". That overstates what a
+// generic map[string]any -> yaml.Marshal round-trip actually
+// guarantees — writeYAMLMap's OWN doc comment is honest about this
+// ("yaml.v3's map round-trip loses comments and key order"; that is
+// why it backs up to path+".bak" first). What genuinely IS preserved
+// here is every other top-level KEY'S VALUE (e.g. pool.api_url) — this
+// function only mutates the "hooks" subtree before handing the whole
+// map back to writeYAMLMap — but the file's original comments,
+// blank-line layout, and key ORDER are NOT preserved; the operator's
+// settings.yaml is re-serialized by the YAML library on every write,
+// same as it always has been for Hermes' config.yaml.
+func (r *Registry) registerPoolside() RegistrationResult {
+	return r.registerPoolsideAt(poolsideHookTarget{
+		tool:      "poolside",
+		dir:       filepath.Join(r.opts.HomeDir, ".config", "poolside"),
+		errPrefix: "hook.registerPoolside",
+	})
+}
+
+// registerPoolsideAt is the shared settings.yaml writer behind
+// registerPoolside and registerPoolsideWindows. Conflict/refresh
+// discipline mirrors registerGenericSettingsHooks: an entry
+// isObserverAnyHookEntry recognises as ours is refreshed silently on
+// drift; anything else blocks without --force.
+//
+// F8 (phase-3a review): this writer was missing the three hardening
+// steps every JSON settings writer above already has —
+// r.lockSettings (cross-process advisory lock, serializes concurrent
+// observer writers against each other), pinWriteTarget (resolves a
+// symlink write target ONCE, right after the lock, before the first
+// read — a TOCTOU guard against the target being retargeted mid-write;
+// see pinnedTarget's doc comment), and r.recordChecksum (lets
+// `observer doctor`/uninstall detect drift). writeYAMLMap itself is
+// NOT modified — it takes a plain path exactly like before; this
+// function now passes pinned.target (the resolved target, == path
+// when not a symlink) instead of the raw path, and calls
+// pinned.verifyUnmoved() immediately before the write exactly as
+// writeJSONIndented's own pinned-target contract requires.
+func (r *Registry) registerPoolsideAt(t poolsideHookTarget) RegistrationResult {
+	res := RegistrationResult{Tool: t.tool, DryRun: r.opts.DryRun}
+	path := filepath.Join(t.dir, "settings.yaml")
+	res.ConfigPath = path
+
+	unlock, err := r.lockSettings(path)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
+		return res
+	}
+	defer unlock()
+
+	// Pin the write target now, before the read — see pinnedTarget (F6),
+	// and F8's doc comment above for why registerPoolsideAt needed this.
+	pinned := pinWriteTarget(path)
+
+	doc, err := readYAMLMap(pinned.target)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: read: %w", t.errPrefix, err)
+		return res
+	}
+
+	hooks := decodePoolsideHooksRaw(doc)
+
+	binPath := forwardSlashPath(r.opts.BinaryPath)
+	cmd := t.wrapper + shellQuoteIfNeeded(binPath) + " hook poolside UserPromptSubmit" + r.configFlagSuffixForwardSlash()
+	entries := hooks["UserPromptSubmit"]
+	idx := -1
+	for i, e := range entries {
+		if isObserverAnyHookEntry(poolsideEntryCommand(e), "poolside") {
+			idx = i
+		}
+	}
+	if idx >= 0 {
+		if poolsideEntryCommand(entries[idx]) == cmd {
+			res.AlreadySet = append(res.AlreadySet, "UserPromptSubmit")
+			return res
+		}
+		entries = append(entries[:idx], entries[idx+1:]...)
+	}
+	if !r.opts.Force {
+		for _, e := range entries {
+			if !isObserverAnyHookEntry(poolsideEntryCommand(e), "poolside") {
+				res.Error = fmt.Errorf("%s: UserPromptSubmit already has a non-observer hook; pass --force to overwrite", t.errPrefix)
+				return res
+			}
+		}
+	}
+	entries = append(entries, poolsideHookEntry{Name: observerPoolsideHookName, Matcher: "*", Command: cmd})
+	hooks["UserPromptSubmit"] = entries
+	res.HooksAdded = append(res.HooksAdded, "UserPromptSubmit")
+	doc["hooks"] = hooks
+
+	if r.opts.DryRun {
+		return res
+	}
+	if err := pinned.verifyUnmoved(); err != nil {
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
+		return res
+	}
+	if err := writeYAMLMap(pinned.target, doc); err != nil {
+		res.Error = fmt.Errorf("%s: write: %w", t.errPrefix, err)
+		return res
+	}
+	if err := r.recordChecksum(path); err != nil {
+		res.Error = err
+		return res
+	}
+	return res
+}
+
+// unregisterPoolside removes ONLY the observer-owned UserPromptSubmit
+// entry from settings.yaml's "hooks" block, leaving every other key
+// and every other event's entries untouched.
+func (r *Registry) unregisterPoolside() UnregistrationResult {
+	return r.unregisterPoolsideAt("poolside", filepath.Join(r.opts.HomeDir, ".config", "poolside"), "hook.unregisterPoolside")
+}
+
+// unregisterPoolsideAt is the shared settings.yaml cleaner behind
+// unregisterPoolside and unregisterPoolsideWindows. F8 (phase-3a
+// review): carries the SAME lock/pin/checksum hardening as
+// registerPoolsideAt — see that function's doc comment — mirroring
+// how every JSON unregister writer (e.g. unregisterGenericSettingsHooks)
+// hardens its removal path identically to its own registration path.
+func (r *Registry) unregisterPoolsideAt(tool, dir, errPrefix string) UnregistrationResult {
+	res := UnregistrationResult{Tool: tool, DryRun: r.opts.DryRun}
+	path := filepath.Join(dir, "settings.yaml")
+	res.ConfigPath = path
+
+	unlock, err := r.lockSettings(path)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: %w", errPrefix, err)
+		return res
+	}
+	defer unlock()
+
+	pinned := pinWriteTarget(path)
+
+	doc, err := readYAMLMap(pinned.target)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: read: %w", errPrefix, err)
+		return res
+	}
+	hooks := decodePoolsideHooksRaw(doc)
+	entries := hooks["UserPromptSubmit"]
+	var kept []any
+	removed := false
+	for _, e := range entries {
+		if isObserverAnyHookEntry(poolsideEntryCommand(e), "poolside") {
+			removed = true
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if !removed {
+		return res
+	}
+	if len(kept) == 0 {
+		delete(hooks, "UserPromptSubmit")
+	} else {
+		hooks["UserPromptSubmit"] = kept
+	}
+	res.HooksRemoved = append(res.HooksRemoved, "UserPromptSubmit")
+	if len(hooks) == 0 {
+		delete(doc, "hooks")
+	} else {
+		doc["hooks"] = hooks
+	}
+
+	if r.opts.DryRun {
+		return res
+	}
+	if err := pinned.verifyUnmoved(); err != nil {
+		res.Error = fmt.Errorf("%s: %w", errPrefix, err)
+		return res
+	}
+	if err := writeYAMLMap(pinned.target, doc); err != nil {
+		res.Error = fmt.Errorf("%s: write: %w", errPrefix, err)
+		return res
+	}
+	if err := r.removeChecksum(path); err != nil {
+		res.Error = err
+		return res
+	}
+	return res
+}
+
+// cascadeHookEntry is one entry of Windsurf/Devin Desktop Cascade's
+// hooks.json "pre_user_prompt" list (Part B item 2, phase-3a;
+// live-fetched 2026-09-07, docs.devin.ai/desktop/cascade/hooks):
+//
+//	{"hooks":{"pre_user_prompt":[{"command":"…","powershell":"…"}]}}
+//
+// No matcher, no "type" field — a flat command list, the vendor's OWN
+// shape distinct from every other hooks.json this repo writes.
+// PowerShell is left empty here: Devin Desktop's only grounded
+// install channel today is the macOS Homebrew cask (internal/
+// integration's devin row, GUI.Binary.Installs) — a Windows cross-OS
+// bridge is a documented, deferred gap for this mechanism, same as
+// HookGeminiSettings/HookQwenSettings/HookFactoryJSON.
+//
+// B5: this type is now used ONLY to construct observer's OWN entry.
+// A sibling entry already in the list — one this repo doesn't own,
+// which may carry a documented field this struct doesn't model (e.g.
+// a per-entry `timeout`) — is never decoded into it; see
+// cascadeEntryProbe and readCascadeHooksFile below.
+type cascadeHookEntry struct {
+	Command    string `json:"command,omitempty"`
+	PowerShell string `json:"powershell,omitempty"`
+}
+
+// cascadeHooksConfig describes hooks.json's body shape
+// (`{"hooks": {<event>: [<entry>...]}}`) for callers (tests) that want
+// a typed READ of the file this package wrote. It is never used to
+// decode a file this package is about to re-write — see
+// readCascadeHooksFile.
+type cascadeHooksConfig struct {
+	Hooks map[string][]cascadeHookEntry `json:"hooks"`
+}
+
+// cascadeEntryProbe decodes just the "command" field from an
+// otherwise-opaque raw Cascade hook entry — enough for
+// isObserverAnyHookEntry to tell whether the entry is observer's own,
+// without decoding (and thereby truncating) any other field the entry
+// carries.
+type cascadeEntryProbe struct {
+	Command string `json:"command"`
+}
+
+// readCascadeHooksFile reads hooks.json's top-level object and its
+// "hooks" subtree with the RawMessage boundary pushed one level deeper
+// than a single map[string]json.RawMessage (B5): top holds every
+// top-level key verbatim (so a key beside "hooks" that Cascade itself
+// — or a human — wrote round-trips byte-for-byte), and hooksByEvent
+// holds, per event, the list of RAW hook entries (so an event beside
+// "pre_user_prompt", and any entry within an event's list this repo
+// doesn't own, both round-trip byte-for-byte too — decodePoolsideHooksRaw
+// and registerClaudeCode's hooksRaw use the identical shape of fix for
+// their own file formats). A missing or empty file yields empty maps
+// and no error, matching every other readSettingsFile-style helper in
+// this package.
+func readCascadeHooksFile(path string) (map[string]json.RawMessage, map[string][]json.RawMessage, error) {
+	hooksByEvent := map[string][]json.RawMessage{}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]json.RawMessage{}, hooksByEvent, nil
+		}
+		return nil, nil, fmt.Errorf("hook.readCascadeHooksFile: read: %w", err)
+	}
+	if len(raw) == 0 {
+		return map[string]json.RawMessage{}, hooksByEvent, nil
+	}
+	top, err := decodeSettingsObject(path, raw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("hook.readCascadeHooksFile: %w", err)
+	}
+	if hRaw, ok := top["hooks"]; ok && len(hRaw) > 0 {
+		if err := json.Unmarshal(hRaw, &hooksByEvent); err != nil {
+			return nil, nil, fmt.Errorf("hook.readCascadeHooksFile: parse hooks: %w", err)
+		}
+		if hooksByEvent == nil {
+			hooksByEvent = map[string][]json.RawMessage{}
+		}
+	}
+	return top, hooksByEvent, nil
+}
+
+// registerCascade installs the prompt-submit hook into
+// ~/.codeium/windsurf/hooks.json's "pre_user_prompt" list (Part B
+// item 2, phase-3a: new HookCascadeJSON mechanism). Single event —
+// this repo has no receiver for any other Cascade hook.
+func (r *Registry) registerCascade() RegistrationResult {
+	res := RegistrationResult{Tool: "devin", DryRun: r.opts.DryRun}
+	dir := filepath.Join(r.opts.HomeDir, ".codeium", "windsurf")
+	path := filepath.Join(dir, "hooks.json")
+	res.ConfigPath = path
+
+	unlock, err := r.lockSettings(path)
+	if err != nil {
+		res.Error = fmt.Errorf("hook.registerCascade: %w", err)
+		return res
+	}
+	defer unlock()
+
+	pinned := pinWriteTarget(path)
+
+	top, hooksByEvent, err := readCascadeHooksFile(path)
+	if err != nil {
+		res.Error = err
+		return res
+	}
+
+	const event = "pre_user_prompt"
+	cmd := shellQuoteIfNeeded(forwardSlashPath(r.opts.BinaryPath)) + " hook devin " + event + r.configFlagSuffixForwardSlash()
+	entries := hooksByEvent[event]
+	idx := -1
+	for i, raw := range entries {
+		var probe cascadeEntryProbe
+		if err := json.Unmarshal(raw, &probe); err != nil {
+			continue
+		}
+		if isObserverAnyHookEntry(probe.Command, "devin") {
+			idx = i
+		}
+	}
+	if idx >= 0 {
+		var probe cascadeEntryProbe
+		if err := json.Unmarshal(entries[idx], &probe); err == nil && probe.Command == cmd {
+			res.AlreadySet = append(res.AlreadySet, event)
+			return res
+		}
+		entries = append(entries[:idx], entries[idx+1:]...)
+	}
+	if !r.opts.Force {
+		for _, raw := range entries {
+			var probe cascadeEntryProbe
+			if err := json.Unmarshal(raw, &probe); err != nil {
+				continue
+			}
+			if !isObserverAnyHookEntry(probe.Command, "devin") {
+				res.Error = fmt.Errorf("hook.registerCascade: event %s already has a non-observer hook; pass --force to overwrite", event)
+				return res
+			}
+		}
+	}
+	entryJSON, err := json.Marshal(cascadeHookEntry{Command: cmd})
+	if err != nil {
+		res.Error = fmt.Errorf("hook.registerCascade: marshal entry: %w", err)
+		return res
+	}
+	entries = append(entries, entryJSON)
+	hooksByEvent[event] = entries
+	res.HooksAdded = append(res.HooksAdded, event)
+
+	hooksJSON, err := json.Marshal(hooksByEvent)
+	if err != nil {
+		res.Error = fmt.Errorf("hook.registerCascade: marshal hooks: %w", err)
+		return res
+	}
+	top["hooks"] = hooksJSON
+
+	if r.opts.DryRun {
+		return res
+	}
+	if err := writeJSONIndented(dir, pinned, top); err != nil {
+		res.Error = err
+		return res
+	}
+	if err := r.recordChecksum(path); err != nil {
+		res.Error = err
+		return res
+	}
+	return res
+}
+
+// unregisterCascade removes ONLY the observer-owned pre_user_prompt
+// entry from ~/.codeium/windsurf/hooks.json, leaving every other
+// top-level key, every other event, and every sibling entry in
+// pre_user_prompt's own list byte-for-byte untouched.
+func (r *Registry) unregisterCascade() UnregistrationResult {
+	res := UnregistrationResult{Tool: "devin", DryRun: r.opts.DryRun}
+	dir := filepath.Join(r.opts.HomeDir, ".codeium", "windsurf")
+	path := filepath.Join(dir, "hooks.json")
+	res.ConfigPath = path
+
+	unlock, err := r.lockSettings(path)
+	if err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCascade: %w", err)
+		return res
+	}
+	defer unlock()
+
+	pinned := pinWriteTarget(path)
+
+	top, hooksByEvent, err := readCascadeHooksFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return res
+		}
+		res.Error = err
+		return res
+	}
+	const event = "pre_user_prompt"
+	entries := hooksByEvent[event]
+	var kept []json.RawMessage
+	removed := false
+	for _, raw := range entries {
+		var probe cascadeEntryProbe
+		if err := json.Unmarshal(raw, &probe); err == nil && isObserverAnyHookEntry(probe.Command, "devin") {
+			removed = true
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	if !removed {
+		return res
+	}
+	if len(kept) == 0 {
+		delete(hooksByEvent, event)
+	} else {
+		hooksByEvent[event] = kept
+	}
+	res.HooksRemoved = append(res.HooksRemoved, event)
+
+	if len(hooksByEvent) == 0 {
+		delete(top, "hooks")
+	} else {
+		hooksJSON, err := json.Marshal(hooksByEvent)
+		if err != nil {
+			res.Error = fmt.Errorf("hook.unregisterCascade: marshal hooks: %w", err)
+			return res
+		}
+		top["hooks"] = hooksJSON
+	}
+
+	if r.opts.DryRun {
+		return res
+	}
+	if err := writeJSONIndented(dir, pinned, top); err != nil {
+		res.Error = err
+		return res
+	}
+	if err := r.removeChecksum(path); err != nil {
+		res.Error = err
+		return res
+	}
+	return res
+}
+
+// registerCommandCode drops the go:embed'd observer-guard.ts bridge
+// into ~/.commandcode/mods/ (Part B item 2, phase-3a: new
+// HookCommandCodeMod mechanism — internal/hook/commandcodemod).
+// Unlike every other registrar in this file, this is NOT a
+// JSON/YAML config-file mutation: commandcode's Mods SDK discovers
+// loose .ts files by directory presence, so "registering" means
+// writing (or overwriting, on re-run) the one file. No lock/pinned-
+// target machinery applies — there is no shared config file another
+// process could be racing to write.
+//
+// FIXED (FIX cluster, item 5): this used to unconditionally overwrite
+// whatever (if anything) already sat at the mod path, with no
+// conflict guard and no checksum recorded — the only writer in this
+// file without the takeover-refusal / --force / checksum discipline
+// every JSON/YAML writer above has. Now: an existing file that
+// doesn't look observer-written (commandcodemod.LooksLikeObserverPlugin)
+// is refused without --force (mirroring registerCascade's own
+// foreign-entry guard), backed up to path+".bak" before being
+// overwritten under --force (mirroring writeYAMLMap's backup
+// discipline for a lossy takeover), and a checksum is recorded after
+// every successful write so unregisterCommandCode can detect
+// out-of-band drift before deleting.
+func (r *Registry) registerCommandCode() RegistrationResult {
+	res := RegistrationResult{Tool: "command-code", DryRun: r.opts.DryRun}
+	dir := filepath.Join(r.opts.HomeDir, ".commandcode", "mods")
+	path := filepath.Join(dir, commandcodemod.ModFileName)
+	res.ConfigPath = path
+
+	existing, readErr := os.ReadFile(path)
+	alreadyInstalled := readErr == nil
+	foreign := alreadyInstalled && !commandcodemod.LooksLikeObserverPlugin(existing)
+	if foreign && !r.opts.Force {
+		res.Error = fmt.Errorf("hook.registerCommandCode: %s already exists and doesn't look like an observer-managed file; pass --force to overwrite", path)
+		return res
+	}
+
+	if r.opts.DryRun {
+		if !alreadyInstalled {
+			res.HooksAdded = append(res.HooksAdded, "transformInput")
+		} else {
+			res.AlreadySet = append(res.AlreadySet, "transformInput")
+		}
+		return res
+	}
+	if foreign {
+		if err := backupForeignCommandCodeMod(path, existing); err != nil {
+			res.Error = fmt.Errorf("hook.registerCommandCode: %w", err)
+			return res
+		}
+	}
+	if err := commandcodemod.WritePlugin(dir, r.opts.BinaryPath, r.opts.ConfigPath); err != nil {
+		res.Error = fmt.Errorf("hook.registerCommandCode: %w", err)
+		return res
+	}
+	if err := r.recordChecksum(path); err != nil {
+		res.Error = fmt.Errorf("hook.registerCommandCode: %w", err)
+		return res
+	}
+	if alreadyInstalled {
+		res.AlreadySet = append(res.AlreadySet, "transformInput")
+	} else {
+		res.HooksAdded = append(res.HooksAdded, "transformInput")
+	}
+	return res
+}
+
+// backupForeignCommandCodeMod writes a path+".bak" copy of data (the
+// pre-overwrite content) — the same discipline writeYAMLMap already
+// applies to a Poolside/Hermes settings.yaml takeover, adapted for a
+// bare-file (non-JSON/YAML) target. Only called when registerCommandCode
+// is about to overwrite a foreign (non-observer-written) file under
+// --force, so an operator who had something else at this path can
+// still recover it.
+func backupForeignCommandCodeMod(path string, data []byte) error {
+	info, err := os.Stat(path)
+	mode := os.FileMode(0o600)
+	if err == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := os.WriteFile(path+".bak", data, mode); err != nil {
+		return fmt.Errorf("backup %s: %w", path, err)
+	}
+	return nil
+}
+
+// unregisterCommandCode removes the observer-guard.ts mod file.
+//
+// FIXED (FIX cluster, item 5): this used to delete purely on
+// commandcodemod.Installed's presence check, with no verification
+// that the on-disk file was still the one observer wrote (vs. having
+// been modified since, or — now that registerCommandCode can take
+// over a foreign file under --force — legitimately being someone
+// else's file). Now checksum-guarded exactly like
+// unregisterClaudeCode: a mismatch refuses without --force.
+func (r *Registry) unregisterCommandCode() UnregistrationResult {
+	res := UnregistrationResult{Tool: "command-code", DryRun: r.opts.DryRun}
+	dir := filepath.Join(r.opts.HomeDir, ".commandcode", "mods")
+	path := filepath.Join(dir, commandcodemod.ModFileName)
+	res.ConfigPath = path
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return res
+		}
+		res.Error = fmt.Errorf("hook.unregisterCommandCode: read: %w", err)
+		return res
+	}
+	if r.opts.DryRun {
+		res.HooksRemoved = append(res.HooksRemoved, "transformInput")
+		return res
+	}
+
+	match, err := r.checksumMatches(path, raw)
+	if err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCommandCode: checksum: %w", err)
+		return res
+	}
+	res.ChecksumMatch = match
+	if !match && !r.opts.Force {
+		res.Error = fmt.Errorf("hook.unregisterCommandCode: %s has been modified since install (checksum mismatch); pass --force to remove anyway", path)
+		return res
+	}
+
+	if err := commandcodemod.RemovePlugin(dir); err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCommandCode: %w", err)
+		return res
+	}
+	if err := r.removeChecksum(path); err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCommandCode: %w", err)
+		return res
+	}
+	res.HooksRemoved = append(res.HooksRemoved, "transformInput")
+	return res
+}
+
+// decodePoolsideHooksRaw pulls doc["hooks"] apart into per-event RAW
+// entry lists (B5) — unlike the typed decodePoolsideHooks this
+// replaced, entries are never routed through poolsideHookEntry, so an
+// entry this repo doesn't own keeps every field it was read with
+// (e.g. the vendor's documented per-entry `timeout`) instead of being
+// silently truncated to {name, matcher, command} on the next write.
+// readYAMLMap already decoded the whole document generically (every
+// map as map[string]any, every sequence as []any), so doc["hooks"] is
+// already exactly that shape — no re-marshal/re-decode round-trip is
+// needed to get raw per-entry values the way readCascadeHooksFile's
+// JSON equivalent needs json.RawMessage. An event whose value isn't a
+// []any (a malformed document) is skipped rather than erroring, same
+// leniency the typed version had via its own best-effort YAML decode.
+func decodePoolsideHooksRaw(doc map[string]any) map[string][]any {
+	hooks := map[string][]any{}
+	raw, ok := doc["hooks"]
+	if !ok {
+		return hooks
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return hooks
+	}
+	for event, v := range m {
+		if list, ok := v.([]any); ok {
+			hooks[event] = list
+		}
+	}
+	return hooks
+}
+
+// poolsideEntryCommand extracts the "command" field from an
+// otherwise-opaque raw Poolside hook entry (a generic
+// map[string]any, as readYAMLMap/decodePoolsideHooksRaw decode it, OR
+// the poolsideHookEntry struct observer's own freshly-appended entry
+// still is at this point in the same slice) — enough for
+// isObserverAnyHookEntry to tell whether the entry is observer's own,
+// without decoding (and thereby truncating) any other field.
+func poolsideEntryCommand(e any) string {
+	switch v := e.(type) {
+	case map[string]any:
+		cmd, _ := v["command"].(string)
+		return cmd
+	case poolsideHookEntry:
+		return v.Command
+	default:
+		return ""
+	}
+}
+
+// unregisterGenericSettingsHooks removes ONLY the observer-owned hook
+// group for t.event from the settings.json's "hooks" block, leaving
+// every other key (and every other event) untouched. Symmetric
+// counterpart of registerGenericSettingsHooks.
+func (r *Registry) unregisterGenericSettingsHooks(t genericSettingsHookTarget) UnregistrationResult {
+	res := UnregistrationResult{Tool: t.label(), DryRun: r.opts.DryRun}
+	path := filepath.Join(t.dir, "settings.json")
+	res.ConfigPath = path
+
+	unlock, err := r.lockSettings(path)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
+		return res
+	}
+	defer unlock()
+
+	// Pin the write target now, before the read — see pinnedTarget (F6).
+	pinned := pinWriteTarget(path)
+
+	raw, err := readSettingsFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return res
+		}
+		res.Error = fmt.Errorf("%s: read: %w", t.errPrefix, err)
+		return res
+	}
+	settings, err := decodeSettingsObject(path, raw)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
+		return res
+	}
+	existing, ok := settings["hooks"]
+	if !ok {
+		return res
+	}
+	var hooks map[string][]claudeHookGroup
+	if err := json.Unmarshal(existing, &hooks); err != nil {
+		res.Error = fmt.Errorf("%s: parse hooks: %w", t.errPrefix, err)
+		return res
+	}
+	groups := hooks[t.event]
+	kept := groups[:0]
+	removed := false
+	for _, g := range groups {
+		isOurs := len(g.Hooks) > 0
+		for _, h := range g.Hooks {
+			if h.Type != "command" || !isObserverAnyHookEntry(h.Command, t.tool) {
+				isOurs = false
+			}
+		}
+		if isOurs {
+			removed = true
+			continue
+		}
+		kept = append(kept, g)
+	}
+	if !removed {
+		return res
+	}
+	if len(kept) == 0 {
+		delete(hooks, t.event)
+	} else {
+		hooks[t.event] = kept
+	}
+	patched, err := json.Marshal(hooks)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: marshal hooks: %w", t.errPrefix, err)
+		return res
+	}
+	settings["hooks"] = patched
+	res.HooksRemoved = append(res.HooksRemoved, t.event)
+
+	if r.opts.DryRun {
+		return res
+	}
+	if err := writeJSONIndented(t.dir, pinned, settings); err != nil {
+		res.Error = err
+		return res
+	}
+	if err := r.removeChecksum(path); err != nil {
+		res.Error = err
+		return res
+	}
+	return res
+}
+
+func (r *Registry) unregisterGeminiCLI() UnregistrationResult {
+	return r.unregisterGenericSettingsHooks(genericSettingsHookTarget{
+		tool: "gemini-cli", dir: filepath.Join(r.opts.HomeDir, ".gemini"),
+		event: "BeforeAgent", errPrefix: "hook.unregisterGeminiCLI",
+	})
+}
+
+func (r *Registry) unregisterQwenCode() UnregistrationResult {
+	return r.unregisterGenericSettingsHooks(genericSettingsHookTarget{
+		tool: "qwen-code", dir: filepath.Join(r.opts.HomeDir, ".qwen"),
+		event: "UserPromptSubmit", errPrefix: "hook.unregisterQwenCode",
+	})
+}
+
+func (r *Registry) unregisterQoder() UnregistrationResult {
+	return r.unregisterGenericSettingsHooks(genericSettingsHookTarget{
+		tool: "qoder", dir: filepath.Join(r.opts.HomeDir, ".qoder"),
+		event: "UserPromptSubmit", errPrefix: "hook.unregisterQoder",
+	})
+}
+
+// droidHookTarget parameterizes registerFactoryDroidAt for its two
+// registration targets: the native `~/.factory` on the daemon's own OS,
+// and the cross-OS Windows-side `.factory` the droid-windows bridge
+// writes. Mirrors codexHookTarget — one shared writer (CLAUDE.md #4),
+// differing only in where it writes and whether the command carries the
+// wsl.exe bridge wrapper. The dispatch vocabulary embedded in the
+// command is always the literal "droid" (hardcoded in
+// registerFactoryDroidAt), never "droid-windows" — the hook receiver on
+// the far end is keyed by base tool name.
+type droidHookTarget struct {
+	// tool is the RegistrationResult.Tool label ("droid" / "droid-windows").
+	tool string
+	// dir is the .factory directory holding hooks.json.
+	dir string
+	// wrapper prefixes every registered command; "" for the native
+	// target, `MSYS_NO_PATHCONV=1 wsl.exe -d <distro> -- ` for the
+	// cross-OS bridge.
+	wrapper string
+	// errPrefix names the calling registrar in wrapped errors.
+	errPrefix string
+}
+
+// registerFactoryDroid installs the prompt-submit hook into
+// ~/.factory/hooks.json (contract §6.7: new HookFactoryJSON
+// mechanism). Reuses codexHooksConfig/readCodexHooks/writeCodexHooks
+// directly — Droid's hooks.json is a DEDICATED hooks-only file, the
+// same shape as Codex's own (matcher+hooks groups keyed by event),
+// not a shared settings.json with unrelated keys to preserve. Single
+// event: UserPromptSubmit.
+func (r *Registry) registerFactoryDroid() RegistrationResult {
+	return r.registerFactoryDroidAt(droidHookTarget{
+		tool:      "droid",
+		dir:       filepath.Join(r.opts.HomeDir, ".factory"),
+		errPrefix: "hook.registerFactoryDroid",
+	})
+}
+
+// registerFactoryDroidAt is the shared ~/.factory/hooks.json writer
+// behind registerFactoryDroid and registerFactoryDroidWindows.
+// Conflict/refresh discipline mirrors registerCodexAt, simplified to
+// one event: an entry isObserverAnyHookEntry recognises as ours is
+// refreshed silently on drift; anything else blocks without --force.
+func (r *Registry) registerFactoryDroidAt(t droidHookTarget) RegistrationResult {
+	res := RegistrationResult{Tool: t.tool, DryRun: r.opts.DryRun}
+	path := filepath.Join(t.dir, "hooks.json")
+	res.ConfigPath = path
+
+	unlock, err := r.lockSettings(path)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
+		return res
+	}
+	defer unlock()
+
+	pinned := pinWriteTarget(path)
+
+	cfg, err := readCodexHooks(path)
+	if err != nil {
+		res.Error = err
+		return res
+	}
+
+	const event = "UserPromptSubmit"
+	cmd := t.wrapper + shellQuoteIfNeeded(forwardSlashPath(r.opts.BinaryPath)) + " hook droid " + event + r.configFlagSuffixForwardSlash()
+	groups := cfg.Hooks[event]
+	idx := -1
+	for i, g := range groups {
+		for _, h := range g.Hooks {
+			if h.Type == "command" && isObserverAnyHookEntry(h.Command, "droid") {
+				idx = i
+			}
+		}
+	}
+	if idx >= 0 {
+		if len(groups[idx].Hooks) == 1 && groups[idx].Hooks[0].Command == cmd {
+			res.AlreadySet = append(res.AlreadySet, event)
+			return res
+		}
+		groups = append(groups[:idx], groups[idx+1:]...)
+	}
+	if !r.opts.Force {
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				if h.Type == "command" && !isObserverAnyHookEntry(h.Command, "droid") {
+					res.Error = fmt.Errorf("%s: event %s already has a non-observer hook; pass --force to overwrite", t.errPrefix, event)
+					return res
+				}
+			}
+		}
+	}
+	groups = append(groups, codexHookGroup{
+		Matcher: "*",
+		Hooks:   []claudeHookCommand{{Type: "command", Command: cmd}},
+	})
+	cfg.Hooks[event] = groups
+	res.HooksAdded = append(res.HooksAdded, event)
+
+	if r.opts.DryRun {
+		return res
+	}
+	if err := writeCodexHooks(t.dir, pinned, cfg); err != nil {
+		res.Error = err
+		return res
+	}
+	if err := r.recordChecksum(path); err != nil {
+		res.Error = err
+		return res
+	}
+	return res
+}
+
+// unregisterFactoryDroid removes ONLY the observer-owned
+// UserPromptSubmit group from ~/.factory/hooks.json.
+func (r *Registry) unregisterFactoryDroid() UnregistrationResult {
+	return r.unregisterFactoryDroidAt("droid", filepath.Join(r.opts.HomeDir, ".factory"), "hook.unregisterFactoryDroid")
+}
+
+// unregisterFactoryDroidAt is the shared hooks.json cleaner behind
+// unregisterFactoryDroid and unregisterFactoryDroidWindows.
+func (r *Registry) unregisterFactoryDroidAt(tool, dir, errPrefix string) UnregistrationResult {
+	res := UnregistrationResult{Tool: tool, DryRun: r.opts.DryRun}
+	path := filepath.Join(dir, "hooks.json")
+	res.ConfigPath = path
+
+	unlock, err := r.lockSettings(path)
+	if err != nil {
+		res.Error = fmt.Errorf("%s: %w", errPrefix, err)
+		return res
+	}
+	defer unlock()
+
+	// Pin the write target now, before the read — see pinnedTarget (F6).
+	pinned := pinWriteTarget(path)
+
+	cfg, err := readCodexHooks(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return res
+		}
+		res.Error = err
+		return res
+	}
+	const event = "UserPromptSubmit"
+	groups := cfg.Hooks[event]
+	kept := groups[:0]
+	removed := false
+	for _, g := range groups {
+		isOurs := len(g.Hooks) > 0
+		for _, h := range g.Hooks {
+			if h.Type != "command" || !isObserverAnyHookEntry(h.Command, "droid") {
+				isOurs = false
+			}
+		}
+		if isOurs {
+			removed = true
+			continue
+		}
+		kept = append(kept, g)
+	}
+	if !removed {
+		return res
+	}
+	if len(kept) == 0 {
+		delete(cfg.Hooks, event)
+	} else {
+		cfg.Hooks[event] = kept
+	}
+	res.HooksRemoved = append(res.HooksRemoved, event)
+
+	if r.opts.DryRun {
+		return res
+	}
+	if err := writeCodexHooks(dir, pinned, cfg); err != nil {
+		res.Error = err
+		return res
+	}
+	if err := r.removeChecksum(path); err != nil {
+		res.Error = err
+		return res
+	}
+	return res
 }
 
 // registerClaudeCodeWindows installs Claude Code hooks into a Windows-
@@ -740,11 +2183,69 @@ func isObserverClaudeEntry(cmd string) bool {
 // `.exe`, optional `-suffix`) and be followed by exactly the tokens
 // `hook` `claude-code`.
 func IsObserverClaudeCodeHookCommand(cmd string) bool {
+	return isObserverAnyHookEntry(cmd, "claude-code")
+}
+
+// isObserverAnyHookEntry reports whether cmd is an observer
+// `hook <tool> <event>` invocation in EITHER shape observer writes:
+//
+//   - native, as a Windows-native npm install writes it —
+//     `C:\...\observer.exe hook cursor stop --config C:\...\config.toml`
+//     (forward- or back-slashed, quoted or bare);
+//   - the cross-OS bridge, as the `*-windows` registrars write it —
+//     `[MSYS_NO_PATHCONV=1 ]wsl.exe -d <distro> -- /home/<u>/observer
+//     hook cursor stop --config /home/<u>/.observer/config.toml`.
+//
+// tool is the hook vocabulary token: "claude-code", "cursor" or
+// "codex".
+//
+// This is the ownership predicate the cross-OS `*-windows` registrars
+// need (class C2, docs/plans/ide-surface-capture-remediation-plan-2026-09-02.md
+// §1). Before it, those registrars recognised ONLY the wsl.exe shape, so a
+// NATIVE observer entry left behind by an earlier Windows-native npm
+// `observer init` was classified FOREIGN: the bridge registration refused
+// without --force and the stale native entry kept writing the stranded
+// Windows DB — the split-brain class CLAUDE.md's "Don't try to bridge
+// cross-OS hook capture at the storage layer" describes, observed live as
+// audit finding IDE-11.
+//
+// Recognition is TOKEN-based, not substring-based: after stripping any
+// leading `KEY=VALUE` env assignments and the `wsl.exe -d <distro> --`
+// bridge prefix (stripHookCommandPrefix), argv[0] must NAME an observer
+// binary (isObserverBinaryToken) and be followed by exactly the tokens
+// `hook` `<tool>`. That strictness is what makes it safe to widen the
+// Windows registrars' "ours" test: a genuinely foreign command — including
+// one that merely CONTAINS ` hook cursor ` somewhere, like
+// `/opt/acme/audit --note "run hook cursor stop"` — still fails argv[0]
+// and is still protected by the --force conflict guard.
+func isObserverAnyHookEntry(cmd, tool string) bool {
+	if observerHookInvocation(cmd, tool) {
+		return true
+	}
+	// Retry on the forward-slash-normalized command. splitCommandTokens
+	// is a POSIX tokenizer, so an UNQUOTED Windows path collapses under
+	// its backslash-escape rule (`C:\Users\u\observer.exe` tokenizes to
+	// `C:Usersuobserver.exe`) and a genuine native registration would
+	// read as foreign purely because of the quoting style whoever wrote
+	// it happened to use. Forward slashes are never escapes in any of
+	// the shells involved, and swapping separators can only change what
+	// the BASENAME of argv[0] is — it can't invent the `hook <tool>`
+	// argument pair — so the retry stays as strict as the first pass.
+	if strings.Contains(cmd, `\`) {
+		return observerHookInvocation(strings.ReplaceAll(cmd, `\`, "/"), tool)
+	}
+	return false
+}
+
+// observerHookInvocation is isObserverAnyHookEntry's single tokenized
+// test: strip env assignments + any wsl.exe bridge prefix, then require
+// argv[0] to name an observer binary followed by `hook <tool>`.
+func observerHookInvocation(cmd, tool string) bool {
 	toks := stripHookCommandPrefix(splitCommandTokens(cmd))
 	if len(toks) < 3 {
 		return false
 	}
-	return isObserverBinaryToken(toks[0]) && toks[1] == "hook" && toks[2] == "claude-code"
+	return isObserverBinaryToken(toks[0]) && toks[1] == "hook" && toks[2] == tool
 }
 
 // stripHookCommandPrefix removes the leading `KEY=VALUE` environment
@@ -773,25 +2274,38 @@ func stripHookCommandPrefix(toks []string) []string {
 	return nil
 }
 
-// isObserverWindowsClaudeEntry recognises a hook command as one
-// previously written by this registrar: a `wsl.exe ` invocation (with
-// or without a leading MSYS env-var prefix) that ultimately calls
-// `<bin> hook claude-code <event>`. The MSYS_NO_PATHCONV=1 prefix
-// shipped in v1.6.22+; we match either shape so refresh-on-drift
-// picks up the older prefix-free entries and rewrites them with the
-// fixed wrapper. The `hook claude-code` token is the stable
-// signature; anything else is treated as a user-authored hook.
+// isObserverWindowsClaudeEntry recognises a hook command in the
+// Windows-side settings.json as observer-owned, in EITHER shape:
+//
+//   - the cross-OS bridge this registrar writes — a `wsl.exe `
+//     invocation (with or without the legacy MSYS_NO_PATHCONV=1 env
+//     prefix) that ultimately calls `<bin> hook claude-code <event>`.
+//     The MSYS prefix shipped in v1.6.22+; matching either lets
+//     refresh-on-drift rewrite older prefix-free entries;
+//   - a NATIVE `<...>\observer.exe hook claude-code <event>` entry
+//     written by an earlier Windows-native npm `observer init`
+//     (isObserverAnyHookEntry — class C2 / audit IDE-11).
+//
+// The native half is what lets the bridge REPLACE a stale native
+// registration without --force. Without it the native entry read as a
+// third-party hook, registration errored, and the stale entry kept
+// writing the stranded Windows DB.
+//
+// Note the deliberate asymmetry with isObserverClaudeEntry, the
+// native-target predicate, which still REJECTS wsl.exe shapes: the two
+// targets must not fight over a settings.json that carries both, and
+// only the Windows target is allowed to convert one shape into the
+// other (native → bridge, never the reverse).
 func isObserverWindowsClaudeEntry(cmd string) bool {
-	if !strings.Contains(cmd, " hook claude-code ") {
-		return false
+	if strings.Contains(cmd, " hook claude-code ") {
+		if strings.HasPrefix(cmd, "wsl.exe ") {
+			return true
+		}
+		if strings.HasPrefix(cmd, "MSYS_NO_PATHCONV=1 wsl.exe ") {
+			return true
+		}
 	}
-	if strings.HasPrefix(cmd, "wsl.exe ") {
-		return true
-	}
-	if strings.HasPrefix(cmd, "MSYS_NO_PATHCONV=1 wsl.exe ") {
-		return true
-	}
-	return false
+	return isObserverAnyHookEntry(cmd, "claude-code")
 }
 
 // findClaudeGroupWithObserverWindows returns the index of a group
@@ -818,30 +2332,6 @@ func hasConflictingClaudeHookWindows(groups []claudeHookGroup) bool {
 				continue
 			}
 			if !isObserverWindowsClaudeEntry(h.Command) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// hasConflictingClaudeHook reports whether any group on the "*"
-// matcher carries a command that isn't observer-shaped. Used by the
-// force-less path to refuse silent overwrite of user-authored hooks.
-// Mirror of hasConflictingClaudeHookWindows; content-heuristic so an
-// observer entry from a different install path (npm, cross-binary
-// upgrade) is recognised as ours and falls through to the
-// refresh-by-overwrite path rather than tripping the guard.
-func hasConflictingClaudeHook(groups []claudeHookGroup) bool {
-	for _, g := range groups {
-		if g.Matcher != "" && g.Matcher != "*" {
-			continue
-		}
-		for _, h := range g.Hooks {
-			if h.Type != "command" {
-				continue
-			}
-			if !isObserverClaudeEntry(h.Command) {
 				return true
 			}
 		}
@@ -1100,25 +2590,32 @@ func (r *Registry) registerCursorWindows() RegistrationResult {
 	return res
 }
 
-// isObserverWindowsCursorEntry recognises an entry as one we
-// previously wrote: a `wsl.exe ...` invocation (with or without a
-// leading MSYS env-var prefix) that ultimately calls `<bin> hook
-// cursor <event> ...`. The MSYS_NO_PATHCONV=1 prefix shipped in
-// v1.6.22+ — matching both shapes lets refresh-on-drift upgrade
-// older prefix-free entries to the fixed wrapper. The `hook cursor`
-// token is the stable signature; anything else is foreign and
-// treated as a user-authored conflict.
+// isObserverWindowsCursorEntry recognises an entry in the Windows-side
+// hooks.json as observer-owned, in EITHER shape:
+//
+//   - the cross-OS bridge this registrar writes — a `wsl.exe ...`
+//     invocation (with or without the legacy MSYS_NO_PATHCONV=1 env
+//     prefix) that ultimately calls `<bin> hook cursor <event> ...`;
+//   - a NATIVE `C:\...\observer.exe hook cursor <event>` entry written
+//     by an earlier Windows-native npm `observer init`
+//     (isObserverAnyHookEntry — class C2 / audit IDE-11, which found
+//     exactly this in a live ~/.cursor/hooks.json).
+//
+// Recognising the native half is what lets refresh-on-drift REPLACE a
+// stale native registration with the bridge command without --force,
+// instead of erroring and leaving the native entry writing the
+// stranded Windows DB. Anything else is foreign and still treated as a
+// user-authored conflict.
 func isObserverWindowsCursorEntry(cmd string) bool {
-	if !strings.Contains(cmd, " hook cursor ") {
-		return false
+	if strings.Contains(cmd, " hook cursor ") {
+		if strings.HasPrefix(cmd, "wsl.exe ") {
+			return true
+		}
+		if strings.HasPrefix(cmd, "MSYS_NO_PATHCONV=1 wsl.exe ") {
+			return true
+		}
 	}
-	if strings.HasPrefix(cmd, "wsl.exe ") {
-		return true
-	}
-	if strings.HasPrefix(cmd, "MSYS_NO_PATHCONV=1 wsl.exe ") {
-		return true
-	}
-	return false
+	return isObserverAnyHookEntry(cmd, "cursor")
 }
 
 // isDanglingObserverWindowsCursorShim recognises a stale
@@ -2262,7 +3759,7 @@ func filterStaleObserverEntries(entries []cursorHookEntry, want string) []cursor
 
 // UnregistrationResult summarizes a single tool unregistration.
 type UnregistrationResult struct {
-	Tool          string   // claude-code | cursor
+	Tool          string   // claude-code[-windows] | cursor | codex[-windows]
 	ConfigPath    string   // absolute path to the patched config file
 	HooksRemoved  []string // event names where observer entries were removed
 	HooksKept     []string // events where non-observer (user-authored) hooks remain
@@ -2279,7 +3776,7 @@ type UnregistrationResult struct {
 // error unless opts.Force is set.
 //
 // Supported tools: "claude-code", "claude-code-windows", "cursor",
-// "codex".
+// "codex", "codex-windows".
 func (r *Registry) Unregister(tool string) UnregistrationResult {
 	switch tool {
 	case "claude-code":
@@ -2288,8 +3785,38 @@ func (r *Registry) Unregister(tool string) UnregistrationResult {
 		return r.unregisterClaudeCodeWindows()
 	case "cursor":
 		return r.unregisterCursor()
+	case "cursor-windows":
+		return r.unregisterCursorWindows()
 	case "codex":
 		return r.unregisterCodex()
+	case "codex-windows":
+		return r.unregisterCodexWindows()
+	case "gemini-cli":
+		return r.unregisterGeminiCLI()
+	case "gemini-cli-windows":
+		return r.unregisterGeminiCLIWindows()
+	case "qwen-code":
+		return r.unregisterQwenCode()
+	case "qwen-code-windows":
+		return r.unregisterQwenCodeWindows()
+	case "droid":
+		return r.unregisterFactoryDroid()
+	case "droid-windows":
+		return r.unregisterFactoryDroidWindows()
+	case "qoder":
+		return r.unregisterQoder()
+	case "qoder-windows":
+		return r.unregisterQoderWindows()
+	case "poolside":
+		return r.unregisterPoolside()
+	case "poolside-windows":
+		return r.unregisterPoolsideWindows()
+	case "devin":
+		return r.unregisterCascade()
+	case "command-code":
+		return r.unregisterCommandCode()
+	case "command-code-windows":
+		return r.unregisterCommandCodeWindows()
 	default:
 		return UnregistrationResult{
 			Tool:   tool,
@@ -2330,16 +3857,26 @@ func (r *Registry) unregisterClaudeCode() UnregistrationResult {
 		res.Error = fmt.Errorf("hook.unregisterClaudeCode: %w", err)
 		return res
 	}
-	hooks := map[string][]claudeHookGroup{}
+	// Kept as json.RawMessage per event (B5) — see registerClaudeCode's
+	// hooksRaw for the rationale; filterClaudeGroupsRaw preserves every
+	// surviving sibling entry's unknown fields byte-for-byte.
+	hooksRaw := map[string]json.RawMessage{}
 	if existing, ok := settings["hooks"]; ok {
-		if err := json.Unmarshal(existing, &hooks); err != nil {
+		if err := json.Unmarshal(existing, &hooksRaw); err != nil {
 			res.Error = fmt.Errorf("hook.unregisterClaudeCode: parse hooks: %w", err)
 			return res
 		}
 	}
 
-	for event, groups := range hooks {
-		newGroups, removed, kept := filterClaudeGroups(groups)
+	for event, raw := range hooksRaw {
+		var groups []claudeHookGroupRaw
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &groups); err != nil {
+				res.Error = fmt.Errorf("hook.unregisterClaudeCode: parse hooks[%s]: %w", event, err)
+				return res
+			}
+		}
+		newGroups, removed, kept := filterClaudeGroupsRaw(groups)
 		if removed > 0 {
 			res.HooksRemoved = append(res.HooksRemoved, event)
 		}
@@ -2347,10 +3884,15 @@ func (r *Registry) unregisterClaudeCode() UnregistrationResult {
 			res.HooksKept = append(res.HooksKept, event)
 		}
 		if len(newGroups) == 0 {
-			delete(hooks, event)
-		} else {
-			hooks[event] = newGroups
+			delete(hooksRaw, event)
+			continue
 		}
+		newGroupsJSON, err := json.Marshal(newGroups)
+		if err != nil {
+			res.Error = fmt.Errorf("hook.unregisterClaudeCode: marshal hooks[%s]: %w", event, err)
+			return res
+		}
+		hooksRaw[event] = newGroupsJSON
 	}
 	sort.Strings(res.HooksRemoved)
 	sort.Strings(res.HooksKept)
@@ -2376,10 +3918,10 @@ func (r *Registry) unregisterClaudeCode() UnregistrationResult {
 		return res
 	}
 
-	if len(hooks) == 0 {
+	if len(hooksRaw) == 0 {
 		delete(settings, "hooks")
 	} else {
-		patched, err := json.Marshal(hooks)
+		patched, err := json.Marshal(hooksRaw)
 		if err != nil {
 			res.Error = fmt.Errorf("hook.unregisterClaudeCode: marshal hooks: %w", err)
 			return res
@@ -2524,11 +4066,15 @@ func (r *Registry) unregisterClaudeCodeWindows() UnregistrationResult {
 	return res
 }
 
-// filterClaudeGroupsWindows walks groups, drops any command our
-// Windows registrar previously wrote (wsl.exe-wrapped observer
-// invocation), and discards groups left empty. Returns the survivors
-// plus removed / kept counts so the caller can decide whether to
-// touch the file at all.
+// filterClaudeGroupsWindows walks groups, drops any command
+// isObserverWindowsClaudeEntry recognises as ours — the wsl.exe-wrapped
+// bridge invocation this registrar writes AND a native
+// `observer.exe hook claude-code …` entry from an earlier
+// Windows-native npm install (class C2) — and discards groups left
+// empty. Removing the native shape too is deliberate: `observer
+// uninstall` must not leave behind the very entry that was writing the
+// stranded Windows DB. Returns the survivors plus removed / kept counts
+// so the caller can decide whether to touch the file at all.
 func filterClaudeGroupsWindows(groups []claudeHookGroup) (out []claudeHookGroup, removed, kept int) {
 	for _, g := range groups {
 		var survivors []claudeHookCommand
@@ -2671,32 +4217,146 @@ func (r *Registry) unregisterCursor() UnregistrationResult {
 	return res
 }
 
-// filterClaudeGroups walks groups, drops any command recognised as
-// observer-written via isObserverClaudeEntry, and cleans up any
-// group left empty. Returns the surviving groups, the count of
-// removed observer entries, and the count of surviving non-observer
-// entries. Content-heuristic (vs byte-exact binary-path prefix) so
-// cross-binary stale entries — npm bundle in node_modules, renamed
-// $HOME, prior worktree build — also get cleaned up when uninstalling
-// from a different observer binary. Mirrors the register-side
-// findClaudeGroupWithObserver / hasConflictingClaudeHook usage.
-func filterClaudeGroups(groups []claudeHookGroup) (out []claudeHookGroup, removed, kept int) {
-	for _, g := range groups {
-		var survivors []claudeHookCommand
-		for _, h := range g.Hooks {
-			if h.Type == "command" && isObserverClaudeEntry(h.Command) {
+// unregisterCursorWindows is unregisterCursor's cross-OS-bridge
+// counterpart — mirrors unregisterClaudeCodeWindows's shape (FIX
+// cluster, item 7b): `Register`'s switch has had a "cursor-windows"
+// case (registerCursorWindows) since the bridge was built, but
+// `Unregister`'s switch never got the matching case, and no
+// unregisterCursorWindows function existed at all — so `observer
+// uninstall --cursor` (or any direct Unregister("cursor-windows")
+// call) could never remove a cursor-windows bridge entry it had
+// written. Same checksum-guard discipline as unregisterClaudeCodeWindows/
+// unregisterCodexWindows, and the same cross-OS home resolution
+// (r.detectWindowsCursorHome/r.opts.WindowsCursorHome) registerCursorWindows
+// already uses.
+func (r *Registry) unregisterCursorWindows() UnregistrationResult {
+	res := UnregistrationResult{Tool: "cursor-windows", DryRun: r.opts.DryRun}
+
+	cursorDir := r.detectWindowsCursorHome()
+	if cursorDir == "" {
+		res.Skipped = true
+		return res
+	}
+	path := filepath.Join(cursorDir, "hooks.json")
+	res.ConfigPath = path
+
+	unlock, err := r.lockSettings(path)
+	if err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCursorWindows: %w", err)
+		return res
+	}
+	defer unlock()
+
+	// Pin the write target now, before the read — see pinnedTarget (F6).
+	pinned := pinWriteTarget(path)
+
+	raw, err := readSettingsFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			res.Skipped = true
+			return res
+		}
+		res.Error = fmt.Errorf("hook.unregisterCursorWindows: read: %w", err)
+		return res
+	}
+
+	settings, err := decodeSettingsObject(path, raw)
+	if err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCursorWindows: %w", err)
+		return res
+	}
+	hooks := map[string][]cursorHookEntry{}
+	if existing, ok := settings["hooks"]; ok {
+		_ = json.Unmarshal(existing, &hooks)
+	}
+
+	for event, entries := range hooks {
+		var survivors []cursorHookEntry
+		removed := 0
+		for _, e := range entries {
+			// isObserverWindowsCursorEntry recognises BOTH the wsl.exe
+			// cross-OS bridge shape this registrar writes AND a native
+			// observer.exe entry from an earlier Windows-native install
+			// — mirrors filterClaudeGroupsWindows's own native+bridge
+			// removal so `observer uninstall` never leaves behind the
+			// entry that was writing the stranded Windows DB.
+			if isObserverWindowsCursorEntry(e.Command) {
 				removed++
 				continue
 			}
-			survivors = append(survivors, h)
+			survivors = append(survivors, e)
+		}
+		if removed > 0 {
+			res.HooksRemoved = append(res.HooksRemoved, event)
+		}
+		if len(survivors) > 0 {
+			res.HooksKept = append(res.HooksKept, event)
 		}
 		if len(survivors) == 0 {
-			continue
+			delete(hooks, event)
+		} else {
+			hooks[event] = survivors
 		}
-		kept += len(survivors)
-		out = append(out, claudeHookGroup{Matcher: g.Matcher, Hooks: survivors})
 	}
-	return out, removed, kept
+	sort.Strings(res.HooksRemoved)
+	sort.Strings(res.HooksKept)
+
+	if len(res.HooksRemoved) == 0 {
+		res.Skipped = true
+		return res
+	}
+
+	match, err := r.checksumMatches(path, raw)
+	if err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCursorWindows: checksum: %w", err)
+		return res
+	}
+	res.ChecksumMatch = match
+	if !match && !r.opts.Force {
+		res.Error = fmt.Errorf("hook.unregisterCursorWindows: %s has been modified since install (checksum mismatch); pass --force to remove anyway", path)
+		return res
+	}
+
+	if len(hooks) == 0 {
+		delete(settings, "hooks")
+	} else {
+		hookJSON, err := json.Marshal(hooks)
+		if err != nil {
+			res.Error = fmt.Errorf("hook.unregisterCursorWindows: marshal hooks: %w", err)
+			return res
+		}
+		settings["hooks"] = hookJSON
+	}
+
+	if r.opts.DryRun {
+		return res
+	}
+
+	// If the only surviving keys are the "version" registerCursorWindows
+	// manufactured at install time, remove the file entirely so
+	// uninstall leaves no trace — mirrors unregisterCursor's own
+	// version-only cleanup.
+	if len(settings) == 1 {
+		if _, onlyVersion := settings["version"]; onlyVersion {
+			delete(settings, "version")
+		}
+	}
+	if len(settings) == 0 {
+		if err := removeEmptyConfigFile(path, raw); err != nil {
+			res.Error = fmt.Errorf("hook.unregisterCursorWindows: remove %s: %w", path, err)
+			return res
+		}
+	} else {
+		if err := writeJSONIndented(cursorDir, pinned, settings); err != nil {
+			res.Error = err
+			return res
+		}
+	}
+	if err := r.removeChecksum(path); err != nil {
+		res.Error = err
+		return res
+	}
+	return res
 }
 
 // checksumMatches reports whether the hash stored for path in the
@@ -2827,9 +4487,80 @@ type codexHooksConfig struct {
 // (the trust hash algorithm is opaque and not exposed via any
 // `codex` subcommand). The CLI prints a hint after registration.
 func (r *Registry) registerCodex() RegistrationResult {
-	res := RegistrationResult{Tool: "codex", DryRun: r.opts.DryRun}
-	dir := filepath.Join(r.opts.HomeDir, ".codex")
-	hooksPath := filepath.Join(dir, codexHooksFile)
+	// codexCmdQuoteIfNeeded picks the right quoter based on path
+	// shape: POSIX single-quote for Linux/macOS paths (codex spawns
+	// hooks via /bin/sh there), cmd.exe double-quote for Windows
+	// paths (codex 0.133+ on Windows spawns via cmd.exe — single
+	// quotes are interpreted literally and the command fails). The
+	// v1.6.25 single-quote fix here was correct for Claude Code (Git
+	// Bash always) but wrong for Codex on Windows; operator report
+	// 2026-05-23 surfaced the regression. See codexCmdQuoteIfNeeded
+	// docstring for the full rationale + trade-off discussion.
+	return r.registerCodexAt(codexHookTarget{
+		tool:      "codex",
+		dir:       filepath.Join(r.opts.HomeDir, ".codex"),
+		quote:     codexCmdQuoteIfNeeded,
+		errPrefix: "hook.registerCodex",
+		matchMine: isObserverCodexEntryNative,
+	})
+}
+
+// codexHookTarget parameterizes registerCodexAt for its two
+// registration targets: the native `~/.codex` on the daemon's own OS,
+// and the cross-OS Windows-side `.codex` the codex-windows bridge
+// writes. Both produce the same hooks.json shape through ONE writer
+// (CLAUDE.md #4: one owner per piece of state) — they differ only in
+// where they write, how they quote, whether the command carries the
+// wsl.exe bridge wrapper, and (B4 fix) which shape they'll accept as
+// "already ours".
+type codexHookTarget struct {
+	// tool is the RegistrationResult.Tool label ("codex" /
+	// "codex-windows").
+	tool string
+	// dir is the .codex directory holding hooks.json + config.toml.
+	dir string
+	// wrapper prefixes every registered command; "" for the native
+	// target, `wsl.exe -d <distro> -- ` for the cross-OS bridge.
+	wrapper string
+	// quote quotes the binary path and the --config argument for the
+	// shell codex spawns hooks through on that target.
+	quote func(string) string
+	// errPrefix names the calling registrar in wrapped errors so a
+	// failure still points at the target the operator asked for.
+	errPrefix string
+	// matchMine recognises an existing hook command as belonging to
+	// THIS target (used for both the "already set, don't touch" check
+	// and the conflict guard). registerCodex passes the STRICT
+	// isObserverCodexEntryNative (excludes the wsl.exe bridge shape);
+	// registerCodexWindows passes the permissive isObserverCodexEntry
+	// (matches native OR bridge). B4 fix: before this field existed,
+	// registerCodexAt always used the permissive isObserverCodexEntry
+	// for BOTH targets, so a native `Register("codex")` re-run against
+	// a hooks.json that already held a codex-windows bridge entry (the
+	// two targets DO write the identical file when WindowsCodexHome
+	// resolves to the same directory HomeDir does — see
+	// TestRegisterCodexNativeDoesNotClobberBridgeEntry) recognised the
+	// bridge command as "already ours", found it didn't string-match
+	// the NATIVE command it was about to write, and silently rewrote
+	// it into native form with NO --force — exactly the flip-flop
+	// isObserverWindowsClaudeEntry/isObserverWindowsCursorEntry's split
+	// from their native counterparts already prevents for the other
+	// two tools. Mirrors that asymmetry: the Windows target MAY still
+	// convert a stale native entry into bridge form (registerCodexAt's
+	// existing drift-refresh behaviour, unchanged), but the native
+	// target must now treat an existing bridge entry as a foreign
+	// conflict requiring --force, never the reverse.
+	matchMine func(string) bool
+}
+
+// registerCodexAt is the shared codex hooks.json writer behind
+// registerCodex and registerCodexWindows. Conflict / refresh discipline
+// is identical on both targets modulo t.matchMine (see its doc
+// comment): an entry t.matchMine recognises as ours is refreshed
+// silently, anything else blocks without --force.
+func (r *Registry) registerCodexAt(t codexHookTarget) RegistrationResult {
+	res := RegistrationResult{Tool: t.tool, DryRun: r.opts.DryRun}
+	hooksPath := filepath.Join(t.dir, codexHooksFile)
 	res.ConfigPath = hooksPath
 
 	// Serialize observer's own writers of this file, THEN read — same
@@ -2837,7 +4568,7 @@ func (r *Registry) registerCodex() RegistrationResult {
 	// Codex's hooks.json previously took NO lock at all here.
 	unlock, err := r.lockSettings(hooksPath)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.registerCodex: %w", err)
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
 		return res
 	}
 	defer unlock()
@@ -2851,32 +4582,22 @@ func (r *Registry) registerCodex() RegistrationResult {
 		return res
 	}
 
-	// codexCmdQuoteIfNeeded picks the right quoter based on path
-	// shape: POSIX single-quote for Linux/macOS paths (codex spawns
-	// hooks via /bin/sh there), cmd.exe double-quote for Windows
-	// paths (codex 0.133+ on Windows spawns via cmd.exe — single
-	// quotes are interpreted literally and the command fails). The
-	// v1.6.25 single-quote fix here was correct for Claude Code (Git
-	// Bash always) but wrong for Codex on Windows; operator report
-	// 2026-05-23 surfaced the regression. See codexCmdQuoteIfNeeded
-	// docstring for the full rationale + trade-off discussion.
-	quote := codexCmdQuoteIfNeeded
 	for _, event := range codexEvents {
-		cmd := quote(r.opts.BinaryPath) + " hook codex " + event + r.configFlagSuffixWith(quote)
+		cmd := t.wrapper + t.quote(r.opts.BinaryPath) + " hook codex " + event + r.configFlagSuffixWith(t.quote)
 		groups := cfg.Hooks[event]
-		idx := findCodexGroupWithObserver(groups)
+		idx := findCodexGroupWithObserver(groups, t.matchMine)
 		if idx >= 0 {
 			if observerCodexCmdMatches(groups[idx], cmd) {
 				res.AlreadySet = append(res.AlreadySet, event)
 				continue
 			}
 			// Stale-observer-args / cross-binary refresh — recognised
-			// as ours via content-heuristic (isObserverCodexEntry).
-			// Drop the stale group; the fresh append below restores.
+			// as ours via t.matchMine's content-heuristic. Drop the
+			// stale group; the fresh append below restores.
 			groups = append(groups[:idx], groups[idx+1:]...)
 		}
-		if !r.opts.Force && hasConflictingCodexHook(groups) {
-			res.Error = fmt.Errorf("hook.registerCodex: event %s already has a non-observer hook; pass --force to overwrite", event)
+		if !r.opts.Force && hasConflictingCodexHook(groups, t.matchMine) {
+			res.Error = fmt.Errorf("%s: event %s already has a non-observer hook; pass --force to overwrite", t.errPrefix, event)
 			return res
 		}
 		groups = append(groups, codexHookGroup{
@@ -2892,7 +4613,7 @@ func (r *Registry) registerCodex() RegistrationResult {
 		return res
 	}
 
-	if err := writeCodexHooks(dir, pinned, cfg); err != nil {
+	if err := writeCodexHooks(t.dir, pinned, cfg); err != nil {
 		res.Error = err
 		return res
 	}
@@ -2900,22 +4621,108 @@ func (r *Registry) registerCodex() RegistrationResult {
 		res.Error = err
 		return res
 	}
-	if err := r.ensureCodexHooksFeatureFlag(dir); err != nil {
+	if err := r.ensureCodexHooksFeatureFlag(t.dir); err != nil {
 		res.Error = err
 		return res
 	}
 	return res
 }
 
+// registerCodexWindows installs Codex hooks into a Windows-side
+// `.codex/hooks.json` (typically `/mnt/c/Users/<u>/.codex/hooks.json`)
+// with each command wrapped in
+//
+//	wsl.exe -d <distro> -- <linux-bin> hook codex <Event> [--config <wsl-path>]
+//
+// so a Windows-native Codex can fire hooks that EXECUTE inside the WSL
+// daemon's OS-context and whose db.Open therefore resolves the daemon's
+// own DB natively. This is the registration-layer cross-OS bridge
+// CLAUDE.md's "Don't try to bridge cross-OS hook capture at the storage
+// layer" prescribes; codex previously had no Windows hook target at all
+// (only the identically-named codex-windows PROXY-ROUTE label in
+// internal/proxyroute — a different subsystem writing config.toml's
+// base_url).
+//
+// Quoting: cmd.exe double-quote-when-needed (cmdQuoteIfNeeded), NOT the
+// POSIX single-quote the claude-code/cursor bridges use. Codex on
+// Windows spawns hooks through cmd.exe, which treats `'...'` as literal
+// argument text (the v1.6.25 → 2026-05-23 regression codexCmdQuoteIfNeeded
+// exists for). For the same reason there is NO `MSYS_NO_PATHCONV=1`
+// prefix: that is a bash-ism, and cmd.exe would try to run it as a
+// program. The Linux-side paths inside the WSL command normally contain
+// no cmd.exe-meaningful character, so in practice nothing is quoted at
+// all and the arguments reach wsl.exe verbatim.
+//
+// Distro lookup: Options.WSLDistro → $WSL_DISTRO_NAME. Empty distro is
+// an error; the command would be ambiguous on a host with multiple
+// distros. Same contract as registerCursorWindows /
+// registerClaudeCodeWindows.
+//
+// Like registerCodex it also ensures `[features].hooks = true` in the
+// WINDOWS-side config.toml — codex reads hooks.json but never dispatches
+// without that flag, and the Windows install has its own config.toml.
+func (r *Registry) registerCodexWindows() RegistrationResult {
+	res := RegistrationResult{Tool: "codex-windows", DryRun: r.opts.DryRun}
+
+	codexDir := r.detectWindowsCodexHome()
+	if codexDir == "" {
+		if r.foreignAutoDetectSuppressed(r.opts.WindowsCodexHome) {
+			r.sandboxSkipResult(&res, ".codex", "WindowsCodexHome", r.opts.WindowsCodexHome)
+			return res
+		}
+		res.Error = errors.New("hook.registerCodexWindows: no Windows-side .codex/ detected (set WindowsCodexHome explicitly or run on a host where crossmount sees /mnt/c/Users/<u>/.codex/)")
+		return res
+	}
+
+	distro := r.opts.WSLDistro
+	if distro == "" {
+		distro = os.Getenv("WSL_DISTRO_NAME")
+	}
+	if distro == "" {
+		res.Error = errors.New("hook.registerCodexWindows: WSL distro unknown — set Options.WSLDistro or run inside WSL (so $WSL_DISTRO_NAME is set)")
+		return res
+	}
+
+	return r.registerCodexAt(codexHookTarget{
+		tool:      "codex-windows",
+		dir:       codexDir,
+		wrapper:   "wsl.exe -d " + cmdQuoteIfNeeded(distro) + " -- ",
+		quote:     cmdQuoteIfNeeded,
+		errPrefix: "hook.registerCodexWindows",
+		matchMine: isObserverCodexEntry,
+	})
+}
+
 func (r *Registry) unregisterCodex() UnregistrationResult {
-	res := UnregistrationResult{Tool: "codex", DryRun: r.opts.DryRun}
-	dir := filepath.Join(r.opts.HomeDir, ".codex")
+	return r.unregisterCodexAt("codex", filepath.Join(r.opts.HomeDir, ".codex"), "hook.unregisterCodex")
+}
+
+// unregisterCodexWindows removes the hook entries the codex-windows
+// bridge wrote from the Windows-side .codex/hooks.json. Mirrors
+// unregisterCodex against the detected Windows home; a host with no
+// Windows-side .codex is a no-op Skip, not an error (there is nothing
+// to clean). isObserverCodexEntry recognises the native and the
+// wsl.exe-bridge shapes alike, so a stale native
+// `observer.exe hook codex …` entry is cleaned up too (class C2).
+func (r *Registry) unregisterCodexWindows() UnregistrationResult {
+	codexDir := r.detectWindowsCodexHome()
+	if codexDir == "" {
+		return UnregistrationResult{Tool: "codex-windows", DryRun: r.opts.DryRun, Skipped: true}
+	}
+	return r.unregisterCodexAt("codex-windows", codexDir, "hook.unregisterCodexWindows")
+}
+
+// unregisterCodexAt is the shared codex hooks.json cleaner behind
+// unregisterCodex and unregisterCodexWindows. dir is the .codex
+// directory; errPrefix names the calling registrar in wrapped errors.
+func (r *Registry) unregisterCodexAt(tool, dir, errPrefix string) UnregistrationResult {
+	res := UnregistrationResult{Tool: tool, DryRun: r.opts.DryRun}
 	hooksPath := filepath.Join(dir, codexHooksFile)
 	res.ConfigPath = hooksPath
 
 	unlock, err := r.lockSettings(hooksPath)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.unregisterCodex: %w", err)
+		res.Error = fmt.Errorf("%s: %w", errPrefix, err)
 		return res
 	}
 	defer unlock()
@@ -2929,12 +4736,12 @@ func (r *Registry) unregisterCodex() UnregistrationResult {
 			res.Skipped = true
 			return res
 		}
-		res.Error = fmt.Errorf("hook.unregisterCodex: read: %w", err)
+		res.Error = fmt.Errorf("%s: read: %w", errPrefix, err)
 		return res
 	}
 	var cfg codexHooksConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		res.Error = fmt.Errorf("hook.unregisterCodex: parse %s: %w", hooksPath, err)
+		res.Error = fmt.Errorf("%s: parse %s: %w", errPrefix, hooksPath, err)
 		return res
 	}
 	if cfg.Hooks == nil {
@@ -2965,11 +4772,11 @@ func (r *Registry) unregisterCodex() UnregistrationResult {
 
 	match, err := r.checksumMatches(hooksPath, raw)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.unregisterCodex: checksum: %w", err)
+		res.Error = fmt.Errorf("%s: checksum: %w", errPrefix, err)
 		return res
 	}
 	if !match && !r.opts.Force {
-		res.Error = fmt.Errorf("hook.unregisterCodex: %s changed since install; pass --force to overwrite", hooksPath)
+		res.Error = fmt.Errorf("%s: %s changed since install; pass --force to overwrite", errPrefix, hooksPath)
 		return res
 	}
 
@@ -3065,26 +4872,65 @@ func writeCodexHooks(dir string, pinned pinnedTarget, cfg codexHooksConfig) erro
 }
 
 // isObserverCodexEntry recognises a hook command as one previously
-// written by ANY observer codex registrar. Same content-heuristic
-// rationale as isObserverClaudeEntry and isObserverCursorEntry — the
-// ` hook codex ` token sequence is the stable signature regardless
-// of which observer binary path prefixes it. Lets refresh-on-drift
-// upgrade entries left behind by a differently-installed observer
-// (npm bundle in node_modules, cross-binary upgrade, renamed
-// $HOME) without --force.
+// written by ANY observer codex registrar, NATIVE OR the wsl.exe
+// cross-OS bridge alike. Same content-heuristic rationale as
+// isObserverClaudeEntry/isObserverWindowsClaudeEntry and
+// isObserverCursorEntry/isObserverWindowsCursorEntry — the
+// ` hook codex ` token sequence is the stable signature regardless of
+// which observer binary path (or bridge wrapper) prefixes it. Lets
+// refresh-on-drift upgrade entries left behind by a differently-
+// installed observer (npm bundle in node_modules, cross-binary
+// upgrade, renamed $HOME) without --force.
+//
+// This is the PERMISSIVE half of codex's native/bridge predicate pair
+// (B4 fix) — the counterpart to the STRICT isObserverCodexEntryNative.
+// Used for: registerCodexWindows's own "already ours" check (so the
+// bridge target may still silently convert a stale NATIVE entry into
+// bridge form — the same one-directional asymmetry
+// isObserverWindowsClaudeEntry documents), and BOTH unregister paths
+// (uninstall must clean up either shape regardless of which target is
+// asked to do it). It must NEVER be used for registerCodex's (native)
+// own "already ours"/conflict check — that uses
+// isObserverCodexEntryNative instead, or a native re-register would
+// silently overwrite an existing bridge entry with no --force. See
+// codexHookTarget.matchMine's doc comment for the incident this
+// predicate split fixes.
 func isObserverCodexEntry(cmd string) bool {
 	return strings.Contains(cmd, " hook codex ")
 }
 
+// isObserverCodexEntryNative is the STRICT, native-only half of
+// codex's predicate pair (B4 fix): it recognises the same
+// ` hook codex ` signature as isObserverCodexEntry but EXCLUDES the
+// wsl.exe cross-OS bridge shape registerCodexWindows writes — the
+// exact split isObserverClaudeEntry/isObserverCursorEntry already
+// apply for their own tools (see isObserverClaudeEntry's doc comment
+// for the full "must not merge" rationale). Used ONLY by registerCodex
+// (via codexHookTarget.matchMine) so a native re-register never
+// mistakes an existing bridge entry for "already ours" and silently
+// rewrites it into native form — that flip would need --force, exactly
+// like a native claude-code/cursor register already refuses to
+// overwrite an existing bridge entry without it.
+func isObserverCodexEntryNative(cmd string) bool {
+	if !strings.Contains(cmd, " hook codex ") {
+		return false
+	}
+	if strings.HasPrefix(cmd, "wsl.exe ") || strings.HasPrefix(cmd, "MSYS_NO_PATHCONV=1 wsl.exe ") {
+		return false
+	}
+	return true
+}
+
 // findCodexGroupWithObserver returns the index of a codex hook
 // group whose single entry is recognised as observer-written by
-// isObserverCodexEntry, or -1. Content-heuristic (see
-// isObserverCodexEntry) so cross-binary stale entries are still
+// matchMine (t.matchMine — either isObserverCodexEntry or
+// isObserverCodexEntryNative, see codexHookTarget's doc comment), or
+// -1. Content-heuristic so cross-binary stale entries are still
 // detected as ours and refreshed.
-func findCodexGroupWithObserver(groups []codexHookGroup) int {
+func findCodexGroupWithObserver(groups []codexHookGroup, matchMine func(string) bool) int {
 	for i, g := range groups {
 		for _, h := range g.Hooks {
-			if h.Type == "command" && isObserverCodexEntry(h.Command) {
+			if h.Type == "command" && matchMine(h.Command) {
 				return i
 			}
 		}
@@ -3108,17 +4954,19 @@ func observerCodexCmdMatches(g codexHookGroup, cmd string) bool {
 }
 
 // hasConflictingCodexHook reports whether any group carries a
-// command that isn't observer-shaped. Force-less guard against
-// silently overwriting user-authored hooks. Content-heuristic via
-// isObserverCodexEntry — cross-binary stale entries fall through
-// to the refresh path.
-func hasConflictingCodexHook(groups []codexHookGroup) bool {
+// command that isn't observer-shaped per matchMine (t.matchMine —
+// see codexHookTarget's doc comment). Force-less guard against
+// silently overwriting user-authored hooks (or, for the native
+// target, an existing bridge entry — see isObserverCodexEntryNative).
+// Content-heuristic — cross-binary stale entries fall through to the
+// refresh path.
+func hasConflictingCodexHook(groups []codexHookGroup, matchMine func(string) bool) bool {
 	for _, g := range groups {
 		for _, h := range g.Hooks {
 			if h.Type != "command" {
 				continue
 			}
-			if !isObserverCodexEntry(h.Command) {
+			if !matchMine(h.Command) {
 				return true
 			}
 		}
@@ -3605,4 +5453,329 @@ func (r *Registry) RegisterClaudeCodeStatusline() RegistrationResult {
 // switch case.
 func (r *Registry) UnregisterClaudeCodeStatusline() UnregistrationResult {
 	return r.unregisterClaudeCodeStatusline()
+}
+
+// --- Part B item 1/2 cross-OS bridges -----------------------------------
+//
+// The six long-tail vendors' own "<tool>-windows" registration targets:
+// a WSL daemon writing a wsl.exe-bridged hook command into a Windows-side
+// config file, mirroring registerClaudeCodeWindows / registerCursorWindows
+// / registerCodexWindows (see CLAUDE.md's "Don't try to bridge cross-OS
+// hook capture at the storage layer"). Windsurf/Devin Desktop Cascade
+// deliberately has NO row here — its only grounded install channel is the
+// macOS Homebrew cask (internal/integration's devin row), so there is no
+// Windows-native install to bridge to.
+
+// resolveWSLDistro returns the WSL distribution the cross-OS bridge
+// registrars invoke via `wsl.exe -d <distro>`, honoring Options.WSLDistro
+// before falling back to $WSL_DISTRO_NAME. errPrefix names the calling
+// registrar in the wrapped error when neither is set — the command would
+// be ambiguous on a host with multiple distros. Same contract as the
+// inline distro resolution registerClaudeCodeWindows / registerCursorWindows
+// / registerCodexWindows each already duplicate.
+func (r *Registry) resolveWSLDistro(errPrefix string) (string, error) {
+	distro := r.opts.WSLDistro
+	if distro == "" {
+		distro = os.Getenv("WSL_DISTRO_NAME")
+	}
+	if distro == "" {
+		return "", fmt.Errorf("%s: WSL distro unknown — set Options.WSLDistro or run inside WSL (so $WSL_DISTRO_NAME is set)", errPrefix)
+	}
+	return distro, nil
+}
+
+// gitBashWrapper returns the "MSYS_NO_PATHCONV=1 wsl.exe -d <distro> -- "
+// prefix every settings.json/hooks.json/settings.yaml *-windows bridge in
+// this section wraps its command with — same convention
+// registerClaudeCodeWindows / registerCursorWindows already established
+// (these tools spawn hooks through Git Bash on Windows; see
+// registerClaudeCodeWindows's doc comment for the MSYS_NO_PATHCONV
+// rationale), NOT codex's cmd.exe convention.
+func gitBashWrapper(distro string) string {
+	return "MSYS_NO_PATHCONV=1 wsl.exe -d " + shellQuoteIfNeeded(distro) + " -- "
+}
+
+// registerGeminiCLIWindows installs the prompt-submit hook into a
+// Windows-side .gemini/settings.json (typically
+// /mnt/c/Users/<u>/.gemini/settings.json) with the command wrapped in
+// the wsl.exe bridge (gitBashWrapper) so a Windows-native Gemini CLI can
+// fire a hook that executes inside the WSL daemon's own OS-context.
+func (r *Registry) registerGeminiCLIWindows() RegistrationResult {
+	res := RegistrationResult{Tool: "gemini-cli-windows", DryRun: r.opts.DryRun}
+	dir := r.detectWindowsGeminiHome()
+	if dir == "" {
+		if r.foreignAutoDetectSuppressed(r.opts.WindowsGeminiHome) {
+			r.sandboxSkipResult(&res, ".gemini", "WindowsGeminiHome", r.opts.WindowsGeminiHome)
+			return res
+		}
+		res.Error = errors.New("hook.registerGeminiCLIWindows: no Windows-side .gemini/ detected (set WindowsGeminiHome explicitly or run on a host where crossmount sees /mnt/c/Users/<u>/.gemini/)")
+		return res
+	}
+	distro, err := r.resolveWSLDistro("hook.registerGeminiCLIWindows")
+	if err != nil {
+		res.Error = err
+		return res
+	}
+	return r.registerGenericSettingsHooks(genericSettingsHookTarget{
+		tool:       "gemini-cli",
+		resultTool: "gemini-cli-windows",
+		dir:        dir,
+		event:      "BeforeAgent",
+		errPrefix:  "hook.registerGeminiCLIWindows",
+		wrapper:    gitBashWrapper(distro),
+	})
+}
+
+// unregisterGeminiCLIWindows removes the hook entry the
+// gemini-cli-windows bridge wrote from the Windows-side
+// .gemini/settings.json. A host with no Windows-side .gemini is a no-op
+// Skip, not an error.
+func (r *Registry) unregisterGeminiCLIWindows() UnregistrationResult {
+	dir := r.detectWindowsGeminiHome()
+	if dir == "" {
+		return UnregistrationResult{Tool: "gemini-cli-windows", DryRun: r.opts.DryRun, Skipped: true}
+	}
+	return r.unregisterGenericSettingsHooks(genericSettingsHookTarget{
+		tool: "gemini-cli", resultTool: "gemini-cli-windows",
+		dir: dir, event: "BeforeAgent", errPrefix: "hook.unregisterGeminiCLIWindows",
+	})
+}
+
+// registerQwenCodeWindows is registerGeminiCLIWindows's Qwen Code
+// counterpart: a Windows-side .qwen/settings.json, single event
+// UserPromptSubmit.
+func (r *Registry) registerQwenCodeWindows() RegistrationResult {
+	res := RegistrationResult{Tool: "qwen-code-windows", DryRun: r.opts.DryRun}
+	dir := r.detectWindowsQwenHome()
+	if dir == "" {
+		if r.foreignAutoDetectSuppressed(r.opts.WindowsQwenHome) {
+			r.sandboxSkipResult(&res, ".qwen", "WindowsQwenHome", r.opts.WindowsQwenHome)
+			return res
+		}
+		res.Error = errors.New("hook.registerQwenCodeWindows: no Windows-side .qwen/ detected (set WindowsQwenHome explicitly or run on a host where crossmount sees /mnt/c/Users/<u>/.qwen/)")
+		return res
+	}
+	distro, err := r.resolveWSLDistro("hook.registerQwenCodeWindows")
+	if err != nil {
+		res.Error = err
+		return res
+	}
+	return r.registerGenericSettingsHooks(genericSettingsHookTarget{
+		tool:       "qwen-code",
+		resultTool: "qwen-code-windows",
+		dir:        dir,
+		event:      "UserPromptSubmit",
+		errPrefix:  "hook.registerQwenCodeWindows",
+		wrapper:    gitBashWrapper(distro),
+	})
+}
+
+// unregisterQwenCodeWindows is unregisterGeminiCLIWindows's Qwen Code
+// counterpart.
+func (r *Registry) unregisterQwenCodeWindows() UnregistrationResult {
+	dir := r.detectWindowsQwenHome()
+	if dir == "" {
+		return UnregistrationResult{Tool: "qwen-code-windows", DryRun: r.opts.DryRun, Skipped: true}
+	}
+	return r.unregisterGenericSettingsHooks(genericSettingsHookTarget{
+		tool: "qwen-code", resultTool: "qwen-code-windows",
+		dir: dir, event: "UserPromptSubmit", errPrefix: "hook.unregisterQwenCodeWindows",
+	})
+}
+
+// registerQoderWindows is registerGeminiCLIWindows's Qoder counterpart:
+// a Windows-side .qoder/settings.json, single event UserPromptSubmit.
+func (r *Registry) registerQoderWindows() RegistrationResult {
+	res := RegistrationResult{Tool: "qoder-windows", DryRun: r.opts.DryRun}
+	dir := r.detectWindowsQoderHome()
+	if dir == "" {
+		if r.foreignAutoDetectSuppressed(r.opts.WindowsQoderHome) {
+			r.sandboxSkipResult(&res, ".qoder", "WindowsQoderHome", r.opts.WindowsQoderHome)
+			return res
+		}
+		res.Error = errors.New("hook.registerQoderWindows: no Windows-side .qoder/ detected (set WindowsQoderHome explicitly or run on a host where crossmount sees /mnt/c/Users/<u>/.qoder/)")
+		return res
+	}
+	distro, err := r.resolveWSLDistro("hook.registerQoderWindows")
+	if err != nil {
+		res.Error = err
+		return res
+	}
+	return r.registerGenericSettingsHooks(genericSettingsHookTarget{
+		tool:       "qoder",
+		resultTool: "qoder-windows",
+		dir:        dir,
+		event:      "UserPromptSubmit",
+		errPrefix:  "hook.registerQoderWindows",
+		wrapper:    gitBashWrapper(distro),
+	})
+}
+
+// unregisterQoderWindows is unregisterGeminiCLIWindows's Qoder
+// counterpart.
+func (r *Registry) unregisterQoderWindows() UnregistrationResult {
+	dir := r.detectWindowsQoderHome()
+	if dir == "" {
+		return UnregistrationResult{Tool: "qoder-windows", DryRun: r.opts.DryRun, Skipped: true}
+	}
+	return r.unregisterGenericSettingsHooks(genericSettingsHookTarget{
+		tool: "qoder", resultTool: "qoder-windows",
+		dir: dir, event: "UserPromptSubmit", errPrefix: "hook.unregisterQoderWindows",
+	})
+}
+
+// registerFactoryDroidWindows installs the prompt-submit hook into a
+// Windows-side .factory/hooks.json with the command wsl.exe-bridged
+// (gitBashWrapper). Single event: UserPromptSubmit.
+func (r *Registry) registerFactoryDroidWindows() RegistrationResult {
+	res := RegistrationResult{Tool: "droid-windows", DryRun: r.opts.DryRun}
+	dir := r.detectWindowsFactoryHome()
+	if dir == "" {
+		if r.foreignAutoDetectSuppressed(r.opts.WindowsFactoryHome) {
+			r.sandboxSkipResult(&res, ".factory", "WindowsFactoryHome", r.opts.WindowsFactoryHome)
+			return res
+		}
+		res.Error = errors.New("hook.registerFactoryDroidWindows: no Windows-side .factory/ detected (set WindowsFactoryHome explicitly or run on a host where crossmount sees /mnt/c/Users/<u>/.factory/)")
+		return res
+	}
+	distro, err := r.resolveWSLDistro("hook.registerFactoryDroidWindows")
+	if err != nil {
+		res.Error = err
+		return res
+	}
+	return r.registerFactoryDroidAt(droidHookTarget{
+		tool:      "droid-windows",
+		dir:       dir,
+		wrapper:   gitBashWrapper(distro),
+		errPrefix: "hook.registerFactoryDroidWindows",
+	})
+}
+
+// unregisterFactoryDroidWindows removes the hook group the
+// droid-windows bridge wrote from the Windows-side .factory/hooks.json.
+func (r *Registry) unregisterFactoryDroidWindows() UnregistrationResult {
+	dir := r.detectWindowsFactoryHome()
+	if dir == "" {
+		return UnregistrationResult{Tool: "droid-windows", DryRun: r.opts.DryRun, Skipped: true}
+	}
+	return r.unregisterFactoryDroidAt("droid-windows", dir, "hook.unregisterFactoryDroidWindows")
+}
+
+// registerPoolsideWindows installs the prompt-submit hook into a
+// Windows-side .config/poolside/settings.yaml with the command
+// wsl.exe-bridged (gitBashWrapper). Single event: UserPromptSubmit.
+func (r *Registry) registerPoolsideWindows() RegistrationResult {
+	res := RegistrationResult{Tool: "poolside-windows", DryRun: r.opts.DryRun}
+	dir := r.detectWindowsPoolsideHome()
+	if dir == "" {
+		if r.foreignAutoDetectSuppressed(r.opts.WindowsPoolsideHome) {
+			r.sandboxSkipResult(&res, filepath.Join(".config", "poolside"), "WindowsPoolsideHome", r.opts.WindowsPoolsideHome)
+			return res
+		}
+		res.Error = errors.New("hook.registerPoolsideWindows: no Windows-side .config/poolside/ detected (set WindowsPoolsideHome explicitly or run on a host where crossmount sees /mnt/c/Users/<u>/.config/poolside/)")
+		return res
+	}
+	distro, err := r.resolveWSLDistro("hook.registerPoolsideWindows")
+	if err != nil {
+		res.Error = err
+		return res
+	}
+	return r.registerPoolsideAt(poolsideHookTarget{
+		tool:      "poolside-windows",
+		dir:       dir,
+		wrapper:   gitBashWrapper(distro),
+		errPrefix: "hook.registerPoolsideWindows",
+	})
+}
+
+// unregisterPoolsideWindows removes the hook entry the
+// poolside-windows bridge wrote from the Windows-side settings.yaml.
+func (r *Registry) unregisterPoolsideWindows() UnregistrationResult {
+	dir := r.detectWindowsPoolsideHome()
+	if dir == "" {
+		return UnregistrationResult{Tool: "poolside-windows", DryRun: r.opts.DryRun, Skipped: true}
+	}
+	return r.unregisterPoolsideAt("poolside-windows", dir, "hook.unregisterPoolsideWindows")
+}
+
+// registerCommandCodeWindows installs commandcode's Mods SDK bridge into
+// a Windows-side .commandcode/mods/observer-guard.ts (typically
+// /mnt/c/Users/<u>/.commandcode/mods/observer-guard.ts), baking in the
+// WSL distro + the Linux-side observer binary path so the mod's OWN
+// runtime (observer-guard.ts's resolveExec()) shells out through
+// wsl.exe when it detects it is running on win32 — see
+// commandcodemod.WritePluginBridge. Unlike every hooks.json/
+// settings.json/settings.yaml *-windows writer above, there is no
+// wrapper string built HERE: the wsl.exe bridge decision is made at
+// RUNTIME inside the TS mod (commandcode's own Node process is the one
+// that knows its own platform at hook-fire time), not baked into a
+// static shell command the way a JSON/YAML hooks entry is.
+func (r *Registry) registerCommandCodeWindows() RegistrationResult {
+	res := RegistrationResult{Tool: "command-code-windows", DryRun: r.opts.DryRun}
+	winHome := r.detectWindowsCommandCodeHome()
+	if winHome == "" {
+		if r.foreignAutoDetectSuppressed(r.opts.WindowsCommandCodeHome) {
+			r.sandboxSkipResult(&res, ".commandcode", "WindowsCommandCodeHome", r.opts.WindowsCommandCodeHome)
+			return res
+		}
+		res.Error = errors.New("hook.registerCommandCodeWindows: no Windows-side .commandcode/ detected (set WindowsCommandCodeHome explicitly or run on a host where crossmount sees /mnt/c/Users/<u>/.commandcode/)")
+		return res
+	}
+	distro, err := r.resolveWSLDistro("hook.registerCommandCodeWindows")
+	if err != nil {
+		res.Error = err
+		return res
+	}
+	dir := filepath.Join(winHome, "mods")
+	path := filepath.Join(dir, commandcodemod.ModFileName)
+	res.ConfigPath = path
+
+	alreadyInstalled := commandcodemod.Installed(dir)
+	if r.opts.DryRun {
+		if !alreadyInstalled {
+			res.HooksAdded = append(res.HooksAdded, "transformInput")
+		} else {
+			res.AlreadySet = append(res.AlreadySet, "transformInput")
+		}
+		return res
+	}
+	if err := commandcodemod.WritePluginBridge(dir, r.opts.BinaryPath, distro, r.opts.ConfigPath); err != nil {
+		res.Error = fmt.Errorf("hook.registerCommandCodeWindows: %w", err)
+		return res
+	}
+	if alreadyInstalled {
+		res.AlreadySet = append(res.AlreadySet, "transformInput")
+	} else {
+		res.HooksAdded = append(res.HooksAdded, "transformInput")
+	}
+	return res
+}
+
+// unregisterCommandCodeWindows removes the observer-guard.ts mod file
+// from the Windows-side .commandcode/mods/. A host with no Windows-side
+// .commandcode is a no-op Skip, not an error.
+func (r *Registry) unregisterCommandCodeWindows() UnregistrationResult {
+	winHome := r.detectWindowsCommandCodeHome()
+	if winHome == "" {
+		return UnregistrationResult{Tool: "command-code-windows", DryRun: r.opts.DryRun, Skipped: true}
+	}
+	dir := filepath.Join(winHome, "mods")
+	res := UnregistrationResult{
+		Tool:       "command-code-windows",
+		DryRun:     r.opts.DryRun,
+		ConfigPath: filepath.Join(dir, commandcodemod.ModFileName),
+	}
+	if !commandcodemod.Installed(dir) {
+		return res
+	}
+	if r.opts.DryRun {
+		res.HooksRemoved = append(res.HooksRemoved, "transformInput")
+		return res
+	}
+	if err := commandcodemod.RemovePlugin(dir); err != nil {
+		res.Error = fmt.Errorf("hook.unregisterCommandCodeWindows: %w", err)
+		return res
+	}
+	res.HooksRemoved = append(res.HooksRemoved, "transformInput")
+	return res
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/scrub"
 )
 
 // flatState is the `<uuid>.json` session-state envelope. Both observed
@@ -28,6 +29,12 @@ type flatState struct {
 type flatSessionState struct {
 	ConversationMetadata flatConvMeta `json:"conversation_metadata"`
 	RTSModelState        flatRTSModel `json:"rts_model_state"`
+	// AgentName is the kiro-cli agent profile that drove the session.
+	// Grounded 2026-09-03 across five live sessions: "kiro_default" for
+	// a plain terminal run, "kirocrew" when AWS's Kiro Crew desktop app
+	// orchestrated the run, and null on one older session. It is the
+	// SURFACE discriminator — see agentSurfaces.
+	AgentName string `json:"agent_name"`
 }
 
 type flatRTSModel struct {
@@ -70,9 +77,35 @@ type flatStreamMsg struct {
 	} `json:"meta"`
 }
 
+// flatStreamBlock is one content block of a stream message.
+//
+// `data` is POLYMORPHIC: a plain string for `kind:"text"`, and an OBJECT
+// for every other kind (`thinking` {text,signature,redactedContent,
+// modelId}, `toolUse` {toolUseId,name,input}, `toolResult`
+// {toolUseId,content,status}). It was typed `string` until 2026-09-03,
+// which made json.Unmarshal fail for the WHOLE LINE the moment a session
+// carried anything but text — so a real interactive session captured only
+// its first pure-text Prompt and warned "malformed stream line" for every
+// assistant turn. Grounded on the live Kiro Crew step-in capture; see
+// testdata/kirocrew/kiro-cli/.
 type flatStreamBlock struct {
-	Kind string `json:"kind"`
-	Data string `json:"data"`
+	Kind string          `json:"kind"`
+	Data json.RawMessage `json:"data"`
+}
+
+// flatToolUse is the decoded `data` of a `toolUse` block.
+type flatToolUse struct {
+	ToolUseID string          `json:"toolUseId"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+}
+
+// flatToolResult is the decoded `data` of a `toolResult` block. `content`
+// is a nested block list of the same polymorphic shape.
+type flatToolResult struct {
+	ToolUseID string            `json:"toolUseId"`
+	Content   []flatStreamBlock `json:"content"`
+	Status    string            `json:"status"`
 }
 
 // parseFlatBundle parses an interactive flat-file session bundle. Both
@@ -100,7 +133,7 @@ func (a *Adapter) parseFlatBundle(ctx context.Context, trigger string, fromOffse
 	// the embedded session_id is NOT allowed to override it (§4.5a — a
 	// re-keyed id orphans rows). In practice they are always equal.
 	state, turnByMsg := readFlatState(jsonPath)
-	projectRoot, gitBranch, gitRemote := resolveProjectRoot(state.CWD)
+	projectRoot, gitBranch, gitRemote, projectIdentity := resolveProjectRoot(state.CWD)
 	model := state.SessionState.RTSModelState.ModelInfo.ModelID
 
 	body, err := os.ReadFile(jsonlPath) //nolint:gosec // jsonlPath derives from a validated watch-root trigger
@@ -113,7 +146,18 @@ func (a *Adapter) parseFlatBundle(ctx context.Context, trigger string, fromOffse
 		return res, nil
 	}
 
+	// Surface stamp. The layout says a flat bundle was written; the
+	// bundle's own `session_state.agent_name` says WHO drove it, and a
+	// Crew-orchestrated run is a desktop surface, not a terminal one
+	// (see agentSurfaces — the kiro-cli half of the kiro-crew
+	// double-count rule).
+	res.SessionSurfaces = append(res.SessionSurfaces,
+		surfaceForAgent(layoutFlat, sessionID, state.SessionState.AgentName))
+
 	turnIndex := -1
+	// results accumulates every ToolResults record seen in this pass; the
+	// correlation onto action rows happens after the scan.
+	results := map[string]flatToolResult{}
 	for _, raw := range strings.Split(string(body), "\n") {
 		line := strings.TrimRight(raw, "\r")
 		if strings.TrimSpace(line) == "" {
@@ -191,11 +235,87 @@ func (a *Adapter) parseFlatBundle(ctx context.Context, trigger string, fromOffse
 					MessageID:     sl.Data.MessageID,
 				})
 			}
+			// Tool calls ride INSIDE the assistant message as `toolUse`
+			// blocks (grounded 2026-09-03 — the package doc's older claim
+			// that interactive streams carry no tool uses was measured on
+			// a text-only session). Each becomes its own action row,
+			// optimistically successful until the paired ToolResults
+			// record lands (see the correlation pass below).
+			for _, tu := range flatToolUses(sl.Data.Content) {
+				action, target, contentBytes := normalizeTool(tu.Name, tu.Input)
+				res.ToolEvents = append(res.ToolEvents, models.ToolEvent{
+					SourceFile:    jsonlPath,
+					SourceEventID: tu.ToolUseID,
+					SessionID:     sessionID,
+					ProjectRoot:   projectRoot,
+					GitBranch:     gitBranch,
+					GitRemote:     gitRemote,
+					Timestamp:     ts,
+					TurnIndex:     max0(turnIndex),
+					Model:         model,
+					Tool:          models.ToolKiroCLI,
+					ActionType:    action,
+					Target:        a.scrubber.String(contentcap.Cap(target, contentcap.DefaultMaxBytes)),
+					RawToolName:   tu.Name,
+					RawToolInput:  a.scrubber.String(contentcap.Cap(string(tu.Input), contentcap.DefaultMaxBytes)),
+					ContentBytes:  contentBytes,
+					Success:       true,
+					// Flipped by the correlation pass when the paired
+					// ToolResults record is in this same window — which,
+					// because the bundle is re-read whole every tick, it
+					// always is once kiro has written it.
+					OutcomePending: true,
+					MessageID:      sl.Data.MessageID,
+				})
+			}
+		case "ToolResults":
+			for id, tr := range flatToolResults(sl.Data.Content) {
+				results[id] = tr
+			}
 		default:
 			warnf(&res, "kirocli: flat bundle %s: unknown stream kind %q", sessionID, sl.Kind)
 		}
 	}
+	adapter.ApplyProjectIdentity(&res, projectIdentity)
+
+	applyFlatToolResults(&res, a.scrubber, results)
 	return res, nil
+}
+
+// applyFlatToolResults folds each ToolResults record onto the action row
+// its toolUseId created. Correlation is IN-WINDOW by construction: the
+// bundle is re-read whole on every parse, so a result that exists on disk
+// is always seen in the same pass as its call.
+//
+// `status` is kiro's own verdict ("success" observed live; anything else
+// is treated as a failure rather than guessing the failure vocabulary).
+func applyFlatToolResults(res *adapter.ParseResult, s *scrub.Scrubber, results map[string]flatToolResult) {
+	if len(results) == 0 {
+		return
+	}
+	for i := range res.ToolEvents {
+		tr, ok := results[res.ToolEvents[i].SourceEventID]
+		if !ok {
+			continue
+		}
+		e := &res.ToolEvents[i]
+		out, exitStatus := resultText(tr.Content)
+		e.OutcomePending = false
+		e.ToolOutput = s.String(contentcap.Cap(out, contentcap.DefaultMaxBytes))
+		switch {
+		case tr.Status != "" && !strings.EqualFold(tr.Status, "success"):
+			e.Success = false
+			e.ErrorMessage = "kiro tool result status: " + tr.Status
+		case exitStatus != "" && exitStatus != zeroExitStatus:
+			// The tool RAN but the command failed. Kiro still reports
+			// status="success" here, so the exit status is the only
+			// honest outcome signal.
+			e.Success = false
+			e.ErrorMessage = "kiro shell " + exitStatus
+		default:
+			e.Success = true
+		}
+	}
 }
 
 // readFlatState reads and decodes the `.json` sibling, returning the
@@ -224,15 +344,102 @@ func readFlatState(jsonPath string) (flatState, map[string]flatTurnMeta) {
 	return state, byMsg
 }
 
-// flatText joins the text blocks of a stream message.
+// flatText joins the text blocks of a stream message. Only `kind:"text"`
+// carries a JSON string; every other block's `data` is an object and is
+// skipped (a `thinking` block's inner text is reasoning, not output, and
+// is deliberately not folded into the assistant message).
 func flatText(blocks []flatStreamBlock) string {
 	var sb strings.Builder
 	for _, b := range blocks {
-		if b.Kind == "text" {
-			sb.WriteString(b.Data)
+		if b.Kind != "text" {
+			continue
+		}
+		var s string
+		if json.Unmarshal(b.Data, &s) == nil {
+			sb.WriteString(s)
 		}
 	}
 	return sb.String()
+}
+
+// flatToolUses decodes the `toolUse` blocks of an assistant message.
+func flatToolUses(blocks []flatStreamBlock) []flatToolUse {
+	var out []flatToolUse
+	for _, b := range blocks {
+		if b.Kind != "toolUse" {
+			continue
+		}
+		var tu flatToolUse
+		if json.Unmarshal(b.Data, &tu) == nil && tu.ToolUseID != "" {
+			out = append(out, tu)
+		}
+	}
+	return out
+}
+
+// flatShellResult is the `json` result block a shell tool returns. Kiro
+// reports the toolResult `status` as "success" whenever the tool RAN, so
+// a non-zero exit code is only visible here — grounded 2026-09-03, where
+// `del hello.py && dir /b` came back status="success" with
+// exit_status="exit code: 1" and a PowerShell parser error on stderr.
+// Reading `status` alone would file that as a successful command.
+type flatShellResult struct {
+	ExitStatus string `json:"exit_status"`
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+}
+
+// zeroExitStatus is the exact `exit_status` spelling kiro emits for a
+// successful command. Anything else is treated as a failure — the
+// conservative direction, and the vocabulary is not otherwise documented.
+const zeroExitStatus = "exit code: 0"
+
+// resultText renders a toolResult's content blocks into the action's
+// ToolOutput, and reports the shell exit status when one is present.
+//
+// Two block shapes are grounded: `text` (file tools — "Successfully
+// created …", a directory listing) and `json` (shell tools —
+// {exit_status, stdout, stderr}). A `json` block is rendered as its
+// stdout followed by its stderr so the operator sees what the command
+// actually printed, not a JSON envelope.
+func resultText(blocks []flatStreamBlock) (out, exitStatus string) {
+	var sb strings.Builder
+	for _, b := range blocks {
+		switch b.Kind {
+		case "text":
+			var s string
+			if json.Unmarshal(b.Data, &s) == nil {
+				sb.WriteString(s)
+			}
+		case "json":
+			var sr flatShellResult
+			if json.Unmarshal(b.Data, &sr) != nil {
+				continue
+			}
+			if sr.ExitStatus != "" {
+				exitStatus = sr.ExitStatus
+			}
+			sb.WriteString(sr.Stdout)
+			sb.WriteString(sr.Stderr)
+		}
+	}
+	return sb.String(), exitStatus
+}
+
+// flatToolResults decodes the `toolResult` blocks of a ToolResults
+// message into (toolUseId → result).
+func flatToolResults(blocks []flatStreamBlock) map[string]flatToolResult {
+	out := map[string]flatToolResult{}
+	for _, b := range blocks {
+		if b.Kind != "toolResult" {
+			continue
+		}
+		var tr flatToolResult
+		if json.Unmarshal(b.Data, &tr) == nil && tr.ToolUseID != "" {
+			out[tr.ToolUseID] = tr
+		}
+	}
+	return out
 }
 
 func unixSeconds(sec int64) time.Time {

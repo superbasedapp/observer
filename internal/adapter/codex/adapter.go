@@ -62,11 +62,40 @@ type Adapter struct {
 	// name checked by WatchPaths (default ".codex"). Set to
 	// ".openinterpreter" for the Open Interpreter variant.
 	homeDirName string
+
+	// desktopAppDir names the Electron userData directory of a DESKTOP
+	// app that embeds this same Rust binary and drives it against its
+	// OWN codex-home. Empty (codex proper) means there is no such app
+	// and WatchPaths adds no desktop root. Set to "interpreter" by the
+	// Open Interpreter variant — see desktopStoreRoots in
+	// openinterpreter.go for the per-OS ladder and its grounding.
+	desktopAppDir string
+
+	// surface is this instance's capture-surface vocabulary: the
+	// variant difference resolved into a capability at construction
+	// (CLAUDE.md #3) instead of a name check on the resolve path. The
+	// ZERO VALUE is codex proper's vocabulary — an empty overlay that
+	// falls straight through to surface.go's shared tables — so every
+	// pre-existing instance behaves exactly as before.
+	//
+	// CONSTRUCTION-ONLY for the same reason `name` is: a registered
+	// adapter is read concurrently.
+	surface surfaceVocabulary
+
+	// readsServiceTier is the capability "the owning <root>/config.toml
+	// carries an OpenAI service_tier worth reading" (Codex Fast mode).
+	// True for codex proper only. The Open Interpreter variant leaves it
+	// false: OpenAI service tiers mean nothing on its OpenRouter/Ollama
+	// lane, and its desktop app's codex-home/config.toml holds plaintext
+	// provider API keys (security ledger OI-1) — that file must never be
+	// opened, so the tier read is gated here at construction rather than
+	// by a name check on the parse path (CLAUDE.md #3).
+	readsServiceTier bool
 }
 
 // New returns a Codex adapter with defaults.
 func New() *Adapter {
-	return &Adapter{scrubber: scrub.New()}
+	return &Adapter{scrubber: scrub.New(), readsServiceTier: true}
 }
 
 // NewWithOptions customizes the scrubber and/or watch root.
@@ -74,7 +103,7 @@ func NewWithOptions(s *scrub.Scrubber, watchRoot string) *Adapter {
 	if s == nil {
 		s = scrub.New()
 	}
-	return &Adapter{scrubber: s, watchRoot: watchRoot}
+	return &Adapter{scrubber: s, watchRoot: watchRoot, readsServiceTier: true}
 }
 
 // Name implements adapter.Adapter.
@@ -114,19 +143,36 @@ func (a *Adapter) homeDir() string {
 //
 // The Open Interpreter variant (NewOpenInterpreter) follows the exact
 // same shape against INTERPRETER_HOME / ".openinterpreter" instead —
-// see homeEnv/homeDir.
+// see homeEnv/homeDir — and ADDITIONALLY watches the Interpreter
+// desktop app's embedded codex-home under every cross-mount home (see
+// desktopStoreRoots). Those desktop roots survive the env override:
+// $INTERPRETER_HOME relocates the CLI's own home, and the desktop
+// app's store is a DIFFERENT product's store at a fixed platform
+// convention that no CLI env var moves. Suppressing it would silently
+// zero desktop capture for an operator who only meant to redirect the
+// CLI. The explicit watchRoot (test/backfill) still short-circuits to
+// exactly one root.
+//
+// Roots are deduped by filesystem identity, so a home reachable under
+// two spellings (a cross-mount bind of the native home, a symlink)
+// contributes one root, not two.
 func (a *Adapter) WatchPaths() []string {
 	if a.watchRoot != "" {
 		return []string{a.watchRoot}
 	}
-	if home := os.Getenv(a.homeEnv()); home != "" {
-		return []string{filepath.Join(home, "sessions")}
-	}
 	var roots []string
-	for _, h := range crossmount.AllHomes() {
-		roots = append(roots, filepath.Join(h.Path, a.homeDir(), "sessions"))
+	envHome := os.Getenv(a.homeEnv())
+	if envHome != "" {
+		roots = append(roots, filepath.Join(envHome, "sessions"))
 	}
-	return roots
+	for _, h := range crossmount.AllHomes() {
+		// The env override replaces the per-home CLI root only.
+		if envHome == "" {
+			roots = append(roots, filepath.Join(h.Path, a.homeDir(), "sessions"))
+		}
+		roots = append(roots, a.desktopStoreRoots(h)...)
+	}
+	return adapter.DedupRootsByIdentity(roots)
 }
 
 // IsSessionFile matches rollout-*.jsonl files under one of this
@@ -180,10 +226,15 @@ type sessionContext struct {
 	// GitRemote is the normalized "origin" remote for Cwd. Unlike
 	// GitBranch (sourced from the rollout JSONL's own git_branch
 	// field), Codex's JSONL never carries a remote — this is resolved
-	// via git.Resolve(Cwd) + git.NormalizeRemote at the same call
-	// sites that already resolve the project root (resolveProjectRoot
-	// / resolveProjectRemote, cached by rootCache), never unmarshaled
-	// from JSON. `json:"-"` keeps it out of the wire shape.
+	// via git.ResolveIdentity(Cwd) at the same call sites that already
+	// resolve the project root (resolveProjectRoot / resolveProjectRemote,
+	// cached by rootCache), never unmarshaled from JSON. `json:"-"`
+	// keeps it out of the wire shape. The fuller Project Identity
+	// Resolver v2 bundle (upstream remote/owner hashes, workspace,
+	// worktree flag, content fingerprint) is applied separately at
+	// ParseSessionFile's return points via
+	// adapter.ApplyProjectIdentityByRoot(identitiesByRoot(rootCache)),
+	// not threaded through sessionContext.
 	GitRemote string `json:"-"`
 	// EffortLevel is the per-turn reasoning effort the model was
 	// asked to use (minimal | low | medium | high). Populated from
@@ -247,6 +298,16 @@ type sessionMetaPayload struct {
 	// the replay discriminator compares task_started.started_at
 	// against.
 	Timestamp string `json:"timestamp"`
+	// Originator + Source are the client-identity discriminator codex
+	// stamps on every session_meta (`codex_cli_rs` / `codex_exec` /
+	// `codex_vscode` / "Codex Desktop" / ... paired with `cli` / `exec`
+	// / `vscode`). Only the OWNING session_meta's values are used —
+	// resolveCodexSurface (surface.go) turns them into the normalized
+	// models.Surface* vocabulary for Part E capture-surface
+	// attribution. See docs/plans/ide-surface-capture-remediation-
+	// plan-2026-09-02.md §0/§3.
+	Originator string `json:"originator"`
+	Source     string `json:"source"`
 }
 
 // turnContextPayload extends sessionContext with developer_instructions —
@@ -330,6 +391,41 @@ type responseItemMessageContent struct {
 type agentMessage struct {
 	TurnID  string `json:"turn_id"`
 	Message string `json:"message"`
+}
+
+// itemCompletedPayload covers event_msg.payload when payload.type ==
+// "item_completed" — a newer Codex CLI wire format (observed live
+// 2026-09-02) that wraps turn activity in a discriminated Item union
+// (item.type: AgentMessage / Reasoning / CommandExecution /
+// UserMessage) instead of the legacy flat event_msg types
+// ("agent_message" / "user_message" above). On rollouts using this
+// schema exclusively, the legacy types never fire, so without this
+// case assistant text is silently dropped entirely (0 assistant_
+// message rows) and every tool call falls back to the dashboard's
+// "no recovered text" placeholder.
+//
+// Only item.type == "AgentMessage" is handled (mirroring the
+// "agent_message" case below). Reasoning and CommandExecution items
+// are exact-count duplicates of the response_item "reasoning" and
+// "custom_tool_call"/"custom_tool_call_output" entries already
+// captured elsewhere — handling them here would double-count.
+// UserMessage is left alone too: it is not a confirmed gap (initial
+// prompts have been observed captured via a different route on
+// item_completed-only rollouts), and speculatively wiring it risks
+// double-counting without a demonstrated need.
+//
+// The content-block shape ({"type":"Text","text":"..."} for
+// AgentMessage, {"type":"text",...} for UserMessage — casing is
+// inconsistent across item types) matches responseItemMessageContent
+// closely enough to reuse it + concatMessageContent verbatim: only
+// the "text" field is read, and its JSON key case is stable even
+// though the "type" field's case is not.
+type itemCompletedPayload struct {
+	TurnID string `json:"turn_id"`
+	Item   struct {
+		Type    string                       `json:"type"`
+		Content []responseItemMessageContent `json:"content"`
+	} `json:"item"`
 }
 
 type taskStarted struct {
@@ -840,6 +936,12 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 	// prefetch (owner already latched) yet reads no session_meta itself,
 	// so it must NOT re-emit — the guarded SQL would fire every poll.
 	sessionMetaObservedThisChunk := false
+	// ownerOriginator / ownerSource carry the OWNING session_meta's
+	// client-identity fields for Part E surface attribution — captured
+	// alongside sessionMetaObservedThisChunk (same owner-only gate) and
+	// resolved into a models.SessionSurface at the same emission site
+	// as the lineage marker below.
+	var ownerOriginator, ownerSource string
 
 	// rootCache is declared here (rather than after the resume block
 	// below) so the resume path can prime ctxState.GitRemote from the
@@ -879,9 +981,13 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 	// rollout JSONL, so read the operator's requested tier once from the
 	// owning ~/.codex/config.toml. Sticky for the whole file; surfaces as
 	// the per-message ServiceTier pill (via withEffort) and drives
-	// TokenEvent.Fast (priority → fast → Pricing.FastMultiplier).
-	if tier := codexServiceTier(path); tier != "" {
-		ctxState.ServiceTier = tier
+	// TokenEvent.Fast (priority → fast → Pricing.FastMultiplier). Gated on
+	// the readsServiceTier capability: the Open Interpreter variant never
+	// opens its root's config.toml (see the field doc).
+	if a.readsServiceTier {
+		if tier := codexServiceTier(path); tier != "" {
+			ctxState.ServiceTier = tier
+		}
 	}
 	pending := map[string]int{} // call_id → res.ToolEvents index
 	// patchInvocations is the SECONDARY index that lets a patch_apply_end
@@ -1150,10 +1256,12 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 	lineNum := lineOffset
 	for {
 		if ctx.Err() != nil {
+			adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 			return res, ctx.Err()
 		}
 		lineStr, consumed, oversized, readErr := readRecord(reader, maxRecordBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 			return res, fmt.Errorf("codex.ParseSessionFile: read %s: %w", path, readErr)
 		}
 		if consumed == 0 {
@@ -1274,9 +1382,14 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 			if err := json.Unmarshal(line.Payload, &meta); err == nil {
 				// Only the OWNING (first) session_meta triggers lineage
 				// emission — a replayed parent meta read mid-chunk on a
-				// resume must not re-emit the owner's lineage row.
+				// resume must not re-emit the owner's lineage row. The
+				// same owner-only gate applies to originator/source: a
+				// replayed parent's session_meta must not overwrite the
+				// child rollout's own surface attribution.
 				if !forkTrack.ownerLatched {
 					sessionMetaObservedThisChunk = true
+					ownerOriginator = meta.Originator
+					ownerSource = meta.Source
 				}
 				created, have := sessionMetaCreationSec(meta, line.Timestamp)
 				forkTrack.observeSessionMeta(
@@ -1367,6 +1480,22 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 				if err := json.Unmarshal(line.Payload, &am); err == nil {
 					turnID := firstNonEmpty(am.TurnID, ctxState.TurnID)
 					msg := strings.TrimSpace(am.Message)
+					if turnID != "" && msg != "" {
+						agentMessages[turnID] = msg
+					}
+					if msg != "" {
+						projectRoot := a.resolveProjectRoot(ctxState.Cwd, rootCache)
+						sess := ctxState
+						sess.TurnID = turnID
+						evt := a.buildAgentMessageEvent(path, sess, projectRoot, ts, lineNum, msg)
+						res.ToolEvents = append(res.ToolEvents, withEffort(evt))
+					}
+				}
+			case "item_completed":
+				var ic itemCompletedPayload
+				if err := json.Unmarshal(line.Payload, &ic); err == nil && ic.Item.Type == "AgentMessage" {
+					turnID := firstNonEmpty(ic.TurnID, ctxState.TurnID)
+					msg := strings.TrimSpace(concatMessageContent(ic.Item.Content))
 					if turnID != "" && msg != "" {
 						agentMessages[turnID] = msg
 					}
@@ -2275,6 +2404,27 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 			ParentThreadID: lin.ParentThreadID,
 			ThreadSource:   lin.ThreadSource,
 		})
+	}
+	adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
+	// Part E: capture-surface attribution (IDE-15 provenance half).
+	// Same owner-only gate as the lineage marker above — a resumed
+	// chunk that never read the owning session_meta must not re-stamp.
+	// The store write is first-wins-unless-empty (models.SessionSurface
+	// doc), so re-stamping the same value on a later full parse is
+	// harmless; this gate just avoids a needless write every poll.
+	if sessionMetaObservedThisChunk && ctxState.SessionID != "" {
+		// a.surface is the per-VARIANT vocabulary set at construction
+		// (zero value == codex proper's shared tables), so the Open
+		// Interpreter desktop's own originator resolves to
+		// desktop/"open-interpreter" without any tool-identity branch
+		// on this path.
+		if kind, host, ok := a.surface.resolve(ownerSource, ownerOriginator); ok {
+			res.SessionSurfaces = append(res.SessionSurfaces, models.SessionSurface{
+				SessionID:   ctxState.SessionID,
+				Surface:     kind,
+				SurfaceHost: host,
+			})
+		}
 	}
 	return res, nil
 }
@@ -3519,12 +3669,14 @@ func (a *Adapter) extractTarget(toolName string, rawInput json.RawMessage, proje
 
 // projectGitInfo is the per-cwd cache entry for resolveProjectRoot /
 // resolveProjectRemote: the resolved project root and its normalized
-// "origin" remote, captured together from a single git.Resolve call so
-// the two never drift and the filesystem walk never happens twice for
-// the same cwd.
+// "origin" remote, captured together from a single git.ResolveIdentity
+// call so the two never drift and the filesystem walk never happens
+// twice for the same cwd. Identity carries the fuller Project Identity
+// Resolver v2 bundle from the same call.
 type projectGitInfo struct {
-	Root   string
-	Remote string
+	Root     string
+	Remote   string
+	Identity git.Identity
 }
 
 func (a *Adapter) resolveProjectRoot(cwd string, cache map[string]projectGitInfo) string {
@@ -3545,12 +3697,16 @@ func (a *Adapter) resolveProjectRoot(cwd string, cache map[string]projectGitInfo
 	if entry, ok := cache[cwd]; ok {
 		return entry.Root
 	}
-	info, err := git.Resolve(cwd)
+	// RootCommit is left nil: the lazy, cached root-commit exec belongs
+	// only in the store-side path (Store.maybeRunLazyRootCommit), never
+	// on a per-line adapter hot path.
+	info, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
 		cache[cwd] = projectGitInfo{Root: cwd}
 		return cwd
 	}
-	cache[cwd] = projectGitInfo{Root: info.Root, Remote: git.NormalizeRemote(info.Remote)}
+	// info.Remote is already NormalizeRemote'd by ResolveIdentity.
+	cache[cwd] = projectGitInfo{Root: info.Root, Remote: info.Remote, Identity: info}
 	return info.Root
 }
 
@@ -3565,6 +3721,22 @@ func (a *Adapter) resolveProjectRemote(cwd string, cache map[string]projectGitIn
 	}
 	cwd = crossmount.TranslateForeignPath(cwd)
 	return cache[cwd].Remote
+}
+
+// identitiesByRoot flattens a per-cwd projectGitInfo cache into a
+// per-root git.Identity map suitable for
+// adapter.ApplyProjectIdentityByRoot. Multiple cwds resolving to the
+// same repo root collapse to one entry (they carry identical
+// identity, since ResolveIdentity is keyed off the discovered root).
+func identitiesByRoot(cache map[string]projectGitInfo) map[string]git.Identity {
+	out := make(map[string]git.Identity, len(cache))
+	for _, entry := range cache {
+		if entry.Root == "" {
+			continue
+		}
+		out[entry.Root] = entry.Identity
+	}
+	return out
 }
 
 func decodeOutput(raw json.RawMessage) string {

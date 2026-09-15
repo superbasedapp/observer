@@ -28,7 +28,7 @@ import {
   LayersIcon,
   PercentIcon,
 } from "@/components/icons";
-import { fmtInt, fmtPct } from "@/lib/format";
+import { fmtDateTime, fmtInt, fmtPct } from "@/lib/format";
 import type {
   ActionsTimeseries,
   ToolsBreakdownResponse,
@@ -112,7 +112,7 @@ export function ToolsPage() {
     <div className="space-y-6 p-6">
       <PageHeader
         title="Tools"
-        sub="Per-tool aggregates with charts showing when each AI client was active and what kind of work it did — four KPIs, activity-over-time stack, action-type mix per tool, and the per-tool aggregates table."
+        sub="Per-tool aggregates with charts showing when each AI client was active and what kind of work it did - four KPIs, activity-over-time stack, action-type mix per tool, and the per-tool aggregates table."
         helpId="tab.tools"
       />
       {/* 4-KPI header.
@@ -174,7 +174,7 @@ export function ToolsPage() {
                 </span>
               </span>
             ) : (
-              "—"
+              "-"
             )
           }
           sub={
@@ -204,7 +204,7 @@ export function ToolsPage() {
 
         <ChartShell
           title={<TitleWithHelp text="Action-type mix per tool" helpId="chart.tools_breakdown" />}
-          sub="What each tool actually does — 100% horizontal stack per tool over the canonical action categories, plus a capture-depth row so shallow adapters aren't misread."
+          sub="What each tool actually does - 100% horizontal stack per tool over the canonical action categories, plus a capture-depth row so shallow adapters aren't misread."
         >
           <ChartState
             loading={breakdown.loading && !breakdown.data}
@@ -221,7 +221,7 @@ export function ToolsPage() {
       {/* Per-tool aggregates */}
       <ChartShell
         title="Per-tool aggregates"
-        sub="Action volume, success rate, distinct sessions, first/last seen — sorted by volume DESC."
+        sub="Action volume, success rate, distinct sessions, first/last seen - sorted by volume DESC."
       >
         <ChartState
           loading={tools.loading && !tools.data}
@@ -360,7 +360,7 @@ function ActionMixPanel({ data }: { data: ToolsBreakdownResponse }) {
                 <span className="text-[10px] text-fg-3">
                   top:{" "}
                   <span className="text-fg-2">
-                    {top ? categoryMeta(top[0]).label : "—"}
+                    {top ? categoryMeta(top[0]).label : "-"}
                   </span>{" "}
                   ({display === "share"
                     ? fmtPct((top?.[1] ?? 0) / Math.max(1, t.total))
@@ -489,7 +489,7 @@ function CoverageDepthRow({
             state === "observed"
               ? `${meta.label}: ${fmtInt(n)} in window`
               : state === "expressible"
-                ? `${meta.label}: this adapter can report it — none in window`
+                ? `${meta.label}: this adapter can report it - none in window`
                 : mapped
                   ? `${meta.label}: outside this adapter's captured vocabulary`
                   : `${meta.label}: capture depth not mapped for this adapter`;
@@ -594,7 +594,7 @@ function PerToolTable({ rows }: { rows: ToolsResponse["tools"] }) {
                       {fmtInt(t.failure_count)}
                     </span>
                   ) : (
-                    <span className="text-fg-4">—</span>
+                    <span className="text-fg-4">-</span>
                   )}
                 </td>
                 <td className="py-1.5">
@@ -621,12 +621,12 @@ function PerToolTable({ rows }: { rows: ToolsResponse["tools"] }) {
                 <td className="py-1.5 text-right tabular-nums text-fg-2">
                   {fmtInt(t.session_count)}
                 </td>
-                <Tooltip content={t.first_seen}>
+                <Tooltip content={fmtDateTime(t.first_seen)}>
                   <td tabIndex={0} className="cursor-help py-1.5 text-fg-3 focus:outline-none">
                     {fmtCompactDate(t.first_seen)}
                   </td>
                 </Tooltip>
-                <Tooltip content={t.last_seen}>
+                <Tooltip content={fmtDateTime(t.last_seen)}>
                   <td tabIndex={0} className="cursor-help py-1.5 text-fg-3 focus:outline-none">
                     {fmtCompactDate(t.last_seen)}
                   </td>
@@ -657,7 +657,7 @@ function fmtCompactDate(iso: string): string {
 // authoritative count. Rendered wherever a browser token/cost figure appears.
 function EstPill() {
   return (
-    <Tooltip content="Browser-chatbot tokens & cost are ESTIMATES — no target UI returns authoritative counts.">
+    <Tooltip content="Browser-chatbot tokens & cost are ESTIMATES - no target UI returns authoritative counts.">
       <span
         tabIndex={0}
         className="ml-1 cursor-help rounded-pill bg-bg-3 px-1.5 py-0.5 align-middle text-[9px] font-medium uppercase tracking-[0.06em] text-fg-3 focus:outline-none"
@@ -699,7 +699,7 @@ function BrowserChatbotsCard({
         loading={loading && browserRows.length === 0}
         error={null}
         empty={browserRows.length === 0}
-        emptyHint="No browser-chatbot turns captured — install the browser extension to observe web AI usage."
+        emptyHint="No browser-chatbot turns captured - install the browser extension to observe web AI usage."
         height={120}
       >
         <div className="overflow-x-auto">
@@ -745,7 +745,7 @@ function BrowserChatbotsCard({
                     <td className="py-1.5 text-right tabular-nums text-fg-2">
                       {fmtInt(t.session_count)}
                     </td>
-                    <Tooltip content={t.last_seen}>
+                    <Tooltip content={fmtDateTime(t.last_seen)}>
                       <td
                         tabIndex={0}
                         className="cursor-help py-1.5 text-fg-3 focus:outline-none"

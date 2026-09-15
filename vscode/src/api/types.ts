@@ -112,6 +112,11 @@ export interface SessionRow {
   tool_cost_usd: number;
   cost_reliability: string;
   models: string[];
+  // title is the developer's OWN session title (migration 116) — distinct
+  // from cloud_title (the AI-generated one) and always wins over it wherever
+  // an "effective title" is rendered. Both optional/absent when unset.
+  title?: string;
+  cloud_title?: string;
   [key: string]: unknown;
 }
 

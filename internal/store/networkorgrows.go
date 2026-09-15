@@ -94,6 +94,32 @@ type networkEventDetails struct {
 // every session with network activity in the trailing window, capped to the
 // sessionNetworkEventCap most recent events per session.
 func (s *Store) SelectSessionNetworkEvents(ctx context.Context) ([]orgcontract.SessionNetworkEventRow, error) {
+	return s.SelectSessionNetworkEventsBounded(ctx, 0)
+}
+
+// SelectSessionNetworkEventsBounded is SelectSessionNetworkEvents with an
+// additional global in-memory byte ceiling. maxBytes <= 0 preserves the
+// unbounded query surface used by the local dashboard/tests. A positive limit
+// stops scanning before the next JSON row would exceed the ceiling; unlike the
+// per-session SQL cap, this bounds the complete cross-session snapshot before
+// request/response bodies accumulate in the Go heap.
+func (s *Store) SelectSessionNetworkEventsBounded(ctx context.Context, maxBytes int64) ([]orgcontract.SessionNetworkEventRow, error) {
+	rows, _, err := s.selectSessionNetworkEventsBounded(ctx, maxBytes)
+	return rows, err
+}
+
+// selectSessionNetworkEventsBounded is SelectSessionNetworkEventsBounded plus
+// the one fact the org-push path needs and no other caller does: whether the
+// byte ceiling stopped the scan EARLY, leaving rows unshipped.
+//
+// The Track R2 snapshot gate must not mark this family delivered when its tail
+// was cut, or the cut rows would never ship (fitRows' "re-composed on the next
+// tick" promise is what makes truncation safe, and a skip would break it).
+// Every other snapshot wire truncates only in fitRows, where the caller can see
+// it by comparing lengths; this one also truncates inside the scan, so it has
+// to say so explicitly.
+func (s *Store) selectSessionNetworkEventsBounded(ctx context.Context, maxBytes int64) ([]orgcontract.SessionNetworkEventRow, bool, error) {
+	truncated := false
 	since := time.Now().UTC().AddDate(0, 0, -sessionNetworkWindowDays)
 	// The per-session cap is enforced IN SQL via ROW_NUMBER() rather than in
 	// Go: it lets the LEFT JOIN onto process_network_bodies fire only for the
@@ -143,11 +169,12 @@ func (s *Store) SelectSessionNetworkEvents(ctx context.Context) ([]orgcontract.S
 		ORDER BY r.session_id, r.timestamp DESC`,
 		string(processobs.EventNetworkConnect), timestamp(since), sessionNetworkEventCap)
 	if err != nil {
-		return nil, fmt.Errorf("store.SelectSessionNetworkEvents: %w", err)
+		return nil, false, fmt.Errorf("store.SelectSessionNetworkEvents: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	out := []orgcontract.SessionNetworkEventRow{}
+	var usedBytes int64
 	for rows.Next() {
 		var (
 			eventID             int64
@@ -171,7 +198,7 @@ func (s *Store) SelectSessionNetworkEvents(ctx context.Context) ([]orgcontract.S
 			&r.ResponseBody, &r.ResponseBodySHA256, &r.ResponseBodyBytes, &respTrunc,
 			&r.ResponseContentType, &r.BodyUnavailableReason,
 		); err != nil {
-			return nil, fmt.Errorf("store.SelectSessionNetworkEvents: scan: %w", err)
+			return nil, false, fmt.Errorf("store.SelectSessionNetworkEvents: scan: %w", err)
 		}
 
 		r.EventKey = fmt.Sprintf("%s:%d", processKey, eventID)
@@ -216,10 +243,41 @@ func (s *Store) SelectSessionNetworkEvents(ctx context.Context) ([]orgcontract.S
 			}
 		}
 
+		rowBytes := jsonSize(r)
+		if maxBytes > 0 && usedBytes+rowBytes > maxBytes {
+			truncated = true
+			break
+		}
 		out = append(out, r)
+		usedBytes += rowBytes
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store.SelectSessionNetworkEvents: %w", err)
+		return nil, false, fmt.Errorf("store.SelectSessionNetworkEvents: %w", err)
 	}
-	return out, nil
+	return out, truncated, nil
+}
+
+// probeNetworkEvents is the Track R2 change-detection probe for the
+// session_network wire. It lives here — with the wire's own SQL — so
+// orgsnapgate.go and orgpush.go stay free of the table names.
+//
+// PROBE: the pair (MAX(process_events.id), MAX(process_network_bodies.id)) —
+// two index-endpoint seeks on AUTOINCREMENT primary keys, O(1). The body table
+// is in the probe because a body can be captured and attached AFTER its event
+// row (the capture paths write them separately), and the wire ships the body.
+//
+// WHY THAT REFLECTS MUTATION: both tables are append-only — the network capture
+// path only ever INSERTs, and neither an event nor a body row is updated in
+// place once written.
+//
+// RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: retention DELETEs inside the 7-day
+// window (and the retention sweep's action_id nulling, which this wire does not
+// ship) are invisible to the maxima; snapGate's maxSkipAge recomputes within
+// the hour. This is also the wire whose recompute is by far the most expensive
+// — it is the 2026-08-26 host-crash wire — so skipping it is the single largest
+// saving the gate makes.
+func (s *Store) probeNetworkEvents(ctx context.Context) (string, error) {
+	return s.snapProbeScalar(ctx, `
+		SELECT 'pe' || (SELECT COALESCE(MAX(id), 0) FROM process_events) ||
+		       ':nb' || (SELECT COALESCE(MAX(id), 0) FROM process_network_bodies)`)
 }

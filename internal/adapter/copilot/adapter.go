@@ -13,6 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/platform/pathnorm"
+	"github.com/marmutapp/superbased-observer/internal/platform/vscodehost"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 )
 
@@ -64,6 +65,10 @@ func (a *Adapter) WatchPaths() []string { return a.roots }
 //  2. Modern snapshot+patches: <ws>/chatSessions/<sessId>.jsonl and
 //     <globalStorage>/emptyWindowChatSessions/<sessId>.jsonl, both written
 //     unconditionally by VS Code Copilot Chat ≥0.45.
+//  3. Modern empty-window DOCUMENT:
+//     <globalStorage>/emptyWindowChatSessions/<sessId>.json — the same
+//     session state as a kind=0 snapshot's `v` payload, written as a plain
+//     JSON document instead of a snapshot+patches log (audit IDE-10).
 //
 // Paths originate on Windows and macOS; we normalize both native and foreign
 // separators so the matcher works regardless of host OS (Linux CI sees
@@ -76,18 +81,39 @@ func (a *Adapter) IsSessionFile(path string) bool {
 }
 
 func isLegacySessionPath(path string) bool {
-	lower := strings.ReplaceAll(strings.ToLower(path), `\`, "/")
+	lower := normalizeLower(path)
 	return strings.HasSuffix(lower, "/main.jsonl") &&
 		strings.Contains(lower, "/github.copilot-chat/debug-logs/")
 }
 
+// isModernSessionPath matches both modern shapes: the snapshot+patches
+// `.jsonl` log (chatSessions and emptyWindowChatSessions alike) and the
+// `.json` empty-window session document.
 func isModernSessionPath(path string) bool {
-	lower := strings.ReplaceAll(strings.ToLower(path), `\`, "/")
-	if !strings.HasSuffix(lower, ".jsonl") {
-		return false
+	lower := normalizeLower(path)
+	if strings.HasSuffix(lower, ".jsonl") {
+		return strings.Contains(lower, "/chatsessions/") ||
+			strings.Contains(lower, "/emptywindowchatsessions/")
 	}
-	return strings.Contains(lower, "/chatsessions/") ||
+	return isEmptyWindowDocumentPath(path)
+}
+
+// isEmptyWindowDocumentPath matches the `.json` session document VS Code
+// writes for a chat opened with no folder attached
+// (`<globalStorage>/emptyWindowChatSessions/<sessId>.json`). Only the
+// empty-window directory is accepted: `chatSessions/` carries no observed
+// `.json` variant, so widening it there would ingest files whose payload
+// shape is unverified.
+func isEmptyWindowDocumentPath(path string) bool {
+	lower := normalizeLower(path)
+	return strings.HasSuffix(lower, ".json") &&
 		strings.Contains(lower, "/emptywindowchatsessions/")
+}
+
+// normalizeLower lower-cases path and folds `\` to `/` so every matcher
+// works on a foreign host's separators (Linux CI reads Windows fixtures).
+func normalizeLower(path string) string {
+	return strings.ReplaceAll(strings.ToLower(path), `\`, "/")
 }
 
 type rawLine struct {
@@ -346,51 +372,173 @@ func extractAssistantText(raw string) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-// defaultRoots emits the VS Code User/workspaceStorage and User/globalStorage
-// paths appropriate to each cross-mount-resolved $HOME's logical OS. Copilot
-// Chat only runs inside VS Code, so the per-OS prefix is fixed:
+// defaultRoots emits the workspaceStorage and
+// globalStorage/emptyWindowChatSessions paths of EVERY VS Code-family
+// product under every cross-mount-resolved $HOME, via the shared
+// internal/platform/vscodehost product table.
 //
-//   - windows: $HOME\AppData\Roaming\Code\User\{workspaceStorage,globalStorage}
-//   - darwin:  $HOME/Library/Application Support/Code/User/{workspaceStorage,globalStorage}
-//   - linux:   $HOME/.config/Code/User/{workspaceStorage,globalStorage}
+// Copilot Chat is not a VS Code-only extension: it installs into the forks
+// too (Code - Insiders, VSCodium, Cursor, Windsurf, Kiro, Qoder, Trae) and
+// into the remote-server layouts (.vscode-server, .cursor-server), and the
+// hand-rolled Code-only switch this replaced silently missed every session
+// recorded inside one of them (audit finding IDE-14). vscodehost owns the
+// per-OS convention (including the native-Windows %APPDATA% override), so
+// branching on h.OS (logical) rather than runtime.GOOS — the fix for a
+// WSL2-installed observer never seeing Copilot data at
+// /mnt/c/Users/<u>/AppData/... — now lives in exactly one place.
 //
 // workspaceStorage hosts both the legacy debug-logs path and the modern
-// chatSessions path. globalStorage hosts the modern emptyWindowChatSessions
-// path (chats opened with no folder attached). Branching on h.OS (logical)
-// instead of runtime.GOOS (host) is the fix for the WSL2-installed observer
-// never seeing Copilot data living at /mnt/c/Users/<u>/AppData/...
+// chatSessions path. globalStorage/emptyWindowChatSessions hosts the modern
+// empty-window sessions (chats opened with no folder attached), in both the
+// `.jsonl` snapshot+patches and the `.json` document shape.
 func defaultRoots() []string {
 	var roots []string
-	for _, h := range crossmount.AllHomes() {
-		var userDir string
-		switch h.OS {
-		case crossmount.OSWindows:
-			userDir = filepath.Join(h.Path, "AppData", "Roaming", "Code", "User")
-		case crossmount.OSDarwin:
-			userDir = filepath.Join(h.Path, "Library", "Application Support", "Code", "User")
-		case crossmount.OSLinux:
-			userDir = filepath.Join(h.Path, ".config", "Code", "User")
-		default:
-			continue
+	seen := map[string]struct{}{}
+	add := func(p string) {
+		if p == "" {
+			return
 		}
-		roots = append(
-			roots,
-			filepath.Join(userDir, "workspaceStorage"),
-			filepath.Join(userDir, "globalStorage", "emptyWindowChatSessions"),
-		)
+		p = filepath.Clean(p)
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		roots = append(roots, p)
+	}
+
+	for _, h := range crossmount.AllHomes() {
+		for _, ref := range vscodehost.WorkspaceStorageDirs(h) {
+			add(ref.Path)
+		}
+		for _, ref := range vscodehost.GlobalStorageDirs(h) {
+			add(filepath.Join(ref.Path, emptyWindowDirName))
+		}
 	}
 	return roots
+}
+
+// emptyWindowDirName is VS Code's own casing for the globalStorage
+// subdirectory holding folder-less chat sessions.
+const emptyWindowDirName = "emptyWindowChatSessions"
+
+// chatSessionsDirName is the workspaceStorage subdirectory holding
+// project-attached modern sessions.
+const chatSessionsDirName = "chatSessions"
+
+// modernLogSiblingExists reports whether a `.jsonl` snapshot+patches log
+// exists anywhere we watch for sessionID — the guard that stops a
+// `<sid>.json` empty-window DOCUMENT from being ingested alongside a
+// `<sid>.jsonl` log of the same session (C1; see parseModernDocument).
+//
+// Both shapes derive their SourceEventIDs from the same request ids, so
+// the store's UNIQUE(source_file, source_event_id) index CANNOT dedupe
+// them — the source files differ by extension. The dedup therefore has
+// to happen here, before emission, exactly like cursor's
+// cursorSiblingExists gate.
+//
+// docPath's own directory is checked first because that is the only place
+// a coexisting pair can appear without any watch-root configuration at
+// all (and the only place tests stage one). The watch roots are then
+// swept for the two layouts a modern log can live in:
+//
+//	<globalStorage>/emptyWindowChatSessions/<sid>.jsonl   (root IS that dir)
+//	<workspaceStorage>/<wsHash>/chatSessions/<sid>.jsonl  (root is workspaceStorage)
+//
+// A session id that is not a plain filename component (empty, or carrying
+// a separator or a glob metacharacter) is refused rather than globbed:
+// it cannot name a real VS Code session file, and feeding it to
+// filepath.Glob would be a path-traversal-shaped read.
+//
+// Cost: two stats plus one single-level glob per watch root, and only on
+// the `.json` document path — which exists for empty-window chats alone
+// and is rewritten in place, so it is parsed rarely. The glob's readdir
+// covers one workspaceStorage root (one entry per workspace).
+func (a *Adapter) modernLogSiblingExists(sessionID, docPath string) bool {
+	if !safeSessionIDComponent(sessionID) {
+		return false
+	}
+	name := sessionID + ".jsonl"
+
+	if fileExists(filepath.Join(filepath.Dir(docPath), name)) {
+		return true
+	}
+	for _, root := range a.WatchPaths() {
+		if fileExists(filepath.Join(root, name)) {
+			return true
+		}
+		if fileExists(filepath.Join(root, chatSessionsDirName, name)) {
+			return true
+		}
+		matches, err := filepath.Glob(filepath.Join(root, "*", chatSessionsDirName, name))
+		if err == nil && len(matches) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// safeSessionIDComponent reports whether sessionID can be joined into a
+// path as a single filename component: non-empty, no separator, no `..`,
+// and no glob metacharacter (which filepath.Glob would expand).
+func safeSessionIDComponent(sessionID string) bool {
+	if sessionID == "" || sessionID == "." || sessionID == ".." {
+		return false
+	}
+	return !strings.ContainsAny(sessionID, `/\*?[]`)
+}
+
+// fileExists reports whether path names an existing regular file (never
+// a directory). Any stat error is "no".
+func fileExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
 }
 
 // sessionIDFromPath returns the session identifier embedded in a Copilot
 // session file path. Legacy debug-logs put the id in the parent directory
 // (`<sess>/main.jsonl`); modern chatSessions and emptyWindowChatSessions
-// put it in the file basename (`<sess>.jsonl`).
+// put it in the file basename (`<sess>.jsonl`, or `<sess>.json` for the
+// empty-window document).
 func sessionIDFromPath(path string) string {
 	if isModernSessionPath(path) {
-		return strings.TrimSuffix(filepath.Base(path), ".jsonl")
+		base := filepath.Base(path)
+		return strings.TrimSuffix(base, filepath.Ext(base))
 	}
 	return filepath.Base(filepath.Dir(path))
+}
+
+// surfaceHostFor resolves the VS Code-family host token for a session file
+// through the shared vscodehost product table — "vscode" for desktop Code,
+// "cursor" for a Cursor host, "vscode-remote" for a VS Code Server layout,
+// and so on. Copilot Chat only ever runs inside such a host, so a path we
+// cannot attribute (a fixture under a temp dir, an unusual relocation)
+// falls back to the overwhelmingly common "vscode" rather than dropping
+// the stamp: the KIND (ide) is certain either way, and the host token is
+// the refinement.
+func surfaceHostFor(path string) string {
+	if p, ok := vscodehost.ProductForPath(path); ok && p.Host != "" {
+		return p.Host
+	}
+	return defaultSurfaceHost
+}
+
+const defaultSurfaceHost = "vscode"
+
+// appendSessionSurface stamps one models.SessionSurface for sessionID.
+// Every Copilot Chat session is an IDE chat by construction (there is no
+// Copilot Chat CLI writing these stores — `copilot-cli` is a separate
+// adapter with its own tool id), so the kind is always models.SurfaceIDE
+// and only the host varies. A parse that never resolved a session id
+// stamps nothing.
+func appendSessionSurface(res *adapter.ParseResult, sessionID, path string) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	res.SessionSurfaces = append(res.SessionSurfaces, models.SessionSurface{
+		SessionID:   sessionID,
+		Surface:     models.SurfaceIDE,
+		SurfaceHost: surfaceHostFor(path),
+	})
 }
 
 // projectRootFromPath walks up from the source file's directory until it

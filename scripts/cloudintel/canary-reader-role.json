@@ -1,0 +1,14 @@
+{
+  "Name": "Cloudintel Canary Reader (<SBCI_ENV>)",
+  "IsCustom": true,
+  "Description": "Read-only access to exactly one Azure AI Foundry (Cognitive Services) account, for the sbci-worker managed identity's canary/attestation probe (plan §2.2, contract §2 'CANARY READER role'). Grants Microsoft.CognitiveServices/accounts/read and nothing else — no key listing, no data-plane inference, no write/delete. AssignableScopes is subscription-wide because Azure role DEFINITIONS cannot themselves be scoped to a single resource; the actual restriction to the one Foundry account is applied by the role ASSIGNMENT (see ensure_canary_role_assignment in cloudintel-azure.sh), which binds this definition to sbci-worker's principal at the Foundry resource's own scope, not the subscription.",
+  "Actions": [
+    "Microsoft.CognitiveServices/accounts/read"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/<SUBSCRIPTION_ID>"
+  ]
+}

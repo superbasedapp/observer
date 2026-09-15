@@ -48,7 +48,9 @@ appear once per row.
 | R-171 | exfil | high | flag | ask | shell command uploading file contents to a remote destination |
 | R-172 | exfil | critical | flag | deny | secret-shaped value in the arguments of a network-touching command |
 | R-172 | exfil | critical | flag | deny | secret-shaped content in an outbound LLM API request |
+| R-172 | exfil | critical | flag | deny | secret-shaped content typed directly into a prompt to your coding-agent tool, before it reaches the model |
 | R-173 | exfil | warn | flag | flag | DNS lookup of an encoded-looking subdomain (DNS-tunnel exfil shape) |
+| R-190 | pii | warn | flag | deny | deterministic PII (credit card, SSN, IBAN, ...) in the developer's own prompt text |
 | R-180 | injection | high | flag | flag | inbound tool-result/web content carries injection-shaped instruction patterns |
 | R-204 | posture | high | flag | flag | compiled native guard rules drifted from the effective policy |
 | R-205 | posture | high | flag | flag | org policy bundle failed integrity verification and was rejected |
@@ -67,6 +69,11 @@ appear once per row.
 | B-602 | budget | high | flag | flag | daily cost (all sessions) exceeded [guard.budget].daily_usd |
 | B-603 | budget | high | flag | flag | calendar-month cost (all sessions) exceeded [guard.budget].monthly_usd |
 | B-604 | budget | high | flag | flag | rolling-7-day cost (all sessions) exceeded [guard.budget].weekly_usd |
+| B-621 | budget | high | flag | flag | session token usage exceeded [guard.budget].session_tokens |
+| B-622 | budget | high | flag | flag | daily token usage (all sessions) exceeded [guard.budget].daily_tokens |
+| B-623 | budget | high | flag | flag | calendar-month token usage (all sessions) exceeded [guard.budget].monthly_tokens |
+| B-624 | budget | high | flag | flag | rolling-7-day token usage (all sessions) exceeded [guard.budget].weekly_tokens |
+| B-625 | budget | high | flag | deny | the organization requires a budget on this managed node and none has been verified |
 | B-610 | limit | warn | flag | flag | 5h usage window utilization reached [guard.budget.window].util_5h_warn |
 | B-611 | limit | high | flag | deny | 5h usage window utilization reached [guard.budget.window].util_5h_deny |
 | B-612 | limit | warn | flag | flag | weekly usage window utilization reached [guard.budget.window].util_weekly_warn |

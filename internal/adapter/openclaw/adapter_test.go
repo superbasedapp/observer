@@ -1287,3 +1287,45 @@ func TestParseSessionFile_TaskRunsReplayLineagePastWatermark(t *testing.T) {
 		t.Fatalf("durable lineage did not replay past watermark: %+v", second.SessionLineages)
 	}
 }
+
+// TestMessageContentListUnmarshal pins the dual-shape content decoder that
+// the live openclaw@2026.8.2 store surfaced: user turns store content as a
+// bare string, assistant turns as an array of typed blocks. Both must
+// decode without error; a string becomes a single text block.
+func TestMessageContentListUnmarshal(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		wantLen int
+		wantErr bool
+		text0   string
+	}{
+		{"string form (user turn)", `"just some prose"`, 1, false, "just some prose"},
+		{"array form (assistant turn)", `[{"type":"text","text":"a"},{"type":"tool_use","name":"bash"}]`, 2, false, "a"},
+		{"empty string", `""`, 1, false, ""},
+		{"null", `null`, 0, false, ""},
+		{"object is rejected", `{"type":"text"}`, 0, true, ""},
+		{"number is rejected", `42`, 0, true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var m messageContentList
+			err := json.Unmarshal([]byte(tc.in), &m)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want error for %q, got none", tc.in)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unmarshal %q: %v", tc.in, err)
+			}
+			if len(m) != tc.wantLen {
+				t.Fatalf("len = %d, want %d", len(m), tc.wantLen)
+			}
+			if tc.wantLen > 0 && m[0].Text != tc.text0 {
+				t.Fatalf("m[0].Text = %q, want %q", m[0].Text, tc.text0)
+			}
+		})
+	}
+}

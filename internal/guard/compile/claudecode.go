@@ -215,6 +215,10 @@ func claudeCodeRows() []Translation {
 			Note: "content detection (typed secret detectors over arguments/bodies), not command-shape",
 		},
 		{
+			RuleID: "R-190", Fidelity: FidelityNone,
+			Note: "content detection (typed PII detectors over the developer's own prompt text), not command-shape; the reconsider-once mode vocabulary lives in [guard.prompt], not the native dialect",
+		},
+		{
 			RuleID: "R-173", Fidelity: FidelityNone,
 			Note: "flag-only rule; encoded-subdomain grading is content analysis, not command-shape",
 		},
@@ -295,6 +299,26 @@ func claudeCodeRows() []Translation {
 		{
 			RuleID: "B-604", Fidelity: FidelityNone,
 			Note: "weekly spend is runtime state; budget enforcement is the proxy's (§12.1 hard mode)",
+		},
+		{
+			RuleID: "B-621", Fidelity: FidelityNone,
+			Note: "session token usage is runtime state; budget enforcement is the proxy's (§12.1 hard mode)",
+		},
+		{
+			RuleID: "B-622", Fidelity: FidelityNone,
+			Note: "daily token usage is runtime state; budget enforcement is the proxy's (§12.1 hard mode)",
+		},
+		{
+			RuleID: "B-623", Fidelity: FidelityNone,
+			Note: "monthly token usage is runtime state; budget enforcement is the proxy's (§12.1 hard mode)",
+		},
+		{
+			RuleID: "B-624", Fidelity: FidelityNone,
+			Note: "weekly token usage is runtime state; budget enforcement is the proxy's (§12.1 hard mode)",
+		},
+		{
+			RuleID: "B-625", Fidelity: FidelityNone,
+			Note: "whether the organization's budget ever verified is daemon state; the refusal is the proxy's (org-budget ruling R2)",
 		},
 		{
 			RuleID: "B-610", Fidelity: FidelityNone,

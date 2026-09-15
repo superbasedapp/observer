@@ -1,5 +1,5 @@
-// Package attachsock implements the AF_UNIX control+stdio protocol that backs
-// `observer <tool> --attach` (session-attach design 2026-07-19, Phase 1).
+// Package attachsock implements the owner-only control+stdio protocol that
+// backs `observer <tool> --attach` (session-attach design 2026-07-19, Phase 1).
 //
 // It is a transport-pure package: it speaks net.Conn, encoding/json and io
 // only. It imports none of the daemon's subsystems (termsession, termsvc,
@@ -9,13 +9,13 @@
 //
 // # Roles
 //
-//   - Server (daemon side): Serve accepts connections on the owner-only unix
-//     socket, reads a spawn control frame, asks the Host to launch a daemon-owned
+//   - Server (daemon side): Serve accepts connections on the owner-only
+//     endpoint, reads a spawn control frame, asks the Host to launch a daemon-owned
 //     PTY, then bridges the PTY's output to the client and the client's stdin to
 //     the PTY. A dropped client detaches (releases the writer + unsubscribes)
 //     WITHOUT killing the child — the child lives on for the dashboard and other
 //     viewers.
-//   - Client (`observer <tool> --attach`): Attach dials the socket, sends the
+//   - Client (`observer <tool> --attach`): Attach dials the endpoint, sends the
 //     spawn request, then pumps the operator's terminal stdin/stdout and window
 //     resizes across the connection. TTY raw-mode and SIGWINCH handling belong to
 //     the cmd layer, which feeds the Resize channel.
@@ -29,7 +29,16 @@
 // connection with a protocol error. Control ops: client→server spawn/resize/
 // detach; server→client spawned/exit/error.
 //
-// The socket is never bound to a network interface — AF_UNIX only, mode 0600,
-// under the operator's ~/.observer/ — so it is unreachable off-box by
-// construction (design §3.3).
+// # Transport
+//
+// The endpoint itself is OS-specific and lives behind the Transport seam
+// (transport.go): an AF_UNIX socket in a 0700 directory under the operator's
+// ~/.observer/ on unix, a named pipe with a protected owner-only DACL on
+// Windows (audit DI-09;
+// docs/plans/dashboard-install-gap-remediation-research-2026-09-02.md §3.5).
+// Both are owner-only and neither is reachable off-box — the unix socket is
+// never bound to a network interface, and the Windows DACL denies the NETWORK
+// group so the pipe's SMB reachability (\\host\pipe\…) is closed at the kernel
+// (design §3.3). Framing, Serve and Attach speak net.Listener / net.Conn only
+// and never branch on the platform.
 package attachsock

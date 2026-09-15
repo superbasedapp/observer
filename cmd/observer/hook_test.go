@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,8 +16,11 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/pidbridge"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 func TestDecidePreToolRewrite(t *testing.T) {
@@ -347,6 +352,306 @@ func captureWriter(out *[]pidbridge.Entry) pidbridgeWriter {
 	return func(_ context.Context, e pidbridge.Entry) error {
 		*out = append(*out, e)
 		return nil
+	}
+}
+
+// TestHandleCodexUserPromptSubmit_EndToEnd mirrors the Claude Code
+// end-to-end test, pinned against Codex's top-level-block dialect
+// (legacy {"decision":"block","reason":…}): register (wired into
+// handleCodexHook below) → a live-shaped secret → a block reply → an
+// identical (same finding set) resend → no decision field (allowed).
+func TestHandleCodexUserPromptSubmit_EndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "observer.db")
+	configPath := filepath.Join(dir, "config.toml")
+	cfgBody := "[observer]\ndb_path = " + strconv.Quote(filepath.ToSlash(dbPath)) + "\n\n" +
+		"[guard]\nenabled = true\nmode = \"enforce\"\n\n" +
+		"[guard.prompt]\nenabled = true\nmode = \"ask-once\"\nhook_lane = true\nreconsider_min_delay = \"0s\"\n"
+	if err := os.WriteFile(configPath, []byte(cfgBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	const secretPrompt = `{"session_id":"s1","cwd":"/r","hook_event_name":"UserPromptSubmit","prompt":"my key is sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz"}`
+	const secretPromptResend = `{"session_id":"s1","cwd":"/r","hook_event_name":"UserPromptSubmit","prompt":"sending again: my key is sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz"}`
+
+	runOnce := func(payload string) map[string]any {
+		t.Helper()
+		stdinR, stdinW, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		go func() {
+			_, _ = stdinW.Write([]byte(payload))
+			_ = stdinW.Close()
+		}()
+		stdoutR, stdoutW, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		oldStdin, oldStdout := os.Stdin, os.Stdout
+		os.Stdin, os.Stdout = stdinR, stdoutW
+		handleCodexHook(context.Background(), "UserPromptSubmit", configPath)
+		os.Stdin, os.Stdout = oldStdin, oldStdout
+		_ = stdoutW.Close()
+		out, _ := io.ReadAll(stdoutR)
+		var reply map[string]any
+		if err := json.Unmarshal(out, &reply); err != nil {
+			t.Fatalf("reply not JSON: %v (%q)", err, out)
+		}
+		return reply
+	}
+
+	first := runOnce(secretPrompt)
+	if got, _ := first["decision"].(string); got != "block" {
+		t.Fatalf("first submission decision = %q, want block (reply=%+v)", got, first)
+	}
+	if reason, _ := first["reason"].(string); reason == "" {
+		t.Fatalf("first submission carried no reason")
+	} else if strings.Contains(reason, "sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz") {
+		t.Fatalf("reason leaked the raw secret value: %q", reason)
+	}
+
+	second := runOnce(secretPromptResend)
+	if _, hasDecision := second["decision"]; hasDecision {
+		t.Fatalf("identical resend must carry NO decision field (allowed), got %+v", second)
+	}
+
+	ctx := context.Background()
+	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	events, err := store.New(database).LoadRecentGuardEvents(ctx, time.Time{}, 10)
+	if err != nil {
+		t.Fatalf("LoadRecentGuardEvents: %v", err)
+	}
+	found := false
+	for _, e := range events {
+		if e.RuleID == "R-172" && e.Tool == models.ToolCodex {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no codex R-172 guard_events row found among %+v", events)
+	}
+
+	// NIT (phase-2 review): the guard verdict is not the only thing
+	// that must land — a denied prompt is still an attempt worth
+	// recording (same posture as every other guarded receiver), so
+	// BOTH resends must also produce an actions row via the EXISTING
+	// codexadapter.BuildHookEvent -> Ingest capture path (handled in
+	// the "handled" branch of handleCodexHook, unconditional on the
+	// verdict).
+	var actionCount int
+	if err := database.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM actions WHERE session_id = ? AND action_type = ?",
+		"s1", string(models.ActionUserPrompt),
+	).Scan(&actionCount); err != nil {
+		t.Fatalf("query actions: %v", err)
+	}
+	if actionCount != 2 {
+		t.Errorf("actions row count for session s1/action_type=user_prompt = %d, want 2 (one per submission, guard verdict notwithstanding)", actionCount)
+	}
+}
+
+// --- Part B item 2 (phase-3a, docs/plans/prompt-submit-intervention-
+// exploration-2026-09-07.md §2.1b): end-to-end deny→resend-allow
+// coverage for the documented long-tail vendors' JSON-reply dialects
+// (zcode, commandcode) through their REAL hookReceivers entry — same
+// pattern as TestHandleCodexUserPromptSubmit_EndToEnd above. Qoder and
+// Devin/Cascade are NOT covered here: their blockExitCode dialects
+// call os.Exit directly inside handlePromptSubmitOnlyHook, which would
+// kill this test binary if invoked in-process — see the "qoder"/
+// "devin" subtests of TestRunProbeHook_EndToEnd (probehook_test.go)
+// for their subprocess-based coverage instead. Poolside moved to that
+// SAME subprocess pattern as of F3 (phase-3a review) —
+// TestHandlePoolsidePromptSubmit_EndToEnd, below hook_test.go's
+// in-process helpers — once its promptDialects row also gained a
+// non-zero blockExitCode (dual-signal: JSON reply + exit-2 fallback),
+// it would os.Exit(2) and kill this test binary exactly like
+// Qoder/Cascade already do; see that test (in this same file) for the
+// subprocess replacement.
+
+// runPromptSubmitHookOnce runs one hookReceivers[tool] invocation with
+// payload on stdin and returns the parsed JSON stdout reply.
+func runPromptSubmitHookOnce(t *testing.T, tool, event, configPath, payload string) map[string]any {
+	t.Helper()
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	go func() {
+		_, _ = stdinW.Write([]byte(payload))
+		_ = stdinW.Close()
+	}()
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	oldStdin, oldStdout := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = stdinR, stdoutW
+	hookReceivers[tool](context.Background(), event, configPath)
+	os.Stdin, os.Stdout = oldStdin, oldStdout
+	_ = stdoutW.Close()
+	out, _ := io.ReadAll(stdoutR)
+	var reply map[string]any
+	if err := json.Unmarshal(out, &reply); err != nil {
+		t.Fatalf("reply not JSON: %v (%q)", err, out)
+	}
+	return reply
+}
+
+func writePromptGuardConfig(t *testing.T, dbPath string) string {
+	t.Helper()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	cfgBody := "[observer]\ndb_path = " + strconv.Quote(filepath.ToSlash(dbPath)) + "\n\n" +
+		"[guard]\nenabled = true\nmode = \"enforce\"\n\n" +
+		"[guard.prompt]\nenabled = true\nmode = \"ask-once\"\nhook_lane = true\nreconsider_min_delay = \"0s\"\n"
+	if err := os.WriteFile(configPath, []byte(cfgBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return configPath
+}
+
+// runPromptSubmitHookSubprocess execs a REAL compiled observer binary
+// as `observer hook <tool> <event> [--config <path>]`, feeding payload
+// on stdin, and returns (parsed JSON stdout reply, process exit code).
+// Needed for a dialect whose promptDialects row sets a non-zero
+// blockExitCode (F3, phase-3a review) — such a dialect's block path
+// calls os.Exit directly inside handlePromptSubmitOnlyHook, which
+// would kill this test binary if invoked in-process via
+// runPromptSubmitHookOnce/hookReceivers (see Qoder/Cascade's existing
+// subprocess-only coverage in TestRunProbeHook_EndToEnd).
+func runPromptSubmitHookSubprocess(t *testing.T, binary, tool, event, configPath, payload string) (reply map[string]any, exitCode int) {
+	t.Helper()
+	args := []string{"hook", tool, event}
+	if configPath != "" {
+		args = append(args, "--config", configPath)
+	}
+	c := exec.Command(binary, args...)
+	c.Stdin = strings.NewReader(payload)
+	var stdout, stderr bytes.Buffer
+	c.Stdout = &stdout
+	c.Stderr = &stderr
+	runErr := c.Run()
+	exitCode = 0
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		} else {
+			t.Fatalf("failed to invoke %s %v: %v (stderr=%s)", binary, args, runErr, stderr.String())
+		}
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &reply); err != nil {
+		t.Fatalf("reply not JSON: %v (stdout=%q stderr=%q)", err, stdout.String(), stderr.String())
+	}
+	return reply, exitCode
+}
+
+// TestHandlePoolsidePromptSubmit_EndToEnd pins the deny->resend-allow
+// flow through a REAL subprocess (F3, phase-3a review moved this off
+// the in-process hookReceivers helper — see the doc comment above this
+// section — because Poolside's promptDialects row now ALSO sets
+// blockExitCode:2 as a fail-closed fallback alongside its JSON reply,
+// and handlePromptSubmitOnlyHook os.Exits on a block for such a
+// dialect). This ALSO verifies F3's own dual-signal classification
+// question directly: a dialect with reply!=nil (JSON) AND a non-zero
+// blockExitCode must still classify a block from its JSON body, not
+// just its exit code — Poolside is deliberately NOT in
+// probeHookExitCodeDialects (cmd/observer/probehook.go), so
+// runProbeHook's own classification of it is covered by
+// TestRunProbeHook_EndToEnd; this test instead checks the raw
+// subprocess contract HandlePromptSubmitGuarded promises: JSON
+// decision AND exit code 2 both fire together on a block, and neither
+// on an allow.
+func TestHandlePoolsidePromptSubmit_EndToEnd(t *testing.T) {
+	binary := probeHookTestBinary(t)
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "observer.db")
+	configPath := writePromptGuardConfig(t, dbPath)
+
+	const secret = `{"hook_api_version":"1.0","hook_event_name":"UserPromptSubmit","event_id":"e1","session_id":"s1","cwd":"/r","trajectory_path":"/t","prompt":"my key is sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz"}`
+	const resend = `{"hook_api_version":"1.0","hook_event_name":"UserPromptSubmit","event_id":"e2","session_id":"s1","cwd":"/r","trajectory_path":"/t","prompt":"sending again: my key is sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz"}`
+
+	first, firstExit := runPromptSubmitHookSubprocess(t, binary, "poolside", "UserPromptSubmit", configPath, secret)
+	if got, _ := first["decision"].(string); got != "block" {
+		t.Fatalf("first submission decision = %q, want block (reply=%+v)", got, first)
+	}
+	if firstExit != 2 {
+		t.Errorf("first submission exit code = %d, want 2 (dual-signal: JSON decision + exit-2 fallback)", firstExit)
+	}
+	second, secondExit := runPromptSubmitHookSubprocess(t, binary, "poolside", "UserPromptSubmit", configPath, resend)
+	if _, hasDecision := second["decision"]; hasDecision {
+		t.Fatalf("identical resend must carry NO decision field (allowed), got %+v", second)
+	}
+	if secondExit != 0 {
+		t.Errorf("resend (allowed) exit code = %d, want 0", secondExit)
+	}
+
+	ctx := context.Background()
+	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	events, err := store.New(database).LoadRecentGuardEvents(ctx, time.Time{}, 10)
+	if err != nil {
+		t.Fatalf("LoadRecentGuardEvents: %v", err)
+	}
+	found := false
+	for _, e := range events {
+		if e.RuleID == "R-172" && e.Tool == models.ToolPoolside {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no poolside R-172 guard_events row found among %+v", events)
+	}
+}
+
+func TestHandleZcodePromptSubmit_EndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "observer.db")
+	configPath := writePromptGuardConfig(t, dbPath)
+
+	const secret = `{"session_id":"s1","transcript_path":"/t","cwd":"/r","permission_mode":"default","hook_event_name":"UserPromptSubmit","prompt":"my key is sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz"}`
+	const resend = `{"session_id":"s1","transcript_path":"/t","cwd":"/r","permission_mode":"default","hook_event_name":"UserPromptSubmit","prompt":"sending again: my key is sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz"}`
+
+	first := runPromptSubmitHookOnce(t, "zcode", "UserPromptSubmit", configPath, secret)
+	if cont, ok := first["continue"].(bool); !ok || cont {
+		t.Fatalf("first submission continue = %v, want false (reply=%+v)", first["continue"], first)
+	}
+	second := runPromptSubmitHookOnce(t, "zcode", "UserPromptSubmit", configPath, resend)
+	if cont, ok := second["continue"].(bool); !ok || !cont {
+		t.Fatalf("identical resend continue = %v, want true (allowed)", second["continue"])
+	}
+}
+
+func TestHandleCommandCodePromptSubmit_EndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "observer.db")
+	configPath := writePromptGuardConfig(t, dbPath)
+
+	// commandcode's transformInput carries no session id at all
+	// (extractCommandCodePrompt) — EvaluatePrompt's documented
+	// empty-session-id rule fails closed to a hard block with no
+	// resend override, so this is a single-shot block test, not a
+	// deny→resend-allow pair like every other vendor here (see
+	// internal/guard/conformance.go's commandcode row for the
+	// disclosed tradeoff).
+	const secret = `{"text":"my key is sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz"}`
+	const resend = `{"text":"sending again: my key is sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz"}`
+
+	first := runPromptSubmitHookOnce(t, "command-code", "transformInput", configPath, secret)
+	if got, _ := first["action"].(string); got != "handled" {
+		t.Fatalf("first submission action = %q, want handled (reply=%+v)", got, first)
+	}
+	second := runPromptSubmitHookOnce(t, "command-code", "transformInput", configPath, resend)
+	if got, _ := second["action"].(string); got != "handled" {
+		t.Errorf("resend action = %q, want handled too — no session id means no reconsider-once override", got)
 	}
 }
 
@@ -686,6 +991,222 @@ func TestBuildClaudeUserPromptSubmitEvent(t *testing.T) {
 	}
 	if ev.Target != "How does main.go work?" {
 		t.Errorf("Target=%q", ev.Target)
+	}
+}
+
+// TestHandleClaudeCodeUserPromptSubmit_EndToEnd is the Part B item 7
+// end-to-end contract: register (wired into the dispatch below) → a
+// fake payload with a live-shaped secret → a deny reply carrying a
+// reason → an identical resend → allow. Also pins that the pre-existing
+// capture (the actions.user_prompt row) still lands regardless of the
+// verdict, and that a guard_events row was persisted with the
+// fingerprint (never the secret) as its target.
+func TestHandleClaudeCodeUserPromptSubmit_EndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "observer.db")
+	configPath := filepath.Join(dir, "config.toml")
+	cfgBody := "[observer]\ndb_path = " + strconv.Quote(filepath.ToSlash(dbPath)) + "\n\n" +
+		"[guard]\nenabled = true\nmode = \"enforce\"\n\n" +
+		"[guard.prompt]\nenabled = true\nmode = \"ask-once\"\nhook_lane = true\nreconsider_min_delay = \"0s\"\n"
+	if err := os.WriteFile(configPath, []byte(cfgBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	const secretPrompt = `{"session_id":"s1","cwd":"/r","hook_event_name":"UserPromptSubmit","user_prompt":"my key is sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz"}`
+	// The RECONSIDER-ONCE fingerprint covers the finding set (the
+	// normalized secret span), not the raw prompt text — so a second
+	// submission with the SAME secret still counts as "identical" for
+	// confirm-by-resend purposes even with different surrounding
+	// prose. Using slightly different text here (rather than the
+	// byte-identical body) also avoids colliding with the pre-existing
+	// capture builder's own content-hash dedup
+	// (buildClaudeUserPromptSubmitEvent's SourceEventID includes a hash
+	// of the body — an EXACT repeat collapses to one actions row by
+	// design, a documented, unrelated behavior this test must not
+	// conflate with the guard's own confirm-by-resend semantics).
+	const secretPromptResend = `{"session_id":"s1","cwd":"/r","hook_event_name":"UserPromptSubmit","user_prompt":"sending again: my key is sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz"}`
+
+	// LIVE CORRECTION (2026-09-07 operator step-in): Claude Code blocks
+	// UserPromptSubmit ONLY via process exit code 2 (stderr = the
+	// user-visible reason, prompt erased); the JSON permissionDecision
+	// form is PreToolUse-only and was silently ignored live. Capture the
+	// exit through the hookOSExit seam so a block does not end the test
+	// binary, and capture stderr for the reason/leak checks.
+	var exitCodes []int
+	prevExit := hookOSExit
+	hookOSExit = func(code int) { exitCodes = append(exitCodes, code) }
+	t.Cleanup(func() { hookOSExit = prevExit })
+
+	runOnce := func(payload string) (reply map[string]any, stdout, stderr string) {
+		t.Helper()
+		stdinR, stdinW, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		go func() {
+			_, _ = stdinW.Write([]byte(payload))
+			_ = stdinW.Close()
+		}()
+		stdoutR, stdoutW, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		stderrR, stderrW, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		oldStdin, oldStdout, oldStderr := os.Stdin, os.Stdout, os.Stderr
+		os.Stdin, os.Stdout, os.Stderr = stdinR, stdoutW, stderrW
+		handleClaudeCodeUserPromptSubmit(context.Background(), "claude-code:user-prompt-submit", configPath)
+		os.Stdin, os.Stdout, os.Stderr = oldStdin, oldStdout, oldStderr
+		_ = stdoutW.Close()
+		_ = stderrW.Close()
+		outB, _ := io.ReadAll(stdoutR)
+		errB, _ := io.ReadAll(stderrR)
+		stdout, stderr = string(outB), string(errB)
+		if strings.TrimSpace(stdout) != "" {
+			if err := json.Unmarshal(outB, &reply); err != nil {
+				t.Fatalf("reply not JSON: %v (%q)", err, outB)
+			}
+		}
+		return reply, stdout, stderr
+	}
+
+	// First submission: a live-shaped secret must be blocked — exit code
+	// 2, NOTHING on stdout, the house reason on stderr, value never leaked.
+	_, firstOut, firstErr := runOnce(secretPrompt)
+	if len(exitCodes) != 1 || exitCodes[0] != 2 {
+		t.Fatalf("first submission exit codes = %v, want exactly [2] (stdout=%q stderr=%q)", exitCodes, firstOut, firstErr)
+	}
+	if strings.TrimSpace(firstOut) != "" {
+		t.Fatalf("a block must write nothing to stdout (permissionDecision is PreToolUse-only): %q", firstOut)
+	}
+	if strings.TrimSpace(firstErr) == "" {
+		t.Fatalf("first submission carried no stderr reason (Claude Code shows exit-2 stderr to the user)")
+	}
+	if strings.Contains(firstErr, "sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz") {
+		t.Fatalf("stderr leaked the raw secret value: %q", firstErr)
+	}
+
+	// Identical (same finding set) resend: allowed through (confirmed) —
+	// exit 0 (no further exit recorded) and the bare allow envelope.
+	second, secondOut, _ := runOnce(secretPromptResend)
+	if len(exitCodes) != 1 {
+		t.Fatalf("identical resend must not exit non-zero: exit codes = %v", exitCodes)
+	}
+	hso, _ := second["hookSpecificOutput"].(map[string]any)
+	if got, _ := hso["hookEventName"].(string); got != "UserPromptSubmit" {
+		t.Fatalf("identical resend reply = %q, want the UserPromptSubmit allow envelope", secondOut)
+	}
+	if _, stray := hso["permissionDecision"]; stray {
+		t.Fatalf("allow envelope must not carry the PreToolUse-only permissionDecision field: %q", secondOut)
+	}
+
+	// The pre-existing capture (actions.user_prompt row) must have
+	// landed for BOTH submissions regardless of the verdict.
+	ctx := context.Background()
+	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	var actionCount int
+	if err := database.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM actions WHERE action_type = ?`, models.ActionUserPrompt,
+	).Scan(&actionCount); err != nil {
+		t.Fatalf("query actions: %v", err)
+	}
+	if actionCount != 2 {
+		t.Errorf("actions.user_prompt rows = %d, want 2 (capture must proceed regardless of the guard verdict)", actionCount)
+	}
+
+	events, err := store.New(database).LoadRecentGuardEvents(ctx, time.Time{}, 10)
+	if err != nil {
+		t.Fatalf("LoadRecentGuardEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatalf("expected at least one guard_events row")
+	}
+	found := false
+	for _, e := range events {
+		if e.RuleID != "R-172" {
+			continue
+		}
+		found = true
+		if strings.Contains(e.Reason, "sk-ant-api03-1234567890ABCDEFGhijKLmnopqRSTuvwxyz") {
+			t.Errorf("guard_events.reason leaked the raw secret: %q", e.Reason)
+		}
+		if strings.Contains(e.TargetExcerpt, "sk-ant") {
+			t.Errorf("guard_events.target_excerpt leaked the raw secret: %q", e.TargetExcerpt)
+		}
+	}
+	if !found {
+		t.Errorf("no R-172 guard_events row found among %+v", events)
+	}
+}
+
+// TestHandleClaudeCodeUserPromptSubmit_FallbackUsesModernEnvelope pins
+// FIX cluster item 7a: when the guard is disabled (or errors), the
+// `!handled` fallback in handleClaudeCodeUserPromptSubmit must still
+// reply with the MODERN hookSpecificOutput envelope
+// (hook.ClaudeCodePromptApproveReply) rather than the legacy bare
+// {"decision":"approve"} shape — the wrong reply contract for
+// UserPromptSubmit specifically. Every other event's own
+// hook.Decision{Decision:"approve"} fallback is untouched by this fix
+// and stays out of scope for this test.
+func TestHandleClaudeCodeUserPromptSubmit_FallbackUsesModernEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "observer.db")
+	configPath := filepath.Join(dir, "config.toml")
+	// guard.prompt disabled -> promptGuardEnabled(cfg) is false ->
+	// handled stays false -> the fallback branch under test fires.
+	cfgBody := "[observer]\ndb_path = " + strconv.Quote(filepath.ToSlash(dbPath)) + "\n\n" +
+		"[guard]\nenabled = false\n"
+	if err := os.WriteFile(configPath, []byte(cfgBody), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	const payload = `{"session_id":"s1","cwd":"/r","hook_event_name":"UserPromptSubmit","user_prompt":"How does main.go work?"}`
+
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	go func() {
+		_, _ = stdinW.Write([]byte(payload))
+		_ = stdinW.Close()
+	}()
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	oldStdin, oldStdout := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = stdinR, stdoutW
+	handleClaudeCodeUserPromptSubmit(context.Background(), "claude-code:user-prompt-submit", configPath)
+	os.Stdin, os.Stdout = oldStdin, oldStdout
+	_ = stdoutW.Close()
+	out, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+
+	var reply map[string]any
+	if err := json.Unmarshal(out, &reply); err != nil {
+		t.Fatalf("reply not JSON: %v (%q)", err, out)
+	}
+	if _, hasLegacy := reply["decision"]; hasLegacy {
+		t.Errorf("fallback reply still carries the legacy top-level %q key: %q", "decision", out)
+	}
+	hso, ok := reply["hookSpecificOutput"].(map[string]any)
+	if !ok {
+		t.Fatalf("fallback reply missing hookSpecificOutput envelope: %q", out)
+	}
+	if got, _ := hso["hookEventName"].(string); got != "UserPromptSubmit" {
+		t.Errorf("hookSpecificOutput.hookEventName = %q, want %q", got, "UserPromptSubmit")
+	}
+	if _, stray := hso["permissionDecision"]; stray {
+		t.Errorf("fallback allow envelope must not carry the PreToolUse-only permissionDecision field: %q", out)
 	}
 }
 
@@ -1477,5 +1998,26 @@ func TestInstallHookWatchdogZeroRuntimeIsNoop(t *testing.T) {
 		t.Errorf("watchdog fired despite zero budget: exit=%d", code)
 	case <-time.After(50 * time.Millisecond):
 		// expected
+	}
+}
+
+// TestPromptLaneHookRowsHaveAReceiver pins BLOCK-1 (phase-2 review):
+// every internal/integration registry row that claims
+// integration.PromptLaneHook (a VERIFIED prompt-submit hook dialect
+// exists AND is registered) must have a corresponding entry in
+// hookReceivers — otherwise `observer hook <tool> UserPromptSubmit`
+// silently falls through to the unconditional approve default, which
+// can never block, no matter what the registry/conformance/docs claim.
+// This is a coverage test, not a behavior test: it walks the LIVE
+// registry so a future PromptLaneHook row added without a receiver
+// fails loudly here instead of shipping a claimed-but-fake guard.
+func TestPromptLaneHookRowsHaveAReceiver(t *testing.T) {
+	for _, c := range integration.Capabilities() {
+		if c.PromptLane != integration.PromptLaneHook {
+			continue
+		}
+		if _, ok := hookReceivers[c.Tool]; !ok {
+			t.Errorf("registry row %q claims PromptLaneHook (a verified, registered hook dialect) but has no entry in cmd/observer's hookReceivers table — observer hook %s UserPromptSubmit would silently fall through to the approve-only default and could never block", c.Tool, c.Tool)
+		}
 	}
 }

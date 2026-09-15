@@ -27,6 +27,14 @@ type CursorSink interface {
 	UpdateActionOutcome(ctx context.Context, sourceFile, sourceEventID string, success bool, errorMessage string, durationMs int64, toolOutput, toolName, target string) (int64, error)
 }
 
+// cursorHookBodyLimit (B2, final-fix review) bounds a single Cursor
+// hook payload read — raised from the original 2 MiB so a genuinely
+// large beforeSubmitPrompt prompt isn't truncated into a guard bypass
+// (see HandleCursorEventGuarded's own truncation detection). Every
+// other cursor event shares this same read/limit, so it is sized for
+// the largest one, not the common case.
+const cursorHookBodyLimit = 8 * 1024 * 1024
+
 // HandleCursorEvent reads a Cursor hook payload from stdin, replies on
 // stdout immediately so the host tool never waits, then synchronously
 // inserts the event into the observer DB with a strict deadline.
@@ -38,7 +46,19 @@ type CursorSink interface {
 // Spec P1: never break the host tool. All error paths log to stderr and
 // return without panicking.
 func HandleCursorEvent(eventName string, sink CursorSink, sc *scrub.Scrubber, stdin io.Reader, stdout, stderr io.Writer, deadline time.Duration) {
-	HandleCursorEventGuarded(eventName, nil, nil, sink, sc, stdin, stdout, stderr, deadline)
+	HandleCursorEventGuarded(eventName, nil, nil, sink, sc, stdin, false, stdout, stderr, deadline)
+}
+
+// CursorEvaluator is HandleCursorEventGuarded's view of the guard:
+// guard.Evaluator for the pre-execution shell/MCP/file channels, plus
+// PromptEvaluator + the ActionVerdictFromPrompt bridge for
+// beforeSubmitPrompt (Part B — the prompt-submit intervention hook
+// lane). *guard.Guard implements all three; a nil CursorEvaluator
+// degrades every channel to the unguarded receiver.
+type CursorEvaluator interface {
+	guard.Evaluator
+	PromptEvaluator
+	ActionVerdictFromPrompt(pv guard.PromptVerdict, em guard.Emission, input guard.ActionInput) guard.ActionVerdict
 }
 
 // HandleCursorEventGuarded is HandleCursorEvent with the guard seam
@@ -52,12 +72,42 @@ func HandleCursorEvent(eventName string, sink CursorSink, sc *scrub.Scrubber, st
 // goes out first per the §6.4 budget; the forensics JSONL row carries
 // the verdict either way).
 //
+// beforeSubmitPrompt (Part B) is special-cased to the shared
+// prompt-submit seam BEFORE any of the above: its reply shape is
+// {continue,user_message}, NOT the {permission,continue} shape every
+// other cursor channel here emits (contract §6.3's wire-shape trap —
+// HandleCursorEventGuarded used to encode ONE cursorReply struct for
+// every event, which is wrong for this one).
+//
 // gd nil (or a non-pre-execution event) degrades to exactly the
 // unguarded behavior. persist is the same nil-tolerant lazy-DB
 // callback shape HandleGuarded takes.
-func HandleCursorEventGuarded(eventName string, gd guard.Evaluator, persist func(guard.ActionVerdict), sink CursorSink, sc *scrub.Scrubber, stdin io.Reader, stdout, stderr io.Writer, deadline time.Duration) {
-	body, _ := io.ReadAll(io.LimitReader(stdin, 2*1024*1024))
-	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
+//
+// callerBodyTruncated (B2, final-fix review) lets a caller that
+// already read+bounded stdin itself (cmd/observer/hook.go's
+// handleCursorHook reads once so the same bytes can also feed the
+// post-reply pidbridge seed) report that ITS OWN read already hit its
+// limit — this function's own internal read below can't rediscover
+// that fact once stdin has been re-wrapped as a fixed-size
+// bytes.Reader, since a length exactly at the limit is indistinguishable
+// from "the payload was exactly that long". A direct caller that hands
+// this function the raw, never-pre-truncated stdin (there are none in
+// this codebase today, but the exported signature doesn't forbid it)
+// passes false and relies entirely on this function's own detection
+// below; the two signals are OR'd together either way.
+func HandleCursorEventGuarded(eventName string, gd CursorEvaluator, persist func(guard.ActionVerdict), sink CursorSink, sc *scrub.Scrubber, stdin io.Reader, callerBodyTruncated bool, stdout, stderr io.Writer, deadline time.Duration) {
+	buf, _ := io.ReadAll(io.LimitReader(stdin, cursorHookBodyLimit+1))
+	truncated := callerBodyTruncated
+	if int64(len(buf)) > cursorHookBodyLimit {
+		buf = buf[:cursorHookBodyLimit]
+		truncated = true
+	}
+	body := bytes.TrimPrefix(buf, []byte{0xEF, 0xBB, 0xBF})
+
+	if eventName == cursor.EventBeforeSubmitPrompt {
+		handleCursorPromptSubmit(body, truncated, gd, persist, sink, sc, stdout, stderr, deadline)
+		return
+	}
 
 	permission := "allow"
 	var verdict guard.ActionVerdict
@@ -110,10 +160,43 @@ func HandleCursorEventGuarded(eventName string, gd guard.Evaluator, persist func
 	}
 }
 
+// handleCursorPromptSubmit routes beforeSubmitPrompt through
+// HandlePromptSubmitGuarded (the shared dialect table), then runs the
+// SAME post-reply capture (processCursorEvent) every other cursor
+// channel gets — a denied prompt is still an attempt worth recording,
+// same posture as the shell/MCP/file channels above. gd nil degrades
+// to the unguarded reply ({"continue":true}), matching this event's
+// documented allow shape.
+func handleCursorPromptSubmit(body []byte, bodyTruncated bool, gd CursorEvaluator, persist func(guard.ActionVerdict), sink CursorSink, sc *scrub.Scrubber, stdout, stderr io.Writer, deadline time.Duration) {
+	promptPersist := func(pv guard.PromptVerdict, em guard.Emission, sessionID string) {
+		if gd == nil || persist == nil {
+			return
+		}
+		persist(gd.ActionVerdictFromPrompt(pv, em, guard.ActionInput{
+			SessionID: sessionID, Tool: models.ToolCursor,
+			ActionType: models.ActionUserPrompt, Timestamp: time.Now().UTC(),
+		}))
+	}
+	// Cursor's dialect always replies via JSON (blockExitCode is
+	// zero — see promptDialects[PromptDialectCursor]), so the
+	// returned exitCode is always 0 and there is nothing for this
+	// caller to act on; Cursor's own hook process always exits 0.
+	handled, after, _ := HandlePromptSubmitGuarded(models.ToolCursor, PromptDialectCursor, cursor.EventBeforeSubmitPrompt, body, bodyTruncated, gd, promptPersist, stdout, stderr)
+	if !handled {
+		_ = json.NewEncoder(stdout).Encode(promptCursorReply{Continue: true})
+	}
+	processCursorEvent(cursor.EventBeforeSubmitPrompt, body, sink, sc, stderr, deadline)
+	if after != nil {
+		after()
+	}
+}
+
 // processCursorEvent is the post-reply capture half of the cursor
 // hook: stop-event token+transcript ingestion, after-event outcome
 // enrichment, and before-event row insertion.
 func processCursorEvent(eventName string, body []byte, sink CursorSink, sc *scrub.Scrubber, stderr io.Writer, deadline time.Duration) {
+	defer recordCursorAccounts(eventName, body, sink, stderr, deadline, time.Now().UTC())
+
 	if eventName == cursor.EventStop {
 		tk, ok, err := cursor.BuildStopTokenEvent(body)
 		if err != nil {
@@ -330,4 +413,21 @@ func BuildCursorEvent(eventName string, body []byte, sc *scrub.Scrubber) (policy
 		Caps:        caps,
 		Now:         time.Now().UTC(),
 	}, true
+}
+
+// recordCursorAccounts also runs for after-events and stops without usage.
+// The guard reply precedes this optional evidence write on every path.
+func recordCursorAccounts(eventName string, body []byte, sink CursorSink, stderr io.Writer, deadline time.Duration, at time.Time) {
+	observations := cursor.BuildAccountObservations(eventName, body, at)
+	if len(observations) == 0 {
+		return
+	}
+	if deadline <= 0 {
+		deadline = 250 * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	if _, err := sink.Ingest(ctx, nil, nil, store.IngestOptions{ToolAccounts: observations}); err != nil {
+		fmt.Fprintf(stderr, "observer-hook: cursor account capture: %v\n", err)
+	}
 }

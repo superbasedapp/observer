@@ -1,8 +1,8 @@
 {
   "name": "superbased-observer",
   "displayName": "SuperBased",
-  "description": "Claude Code cost tracking, Cursor token usage, Codex spend — AI coding agent observability across 33 adapters (Claude Code, Codex, Cursor, Cline + Cline CLI, Copilot, Gemini CLI, Hermes Agent, Kilo Code, Aider, Goose, Devin, and more), proxy-accurate. No telemetry. No cloud.",
-  "version": "1.32.0",
+  "description": "Claude Code cost tracking, Cursor token usage, Codex spend — AI coding agent observability across 40 adapters (Claude Code, Codex, Cursor, Cline + Cline CLI, Copilot, Gemini CLI, Hermes Agent, Kilo Code, Aider, Goose, Devin, and more), proxy-accurate. No telemetry. No cloud.",
+  "version": "1.33.0",
   "publisher": "superbased",
   "license": "Apache-2.0",
   "author": "Santosh Kathira <contact@superbased.app>",
@@ -319,6 +319,23 @@
           "type": "boolean",
           "default": true,
           "description": "Show the cache-expiry status bar item (a countdown that appears when a valuable prompt cache is about to go cold)."
+        },
+        "observer.loc.reportSaves": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report how many lines you changed when you save a file, so the dashboard can show human-written lines next to AI-written ones. Only LINE COUNTS leave the editor - how many code, comment, blank and whitespace-only lines changed. File content is never read, sent, or stored: no lines, no excerpts, no filenames beyond the workspace-relative path. Counts go to the local observer daemon on loopback (127.0.0.1) and nowhere else. Generated and vendored files (lockfiles, node_modules, dist, *.pb.go) are skipped entirely."
+        },
+        "observer.loc.editorToken": {
+          "type": "string",
+          "default": "",
+          "description": "Token sent as X-Observer-Token when reporting saved line counts. Leave empty: the daemon generates a per-install token on first start and the extension reads it from the observer home (loc-editor-token, or OBSERVER_HOME if you set that). Fill this in only when the daemon runs somewhere the extension cannot read that file, or when you moved it with the [loc].editor_token_file config key."
+        },
+        "observer.apiToken": {
+          "type": "string",
+          "default": "",
+          "markdownDeprecationMessage": "No longer read. The only request that ever sent this header was the saved-line-count report; it now uses `#observer.loc.editorToken#` and the daemon's generated token file.",
+          "deprecationMessage": "No longer read. Use observer.loc.editorToken instead.",
+          "description": "Deprecated and no longer read by any request. The saved-line-count report now uses observer.loc.editorToken, falling back to the token file the daemon generates in the observer home."
         }
       }
     }

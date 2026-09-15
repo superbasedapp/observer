@@ -37,6 +37,9 @@ func TestAuthoredBytes(t *testing.T) {
 		want   int64
 	}{
 		{"write content", models.ActionWriteFile, `{"content":"abcde"}`, 5},
+		// The Qoder IDE spells Write's body `file_content`.
+		{"write file_content (ide)", models.ActionWriteFile, `{"file_content":"abcde","file_path":"/x"}`, 5},
+		{"write content wins over file_content", models.ActionWriteFile, `{"content":"abc","file_content":"abcde"}`, 3},
 		{"edit new_string", models.ActionEditFile, `{"new_string":"abc"}`, 3},
 		{"edit multi", models.ActionEditFile, `{"edits":[{"new_string":"ab"},{"new_string":"cd"}]}`, 4},
 		{"run command", models.ActionRunCommand, `{"command":"ls -la"}`, 6},

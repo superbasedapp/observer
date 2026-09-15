@@ -46,14 +46,19 @@ const crossOSBackSkew = 2 * time.Minute
 // cwd (alongside node_repl.exe). An unknown tool (no entry) yields no anchor —
 // cross-OS never guesses.
 var DefaultCrossOSToolBasenames = map[string][]string{
-	"claude-code":     {"claude.exe", "claude", "node.exe", "node"},
-	"codex":           {"codex.exe", "codex", "node.exe", "node", "node_repl.exe", "codex-command-runner-*"},
-	"cursor":          {"cursor.exe", "cursor"},
-	"copilot":         {"copilot.exe", "node.exe", "node"},
-	"copilot-cli":     {"copilot.exe", "copilot", "node.exe", "node"}, // @github/copilot CLI (binary `copilot`)
-	"cline":           {"node.exe", "node"},
-	"cline-cli":       {"cline.exe", "cline", "node.exe", "node"},
-	"roo-code":        {"node.exe", "node"}, // VS Code extension (Roo Cline fork) — runs in the node extension host
+	"claude-code": {"claude.exe", "claude", "node.exe", "node"},
+	"codex":       {"codex.exe", "codex", "node.exe", "node", "node_repl.exe", "codex-command-runner-*"},
+	"cursor":      {"cursor.exe", "cursor"},
+	"copilot":     {"copilot.exe", "node.exe", "node"},
+	"copilot-cli": {"copilot.exe", "copilot", "node.exe", "node"}, // @github/copilot CLI (binary `copilot`)
+	"cline":       {"node.exe", "node"},
+	"cline-cli":   {"cline.exe", "cline", "node.exe", "node"},
+	"roo-code":    {"node.exe", "node"}, // VS Code extension (Roo Cline fork) — runs in the node extension host
+	// zoo-code (2026-09-03): ZooCode, the community continuation of Roo
+	// Code — the SAME VS Code extension shape (parsed by the cline
+	// adapter's clineExtensions table), so it runs in the same node
+	// extension host as roo-code.
+	"zoo-code":        {"node.exe", "node"},
 	"opencode":        {"opencode.exe", "opencode", "bun.exe", "bun", "node.exe", "node"},
 	"kilo-code":       {"node.exe", "node"},
 	"kilo-code-cli":   {"kilo.exe", "kilo", "node.exe", "node"},
@@ -73,11 +78,29 @@ var DefaultCrossOSToolBasenames = map[string][]string{
 	// node/python would risk false-anchoring a stray interpreter that merely
 	// shares the project cwd; node-shim and python-launched tools also carry
 	// their interpreter (the tool's own long-running child may present as it).
-	"qwen-code": {"qwen.exe", "qwen", "node.exe", "node"},       // npm @qwen-code/qwen-code — node shim (cli-entry.js)
-	"kiro-cli":  {"kiro-cli.exe", "kiro-cli"},                   // AWS Kiro CLI (rebranded Amazon Q) — native binary
-	"crush":     {"crush.exe", "crush", "node.exe", "node"},     // Charm Crush — npm shim (run-crush.js) execs the Go binary
-	"kimi-code": {"kimi.exe", "kimi"},                           // Moonshot kimi-code (binary `kimi`) — native ELF (bun-compiled)
-	"grok":      {"grok.exe", "grok", "grok-*"},                 // xAI Grok — native ELF; live installs ship version-stamped artifacts (grok-1.0.0-linux-x86_64, observed 2026-08-21), so the prefix pattern is required
+	"qwen-code": {"qwen.exe", "qwen", "node.exe", "node"},   // npm @qwen-code/qwen-code — node shim (cli-entry.js)
+	"kiro-cli":  {"kiro-cli.exe", "kiro-cli"},               // AWS Kiro CLI (rebranded Amazon Q) — native binary
+	"crush":     {"crush.exe", "crush", "node.exe", "node"}, // Charm Crush — npm shim (run-crush.js) execs the Go binary
+	"kimi-code": {"kimi.exe", "kimi"},                       // Moonshot kimi-code (binary `kimi`) — native ELF (bun-compiled)
+	"grok":      {"grok.exe", "grok", "grok-*"},             // xAI Grok — native ELF; live installs ship version-stamped artifacts (grok-1.0.0-linux-x86_64, observed 2026-08-21), so the prefix pattern is required
+	// Grok Bot DESKTOP (distinct from "grok" above) — an Electron app
+	// installed at "C:\Program Files\Grok Bot\Grok Bot.exe" (grounded on a
+	// live 0.28.0 install, 2026-08-28). Its local-exec daemon and renderer
+	// are .cjs bundles run by that SAME executable, not separate binaries,
+	// so the one basename covers every child. Matched case-insensitively;
+	// no bare "grok" spelling, which would collide with the grok CLI.
+	"grokbot": {"grok bot.exe"},
+	// AWS Kiro Crew — the DESKTOP app is the only local process on the
+	// grounding box: "C:\Program Files\KiroCrew\KiroCrew.exe" (live
+	// install, 2026-09-03; matched case-insensitively). The vendor also
+	// documents a `kirocrew` CLI (`kirocrew telemetry status`), which was
+	// NOT on PATH there — its spelling is carried on the strength of the
+	// vendor's own command syntax, not a live probe. Note Crew ORCHESTRATES
+	// kiro-cli, so a Crew run's actual agent process presents as
+	// kiro-cli.exe and is attributed under "kiro-cli" above; that is
+	// correct — kiro-cli owns those sessions (see
+	// internal/adapter/kirocrew/doc.go "Ownership").
+	"kiro-crew": {"kirocrew.exe", "kirocrew"},
 	"devin":     {"devin.exe", "devin"},                         // Cognition Devin CLI (binary `devin`) — native binary
 	"aider":     {"aider.exe", "aider", "python.exe", "python"}, // pip aider-chat — python console-script entry
 	"qoder":     {"qoder.exe", "qoder", "node.exe", "node"},     // Alibaba Qoder CLI — CC-shaped node-family (no local install to probe)
@@ -132,6 +155,19 @@ var DefaultCrossOSToolBasenames = map[string][]string{
 	// adapter.md's off-limits note: "the `freebuff` ELF/exe binary") — the
 	// kimi-code/goose native-binary precedent, so no node/python.
 	"freebuff": {"freebuff.exe", "freebuff"},
+	// Poolside (2026-09-05): the JetBrains-bundled ACP agent binary is
+	// `pool-windows-amd64.exe` (grounded live under
+	// <JetBrains vendor root>/acp-agents/poolside/<ver>/), spawned as its
+	// own child process by the IDE. The bare `pool` stem is a documented
+	// guess for the unverified macOS/Linux binary naming (no build was
+	// available to ground on the grounding host).
+	"poolside": {"pool-windows-amd64.exe", "pool"},
+	// Zed (2026-09-06): the built-in agent runs INSIDE the Zed editor's
+	// own process — there is no separate agent worker binary — so the
+	// editor's own executable is both the root process and, when a
+	// project is open, the process presenting in the project cwd (the
+	// same shape as "cursor" above).
+	"zed": {"zed.exe", "zed"},
 }
 
 // DefaultCrossOSToolLaunchers maps a session tool to the branded IDE/desktop
@@ -149,8 +185,8 @@ var DefaultCrossOSToolBasenames = map[string][]string{
 // here — the parent identity is the disambiguator (e.g. a git under OpenCode.exe
 // vs the same git under Codex.exe in one shared project dir). Matched
 // case-insensitively, prefix-pattern aware (basenameMatches). The VS Code family
-// (copilot/cline/roo-code/kilo-code) shares Code.exe, so within VS Code the
-// worker's cwd==project_root is what selects the session; only two VS Code AI
+// (copilot/cline/roo-code/zoo-code/kilo-code) shares Code.exe, so within VS Code
+// the worker's cwd==project_root is what selects the session; only two VS Code AI
 // tools open on the SAME project in the SAME window is genuinely ambiguous (a
 // rare corner, resolved by nearest-start, medium confidence either way).
 var DefaultCrossOSToolLaunchers = map[string][]string{
@@ -162,7 +198,10 @@ var DefaultCrossOSToolLaunchers = map[string][]string{
 	"copilot":         {"code.exe"},
 	"cline":           {"code.exe"},
 	"roo-code":        {"code.exe"},
-	"kilo-code":       {"code.exe"},
+	// zoo-code (2026-09-03): same VS Code-family shape as roo-code —
+	// see the DefaultCrossOSToolBasenames entry above.
+	"zoo-code":  {"code.exe"},
+	"kilo-code": {"code.exe"},
 }
 
 // DefaultRefreshLauncherBasenames are the DISTINCTIVE AI-tool launcher exe
@@ -181,6 +220,35 @@ var DefaultCrossOSToolLaunchers = map[string][]string{
 // exec-time + accurate at-exit metrics rather than LIVE refresh of its
 // long-running children. The precise fix is a daemon→capturer attributed-pid
 // feedback channel (deferred, same class as the ETW reverse-channel).
+//
+// THE SCRIPT-WRAPPER SHAPE (grounded on a live install, 2026-08-27). Several
+// tools install a launcher that is NOT a binary at all but a script, so the
+// process the OS execs — and therefore the exe basename this map is matched
+// against — is the INTERPRETER, never the tool's name. No row can be added for
+// these, because the row would have to say "bash" or "python" or "node" and
+// that is exactly the generic match the wire-volume rule forbids:
+//
+//	hermes   → ~/.local/bin/hermes is a bash script; the worker is python
+//	           (this is the Hermes-as-python limitation named above, now with
+//	           its cause: the wrapper, not the adapter)
+//	vibe     → ~/.local/bin/vibe is a python script (mistral-code)
+//	zcode    → an npm-installed node script
+//	freebuff → an npm-installed node script
+//
+// A row was NOT invented for any of them: the registry's honesty rule is that
+// a zero value means "no grounded capability", never a fabricated one. They
+// keep cross-OS attribution via DefaultCrossOSToolBasenames plus exec-time and
+// at-exit metrics; only LIVE refresh is skipped.
+//
+// muse is the one script-wrapper tool that IS reachable, and only through the
+// prefix rule below — see DefaultRefreshLauncherPrefixes.
+//
+// The `observer` wrapper that roots every dashboard-launched subtree is also
+// deliberately absent. Adding it would collide head-on with
+// Options.ExcludeOwnBasenames, which exists to keep the daemon's own binary
+// from being captured and mis-joined to whatever session shares its cwd. The
+// principled fix for that subtree is the launch_seeds.run_id binding (task
+// 9f), which identifies the child directly instead of guessing from its name.
 var DefaultRefreshLauncherBasenames = map[string]bool{
 	"claude.exe":   true, // claude-code (also EV/tokened on Windows; covers Linux-native + non-EV)
 	"claude":       true,
@@ -254,14 +322,76 @@ var DefaultRefreshLauncherBasenames = map[string]bool{
 	// alone (no cwd discriminator here) would false-anchor a stray interpreter
 	// and flood the cross-OS wire. aider's python-shim console-script form is
 	// therefore uncovered BY DESIGN; only its native-binary form is matched.
+	//
+	// Likewise the script-wrapper tools (hermes / vibe / zcode / freebuff) get
+	// no row at all — see the SCRIPT-WRAPPER SHAPE note above for why a row
+	// for them is unrepresentable rather than merely missing.
+}
+
+// DefaultRefreshLauncherPrefixes are lowercased exe-basename PREFIXES that
+// identify a distinctive AI-tool launcher whose binary carries a VERSION in
+// its own filename, so no exact name can ever match it across upgrades.
+//
+// It is a separate, deliberately tiny list consulted only AFTER
+// DefaultRefreshLauncherBasenames misses, so exact-match semantics are
+// unchanged for every other tool: nothing that matched before matches
+// differently now, and a prefix can only ever ADD a match. That ordering is
+// the whole reason this is a second list instead of a rewrite of the first.
+//
+// WHY NOT THE "name*" CONVENTION basenameMatches uses. DefaultCrossOSToolBasenames
+// encodes the same idea as a trailing "*" inside its per-tool SLICE, which it
+// can afford because that slice is scanned linearly anyway. This list's
+// companion is a MAP, looked up once per observed process on the poll backend's
+// hot path; a "*"-suffixed key is unreachable by map lookup, so honouring it
+// would mean scanning all ~60 entries on every miss — that is, on every
+// non-AI process on the box. Same semantics, different data structure, so the
+// prefixes live beside the map rather than inside it.
+//
+// A prefix earns a place here only when it is (a) grounded on a live install
+// and (b) distinctive enough to be safe with no cwd discriminator — the same
+// bar every exact row must clear. A short or generic prefix would match far
+// more than its tool and flood the cross-OS wire, which is the failure this
+// list is one careless entry away from.
+//
+// Grounded 2026-08-27 on a live install:
+//
+//	muse-bin- → Meta's Muse Code CLI installs ~/.local/bin/muse as a BASH
+//	            SCRIPT (so the exec'd basename is "bash" — unmatchable, see
+//	            the SCRIPT-WRAPPER SHAPE note) beside the real binary, which
+//	            is version-stamped: "muse-bin-0.2.1-R1215.1". The version tail
+//	            moves on every upgrade; the prefix does not.
+var DefaultRefreshLauncherPrefixes = []string{
+	"muse-bin-",
+}
+
+// matchesLauncherPrefix reports whether an already-lowercased basename starts
+// with one of DefaultRefreshLauncherPrefixes.
+func matchesLauncherPrefix(lowerBase string) bool {
+	for _, p := range DefaultRefreshLauncherPrefixes {
+		if strings.HasPrefix(lowerBase, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsAIToolLauncher reports whether an executable path's basename is a
-// DISTINCTIVE AI-tool launcher (DefaultRefreshLauncherBasenames). The poll
-// backend calls it to extend live metrics refresh to medium-attributed
-// (non-env-token) AI subtrees on both the cross-OS bridge and native Linux.
+// DISTINCTIVE AI-tool launcher. The poll backend calls it to extend live
+// metrics refresh to medium-attributed (non-env-token) AI subtrees on both the
+// cross-OS bridge and native Linux.
+//
+// It is the SINGLE seam over both matching rules (CLAUDE.md rule 4): the exact
+// DefaultRefreshLauncherBasenames map first, then — only on a miss — the
+// version-stamped DefaultRefreshLauncherPrefixes. Every caller in the tree
+// goes through this function rather than indexing the map itself, which is why
+// the prefix rule reaches all of them without a second decision point that
+// could drift.
 func IsAIToolLauncher(exePath string) bool {
-	return DefaultRefreshLauncherBasenames[strings.ToLower(basename(exePath))]
+	base := strings.ToLower(basename(exePath))
+	if DefaultRefreshLauncherBasenames[base] {
+		return true
+	}
+	return matchesLauncherPrefix(base)
 }
 
 // CrossOSSessionRef is a session a Windows process tree may belong to (§5.5).

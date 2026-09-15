@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
@@ -127,7 +128,7 @@ func (a *Adapter) parseSession(ctx context.Context, db *sql.DB, sourceFile strin
 	}
 
 	sessionID := scopedSessionID(s.ID, sourceFile)
-	projectRoot, gitRemote := a.resolveProjectRoot(s.WorkingDir)
+	projectRoot, gitRemote, projectIdentity := a.resolveProjectRoot(s.WorkingDir)
 	model := modelName(s.ModelConfigJSON)
 
 	// Decode each message's blocks once; collect tool results by call id.
@@ -164,7 +165,9 @@ func (a *Adapter) parseSession(ctx context.Context, db *sql.DB, sourceFile strin
 	if tok, ok := a.tokenEvent(sourceFile, projectRoot, gitRemote, model, sessionID, s); ok {
 		tokens = append(tokens, tok)
 	}
-	return tools, tokens, warns
+	stamped := adapter.ParseResult{ToolEvents: tools, TokenEvents: tokens}
+	adapter.ApplyProjectIdentity(&stamped, projectIdentity)
+	return stamped.ToolEvents, stamped.TokenEvents, warns
 }
 
 // eventsForMessage converts one message's content blocks into ToolEvents.

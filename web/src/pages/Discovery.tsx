@@ -53,7 +53,7 @@ export function DiscoveryPage() {
     <div className="space-y-6 p-6">
       <PageHeader
         title="Discovery"
-        sub="Wasted-effort signals — same-session stale re-reads, repeated no-change commands, and cross-tool file overlap. Surfaces the moments where the model lost track of what it already knew."
+        sub="Wasted-effort signals - same-session stale re-reads, repeated no-change commands, and cross-tool file overlap. Surfaces the moments where the model lost track of what it already knew."
         helpId="tab.discovery"
       />
       {/* Design 1.24: HeroStat (danger) for Estimated waste +
@@ -61,14 +61,14 @@ export function DiscoveryPage() {
           wasted / Affected files / Repeated commands). */}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1.4fr_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
         <HeroStat
-          label={`Estimated waste — last ${win}`}
+          label={`Estimated waste - last ${win}`}
           helpId="metric.stale_count"
           icon={<CoinsIcon />}
           loading={data.loading}
           value={
             summary
               ? fmtUSD(estWasteUSD(summary.est_wasted_tokens, rate))
-              : "—"
+              : "-"
           }
           sub={
             summary ? (
@@ -93,7 +93,7 @@ export function DiscoveryPage() {
           helpId="metric.stale_count"
           icon={<AlertIcon />}
           loading={data.loading}
-          value={summary ? fmtInt(summary.stale_read_count) : "—"}
+          value={summary ? fmtInt(summary.stale_read_count) : "-"}
           sub={
             summary?.cross_thread_stale_count
               ? `${fmtInt(summary.cross_thread_stale_count)} cross-thread`
@@ -105,7 +105,7 @@ export function DiscoveryPage() {
           helpId="metric.stale_count"
           icon={<DatabaseIcon />}
           loading={data.loading}
-          value={summary ? fmtCompact(summary.est_wasted_tokens) : "—"}
+          value={summary ? fmtCompact(summary.est_wasted_tokens) : "-"}
           sub={
             summary
               ? `${fmtUSD(rate)}/M blended input rate`
@@ -124,7 +124,7 @@ export function DiscoveryPage() {
           helpId="metric.no_change_reruns"
           icon={<BoltIcon />}
           loading={data.loading}
-          value={summary ? fmtInt(summary.repeated_command_groups) : "—"}
+          value={summary ? fmtInt(summary.repeated_command_groups) : "-"}
           sub={
             summary?.cross_tool_file_count
               ? `+ ${fmtInt(summary.cross_tool_file_count)} cross-tool files`
@@ -152,7 +152,7 @@ export function DiscoveryPage() {
           loading={data.loading && !data.data}
           error={data.error}
           empty={!data.data?.stale_reads?.length}
-          emptyHint="No stale re-reads detected — files weren't re-read after intervening edits."
+          emptyHint="No stale re-reads detected - files weren't re-read after intervening edits."
           height={200}
         >
           {data.data?.stale_reads && (
@@ -192,7 +192,7 @@ export function DiscoveryPage() {
       {/* Cross-tool overlap */}
       <ChartShell
         title="Cross-tool overlap"
-        sub="Files touched by 2+ AI clients in this window — SuperBased's unique multi-tool value prop."
+        sub="Files touched by 2+ AI clients in this window - SuperBased's unique multi-tool value prop."
       >
         <ChartState
           loading={data.loading && !data.data}
@@ -328,7 +328,7 @@ function StaleReadsTable({
                       {fmtInt(r.cross_thread_stale_count)}
                     </span>
                   ) : (
-                    "—"
+                    "-"
                   )}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-fg-2">
@@ -437,14 +437,14 @@ function RepeatedCommandsTable({
                   >
                     {r.no_change_reruns > 0
                       ? `${fmtInt(r.no_change_reruns)} (${Math.round(noChangePct * 100)}%)`
-                      : "—"}
+                      : "-"}
                   </span>
                 </td>
                 <td className="py-1.5 text-right tabular-nums">
                   {r.failed_runs > 0 ? (
                     <span className="text-danger">{fmtInt(r.failed_runs)}</span>
                   ) : (
-                    <span className="text-fg-4">—</span>
+                    <span className="text-fg-4">-</span>
                   )}
                 </td>
               </tr>
@@ -612,7 +612,7 @@ function shortPath(p: string): string {
 }
 
 function basename(p: string): string {
-  if (!p) return "—";
+  if (!p) return "-";
   const parts = p.split("/").filter(Boolean);
   return parts[parts.length - 1] || p;
 }

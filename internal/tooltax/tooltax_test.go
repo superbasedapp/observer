@@ -570,6 +570,7 @@ func TestAliasVocabulariesMatchSource(t *testing.T) {
 		{"open-interpreter", "codex"},
 		{"antigravity-cli", "antigravity"},
 		{"roo-code", "cline"},
+		{"zoo-code", "cline"},
 		{"kilo-code", "cline"},
 	}
 	for _, p := range pairs {

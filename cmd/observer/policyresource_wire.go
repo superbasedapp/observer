@@ -54,23 +54,47 @@ func policyResourceCacheDir(cfg config.Config) string {
 
 // policyResourceOptionsFor builds the orgclient.PolicyResourceOptions both
 // the LKG loader and the poller share: the cache dir and the operator's
-// accept/preauthorize lists (plan §6.4). LiveCapabilities is left empty —
-// v1 wires no judge (or other) capability onto this rail (plan §6.8: the
-// org-only service permits no remote judge), so any body declaring a
-// nonempty RequiredCapabilities fails closed with capability_mismatch,
-// exactly the plan's "fail-closed default before Phase W wires a real
-// capability source" posture for LiveCapabilities.
+// accept/preauthorize lists (plan §6.4). liveCaps is the closed set of
+// policy-resource capability tokens this node's LIVE runtime advertises (plan
+// §6.6) — resolved by the CALLER from the admission service (a plain string
+// slice, never an obs type, so this untagged file stays clear of the obs
+// reverse-import boundary). A body whose RequiredCapabilities is not a subset
+// of liveCaps fails closed with capability_mismatch; a nil/empty liveCaps
+// therefore keeps the strict fail-closed default for a node with no matching
+// live capability (e.g. no judge wired, or the no_obs build).
 // NodeAttrs carries the operator's locally-configured targeting attributes
 // (P0-10 Phase B) so both the live accept path and the LKG path corroborate
 // a signed selector predicate against the SAME attributes — an LKG install
 // must never resurrect an envelope the live path would now reject.
-func policyResourceOptionsFor(cfg config.Config) orgclient.PolicyResourceOptions {
+func policyResourceOptionsFor(cfg config.Config, liveCaps []string) orgclient.PolicyResourceOptions {
 	return orgclient.PolicyResourceOptions{
 		CacheDir:            policyResourceCacheDir(cfg),
 		AcceptFamilies:      cfg.OrgClient.Policy.AcceptFamilies,
 		PreauthorizeEnforce: cfg.OrgClient.Policy.PreauthorizeEnforce,
 		NodeAttrs:           policyResourceNodeAttrs(cfg),
+		LiveCapabilities:    liveCaps,
 	}
+}
+
+// nodeLiveCapabilities composes the FULL capability-token list this node
+// advertises to the acceptance path: the admission-handle-derived judge
+// capability (handle.LiveCapabilities(), honest — "judge" only when a judge
+// client is actually wired) plus the node's static mode-capability token
+// (orgcontract.ModeCapabilityToken(providers.SupportedModeSchemaVersion),
+// capabilities.go / Plane B dual-mode gateway design 2026-08-29 §3, Sol S3).
+// The mode token is unconditional (not gated on the admission service, and
+// present even in the no_obs build / nil handle): every build of this binary
+// ships the dual-mode gateway enforcement point in-process, so it can always
+// honor a gateway.providers body up to that schema version. Callers that also
+// need the same list for PolicyStateReport.LiveCapabilities (the policy-ack
+// report) go through this same function so the two never drift — see
+// buildPolicyStateReporter in policystate_wire.go.
+func nodeLiveCapabilities(handle *obsAdmissionHandle) []string {
+	caps := handle.LiveCapabilities()
+	if tok := orgcontract.ModeCapabilityToken(providers.SupportedModeSchemaVersion); tok != "" {
+		caps = append(caps, tok)
+	}
+	return caps
 }
 
 // policyResourceNodeAttrs maps [org_client.policy]'s node attribute knobs
@@ -117,9 +141,18 @@ type gatewayProvidersHandle struct {
 	// means the CURRENT lane table is left UNCHANGED — the caller only
 	// logs it, it never crashes.
 	apply func(upstreams map[string]string, autoDefaultLane string) error
-	// clear reverts the proxy to its bootstrap ([proxy] config.toml) lane
-	// table — a withdrawn org policy restores the operator's own
-	// configured lanes, never an empty table.
+	// applyRoute installs a fresh lane table AND the org-gateway route
+	// (mode + primary + fallbacks) as ONE atomic routing snapshot
+	// (internal/proxy.Proxy.SetRoutingSnapshot, Sol S7). Set at the daemon
+	// construction sites via SetRouteApply; nil on test handles and on
+	// builds with no proxy wiring, in which case ApplyWithMode falls back to
+	// the lane-only `apply` (org-route preserved) — a mode body then applies
+	// its lanes but leaves the org-route unchanged, which is the honest
+	// degraded behavior for a handle that cannot repoint the mode.
+	applyRoute func(upstreams map[string]string, autoDefaultLane, mode, primary string, fallbacks []string, terminal string, custodyAck bool) error
+	// clear reverts the proxy to its bootstrap ([proxy] + [proxy.org_route]
+	// config.toml) lane table AND org-route — a withdrawn org policy restores
+	// the operator's own configured routing, never an empty table.
 	clear func()
 	// liveLanes reads the CURRENTLY live lane table (Proxy.LaneTable). Only
 	// the P0-6 local-row hash uses it; nil means "no live read available on
@@ -173,6 +206,47 @@ func (h *gatewayProvidersHandle) Apply(upstreams map[string]string, autoDefaultL
 		return nil
 	}
 	return h.apply(upstreams, autoDefaultLane)
+}
+
+// SetRouteApply binds the atomic lanes+org-route setter
+// (internal/proxy.Proxy.SetRoutingSnapshot) so ApplyWithMode can install a
+// gateway.providers MODE body's lanes and mode together in one generation
+// (Sol S7). Called once per handle at the daemon construction sites; a nil
+// handle is a no-op.
+func (h *gatewayProvidersHandle) SetRouteApply(fn func(upstreams map[string]string, autoDefaultLane, mode, primary string, fallbacks []string, terminal string, custodyAck bool) error) {
+	if h == nil {
+		return
+	}
+	h.applyRoute = fn
+}
+
+// ApplyWithMode installs a compiled gateway.providers spec, honoring its
+// optional mode block (P5b, Luna L14):
+//
+//   - a body that carries a mode block (ModeNode or ModeGateway) installs
+//     lanes AND the org-route atomically via applyRoute (SetRoutingSnapshot),
+//     so a mode flip is a single routing generation;
+//   - a lane-only body (no mode block) installs lanes via the existing
+//     apply (SetLaneTable), which PRESERVES the live org-route — so a
+//     [proxy.org_route] bootstrap (or a previously-applied org mode) is not
+//     clobbered by an unrelated lane publish.
+//
+// When applyRoute is nil (test handles / builds without proxy wiring) a mode
+// body degrades to a lane-only apply; the mode is not repointed. Nil-safe.
+func (h *gatewayProvidersHandle) ApplyWithMode(spec providers.PolicySpec) error {
+	if h == nil {
+		return nil
+	}
+	if spec.HasModeBlock() && h.applyRoute != nil {
+		mode, primary, fallbacks := spec.OrgRoute()
+		// Thread the compiled fallback-ladder terminal rung (Sol S10 / Luna
+		// L16) alongside the destination so the runtime executor
+		// (internal/proxy/gatewayfallback.go) reads it from the SAME routing
+		// generation. TerminalPolicy / DirectFallbackCustodyAck are empty/
+		// false outside Gateway Mode, so a Node-Mode body threads a no-op.
+		return h.applyRoute(spec.UpstreamsAsStringMap(), spec.AutoDefaultLane, mode, primary, fallbacks, spec.TerminalPolicy, spec.DirectFallbackCustodyAck)
+	}
+	return h.Apply(spec.UpstreamsAsStringMap(), spec.AutoDefaultLane)
 }
 
 // Clear reverts to the bootstrap lane table through the handle and forgets
@@ -307,7 +381,7 @@ func applyGatewayProviders(gw *gatewayProvidersHandle, res orgclient.PolicyResou
 			"version", res.Version, "reason", res.InertReason)
 		return
 	}
-	if err := gw.Apply(p.UpstreamsAsStringMap(), p.AutoDefaultLane); err != nil {
+	if err := gw.ApplyWithMode(p); err != nil {
 		gw.recordApplyFailure(res.Version)
 		logger.Warn("policy resource: applying gateway.providers lane table failed", "err", err, "version", res.Version)
 		return
@@ -331,6 +405,40 @@ func applyGatewayProviders(gw *gatewayProvidersHandle, res orgclient.PolicyResou
 type nodeFeaturesHandle struct {
 	mu    sync.Mutex
 	state nodeFeaturesState
+	// sidecarWriter, when set, materializes the resolved tools.disallow list to
+	// the node-local node.features LKG sidecar (P6 item 5) so BARE CLI
+	// launchers and `observer adapters` — short-lived processes with no access
+	// to this in-memory handle — see the live disallow state. Called on every
+	// state change (apply → the applied list; inert/clear → empty). Best-effort;
+	// a nil writer is the ungoverned/solo no-op. Invoked AFTER the state mutex
+	// is released so file I/O never holds the lock.
+	sidecarWriter func(disallow []string)
+}
+
+// SetSidecarWriter binds the node.features LKG sidecar writer (P6 item 5).
+// Called once at daemon construction; nil-safe.
+func (h *nodeFeaturesHandle) SetSidecarWriter(fn func(disallow []string)) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.sidecarWriter = fn
+	h.mu.Unlock()
+}
+
+// emitSidecar invokes the sidecar writer (if bound) with the given disallow
+// list. Read the writer under the lock, call it outside — never hold the state
+// mutex across file I/O.
+func (h *nodeFeaturesHandle) emitSidecar(disallow []string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	fn := h.sidecarWriter
+	h.mu.Unlock()
+	if fn != nil {
+		fn(disallow)
+	}
 }
 
 // nodeFeaturesState is the org-rail half of the node.features
@@ -385,6 +493,21 @@ func (h *nodeFeaturesHandle) TerminalAllowed(requestedSandbox bool) (bool, strin
 	return d.Allowed, d.Reason
 }
 
+// ToolAllowed evaluates the P7 gateway-arc tools disallow-list (Phase P7
+// item 4 — the node-side honor path for the org_disallow enforcement
+// bucket): (bool allowed, string reason). Nil-safe. tool is an
+// integration-registry Capability.Tool name (e.g. "codex", "crush").
+func (h *nodeFeaturesHandle) ToolAllowed(tool string) (bool, string) {
+	if h == nil {
+		return true, ""
+	}
+	h.mu.Lock()
+	spec := h.state.spec
+	h.mu.Unlock()
+	d := nodefeatures.ToolDecision(spec, tool)
+	return d.Allowed, d.Reason
+}
+
 // Clear reverts to no accepted body — every seam fail-opens. Nil-safe.
 func (h *nodeFeaturesHandle) Clear() {
 	if h == nil {
@@ -393,6 +516,9 @@ func (h *nodeFeaturesHandle) Clear() {
 	h.mu.Lock()
 	h.state = nodeFeaturesState{}
 	h.mu.Unlock()
+	// Cleared org rail ⇒ nothing disallowed (fail-open); refresh the sidecar so
+	// a short-lived launcher never reads a stale disallow list after a withdraw.
+	h.emitSidecar(nil)
 }
 
 // recordApplied stamps a body that is actually in effect.
@@ -401,8 +527,9 @@ func (h *nodeFeaturesHandle) recordApplied(version int64, bodyHash string, spec 
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.state = nodeFeaturesState{hasOrgRail: true, version: version, bodyHash: bodyHash, spec: &spec}
+	h.mu.Unlock()
+	h.emitSidecar(disallowKeys(spec.Tools.Disallow))
 }
 
 // recordInert stamps a body that was ACCEPTED but not applied (the §6.4
@@ -416,8 +543,11 @@ func (h *nodeFeaturesHandle) recordInert(version int64, bodyHash, reason string)
 		reason = "not_preauthorized"
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.state = nodeFeaturesState{hasOrgRail: true, version: version, bodyHash: bodyHash, inertReason: reason}
+	h.mu.Unlock()
+	// An INERT body applies no disallow list (spec is nil ⇒ fail-open), so the
+	// sidecar must reflect "nothing disallowed" — never the inert body's list.
+	h.emitSidecar(nil)
 }
 
 // nodeFeaturesFacts is the plain snapshot the P0-6 node.features point
@@ -566,7 +696,7 @@ func runPolicyResourcePoller(ctx context.Context, cfg config.Config, oc *orgclie
 	if logger == nil {
 		logger = slog.Default()
 	}
-	opts := policyResourceOptionsFor(cfg)
+	opts := policyResourceOptionsFor(cfg, nodeLiveCapabilities(handle))
 	logger.Debug("policy resource poller: starting", "families", policyfam.SupportedFamilies)
 	_ = oc.PolicyResourcePollLoop(ctx, opts, func(pr orgclient.PolicyResourcePollResult) {
 		switch {
@@ -925,7 +1055,7 @@ func loadPolicyResourceLKG(ctx context.Context, cfg config.Config, oc *orgclient
 	if err != nil || !ok || genRow.Tombstoned {
 		return // no live generation for this identity — nothing to load
 	}
-	opts := policyResourceOptionsFor(cfg)
+	opts := policyResourceOptionsFor(cfg, nodeLiveCapabilities(handle))
 	for _, family := range policyfam.SupportedFamilies {
 		loadPolicyResourceLKGFamily(ctx, oc, st, opts, enr.OrgServerURL, orgKey, genRow.Generation, family, handle, gw, ngov, nf, logger)
 	}

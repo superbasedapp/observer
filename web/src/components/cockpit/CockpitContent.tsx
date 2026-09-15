@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { IdLink, Pill, ToolBadge } from "@/components/primitives";
 import { ResourceCharts, type SessionMetricsResponse } from "./ResourceCharts";
 import { useApi } from "@/lib/useApi";
+import { useNowTick } from "@/lib/useNowTick";
 import { isRemoteView } from "@/lib/remote";
 import { markRestartPending } from "@/lib/restartPending";
 import { fmtBytes, fmtCompact, fmtInt, fmtUSD } from "@/lib/format";
@@ -58,21 +59,6 @@ type CockpitContentProps = {
   // known (the link wire carries no launch timestamp).
   mountMs: number;
 };
-
-// useNowTick re-renders on a fixed interval so live countdowns/elapsed advance
-// between the slower data polls. Paused while the tab is hidden (same policy
-// as useApi) so a backgrounded cockpit does no needless work.
-function useNowTick(intervalMs: number): number {
-  const [now, setNow] = useState<number>(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      setNow(Date.now());
-    }, intervalMs);
-    return () => window.clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
 
 export function CockpitContent({ link, linkError, linkLoading, mountMs }: CockpitContentProps) {
   const now = useNowTick(1000);
@@ -192,7 +178,7 @@ export function CockpitContent({ link, linkError, linkLoading, mountMs }: Cockpi
         {confidence > 0 && confidence < WEAK_LINK_CONFIDENCE && (
           <Pill
             variant="warn"
-            title={`Heuristic correlation (confidence ${(confidence * 100).toFixed(0)}%): this terminal was matched to the session by activity, not an exact token binding. Only the out-of-band handshake (95%) is authoritative — treat this pairing as best-effort.`}
+            title={`Heuristic correlation (confidence ${(confidence * 100).toFixed(0)}%): this terminal was matched to the session by activity, not an exact token binding. Only the out-of-band handshake (95%) is authoritative - treat this pairing as best-effort.`}
           >
             ≈ linked
           </Pill>
@@ -256,7 +242,7 @@ function SectionLabel({ children }: { children: ReactNode }) {
 }
 
 function SectionErr({ label }: { label: string }) {
-  return <div className="text-[10.5px] text-danger">{label} unavailable — retrying…</div>;
+  return <div className="text-[10.5px] text-danger">{label} unavailable - retrying…</div>;
 }
 
 // --- Degraded states -------------------------------------------------------
@@ -385,7 +371,7 @@ function NowStrip({
             <Pill variant={measured ? "success" : "neutral"}>{measured ? "measured" : "est."}</Pill>
           </>
         ) : (
-          <span className="text-fg-3">— tok/s</span>
+          <span className="text-fg-3">- tok/s</span>
         )}
       </span>
       <span className="text-fg-4">|</span>
@@ -393,7 +379,7 @@ function NowStrip({
         {procEnabled === false ? (
           <span className="text-fg-3">proc off</span>
         ) : !procLoaded ? (
-          // Don't render a failed/absent /processes fetch as "0 proc live" —
+          // Don't render a failed/absent /processes fetch as "0 proc live" -
           // that reads as an observed zero. Show an honest unavailable marker.
           <span className="text-fg-4" title={procErr ? "process vitals unavailable" : "loading process vitals…"}>
             proc {procErr ? "n/a" : "…"}
@@ -422,7 +408,7 @@ function NowStrip({
 // --- 3: Cost strip ---------------------------------------------------------
 
 function fmtCost(n: number | null | undefined): string {
-  if (n == null || !Number.isFinite(n)) return "—";
+  if (n == null || !Number.isFinite(n)) return "-";
   return fmtUSD(n, n > 0 && n < 0.1);
 }
 
@@ -470,7 +456,7 @@ function CostStrip({
                 <span className="text-fg-3">/h</span>
               </>
             ) : (
-              <span className="text-fg-4">—</span>
+              <span className="text-fg-4">-</span>
             )}
           </div>
           <div className="text-[10px] tabular-nums text-fg-3">
@@ -483,7 +469,7 @@ function CostStrip({
             {nextLo != null && nextHi != null ? (
               <>≈ {fmtCost(nextLo)}–{fmtCost(nextHi)}</>
             ) : (
-              <span className="text-fg-4">—</span>
+              <span className="text-fg-4">-</span>
             )}
           </div>
         </div>
@@ -498,12 +484,12 @@ function CostStrip({
 // started, and reading one as the other is the whole risk of showing a rate.
 function burnTitle(burn: BurnRate | null): string {
   if (!burn) {
-    return "No burn rate yet — a rate needs at least two timed turns, or a session with elapsed time and a known cost.";
+    return "No burn rate yet - a rate needs at least two timed turns, or a session with elapsed time and a known cost.";
   }
   if (burn.basis === "recent") {
     return `Current rate: ${burn.turns} turn(s) over ${fmtElapsed(burn.spanSecs)}. The oldest fetched turn sets the window start and is excluded from the total, so the rate isn't inflated by counting a cost incurred before the window.`;
   }
-  return `Session average over ${fmtElapsed(burn.spanSecs)} elapsed — the same elapsed shown in the header. Diluted by any idle time; a current rate needs at least two timed turns.`;
+  return `Session average over ${fmtElapsed(burn.spanSecs)} elapsed - the same elapsed shown in the header. Diluted by any idle time; a current rate needs at least two timed turns.`;
 }
 
 // --- 4: Context & tokens ---------------------------------------------------
@@ -767,7 +753,7 @@ function NetworkTraffic({
     return (
       <div
         className="mt-2 text-[10.5px] text-fg-4"
-        title="Network capture is off — set [observer.process.network].enabled to record this session's outbound API/network activity."
+        title="Network capture is off - set [observer.process.network].enabled to record this session's outbound API/network activity."
       >
         Network capture off
       </div>
@@ -775,7 +761,7 @@ function NetworkTraffic({
   }
   if (err && !network) {
     return (
-      <div className="mt-2 text-[10.5px] text-danger">API traffic unavailable — retrying…</div>
+      <div className="mt-2 text-[10.5px] text-danger">API traffic unavailable - retrying…</div>
     );
   }
   const sum = networkSummary(network);
@@ -789,7 +775,7 @@ function NetworkTraffic({
           hasBytes
             ? "Body byte totals exist only for SuperBased-proxied/plaintext API flows; per-process network bytes are not captured."
             : bodyCapture === false
-              ? "Body byte capture is off ([observer.process.network].capture_bodies) — proxied calls are counted, but their request/response bytes were not measured."
+              ? "Body byte capture is off ([observer.process.network].capture_bodies) - proxied calls are counted, but their request/response bytes were not measured."
               : "No request/response bytes have been recorded yet for this session's proxied calls."
         }
       >
@@ -808,7 +794,7 @@ function NetworkTraffic({
       {sum.os_connections > 0 && (
         <div
           className="text-[10.5px] text-fg-4"
-          title="OS-observed outbound connections from the captured process tree — raw sockets, not proxied API calls (no body bytes)."
+          title="OS-observed outbound connections from the captured process tree - raw sockets, not proxied API calls (no body bytes)."
         >
           Network connections: {fmtInt(sum.os_connections)}
         </div>
@@ -903,7 +889,7 @@ function ProcessEnableCTA() {
           disabled={state === "saving" || remote}
           title={
             remote
-              ? "Config changes are owner-local — enable process capture from the local dashboard."
+              ? "Config changes are owner-local - enable process capture from the local dashboard."
               : "Turns on process capture, preserving the configured backend."
           }
           className="rounded-2 border border-accent/40 bg-accent-soft px-2.5 py-1 text-[11px] font-medium text-accent hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-50"
@@ -967,7 +953,7 @@ function RecentTurns({
                 {fmtCompact(m.output)} tok
               </span>
               <span className="w-14 shrink-0 tabular-nums text-fg-3">
-                {tps != null ? fmtTps(tps) : "—"}
+                {tps != null ? fmtTps(tps) : "-"}
               </span>
               <span className="flex-1 text-right tabular-nums text-fg-2">{fmtCost(m.cost_usd)}</span>
             </Link>

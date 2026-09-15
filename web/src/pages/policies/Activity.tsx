@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Pill } from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
+import { fmtClock } from "@/lib/format";
 import { decisionVariant, severityVariant } from "./types";
 import { Card, Muted, Select } from "./ui";
 
@@ -71,7 +72,7 @@ export function ActivityTab() {
     <div className="space-y-4">
       <Card
         title="Admission verdicts"
-        sub="Every decision the admission policy recorded — the shadow (observe) or enforced verdict, which criterion fired, and whether the judge ran. Node-local audit; never pushed."
+        sub="Every decision the admission policy recorded - the shadow (observe) or enforced verdict, which criterion fired, and whether the judge ran. Node-local audit; never pushed."
       >
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <Select value={win} onChange={setWin} options={WINDOWS} />
@@ -102,17 +103,17 @@ export function ActivityTab() {
               <tbody>
                 {rows.map((v) => (
                   <tr key={v.id} className="border-b border-line-1/60 align-top">
-                    <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">{new Date(v.ts).toLocaleString()}</td>
+                    <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">{fmtClock(v.ts)}</td>
                     <td className="py-1.5 pr-3">
                       <span className="inline-flex items-center gap-1">
                         <Pill variant={decisionVariant(v.decision)}>{v.decision}</Pill>
                         {v.severity && v.severity !== "info" && <Pill variant={severityVariant(v.severity)}>{v.severity}</Pill>}
                         {v.mode === "observe" && v.decision !== "allow" && (
-                          <span className="text-[10px] text-fg-3" title="observe mode — recorded but not enforced">shadow</span>
+                          <span className="text-[10px] text-fg-3" title="observe mode - recorded but not enforced">shadow</span>
                         )}
                       </span>
                     </td>
-                    <td className="py-1.5 pr-3 font-mono text-[11px] text-fg-2">{v.criterion_id || "—"}</td>
+                    <td className="py-1.5 pr-3 font-mono text-[11px] text-fg-2">{v.criterion_id || "-"}</td>
                     <td className="py-1.5 pr-3">
                       {v.judge_used ? (
                         <span className="text-fg-3">{v.latency_ms}ms{v.degraded ? " · degraded" : ""}</span>
@@ -120,8 +121,8 @@ export function ActivityTab() {
                         <span className="text-fg-3">deterministic</span>
                       )}
                     </td>
-                    <td className="py-1.5 pr-3 font-mono text-[11px] text-fg-3">{v.user || "—"}</td>
-                    <td className="py-1.5 text-fg-3">{v.reason_excerpt || "—"}</td>
+                    <td className="py-1.5 pr-3 font-mono text-[11px] text-fg-3">{v.user || "-"}</td>
+                    <td className="py-1.5 text-fg-3">{v.reason_excerpt || "-"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -142,7 +143,7 @@ export function ActivityTab() {
         {egress.loading && egRows.length === 0 ? (
           <Muted>Loading…</Muted>
         ) : egRows.length === 0 ? (
-          <Muted>No egress decisions yet — a row appears when an admission-judged request matches a routing rule.</Muted>
+          <Muted>No egress decisions yet - a row appears when an admission-judged request matches a routing rule.</Muted>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-[12px]">
@@ -158,14 +159,14 @@ export function ActivityTab() {
               <tbody>
                 {egRows.map((d) => (
                   <tr key={d.id} className="border-b border-line-1/60">
-                    <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">{new Date(d.ts).toLocaleString()}</td>
+                    <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">{fmtClock(d.ts)}</td>
                     <td className="py-1.5 pr-3 font-semibold text-fg-1">{d.rule_name}</td>
                     <td className="py-1.5 pr-3 font-mono text-[11px] text-fg-2">
                       {d.action}
                       {egressActionDetail(d) && <span className="text-fg-3"> {egressActionDetail(d)}</span>}
                     </td>
                     <td className="py-1.5 pr-3">
-                      {d.verdict_decision ? <Pill variant={decisionVariant(d.verdict_decision)}>{d.verdict_decision}</Pill> : <span className="text-fg-3">—</span>}
+                      {d.verdict_decision ? <Pill variant={decisionVariant(d.verdict_decision)}>{d.verdict_decision}</Pill> : <span className="text-fg-3">-</span>}
                     </td>
                     <td className="py-1.5">
                       {d.realized_outcome ? (
@@ -173,7 +174,7 @@ export function ActivityTab() {
                           {d.realized_outcome}
                         </Pill>
                       ) : (
-                        <span className="text-fg-3" title="advise-mode decisions are recorded but never routed">—</span>
+                        <span className="text-fg-3" title="advise-mode decisions are recorded but never routed">-</span>
                       )}
                     </td>
                   </tr>

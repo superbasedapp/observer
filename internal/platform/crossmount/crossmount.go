@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 )
 
 // OS tags emitted on HomeRoot.
@@ -34,12 +36,20 @@ type HomeRoot struct {
 
 // detector is the test seam — production code uses defaultDetector(),
 // tests construct one with fakes for runtimeOS / nativeHome / statDir /
-// readDir to exercise both bridge directions on any host.
+// readDir / exists / getenv to exercise both bridge directions on any
+// host.
+//
+// exists and getenv are nil-tolerant: a detector literal that omits
+// them falls back to the real os.Stat / os.Getenv, so the pre-existing
+// test literals keep compiling and only the tests that care about the
+// Windows-profile filter have to stage them.
 type detector struct {
 	runtimeOS  string
 	nativeHome func() (string, error)
 	statDir    func(path string) bool
 	readDir    func(path string) ([]string, error)
+	exists     func(path string) bool
+	getenv     func(name string) string
 }
 
 func defaultDetector() *detector {
@@ -48,7 +58,57 @@ func defaultDetector() *detector {
 		nativeHome: os.UserHomeDir,
 		statDir:    isExistingDir,
 		readDir:    readDirNames,
+		exists:     fileExists,
+		getenv:     os.Getenv,
 	}
+}
+
+// The cross-mount scan behind ExtraHomes enumerates and stats a
+// foreign-OS mount (/mnt/c/Users over 9P on WSL2, \\wsl.localhost\ on
+// Windows) — tens of milliseconds per call, and every adapter's
+// WatchPaths/IsSessionFile recomputes it. Hot paths multiply that:
+// the watcher runs IsSessionFile per fsnotify event, and the
+// watcher-health endpoint resolved cursor semantics for ~5k rows,
+// each re-scanning the mount — minutes of 9P round-trips per request
+// (the 2026-08-29 goroutine dump named this exact stack). Home
+// directories effectively never change while the daemon runs, so the
+// package entry points serve a short-TTL cache; a genuinely new
+// foreign-OS user home is picked up within extrasCacheTTL. The
+// detector methods themselves stay uncached — tests construct their
+// own detectors and must observe every injected-fs call.
+const extrasCacheTTL = 30 * time.Second
+
+var extrasCache struct {
+	mu      sync.Mutex
+	val     []HomeRoot
+	expires time.Time
+}
+
+// extrasScan is the cache's refill seam; tests stub it to count scans.
+var extrasScan = func() []HomeRoot { return defaultDetector().extraHomes() }
+
+func cachedExtraHomes() []HomeRoot {
+	extrasCache.mu.Lock()
+	defer extrasCache.mu.Unlock()
+	if time.Now().After(extrasCache.expires) {
+		extrasCache.val = extrasScan()
+		extrasCache.expires = time.Now().Add(extrasCacheTTL)
+	}
+	// Copy: callers append to and re-slice the result (WatchPaths
+	// composition); aliasing the cached backing array would let one
+	// caller corrupt every later caller's view.
+	out := make([]HomeRoot, len(extrasCache.val))
+	copy(out, extrasCache.val)
+	return out
+}
+
+// resetExtrasCacheForTest empties the cache so a test observes a fresh
+// scan. Test-only; never called from production code.
+func resetExtrasCacheForTest() {
+	extrasCache.mu.Lock()
+	defer extrasCache.mu.Unlock()
+	extrasCache.val = nil
+	extrasCache.expires = time.Time{}
 }
 
 // AllHomes returns the native home (when resolvable) plus every
@@ -56,16 +116,28 @@ func defaultDetector() *detector {
 // directory-listing order (which on most filesystems is creation
 // order, sometimes alphabetical — callers must not rely on it).
 //
-// Safe to call on any platform; never errors.
+// Safe to call on any platform; never errors. The cross-mount extras
+// are served from a short-TTL cache (see extrasCacheTTL); the native
+// home is resolved fresh on every call.
 func AllHomes() []HomeRoot {
-	return defaultDetector().allHomes()
+	var all []HomeRoot
+	d := defaultDetector()
+	if home, err := d.nativeHome(); err == nil && home != "" {
+		all = append(all, HomeRoot{
+			Path:   home,
+			OS:     d.runtimeOS,
+			Origin: "native",
+		})
+	}
+	return append(all, cachedExtraHomes()...)
 }
 
 // ExtraHomes returns only the auto-detected cross-mount homes,
 // excluding the native home. Useful for diagnostic logging that
-// surfaces what the bridge picked up.
+// surfaces what the bridge picked up. Served from the same short-TTL
+// cache as AllHomes.
 func ExtraHomes() []HomeRoot {
-	return defaultDetector().extraHomes()
+	return cachedExtraHomes()
 }
 
 func (d *detector) allHomes() []HomeRoot {
@@ -95,12 +167,32 @@ func (d *detector) extraHomes() []HomeRoot {
 // host via the /mnt/c bind. Returns nil when /mnt/c/Users is not a
 // directory (pure Linux host, or WSL2 instance without the C: mount).
 //
-// Per design: NO name-based filtering. The watcher's anyDirExists +
-// per-adapter subpath check turns inert candidates into no-ops; we'd
-// rather risk an extra inert home than skip a legitimate user dir.
-// We do still require the candidate is itself a directory, so files
-// like desktop.ini get skipped (filepath.WalkDir would error on them
-// otherwise).
+// Four gates, applied in this order (see windowsprofiles.go for the
+// tables and the reasoning behind each):
+//
+//  1. The candidate must itself be a DIRECTORY, so entries like
+//     desktop.ini are skipped (filepath.WalkDir would error on them
+//     downstream otherwise).
+//  2. Its name must not be a well-known non-user entry — Default,
+//     Default User, Public, All Users, and the service/template
+//     profiles alongside them.
+//  3. It must carry a real-profile marker: an NTUSER.DAT hive or an
+//     AppData tree. A directory with neither has never held an AI
+//     tool's session store.
+//  4. Case-insensitive de-duplication, because the underlying
+//     filesystem is case-insensitive and two spellings of one profile
+//     would otherwise fan out into two full sets of watch roots.
+//
+// The original design deliberately did NO name filtering, on the
+// theory that the watcher's existence check turns an inert home into a
+// no-op. That is true of the DATA path but not of the operational one:
+// on the 2026-09-03 dev box the daemon composed, registered and logged
+// a full set of watch roots for Default, Default User, Public, All
+// Users and WsiAccount — none of which can ever exist — cluttering the
+// journal and the doctor output, and paying per-tick re-detection cost
+// on DrvFs for each. Filtering the enumeration is the one-owner fix.
+//
+// Set EnvAllWindowsProfiles to restore the unfiltered behaviour.
 func (d *detector) wslWindowsHomes() []HomeRoot {
 	const root = "/mnt/c/Users"
 	if !d.statDir(root) {
@@ -110,12 +202,27 @@ func (d *detector) wslWindowsHomes() []HomeRoot {
 	if err != nil {
 		return nil
 	}
+	unfiltered := d.allProfilesForced()
 	var out []HomeRoot
+	seen := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		path := filepath.Join(root, name)
 		if !d.statDir(path) {
 			continue
 		}
+		if !unfiltered {
+			if isNonUserProfileName(name) {
+				continue
+			}
+			if !d.hasUserProfileMarker(path) {
+				continue
+			}
+		}
+		key := strings.ToLower(name)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
 		out = append(out, HomeRoot{
 			Path:   path,
 			OS:     OSWindows,

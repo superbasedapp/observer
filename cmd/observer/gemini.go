@@ -139,11 +139,12 @@ func newGeminiCmd() *cobra.Command {
 				continueDir = cwd
 			}
 			return runEnvLauncher(envLauncherSpec{
-				tool:     "gemini",
-				bin:      bin,
-				args:     args,
-				dir:      continueDir,
-				proxyURL: resolved,
+				tool:       "gemini",
+				bin:        bin,
+				args:       args,
+				configPath: configPath,
+				dir:        continueDir,
+				proxyURL:   resolved,
 				// Gemini base URL is the host ROOT (no /v1) — the CLI appends
 				// the /v1beta/models/<model>:generateContent path itself.
 				env:      map[string]string{"GOOGLE_GEMINI_BASE_URL": strings.TrimRight(resolved, "/")},

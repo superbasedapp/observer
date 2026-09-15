@@ -18,6 +18,7 @@ import { ChartState } from "@/components/ChartState";
 import { SessionDetailPanel } from "@/components/SessionDetailPanel";
 import { useFilters, windowParams } from "@/lib/filters";
 import { useApi } from "@/lib/useApi";
+import { fmtDateOnly, fmtDateTime, fmtShortId } from "@/lib/format";
 import {
   actionMeta,
   mcpIdentity,
@@ -165,7 +166,7 @@ export function ActionsPage() {
         header: () => <>Time<HelpInd id="column.actions.when" /></>,
         accessorKey: "timestamp",
         cell: ({ row }) => (
-          <Tooltip content={row.original.timestamp}>
+          <Tooltip content={fmtDateTime(row.original.timestamp)}>
             <span tabIndex={0} className="cursor-help text-fg-2 focus:outline-none">
               {relativeTime(row.original.timestamp)}
             </span>
@@ -202,7 +203,7 @@ export function ActionsPage() {
               </span>
             </Tooltip>
           ) : (
-            <span className="text-fg-4">—</span>
+            <span className="text-fg-4">-</span>
           ),
       },
       {
@@ -228,7 +229,7 @@ export function ActionsPage() {
           row.original.effort_level ? (
             <Pill>{row.original.effort_level}</Pill>
           ) : (
-            <span className="text-fg-4">—</span>
+            <span className="text-fg-4">-</span>
           ),
       },
       {
@@ -237,7 +238,7 @@ export function ActionsPage() {
         accessorKey: "source_file",
         cell: ({ row }) => {
           const sf = row.original.source_file;
-          if (!sf) return <span className="text-fg-4">—</span>;
+          if (!sf) return <span className="text-fg-4">-</span>;
           // Short-display: just the filename. Hover reveals the full path.
           const i = sf.lastIndexOf("/");
           const tail = i >= 0 ? sf.slice(i + 1) : sf;
@@ -278,7 +279,7 @@ export function ActionsPage() {
               </span>
             </Tooltip>
           ) : (
-            <span className="text-fg-4">—</span>
+            <span className="text-fg-4">-</span>
           ),
       },
       {
@@ -296,7 +297,7 @@ export function ActionsPage() {
                 }}
                 className="font-mono text-[11px] text-accent hover:text-accent-strong hover:underline"
               >
-                {row.original.session_id.slice(0, 8)}…
+                {fmtShortId(row.original.session_id, 8)}
               </button>
             </Tooltip>
             <CopyOnClick value={row.original.session_id}>
@@ -348,7 +349,7 @@ export function ActionsPage() {
       <div className="min-w-0 space-y-4 overflow-y-auto p-6">
         <PageHeader
           title="Actions"
-          sub="The flat firehose — every recorded tool-call action across the window, filterable by tool, type, effort, and permission. Row-click expands inline detail; the session pill opens the session slide-over."
+          sub="The flat firehose - every recorded tool-call action across the window, filterable by tool, type, effort, and permission. Row-click expands inline detail; the session pill opens the session slide-over."
           helpId="tab.actions"
         />
         <ChartShell
@@ -801,7 +802,7 @@ function TimelineDayAxis({
           return (
             <Tooltip
               key={c.day}
-              content={`${c.day} · ${c.count} action${c.count === 1 ? "" : "s"}`}
+              content={`${fmtDateOnly(c.day)} · ${c.count} action${c.count === 1 ? "" : "s"}`}
             >
               <button
                 type="button"
@@ -894,7 +895,7 @@ function TimelineEntry({
   });
   return (
     <li className="flex items-stretch gap-3 py-2">
-      <Tooltip content={ts.toLocaleString()}>
+      <Tooltip content={fmtDateTime(row.timestamp)}>
         <div
           tabIndex={0}
           className="shrink-0 cursor-help pt-2 text-right font-mono text-[10.5px] tabular-nums text-fg-3 focus:outline-none"
@@ -1057,7 +1058,7 @@ function EventLogCard({
               !sf && "ml-auto",
             )}
           >
-            session {row.session_id.slice(0, 10)}…
+            session {fmtShortId(row.session_id, 10)}
           </button>
         </Tooltip>
       </footer>
@@ -1118,7 +1119,7 @@ function ExpandedDetail({
         <DetailRow label="Timestamp" value={row.timestamp} mono />
         <DetailRow
           label="Message ID"
-          value={row.message_id || "—"}
+          value={row.message_id || "-"}
           mono
         />
         <DetailRow
@@ -1128,9 +1129,9 @@ function ExpandedDetail({
         />
         <DetailRow
           label="Permission"
-          value={row.permission_mode || "—"}
+          value={row.permission_mode || "-"}
         />
-        <DetailRow label="Effort" value={row.effort_level || "—"} />
+        <DetailRow label="Effort" value={row.effort_level || "-"} />
         <DetailRow
           label="Status"
           value={row.success ? "success" : "failure"}
@@ -1270,7 +1271,8 @@ function buildActionChips(props: {
     });
   if (props.sessionFilter)
     chips.push({
-      label: `session: ${props.sessionFilter.slice(0, 10)}…`,
+      label: `session: ${fmtShortId(props.sessionFilter, 10)}`,
+      title: `Remove filter (session ${props.sessionFilter})`,
       onClear: () => props.setSessionFilter(""),
     });
   return chips;
@@ -1287,7 +1289,7 @@ function todayIsoDate(): string {
 
 function relativeTime(iso: string): string {
   const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "—";
+  if (!Number.isFinite(t)) return "-";
   const ms = Date.now() - t;
   if (ms < 0) return "future";
   const s = ms / 1000;

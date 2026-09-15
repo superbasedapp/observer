@@ -47,6 +47,9 @@ type driveRequest struct {
 	OnStart func(pid int) error
 	// OnExit retracts the exact pid bridge after the direct child exits.
 	OnExit func(pid int)
+	// Admission runs immediately before the harness process starts. Nil keeps
+	// the standalone Arena engine behavior unchanged.
+	Admission func(context.Context, string, string) error
 }
 
 // driveResult is one candidate drive's outcome.
@@ -103,10 +106,31 @@ func executeDrive(ctx context.Context, bin string, spec *integration.HeadlessSpe
 	if err != nil {
 		return driveResult{}, fmt.Errorf("arena.executeDrive: %w", err)
 	}
-	args := make([]string, 0, len(spec.Lead)+len(spec.OutputArgs)+8)
+	args, sessionID, outPath := buildDriveArgv(spec, req, model)
+
+	stdout, captured, res, err := spawnDrive(ctx, bin, args, spec, req)
+	if err != nil {
+		return driveResult{}, err
+	}
+	if captured {
+		if extract, ok := driveResultExtractors[spec.Result]; ok {
+			res.FinalAnswer, res.SessionIDs = extract(stdout, outPath, sessionID)
+		}
+	}
+	return res, nil
+}
+
+// buildDriveArgv composes the harness argv from the HeadlessSpec plus this
+// request's prompt/model/context files — one branch per capability the spec
+// declares (session-id minting + skip-permissions for the stdout-JSON lane,
+// workspace-write flags for the file-output lane, positional context files,
+// the output-file flag). Returns the argv, the session id minted for a
+// stdout-JSON lane (empty otherwise), and the output-file path for a lane
+// that extracts its answer from a file (empty otherwise).
+func buildDriveArgv(spec *integration.HeadlessSpec, req driveRequest, model string) (args []string, sessionID string, outPath string) {
+	args = make([]string, 0, len(spec.Lead)+len(spec.OutputArgs)+8)
 	args = append(args, spec.Lead...)
 
-	sessionID := ""
 	switch spec.Result {
 	case integration.HeadlessResultStdoutJSON:
 		// claude-code lane: mint the correlation id up front — the tool
@@ -136,14 +160,24 @@ func executeDrive(ctx context.Context, bin string, spec *integration.HeadlessSpe
 		args = append(args, req.ContextFiles...)
 	}
 
-	outFile := ""
-	outPath := ""
 	if spec.Result == integration.HeadlessResultOutputFile {
-		outFile = filepath.Join(req.WorktreePath, ".arena-last-message.txt")
-		outPath = outFile
-		args = append(args, spec.ResultFlag, outFile)
+		outPath = filepath.Join(req.WorktreePath, ".arena-last-message.txt")
+		args = append(args, spec.ResultFlag, outPath)
 	}
+	return args, sessionID, outPath
+}
 
+// spawnDrive runs the harness binary to completion inside its own process
+// group, killing the whole group on a context timeout, and returns the
+// captured stdout+stderr bytes alongside the outcome (exit code / wall time
+// / pid). captured reports whether the temp-file capture could be read back
+// afterward; when false the caller must skip result extraction (mirrors the
+// original inline behavior of silently skipping extraction on a read
+// failure rather than failing the drive). A non-nil error means the harness
+// never produced an outcome at all (setup, start, or attribution failure) —
+// distinct from a non-zero harness exit, which is folded into the returned
+// driveResult instead.
+func spawnDrive(ctx context.Context, bin string, args []string, spec *integration.HeadlessSpec, req driveRequest) (stdout []byte, captured bool, res driveResult, err error) {
 	dctx := ctx
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -176,7 +210,7 @@ func executeDrive(ctx context.Context, bin string, spec *integration.HeadlessSpe
 	// *os.File, Wait returns at direct-child exit; we read the file after.
 	tmpOut, terr := os.CreateTemp("", "sbo-drive-out-*")
 	if terr != nil {
-		return driveResult{}, fmt.Errorf("arena.executeDrive: %w", terr)
+		return nil, false, driveResult{}, fmt.Errorf("arena.executeDrive: %w", terr)
 	}
 	tmpName := tmpOut.Name()
 	defer func() {
@@ -186,17 +220,22 @@ func executeDrive(ctx context.Context, bin string, spec *integration.HeadlessSpe
 	cmd.Stdout = tmpOut
 	cmd.Stderr = tmpOut
 
+	if req.Admission != nil {
+		if admissionErr := req.Admission(dctx, req.Tool, req.ProxyURL); admissionErr != nil {
+			return nil, false, driveResult{}, fmt.Errorf("arena.executeDrive: admission: %w", admissionErr)
+		}
+	}
 	start := time.Now()
 	runErr := cmd.Start()
 	if runErr != nil {
-		return driveResult{}, fmt.Errorf("arena.executeDrive: start: %w", runErr)
+		return nil, false, driveResult{}, fmt.Errorf("arena.executeDrive: start: %w", runErr)
 	}
 	pid := cmd.Process.Pid
 	if req.OnStart != nil {
-		if err := req.OnStart(pid); err != nil {
+		if attErr := req.OnStart(pid); attErr != nil {
 			_ = killProcGroup(cmd)
 			_ = cmd.Wait()
-			return driveResult{}, fmt.Errorf("arena.executeDrive: process attribution: %w", err)
+			return nil, false, driveResult{}, fmt.Errorf("arena.executeDrive: process attribution: %w", attErr)
 		}
 	}
 	if req.OnExit != nil {
@@ -205,7 +244,7 @@ func executeDrive(ctx context.Context, bin string, spec *integration.HeadlessSpe
 	runErr = cmd.Wait()
 	wallMS := time.Since(start).Milliseconds()
 
-	res := driveResult{WallMS: wallMS, PID: pid}
+	res = driveResult{WallMS: wallMS, PID: pid}
 	if runErr != nil {
 		if errors.Is(dctx.Err(), context.DeadlineExceeded) || ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			res.TimedOut = true
@@ -215,38 +254,71 @@ func executeDrive(ctx context.Context, bin string, spec *integration.HeadlessSpe
 	}
 
 	stdout, rerr := os.ReadFile(tmpName)
-	if rerr == nil {
-		switch spec.Result {
-		case integration.HeadlessResultStdoutJSON:
-			if ans, ok := parseClaudeResult(stdout); ok {
-				res.FinalAnswer = stripANSI(ans)
-			}
-			if sessionID != "" {
-				res.SessionIDs = []string{sessionID}
-			}
-		case integration.HeadlessResultOutputFile:
-			res.SessionIDs = parseCodexThreadIDs(stdout)
-			if b, err := os.ReadFile(outPath); err == nil {
-				res.FinalAnswer = stripANSI(string(b))
-			}
-		case integration.HeadlessResultGrokJSON:
-			if ans, sid, ok := parseGrokResult(stdout); ok {
-				res.FinalAnswer = stripANSI(ans)
-				if sid != "" {
-					res.SessionIDs = []string{sid}
-				}
-			}
-		case integration.HeadlessResultOpenCodeEvents:
-			ans, sids := parseOpenCodeEvents(stdout)
-			if ans != "" {
-				res.FinalAnswer = stripANSI(ans)
-			}
-			res.SessionIDs = sids
-		case integration.HeadlessResultStdoutText:
-			res.FinalAnswer = stripANSI(string(stdout))
-		}
+	return stdout, rerr == nil, res, nil
+}
+
+// driveResultExtractors maps a HeadlessSpec's Result kind to the parser that
+// pulls the final answer + session ids out of a drive's captured stdout (and,
+// for the file-output lane, the sidecar output file). Table-driven so a new
+// result kind is one row here, not another branch inside executeDrive.
+var driveResultExtractors = map[integration.HeadlessResultKind]func(stdout []byte, outPath, sessionID string) (answer string, sessionIDs []string){
+	integration.HeadlessResultStdoutJSON:     extractStdoutJSON,
+	integration.HeadlessResultOutputFile:     extractOutputFile,
+	integration.HeadlessResultGrokJSON:       extractGrokJSON,
+	integration.HeadlessResultOpenCodeEvents: extractOpenCodeEvents,
+	integration.HeadlessResultStdoutText:     extractStdoutText,
+}
+
+// extractStdoutJSON pulls the final answer out of claude print-mode JSON and
+// pairs it with the session id minted before the drive started.
+func extractStdoutJSON(stdout []byte, _ string, sessionID string) (string, []string) {
+	answer, _ := parseClaudeResult(stdout)
+	var sessionIDs []string
+	if sessionID != "" {
+		sessionIDs = []string{sessionID}
 	}
-	return res, nil
+	return stripANSI(answer), sessionIDs
+}
+
+// extractOutputFile pulls thread ids out of codex's --json stdout and the
+// final answer out of the sidecar file the harness was told to write to.
+func extractOutputFile(stdout []byte, outPath, _ string) (string, []string) {
+	sessionIDs := parseCodexThreadIDs(stdout)
+	answer := ""
+	if b, err := os.ReadFile(outPath); err == nil {
+		answer = stripANSI(string(b))
+	}
+	return answer, sessionIDs
+}
+
+// extractGrokJSON pulls the final answer + session id out of grok's
+// `--output-format json` envelope.
+func extractGrokJSON(stdout []byte, _ string, _ string) (string, []string) {
+	answer, sid, ok := parseGrokResult(stdout)
+	if !ok {
+		return "", nil
+	}
+	var sessionIDs []string
+	if sid != "" {
+		sessionIDs = []string{sid}
+	}
+	return stripANSI(answer), sessionIDs
+}
+
+// extractOpenCodeEvents pulls the last text part + distinct session ids out
+// of opencode's NDJSON event stream.
+func extractOpenCodeEvents(stdout []byte, _ string, _ string) (string, []string) {
+	answer, sessionIDs := parseOpenCodeEvents(stdout)
+	if answer != "" {
+		answer = stripANSI(answer)
+	}
+	return answer, sessionIDs
+}
+
+// extractStdoutText treats the harness's entire captured stdout as the
+// answer — for tools with no structured result channel (aider).
+func extractStdoutText(stdout []byte, _ string, _ string) (string, []string) {
+	return stripANSI(string(stdout)), nil
 }
 
 // headlessModelFor resolves the candidate model for a direct or proxy-routed

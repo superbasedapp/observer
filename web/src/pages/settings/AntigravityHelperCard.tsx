@@ -116,7 +116,7 @@ export function AntigravityHelperCard() {
             <code className="rounded-1 bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
               bin/antigravity-bridge.exe
             </code>{" "}
-            to the Windows host and run it once — the helper listens on{" "}
+            to the Windows host and run it once - the helper listens on{" "}
             <code className="rounded-1 bg-bg-3 px-1 py-0.5 font-mono text-[11px] text-fg-1">
               127.0.0.1:18801
             </code>{" "}
@@ -137,7 +137,7 @@ export function AntigravityHelperCard() {
       </details>
 
       <p className="mt-3 text-[10.5px] text-fg-3">
-        macOS / Linux native installs don't need this — the adapter reads
+        macOS / Linux native installs don't need this - the adapter reads
         directly from the local filesystem.
       </p>
     </section>

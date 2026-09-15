@@ -15,6 +15,7 @@ import { ManagedBanner } from "@/components/ManagedBanner";
 import { DemoBanner } from "@/components/DemoBanner";
 import { AnnouncementBanner } from "@/components/AnnouncementBanner";
 import { BudgetBanner } from "@/components/BudgetBanner";
+import { UpdateBanner } from "@/components/UpdateBanner";
 import { FirstCaptureToast } from "@/components/FirstCaptureToast";
 import { ToastViewport } from "@/components/Toast";
 import { KonamiEgg } from "@/components/KonamiEgg";
@@ -24,6 +25,8 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { NotFoundPage } from "@/pages/NotFound";
 import { FilterProvider } from "@/lib/filters";
 import { TourProvider } from "@/components/tour/TourProvider";
+import { HelpInd } from "@/components/HelpInd";
+import { HelpSlotProvider } from "@/components/primitives";
 import { NAV_ITEMS } from "@/lib/nav";
 import { isSectionHidden, useGovernance, type Governance } from "@/lib/governance";
 
@@ -224,6 +227,11 @@ function AnimatedRoutes() {
   );
 }
 
+// Renderer injected into the shared design-system help slot: DS components
+// (StatCard/HeroStat/PageHeader) render this app's HelpInd for their helpId,
+// which the delegated data-help-id click handler below turns into a drawer.
+const renderHelpInd = (id: string) => <HelpInd id={id} />;
+
 export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [helpId, setHelpId] = useState<string | null>(null);
@@ -300,6 +308,7 @@ export default function App() {
   const openHelp = useCallback(() => setHelpOpen(true), []);
 
   return (
+    <HelpSlotProvider value={renderHelpInd}>
     <TourProvider>
       <FilterProvider>
         <div className="flex h-full w-full bg-bg-0 text-fg-1">
@@ -313,6 +322,11 @@ export default function App() {
             <ManagedBanner gov={gov.data} />
             <DemoBanner />
             <AnnouncementBanner />
+            {/* Enterprise update management (W5): what the ORG has said about
+                this node's version, as opposed to the npm pill in the TopBar
+                which asks the public registry on a click. One loopback GET on
+                mount, no polling. */}
+            <UpdateBanner />
             <BudgetBanner />
             <FirstCaptureToast />
             <ToastViewport />
@@ -349,5 +363,6 @@ export default function App() {
         </div>
       </FilterProvider>
     </TourProvider>
+    </HelpSlotProvider>
   );
 }

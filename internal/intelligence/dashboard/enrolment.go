@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 )
@@ -21,6 +22,11 @@ type enrolmentStatusResponse struct {
 	EnrolledAt      string       `json:"enrolled_at,omitempty"`
 	CredentialStore string       `json:"credential_store,omitempty"`
 	LastPush        *lastPushDTO `json:"last_push,omitempty"`
+	// PushPaused is present ONLY while the oversized-batch circuit is open —
+	// the composed rollup exceeded the accepted push limit, so the loop is
+	// parked and NO telemetry is reaching the org server. Absent is the normal
+	// case; the UI must not render a scary state for a merely-idle push loop.
+	PushPaused *pushPausedDTO `json:"push_paused,omitempty"`
 }
 
 type lastPushDTO struct {
@@ -29,6 +35,13 @@ type lastPushDTO struct {
 	RowCount int64  `json:"row_count"`
 	Bytes    int64  `json:"bytes"`
 	Error    string `json:"error,omitempty"`
+}
+
+// pushPausedDTO is the open oversized-batch circuit. Reason is the underlying
+// serialized-bytes-vs-limit diagnostic; Until is when the loop retries.
+type pushPausedDTO struct {
+	Reason string `json:"reason,omitempty"`
+	Until  string `json:"until"`
 }
 
 // handleEnrolmentStatus serves GET /api/enrolment/status. When org mode is off
@@ -62,6 +75,12 @@ func (s *Server) handleEnrolmentStatus(w http.ResponseWriter, r *http.Request) {
 			RowCount: st.LastPush.RowCount,
 			Bytes:    st.LastPush.Bytes,
 			Error:    st.LastPush.Error,
+		}
+	}
+	if st.PushPaused != nil {
+		resp.PushPaused = &pushPausedDTO{
+			Reason: st.PushPaused.Reason,
+			Until:  st.PushPaused.Until.UTC().Format(time.RFC3339),
 		}
 	}
 	writeJSON(w, resp)

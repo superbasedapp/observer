@@ -58,8 +58,11 @@ var defaultPatterns = []pattern{
 	// Bearer tokens
 	{re: regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*`)},
 	// Common API key prefixes: sk-..., pk-..., ak-..., api_key=..., etc.
-	// Allow underscores inside the body to catch forms like pk_test_abc123...
-	{re: regexp.MustCompile(`(?i)(?:sk|pk|ak)[_-][A-Za-z0-9_]{16,}`)},
+	// Allow underscores AND hyphens inside the body: pk_test_abc123... and
+	// Anthropic's sk-ant-api03-... both carry separators past the prefix.
+	// Without `-` the match died at `sk-ant`, passing the key through
+	// unredacted (grokbot Phase-0 finding, 2026-08-29).
+	{re: regexp.MustCompile(`(?i)(?:sk|pk|ak)[_-][A-Za-z0-9_-]{16,}`)},
 	{re: regexp.MustCompile(`(?i)api[_-]?key[_-]?[A-Za-z0-9_]{20,}`)},
 	// AWS access key IDs
 	{re: regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
@@ -343,6 +346,36 @@ func Truncate(v string) string {
 	cut := MaxRawInputBytes - len(marker)
 	if cut < 0 {
 		cut = 0
+	}
+	return v[:cut] + marker
+}
+
+// TruncateN caps v at maxBytes, appending the same trailing "…[truncated]"
+// marker as [Truncate] when the value was cut. Unlike Truncate — which is
+// pinned to the fixed MaxRawInputBytes (1 MiB) raw_tool_input ceiling — this
+// takes a caller-supplied cap, for stores with a tighter size ceiling (e.g.
+// otel_content's 32 KiB, mirroring the org gateway's classify.Policy body
+// bound). The cut point backs up to a UTF-8 rune boundary (a continuation
+// byte is 0b10xxxxxx) so the stored value never ends mid-rune, matching
+// classify's own boundBytes convention. maxBytes<=0 returns "" for a
+// non-empty v (the degenerate "no room" case).
+func TruncateN(v string, maxBytes int) string {
+	if maxBytes <= 0 {
+		if v == "" {
+			return v
+		}
+		return ""
+	}
+	if len(v) <= maxBytes {
+		return v
+	}
+	const marker = "…[truncated]"
+	cut := maxBytes - len(marker)
+	if cut < 0 {
+		cut = 0
+	}
+	for cut > 0 && v[cut]&0xC0 == 0x80 {
+		cut--
 	}
 	return v[:cut] + marker
 }

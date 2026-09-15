@@ -29,9 +29,9 @@ import (
 //
 // Coverage compared to the hook path:
 //   - Activity (user prompts, every tool_use): covered.
-//   - Token usage / model: NOT covered — the transcript file has no
-//     `model` or `usage` fields. Token rows still require the live
-//     hook (BuildStopTokenEvent on the `stop` event).
+//   - Token usage: transcripts have no usage fields. Headless CLI usage is
+//     captured separately from its structured diagnostic logs; other surfaces
+//     use stop / afterAgentResponse hooks.
 //   - Real-time: lags by one assistant turn — Cursor flushes the JSONL
 //     after the turn completes.
 //
@@ -117,7 +117,7 @@ func (a *Adapter) WatchPaths() []string { return a.roots }
 // normalised to `/` so the matcher works against backslash-shaped
 // strings even on Linux (where filepath.Base wouldn't split on `\`).
 func (a *Adapter) IsSessionFile(path string) bool {
-	if !matchesSessionShape(path) && !matchesStoreDBShape(path) && !matchesStateDBShape(path) {
+	if !matchesSessionShape(path) && !matchesStoreDBShape(path) && !matchesStateDBShape(path) && !matchesCLIUsageLog(path) {
 		return false
 	}
 	return adapter.UnderAnyWatchRoot(path, a.WatchPaths())
@@ -177,19 +177,44 @@ func matchesSessionShape(path string) bool {
 // than offset-based incremental parsing. NewOffset = file size at scan
 // time, so the polling fallback only re-parses on file growth.
 func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
-	// store.db blob stores carry the system prompt + prompt budget;
+	// store.db blob stores carry the system prompt + prompt budget + native todos;
 	// state.vscdb carries the global (cross-project, incl. empty-window)
 	// conversation index; transcripts carry the per-turn activity.
-	// Dispatch by shape.
-	if matchesStoreDBShape(path) {
-		return a.parseStoreDBFile(path, fromOffset)
+	// Dispatch by shape — the same storeLayout key surfaceByLayout
+	// (surface.go) maps to a capture surface, so the two never drift.
+	layout := layoutFor(path)
+	var (
+		res adapter.ParseResult
+		err error
+	)
+	switch layout {
+	case layoutCLIUsage:
+		res, err = a.parseCLIUsageLog(ctx, path, fromOffset)
+	case layoutStoreDB:
+		res, err = a.parseStoreDBFile(path, fromOffset)
+	case layoutStateDB:
+		res, err = a.parseStateDBFile(ctx, path, fromOffset)
+	default:
+		// layoutTranscript, plus layoutUnknown: a path the watcher
+		// handed us that no matcher claims is parsed as a transcript
+		// (the historical behaviour) and gets no surface stamp.
+		res, err = a.parseTranscriptFile(ctx, path, fromOffset)
 	}
-	if matchesStateDBShape(path) {
-		return a.parseStateDBFile(ctx, path, fromOffset)
+	if err != nil {
+		return adapter.ParseResult{}, err
 	}
+	stampSurfaces(&res, layout, sessionHintFor(layout, path))
+	return res, nil
+}
+
+// parseTranscriptFile parses a Cursor agent-transcript JSONL
+// (`.cursor/projects/<slug>/agent-transcripts/<conv>/<conv>.jsonl`)
+// into per-turn activity rows. Split out of ParseSessionFile so the
+// shape dispatch + surface stamping live in one place.
+func (a *Adapter) parseTranscriptFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("cursor.ParseSessionFile: stat: %w", err)
+		return adapter.ParseResult{}, fmt.Errorf("cursor.parseTranscriptFile: stat: %w", err)
 	}
 	res := adapter.ParseResult{NewOffset: fi.Size()}
 	if fi.Size() == 0 {
@@ -201,7 +226,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 
 	turns, err := parseTranscriptTurns(path)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("cursor.ParseSessionFile: parse: %w", err)
+		return adapter.ParseResult{}, fmt.Errorf("cursor.parseTranscriptFile: parse: %w", err)
 	}
 	if len(turns) == 0 {
 		return res, nil
@@ -276,9 +301,10 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 
 // parseStoreDBFile handles a cursor-agent per-conversation blob store
 // (`.cursor/chats/<ws-hash>/<conv>/store.db`). It emits the system-
-// prompt content row + the prompt-budget section rows, independent of
-// the transcript. There is no hook-deferral gate: the live hook path
-// never captures these, so they must land regardless.
+// prompt content row, prompt-budget section rows, and successful native
+// todo executions independently of the transcript. Native todo calls
+// preserve vendor call IDs and completion timestamps. There is no
+// session-wide hook-deferral gate for this authoritative store.
 //
 // NewOffset = file size so the poller only re-reads on store.db growth;
 // the watcher's full-scan discovers never-seen store.db files (existing
@@ -309,6 +335,7 @@ func (a *Adapter) parseStoreDBFile(path string, fromOffset int64) (adapter.Parse
 	// giving these rows the exact same project attribution as the
 	// session's activity rows.
 	projectRoot := a.projectRootForStoreDB(path, convID)
+	res.ToolEvents = append(res.ToolEvents, a.todoEvents(store.Todos, convID, projectRoot, path)...)
 	if store.SystemPrompt != "" {
 		res.ToolEvents = append(res.ToolEvents,
 			a.systemPromptEvent(store.SystemPrompt, convID, projectRoot, path, ts))
@@ -822,7 +849,8 @@ func projectSlugFromPath(path string) string {
 // up `/mnt/c/Users/<u>/.cursor/projects` automatically.
 func defaultRoots() []string {
 	var roots []string
-	for _, h := range crossmount.AllHomes() {
+	homes := crossmount.AllHomes()
+	for _, h := range homes {
 		// projects/ → agent-transcripts (activity); chats/ → store.db
 		// blob stores (system prompt + prompt budget). Both watched so
 		// existing store.db files are discovered by the full-scan and
@@ -832,9 +860,19 @@ func defaultRoots() []string {
 		// globalStorage/state.vscdb → the ONLY on-disk record of an
 		// empty-window / no-folder conversation (no projects/ or
 		// chats/ entry exists for those at all). See statedb.go.
+		//
+		// The root is the FILE, not its globalStorage parent: other
+		// adapters (cline, roo-code, kilo-code, copilot) legitimately
+		// watch `<Cursor>/User/globalStorage/<ext>/...` for the same
+		// extensions installed inside the Cursor host (vscodehost), and
+		// the watcher's root-based dispatch requires cross-adapter roots
+		// to be pairwise non-prefix. A file root is a first-class shape
+		// (aider watches transcript files the same way): the scan walk
+		// visits it directly and fsnotify watches the file itself; the
+		// -wal/-shm sidecars are read through SQLite, never as triggers.
 		if dir := cursorGlobalStorageDir(h); dir != "" {
-			roots = append(roots, dir)
+			roots = append(roots, filepath.Join(dir, "state.vscdb"))
 		}
 	}
-	return roots
+	return append(roots, cliUsageRoots(homes)...)
 }

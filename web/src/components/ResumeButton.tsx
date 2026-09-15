@@ -136,7 +136,7 @@ export function ResumeButton({
           Resume
         </span>
         <p className="mt-1 text-[10.5px] text-fg-3">
-          Native resume isn't grounded for this tool — use{" "}
+          Native resume isn't grounded for this tool - use{" "}
           <span className="font-medium text-fg-2">Continue in another tool</span>{" "}
           below to fork this session into a fresh handover instead. A fork is a
           NEW session seeded from a scrubbed handover doc, not the original
@@ -155,7 +155,7 @@ export function ResumeButton({
             Resume
           </span>
           <Tooltip
-            content={`Resume unavailable — ${tool} has no native resume and isn't launchable in the embedded terminal, so there's no way to reopen this session from the dashboard.`}
+            content={`Resume unavailable - ${tool} has no native resume and isn't launchable in the embedded terminal, so there's no way to reopen this session from the dashboard.`}
             maxWidth={360}
           >
             <span>
@@ -189,8 +189,8 @@ export function ResumeButton({
         <Tooltip
           content={
             alreadyRunning
-              ? "This session already has a live terminal run — jump into it or wait for it to end before resuming again."
-              : "Reopen this closed session in an embedded terminal running the tool's own resume — the REAL prior transcript, signed thinking blocks and all, not a distilled fork."
+              ? "This session already has a live terminal run - jump into it or wait for it to end before resuming again."
+              : "Reopen this closed session in an embedded terminal running the tool's own resume - the REAL prior transcript, signed thinking blocks and all, not a distilled fork."
           }
           maxWidth={360}
         >
@@ -217,11 +217,11 @@ export function ResumeButton({
       </div>
       <p className="mt-1 text-[10.5px] text-fg-3">
         {alreadyRunning
-          ? "This session already has a live terminal run — jump into it or wait for it to end before resuming again."
+          ? "This session already has a live terminal run - jump into it or wait for it to end before resuming again."
           : "Reopen this closed session with its native resume ("}
         {!alreadyRunning && <span className="font-mono">{cmd}</span>}
         {!alreadyRunning &&
-          ") in an embedded terminal — the actual conversation reattaches, drivable from here."}
+          ") in an embedded terminal - the actual conversation reattaches, drivable from here."}
       </p>
     </section>
   );

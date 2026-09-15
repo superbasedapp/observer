@@ -195,12 +195,25 @@ func TestHookCapabilities(t *testing.T) {
 	}{
 		{"claude-code", HookClaudeSettings, true, true},
 		{"cursor", HookCursor, true, true},
-		{"codex", HookCodexConfig, false, true},
+		{"codex", HookCodexConfig, true, true},
 		{"hermes", HookHermesPlugin, false, true},
 		{"cline-cli", HookClineCLIJSONL, false, false}, // receiver exists, not auto-wired
 		{"opencode", HookNone, false, false},
 		{"cline", HookNone, false, false},
 		{"pi", HookNone, false, false},
+		// The six Part B item 1/2 long-tail vendors' own cross-OS bridge
+		// targets (internal/hook's register*Windows writers) —
+		// CrossOSBridge flipped true once the wsl.exe bridge writer
+		// existed for each. devin/Windsurf Desktop Cascade stays false:
+		// its only grounded install channel is the macOS Homebrew cask,
+		// so there is no Windows-native client to bridge to.
+		{"gemini-cli", HookGeminiSettings, true, true},
+		{"qwen-code", HookQwenSettings, true, true},
+		{"droid", HookFactoryJSON, true, true},
+		{"qoder", HookQoderJSON, true, true},
+		{"poolside", HookPoolsideYAML, true, true},
+		{"command-code", HookCommandCodeMod, true, true},
+		{"devin", HookCascadeJSON, false, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.tool, func(t *testing.T) {
@@ -284,6 +297,132 @@ func TestTokenTierGroundedForEveryAdapter(t *testing.T) {
 	for _, c := range Capabilities() {
 		if c.TokenTier.Best == "" {
 			t.Errorf("%s: TokenTier.Best is empty — every registered adapter must name a capture tier", c.Tool)
+		}
+	}
+}
+
+// TestPromptLaneGroundedForTouchedAdapters pins the prompt-submit
+// intervention hook lane's PromptLane field (docs/plans/
+// prompt-submit-intervention-exploration-2026-09-07.md Part B) for
+// every adapter this build touched. NOT a full-registry assertion
+// (unlike TestRoutabilityClassifiedForEveryAdapter) — scoping to the
+// touched set is a disclosed deviation from the contract's "every
+// adapter row declares it" ask; a follow-up should widen this once
+// every registry row has been reviewed for a grounded PromptLane
+// value (most legitimately stay PromptLaneNone, the zero value).
+// TestPromptLaneClassifiedForEveryAdapter is FIX-7's total-coverage
+// test (phase-2 review), in the TestRoutabilityClassifiedForEveryAdapter
+// style: EVERY registry row gets an EXPLICIT, audited PromptLane
+// expectation here — not just the handful the hook lane happens to
+// have touched so far. A row missing from this table, or a row whose
+// live PromptLane drifts from what's recorded here, fails loudly: the
+// map below IS the single canonical audit trail for "why does this
+// tool have this PromptLane", in one place rather than scattered across
+// 45 struct literals in integration.go (most of which — the
+// PromptLaneNone rows — carry the zero value with no line to comment
+// on at all).
+func TestPromptLaneClassifiedForEveryAdapter(t *testing.T) {
+	want := map[string]PromptLane{
+		// --- PromptLaneHook: VERIFIED dialects, wired in
+		// internal/hook/promptsubmit.go with a conformance.go
+		// CanBlock:true row AND a hookReceivers entry
+		// (cmd/observer/hook.go, TestPromptLaneHookRowsHaveAReceiver).
+		"claude-code": PromptLaneHook,
+		"codex":       PromptLaneHook,
+		"cursor":      PromptLaneHook,
+		"gemini-cli":  PromptLaneHook,
+		"qwen-code":   PromptLaneHook,
+		"droid":       PromptLaneHook,
+		// Part B item 2, phase-3a (2026-09-07): the documented
+		// long-tail vendors, live-fetched and wired. zcode's writer is
+		// deliberately not auto-registered (Hook.AutoWired:false)
+		// pending a liveness probe, but its receiver/dialect are built
+		// and tested like every other PromptLaneHook row.
+		"qoder":        PromptLaneHook,
+		"poolside":     PromptLaneHook,
+		"zcode":        PromptLaneHook,
+		"command-code": PromptLaneHook,
+		"devin":        PromptLaneHook,
+
+		// --- PromptLaneProxyOnly: no prompt-submit hook exists (or
+		// the one that does can't block/redact), but the tool is
+		// already proxy-routed today (contract §2.4/§2.6) — the proxy
+		// lane (internal/guard/proxyguard.go's scanPrompt, built and
+		// wired) is the only realistic path.
+		"opencode":    PromptLaneProxyOnly,
+		"copilot-cli": PromptLaneProxyOnly,
+		"cline-cli":   PromptLaneProxyOnly,
+		"hermes":      PromptLaneProxyOnly,
+		"pi":          PromptLaneProxyOnly,
+		"grok":        PromptLaneProxyOnly,
+		"crush":       PromptLaneProxyOnly,
+		"aider":       PromptLaneProxyOnly,
+		"goose":       PromptLaneProxyOnly,
+		"prime-agent": PromptLaneProxyOnly,
+
+		// --- PromptLaneProbeRequired: a documented mechanism exists,
+		// but the exact wire shape (the prompt field's presence, or
+		// whether a block reason ever reaches the developer) is
+		// genuinely UNVERIFIED or contested in the vendor's own
+		// tracker — a live `observer doctor --probe-hook` run, not a
+		// docs re-read, is what would resolve it.
+		"kimi-code":        PromptLaneProbeRequired,
+		"kiro-cli":         PromptLaneProbeRequired,
+		"cline":            PromptLaneProbeRequired,
+		"open-interpreter": PromptLaneProbeRequired,
+
+		// --- PromptLaneNone: no grounded prompt-submit intervention
+		// capability at all today, for one of three honest reasons —
+		// (a) genuinely uncoverable (no hook, no route, no third
+		// lane: antigravity, antigravity-cli, deepseek, cowork), (b)
+		// hook-uncoverable but not proxy-routed either so even the
+		// weaker lane doesn't apply yet (copilot/junie/zed/mistral-code
+		// are route-wiring-away per contract §2.5.C, kilo-code/
+		// kilo-code-cli are redact-only-and-unbuilt with no route,
+		// openclaw's fully-documented block is a DIFFERENT mechanism
+		// — an in-process JS plugin, deferred per the vendor's own
+		// runner-scope warning — grokbot/freebuff/kiro-crew/muse have
+		// no lane evidence at all), or (c) covered by a DIFFERENT lane
+		// entirely (the five *-web rows, MV3 browser extension,
+		// deferred to a later phase per contract §2.5.D).
+		"copilot":         PromptLaneNone,
+		"kilo-code":       PromptLaneNone,
+		"kilo-code-cli":   PromptLaneNone,
+		"cowork":          PromptLaneNone,
+		"openclaw":        PromptLaneNone,
+		"antigravity":     PromptLaneNone,
+		"antigravity-cli": PromptLaneNone,
+		"deepseek":        PromptLaneNone,
+		"chatgpt-web":     PromptLaneNone,
+		"claude-web":      PromptLaneNone,
+		"perplexity-web":  PromptLaneNone,
+		"gemini-web":      PromptLaneNone,
+		"copilot-web":     PromptLaneNone,
+		"muse":            PromptLaneNone,
+		"junie":           PromptLaneNone,
+		"mistral-code":    PromptLaneNone,
+		"freebuff":        PromptLaneNone,
+		"grokbot":         PromptLaneNone,
+		"kiro-crew":       PromptLaneNone,
+		"zed":             PromptLaneNone,
+	}
+	byTool := map[string]Capability{}
+	for _, c := range Capabilities() {
+		byTool[c.Tool] = c
+	}
+	for tool := range byTool {
+		if _, ok := want[tool]; !ok {
+			t.Errorf("%s: registry row has no PromptLane expectation in this test's want table — a new adapter needs a conscious PromptLane decision, not silence", tool)
+		}
+	}
+	for tool, wantLane := range want {
+		c, ok := byTool[tool]
+		if !ok {
+			t.Errorf("%s: want table names a tool with no registry row (stale entry?)", tool)
+			continue
+		}
+		if c.PromptLane != wantLane {
+			t.Errorf("%s: PromptLane = %q, want %q", tool, c.PromptLane, wantLane)
 		}
 	}
 }

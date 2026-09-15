@@ -3,49 +3,63 @@ package main
 import (
 	"fmt"
 	"io"
-	"path/filepath"
 
+	"github.com/marmutapp/superbased-observer/internal/attachsock"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 )
 
 // attach_client.go holds the PLATFORM-NEUTRAL half of session-attach's CLI
-// client (design 2026-07-19, Phase 1): the socket-path formula, the resolved-
-// input struct, the resume-hint composer, and the forwarded-argv builder. The
-// interactive client itself — raw-mode terminal handling, signal plumbing, the
-// /dev/tty reader, the stdio bridge — is POSIX-only and lives in
+// client (design 2026-07-19, Phase 1): the endpoint/socket-path resolvers, the
+// resolved-input struct, the resume-hint composer, and the forwarded-argv
+// builder. The interactive client itself — raw-mode terminal handling, signal
+// plumbing, the /dev/tty reader, the stdio bridge — is POSIX-only and lives in
 // attach_client_unix.go (`//go:build unix`); a `//go:build !unix` stub in
-// attach_client_other.go returns an honest "Linux/WSL-only in v1" error so the
-// tree cross-compiles (B2-1, design §6 decision 3). Everything a test needs on
-// every platform (attachSocketPath / attachExtraArgs / nativeResumeHint) stays
-// here so those tests keep running under Windows/darwin too.
+// attach_client_other.go returns an honest error so the tree cross-compiles
+// (B2-1, design §6 decision 3). Note the split moved with DI-09 (T9): the
+// DAEMON now serves the attach channel on Windows too (attachsock's Transport
+// seam gives it a named pipe), so what the stub reports missing is the
+// interactive CLIENT, not the channel. Everything a test needs on every
+// platform (attachSocketPath / attachEndpoint / attachExtraArgs /
+// nativeResumeHint) stays here so those tests keep running under
+// Windows/darwin too.
 //
 // `observer <tool> --attach` becomes a thin PTY-proxy client: instead of
 // exec'ing the tool as a child of the user's shell (the bare launcher), it asks
-// the running daemon — over the owner-only AF_UNIX attach socket — to spawn the
-// tool's PTY through the SAME termsession.Manager the dashboard drives. The
+// the running daemon — over the owner-only attach channel (an AF_UNIX socket
+// on unix, a named pipe on Windows; see attachsock's Transport seam) — to spawn
+// the tool's PTY through the SAME termsession.Manager the dashboard drives. The
 // operator's terminal is viewer #1; the dashboard can join as viewer #2 over
 // the existing /ws/launch fan-out. Killing this client detaches (the child
 // lives on under the daemon); Ctrl-C reaches the agent as a raw byte.
 
-// attachSocketFile is the attach socket's basename inside the dedicated attach
-// directory. The client and the `observer start` server MUST derive the path
-// identically — attachSocketPath is the one formula both use.
-const attachSocketFile = "attach.sock"
-
-// attachSocketDir is the dedicated directory (under the DB dir) that holds the
-// attach socket. It is created 0700 (owner-only search), which is what makes
-// connect(2) OS-enforced owner-only with no race window regardless of the
-// socket file's own mode (A1). See attachsock.ListenSocket.
-const attachSocketDir = "attach"
-
-// attachSocketPath returns the attach socket path for a given observer DB path:
-// <dir(dbPath)>/attach/attach.sock. It is the single source of truth shared by
-// the daemon's ListenSocket (cmd/observer/start.go) and the `--attach` client's
-// Dial, so the two never drift. The socket lives in its own 0700 directory so
-// the parent-dir permission — not a racy chmod-after-listen — enforces
-// owner-only access (A1).
+// attachSocketPath returns the ON-DISK attach socket path for a given observer
+// DB path: <dir(dbPath)>/attach/attach.sock. It delegates to
+// attachsock.SocketPath, which owns the formula, so the daemon and the client
+// can never drift.
+//
+// Two distinct uses, and only one of them is the endpoint:
+//
+//   - on unix it IS the transport endpoint (the AF_UNIX socket the daemon
+//     binds and the client dials), living in its own 0700 directory so the
+//     parent-dir permission — not a racy chmod-after-listen — enforces
+//     owner-only access (A1);
+//   - on EVERY platform its parent is the owner-only attach DIRECTORY, which
+//     also holds the durable resume-claim flock (attachsock.AcquireResumeClaim).
+//     That is why this stays a filesystem path even on Windows, where the
+//     endpoint is a named pipe with no filesystem location at all — use
+//     attachEndpoint for the thing to listen on / dial.
 func attachSocketPath(dbPath string) string {
-	return filepath.Join(filepath.Dir(dbPath), attachSocketDir, attachSocketFile)
+	return attachsock.SocketPath(dbPath)
+}
+
+// attachEndpoint resolves the attach ENDPOINT for an observer DB path through
+// the platform's transport: the AF_UNIX socket path on unix, the hashed
+// named-pipe name on Windows. It is what `observer start` listens on and what
+// the `--attach` client dials — the single source of truth both sides use, so
+// they cannot drift. It fails rather than return an unusable endpoint (e.g. a
+// socket path past UNIX_PATH_MAX, DI-09).
+func attachEndpoint(dbPath string) (string, error) {
+	return attachsock.Endpoint(dbPath)
 }
 
 // attachLaunch carries the resolved inputs for an `observer <tool> --attach`

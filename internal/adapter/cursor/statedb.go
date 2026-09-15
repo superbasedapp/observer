@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -291,13 +292,46 @@ func (a *Adapter) stateDBAlreadyCaptured(ctx context.Context, composerID string)
 // folder and is already captured by the richer transcript/store.db
 // paths.
 func cursorSiblingExists(composerID string) bool {
+	return cursorTranscriptSiblingExists(composerID) || cursorAgentStoreExists(composerID)
+}
+
+// cursorTranscriptSiblingExists reports whether an IDE agent-transcript
+// exists for composerID under any cross-mount home.
+func cursorTranscriptSiblingExists(composerID string) bool {
+	return cursorSiblingGlob(composerID, func(home string) string {
+		return filepath.Join(home, ".cursor", "projects", "*", "agent-transcripts", composerID, composerID+".jsonl")
+	})
+}
+
+// cursorAgentStoreExists reports whether a `cursor-agent` CLI store
+// (`.cursor/chats/<ws-hash>/<conv>/store.db`) exists for composerID
+// under any cross-mount home.
+//
+// Split out of cursorSiblingExists so the surface layer can ask this
+// HALF of the question on its own: a store.db is written by exactly one
+// client, the CLI, so its presence is positive evidence about WHICH
+// client ran the conversation — evidence the transcript / state.vscdb
+// stamps do not have and must defer to (see surface.go, "CLI store
+// wins").
+func cursorAgentStoreExists(composerID string) bool {
+	return cursorSiblingGlob(composerID, func(home string) string {
+		return filepath.Join(home, ".cursor", "chats", "*", composerID, "store.db")
+	})
+}
+
+// cursorSiblingGlob walks every cross-mount home, building one glob per
+// home through pattern, and reports whether any matched. An empty
+// composerID never matches — an unresolved conversation id must not be
+// allowed to glob a whole directory.
+func cursorSiblingGlob(composerID string, pattern func(home string) string) bool {
+	if strings.TrimSpace(composerID) == "" {
+		return false
+	}
 	for _, h := range crossmount.AllHomes() {
-		transcriptPattern := filepath.Join(h.Path, ".cursor", "projects", "*", "agent-transcripts", composerID, composerID+".jsonl")
-		if matches, err := filepath.Glob(transcriptPattern); err == nil && len(matches) > 0 {
-			return true
+		if h.Path == "" {
+			continue
 		}
-		storePattern := filepath.Join(h.Path, ".cursor", "chats", "*", composerID, "store.db")
-		if matches, err := filepath.Glob(storePattern); err == nil && len(matches) > 0 {
+		if matches, err := filepath.Glob(pattern(h.Path)); err == nil && len(matches) > 0 {
 			return true
 		}
 	}
@@ -368,14 +402,154 @@ func cursorWorkspaceRoots(db *sql.DB) map[string]string {
 // (reverse-engineered from public documentation as of 2026-08 — no
 // vendor spec exists). Every field is read defensively; a missing or
 // mistyped field degrades the row rather than dropping it.
+//
+// `name` is JSON `null` on some rows (a conversation the user never
+// titled): Go decodes a null into the zero string, so no tolerant type
+// is needed there.
 type composerDataDoc struct {
-	Name        string `json:"name"`
-	CreatedAt   int64  `json:"createdAt"` // Unix ms
-	UnifiedMode string `json:"unifiedMode"`
-	IsAgentic   bool   `json:"isAgentic"`
-	ModelConfig []struct {
-		ModelName string `json:"modelName"`
-	} `json:"modelConfig"`
+	Name        string         `json:"name"`
+	CreatedAt   flexTime       `json:"createdAt"`
+	UnifiedMode string         `json:"unifiedMode"`
+	IsAgentic   bool           `json:"isAgentic"`
+	ModelConfig modelConfigDoc `json:"modelConfig"`
+}
+
+// modelConfigDoc is the tolerant decode of `composerData.modelConfig`,
+// whose SHAPE differs across Cursor store versions:
+//
+//	_v 14/15 (live capture 2026-09-02, all 23 rows):
+//	  "modelConfig":{"modelName":"default","maxMode":false}
+//	  "modelConfig":{"modelName":"default","maxMode":false,
+//	                 "selectedModels":[{"modelId":"default","parameters":[]}]}
+//	older builds (the shape this reader was originally written against):
+//	  "modelConfig":[{"modelName":"claude-4-sonnet"}]
+//
+// Declaring the field as a fixed `[]struct{...}` made EVERY v14/v15
+// composerData row fail json.Unmarshal, which dropped the whole
+// document (name, createdAt, mode) — the reader emitted zero rows on a
+// store holding hundreds. So this type accepts object OR array OR null,
+// and — critically — NEVER returns an error: an unrecognized fourth
+// shape degrades to an empty model instead of dropping the session row
+// again.
+type modelConfigDoc struct {
+	// ModelName is the resolved model string, "" when none was found.
+	ModelName string
+}
+
+// modelConfigEntry is one modelConfig element (the object itself in the
+// v14/v15 shape, one array element in the legacy shape). `modelName`
+// stays the primary source — it is what the pre-v14 reader used and
+// what Cursor still writes today; `selectedModels[0].modelId` is only
+// consulted when `modelName` is absent/empty.
+type modelConfigEntry struct {
+	ModelName      string `json:"modelName"`
+	SelectedModels []struct {
+		ModelID string `json:"modelId"`
+	} `json:"selectedModels"`
+}
+
+// resolve returns the entry's model string under the modelName-first
+// precedence documented on modelConfigEntry.
+func (e modelConfigEntry) resolve() string {
+	if name := strings.TrimSpace(e.ModelName); name != "" {
+		return name
+	}
+	for _, sm := range e.SelectedModels {
+		if id := strings.TrimSpace(sm.ModelID); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// UnmarshalJSON implements json.Unmarshaler for the object-or-array
+// modelConfig shapes. It is deliberately total: every input, including
+// a shape Cursor has not written yet, decodes to "no model" rather than
+// an error.
+func (m *modelConfigDoc) UnmarshalJSON(b []byte) error {
+	trimmed := strings.TrimSpace(string(b))
+	switch {
+	case trimmed == "" || trimmed == "null":
+		return nil
+	case strings.HasPrefix(trimmed, "["):
+		var entries []modelConfigEntry
+		if err := json.Unmarshal(b, &entries); err != nil {
+			return nil
+		}
+		for _, e := range entries {
+			if name := e.resolve(); name != "" {
+				m.ModelName = name
+				return nil
+			}
+		}
+	case strings.HasPrefix(trimmed, "{"):
+		var entry modelConfigEntry
+		if err := json.Unmarshal(b, &entry); err != nil {
+			return nil
+		}
+		m.ModelName = entry.resolve()
+	}
+	return nil
+}
+
+// flexTime is the tolerant decode of the `createdAt` fields on both
+// composerData and bubbleId documents. On the live v14/v15 store every
+// bubble's `createdAt` is an ISO-8601 TEXT string
+// ("2026-08-30T11:04:07.318Z") while older builds wrote Unix
+// milliseconds as a NUMBER — the fixed `int64` declaration made all 293
+// bubble rows fail json.Unmarshal, so the reader emitted no messages at
+// all. Like modelConfigDoc this never errors: an unparsable value
+// leaves Set false and the caller falls back to the file mtime, which
+// is exactly the pre-existing "createdAt absent" behaviour.
+type flexTime struct {
+	// Time is the decoded timestamp (UTC); only meaningful when Set.
+	Time time.Time
+	// Set reports whether a usable timestamp was decoded.
+	Set bool
+}
+
+// flexTimeLayouts are the string layouts tried, in order, for a TEXT
+// createdAt. RFC3339Nano covers the millisecond-precision "…318Z" form
+// Cursor writes; RFC3339 covers a whole-second variant.
+var flexTimeLayouts = []string{time.RFC3339Nano, time.RFC3339}
+
+// UnmarshalJSON implements json.Unmarshaler for the number-or-string
+// createdAt shapes.
+func (t *flexTime) UnmarshalJSON(b []byte) error {
+	trimmed := strings.TrimSpace(string(b))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	if strings.HasPrefix(trimmed, `"`) {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return nil
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil
+		}
+		for _, layout := range flexTimeLayouts {
+			if parsed, err := time.Parse(layout, s); err == nil {
+				t.Time, t.Set = parsed.UTC(), true
+				return nil
+			}
+		}
+		// Some builds quote the epoch-ms number; accept that too rather
+		// than losing the timestamp to a pair of quotes.
+		if ms, err := strconv.ParseInt(s, 10, 64); err == nil && ms > 0 {
+			t.Time, t.Set = time.UnixMilli(ms).UTC(), true
+		}
+		return nil
+	}
+	var ms int64
+	if err := json.Unmarshal(b, &ms); err != nil {
+		return nil
+	}
+	if ms > 0 {
+		t.Time, t.Set = time.UnixMilli(ms).UTC(), true
+	}
+	return nil
 }
 
 // composerSessionEvent builds an ActionSessionStart row for a
@@ -399,13 +573,10 @@ func (a *Adapter) composerSessionEvent(raw []byte, composerID, sourceFile, proje
 		return models.ToolEvent{}, false
 	}
 	ts := fallback
-	if doc.CreatedAt > 0 {
-		ts = time.UnixMilli(doc.CreatedAt).UTC()
+	if doc.CreatedAt.Set {
+		ts = doc.CreatedAt.Time
 	}
-	model := ""
-	if len(doc.ModelConfig) > 0 {
-		model = doc.ModelConfig[0].ModelName
-	}
+	model := doc.ModelConfig.ModelName
 	name := strings.TrimSpace(doc.Name)
 	detail := fmt.Sprintf("Cursor state.vscdb composerData: name=%q model=%q mode=%q agentic=%v",
 		name, model, doc.UnifiedMode, doc.IsAgentic)
@@ -436,9 +607,12 @@ func (a *Adapter) composerSessionEvent(raw []byte, composerID, sourceFile, proje
 // row rather than just missing one. See the package/adapter report
 // for the follow-up.
 type bubbleDoc struct {
-	Type      int    `json:"type"`
-	Text      string `json:"text"`
-	CreatedAt int64  `json:"createdAt"` // Unix ms; absent on some builds
+	Type int    `json:"type"`
+	Text string `json:"text"`
+	// CreatedAt is an ISO-8601 string on current builds and Unix
+	// milliseconds on older ones — see flexTime. Absent entirely on
+	// some builds, in which case the caller falls back to file mtime.
+	CreatedAt flexTime `json:"createdAt"`
 }
 
 // bubbleEvent builds an ActionUserPrompt or ActionAssistantMessage row
@@ -482,8 +656,8 @@ func (a *Adapter) bubbleEvent(raw []byte, composerID, bubbleID, sourceFile, proj
 		return models.ToolEvent{}, false
 	}
 	ts := fallback
-	if doc.CreatedAt > 0 {
-		ts = time.UnixMilli(doc.CreatedAt).UTC()
+	if doc.CreatedAt.Set {
+		ts = doc.CreatedAt.Time
 	}
 	body := text
 	if a.scrubber != nil {

@@ -364,7 +364,17 @@ describe('resolveLocalBinary', () => {
       probeVersion: alwaysOk,
     });
     assert.deepEqual(res.hit, { path: bundledPath, source: 'bundled', version: '9.9.9' });
-    assert.equal(whichCalled, false, 'PATH must not be scanned when the bundled binary is present');
+    // The bundled binary still WINS, which is what GitHub #5 asked for. What
+    // changed with the O7 guard (enterprise update management, plan §6 O7) is
+    // that PATH is now probed once afterwards, to find out whether the
+    // installed daemon has self-updated past the bundled copy. Here it has not
+    // (no PATH candidate passes fileExists), so the bundled hit stands.
+    //
+    // The cost is bounded to that comparison: the probe runs only when the
+    // bundled copy won, and only to answer "is the installed one newer".
+    // Without it, an extension pinned to release N would relaunch its own
+    // older binary over a node that just updated itself to N+1.
+    assert.equal(whichCalled, true, 'PATH is probed once so the O7 guard can compare versions');
   });
 
   test('preferPathBinary=true restores PATH-first order', async () => {

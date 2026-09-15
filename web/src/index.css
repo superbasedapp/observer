@@ -9,7 +9,7 @@
 @import "@fontsource/inter/latin-700.css";
 @import "@fontsource/jetbrains-mono/latin-400.css";
 @import "@fontsource/jetbrains-mono/latin-500.css";
-@import "./styles/tokens.css";
+@import "../../shared/styles/tokens.css";
 
 @tailwind base;
 @tailwind components;
@@ -98,6 +98,28 @@
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+/* --------------------------------------------------------------
+   Horizontal table scroller (DataTable's wrapper).
+   The global rules above give a transparent track, which on a wide
+   data table reads as "no scrollbar at all" until you happen to
+   drag. Here the track is painted, so the bar is visible whenever
+   the table overflows -- paired with DataTable's edge fades.
+   -------------------------------------------------------------- */
+.table-scroll-x {
+  scrollbar-color: var(--line-3) var(--bg-3);
+}
+.table-scroll-x::-webkit-scrollbar {
+  height: 10px;
+}
+.table-scroll-x::-webkit-scrollbar-track {
+  background: var(--bg-3);
+  border-radius: 999px;
+}
+.table-scroll-x::-webkit-scrollbar-thumb {
+  background: var(--line-3);
+  border: 2px solid var(--bg-3);
 }
 
 /* ============================================================

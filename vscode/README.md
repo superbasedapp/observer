@@ -14,7 +14,7 @@
 <p align="center">
   Claude Code cost tracking. Cursor token usage. Codex spend. Captures,
   normalises, and analyses tool-call activity across
-  <a href="#supported-ai-tools">33 adapters</a> — Claude Code, Codex,
+  <a href="#supported-ai-tools">40 adapters</a> — Claude Code, Codex,
   Cursor, Cline, Copilot, Gemini CLI, Aider, Goose, Devin, and more.
   Zero telemetry. No data leaves your machine.
 </p>
@@ -151,10 +151,10 @@ Open the command palette (`Ctrl+Shift+P` / `⌘⇧P`) and type **SuperBased:**
 - **Aider**, **Goose**, **Devin**, **Qoder**, **Crush**, **Kimi Code**, **Grok**, **Kiro CLI**, **Qwen Code** — via JSONL / SQLite adapters
 - **Factory `droid`**, **Open Interpreter**, **Command Code** — via JSONL adapters
 
-33 adapters total. Five more (`chatgpt-web`, `claude-web`, `perplexity-web`,
-`gemini-web`, `copilot-web`) capture browser-based chat via an opt-in
-browser extension that today installs unpacked only — not yet in the
-Chrome Web Store.
+40 adapters total, including five browser-based chat surfaces
+(`chatgpt-web`, `claude-web`, `perplexity-web`, `gemini-web`,
+`copilot-web`) captured via an opt-in browser extension that today
+installs unpacked only — not yet in the Chrome Web Store.
 
 Full integration details in the [user guide](https://github.com/superbasedapp/observer/blob/main/docs/vscode-extension-user-guide.md#per-ai-tool-integration).
 

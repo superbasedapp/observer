@@ -17,11 +17,19 @@ const LIMIT = 20;
 export class SessionItem extends vscode.TreeItem {
   constructor(public readonly row: SessionRow) {
     const project = basename(row.project) || row.project || '(no project)';
+    const defaultLabel = `${row.tool} · ${project}`;
+    const stats = `${formatUSD(row.cost_usd)} · ${formatDuration(row.duration_seconds)} · ${row.total_actions} actions`;
+    // Effective title: the developer's own title (migration 116) wins over
+    // the AI/cloud-suggested one, which wins over the plain tool/project
+    // label. When a title is shown, the label it replaced moves into the
+    // description (ahead of the existing cost/duration/actions stats)
+    // instead of being dropped, so that information stays one glance away.
+    const title = row.title || row.cloud_title || '';
     super(
-      `${row.tool} · ${project}`,
+      title || defaultLabel,
       vscode.TreeItemCollapsibleState.None,
     );
-    this.description = `${formatUSD(row.cost_usd)} · ${formatDuration(row.duration_seconds)} · ${row.total_actions} actions`;
+    this.description = title ? `${defaultLabel} · ${stats}` : stats;
     this.tooltip = buildSessionTooltip(row);
     this.contextValue = 'session';
     this.iconPath = new vscode.ThemeIcon(toolIcon(row.tool));
@@ -133,6 +141,8 @@ function buildSessionTooltip(row: SessionRow): vscode.MarkdownString {
   md.supportThemeIcons = true;
   const lines = [
     `**${row.tool}** — \`${row.id}\``,
+    ...(row.title ? [`**Title**: ${row.title}`] : []),
+    ...(!row.title && row.cloud_title ? [`**AI title**: ${row.cloud_title}`] : []),
     `**Project**: ${row.project || '(none)'}`,
     `**Cost**: ${formatUSD(row.cost_usd)} (${row.cost_reliability})`,
     `**Duration**: ${formatDuration(row.duration_seconds)}`,

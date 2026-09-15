@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useApi } from "@/lib/useApi";
-import { fmtBytes, fmtCompact, fmtInt, fmtUSD } from "@/lib/format";
+import { fmtBytes, fmtCompact, fmtDateTime, fmtInt, fmtUSD, fmtYearMonth } from "@/lib/format";
 import { HeroWordmark } from "@/components/HeroWordmark";
 import type { MonthlyReport, ProjectsResponse } from "@/lib/types";
 
@@ -33,7 +33,7 @@ export function ReportPage() {
           className="rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-[12px] text-fg-1"
         >
           {months.map((m) => (
-            <option key={m}>{m}</option>
+            <option key={m} value={m}>{fmtYearMonth(m)}</option>
           ))}
         </select>
         <select
@@ -70,7 +70,7 @@ export function ReportPage() {
         <article className="space-y-5 rounded-3 border border-line-2 bg-bg-2 p-6 print:border-0 print:bg-transparent print:p-0">
           <header className="border-b border-line-1 pb-3">
             <h1 className="text-[18px] font-semibold tracking-[-0.02em] text-fg-0">
-              AI usage statement — {r.month}
+              AI usage statement - {r.month}
             </h1>
             <p className="mt-1 text-[11.5px] text-fg-3">
               {r.project ? (
@@ -78,7 +78,7 @@ export function ReportPage() {
               ) : (
                 "all projects · "
               )}
-              generated {r.generated_at} · SuperBased
+              generated {fmtDateTime(r.generated_at)} · SuperBased
             </p>
           </header>
 
@@ -113,7 +113,7 @@ export function ReportPage() {
                 <>
                   {" "}A further{" "}
                   <span className="tabular-nums font-medium">{fmtBytes(r.savings?.compression_evicted_bytes ?? 0)}</span>{" "}
-                  of low-importance history was evicted (lossy drop) — not counted as
+                  of low-importance history was evicted (lossy drop) - not counted as
                   savings above; that content stays recoverable via search_past_outputs markers.
                 </>
               )}{" "}
@@ -141,10 +141,10 @@ export function ReportPage() {
                 <tbody>
                   {r.top_sessions!.map((s) => (
                     <tr key={s.id} className="border-t border-line-1">
-                      <td className="py-1 tabular-nums">{s.started_at.slice(0, 16).replace("T", " ")}</td>
-                      <td className="py-1">{s.tool || "—"}</td>
+                      <td className="py-1 tabular-nums">{fmtDateTime(s.started_at)}</td>
+                      <td className="py-1">{s.tool || "-"}</td>
                       {!r.project && (
-                        <td className="max-w-[220px] truncate py-1 font-mono text-[10.5px]">{s.project || "—"}</td>
+                        <td className="max-w-[220px] truncate py-1 font-mono text-[10.5px]">{s.project || "-"}</td>
                       )}
                       <td className="py-1 text-right tabular-nums">{fmtInt(s.turns)}</td>
                       <td className="py-1 text-right tabular-nums">{fmtUSD(s.cost_usd)}</td>

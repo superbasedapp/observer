@@ -244,6 +244,12 @@ func TestMinCacheableTokens(t *testing.T) {
 		{"claude-opus-5-20260610", 512},
 		{"claude-fable-5", 512},
 		{"claude-mythos-5", 512},
+		// Fable 5.1 / Mythos 5.1 (2026-09-01) are also 512 per the
+		// vendor page (re-verified 2026-09-02); they resolve via the
+		// SAME "fable-5"/"mythos-5" substring rows — no new table
+		// entry needed, these rows pin that coverage.
+		{"claude-fable-5-1", 512},
+		{"claude-mythos-5-1", 512},
 		// Case normalization: MinCacheableTokens lowercases before
 		// the scan, matching the pricing registry's family scan. An
 		// upper/mixed-case or vendor-decorated id must resolve to the

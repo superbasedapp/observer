@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useLaunchDock } from "@/components/LaunchDock";
 import { isRemoteView } from "@/lib/remote";
 import { isLiveStatus, type Status } from "@/components/LaunchTerminal";
+import { fmtShortId } from "@/lib/format";
 
 // WorkspaceGrid — the Terminal Workspace dock grid (docs/plans/
 // terminal-dock-grid-design-2026-07-20.md, P0; operator decisions 2026-07-21:
@@ -99,7 +100,7 @@ export function WorkspaceGrid({
             if (!r.ok && !saveWarned.current) {
               saveWarned.current = true;
               console.warn(
-                `workspace layout not saved (HTTP ${r.status}) — arranging still works for this tab; saving needs the owner's local dashboard`,
+                `workspace layout not saved (HTTP ${r.status}) - arranging still works for this tab; saving needs the owner's local dashboard`,
               );
             }
           })
@@ -241,7 +242,7 @@ export function WorkspaceGrid({
         )}
         {readOnly && (
           <span className="text-[11px] text-fg-3">
-            Read-only shared view — arrange the grid from the owner&apos;s dashboard.
+            Read-only shared view - arrange the grid from the owner&apos;s dashboard.
           </span>
         )}
         {traySessions.length > 0 && (
@@ -341,7 +342,7 @@ export function WorkspaceGrid({
       {dockedDead.length > 0 && dock.sessionsHydrated && (
         <div className="text-[11px] text-fg-3">
           {dockedDead.length} saved tile(s) reference sessions that are no longer running (the daemon
-          restarted or they exited) — remove them or relaunch.
+          restarted or they exited) - remove them or relaunch.
         </div>
       )}
     </div>
@@ -407,8 +408,10 @@ function TerminalTile({
         </span>
         {/* Read-only project panel (file tree + git). Shown regardless of the
             grid's read-only mode — the remote gate is enforced server-side and
-            the panel surfaces that honestly. Disabled with an honest title when
-            the run has no project root. */}
+            the panel surfaces that honestly. Enabled for any run with a local
+            directory (allow-listed project root, else the terminal's working
+            directory); disabled with an honest title only when there is nothing
+            local to browse, e.g. an SSH terminal. */}
         <button
           type="button"
           disabled={!hasProjectRoot || !isLiveStatus(status)}
@@ -417,10 +420,10 @@ function TerminalTile({
           onTouchStart={(e) => e.stopPropagation()}
           title={
             !isLiveStatus(status)
-              ? "This session is no longer running — its project can no longer be browsed"
+              ? "This session is no longer running - its project can no longer be browsed"
               : hasProjectRoot
-                ? "Browse this project's files"
-                : "This terminal was launched without a project root"
+                ? "Browse this terminal's files"
+                : "This terminal has no directory on this machine to browse"
           }
           className="rounded px-1.5 text-[12px] leading-none text-fg-3 hover:bg-white/10 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-3"
         >
@@ -434,10 +437,10 @@ function TerminalTile({
           onTouchStart={(e) => e.stopPropagation()}
           title={
             !isLiveStatus(status)
-              ? "This session is no longer running — its project can no longer be browsed"
+              ? "This session is no longer running - its project can no longer be browsed"
               : hasProjectRoot
-                ? "Show this project's git status, changes, and history"
-                : "This terminal was launched without a project root"
+                ? "Show git status, changes, and history for this terminal's directory"
+                : "This terminal has no directory on this machine to browse"
           }
           className="rounded px-1.5 text-[12px] leading-none text-fg-3 hover:bg-white/10 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-3"
         >
@@ -450,7 +453,7 @@ function TerminalTile({
           onClick={onOpenWindow}
           onMouseDown={(e) => e.stopPropagation()}
           onTouchStart={(e) => e.stopPropagation()}
-          title="Open as window — undock into the resizable floating panel. The session keeps running."
+          title="Open as window - undock into the resizable floating panel. The session keeps running."
           className="rounded px-1.5 text-[12px] leading-none text-fg-3 hover:bg-white/10 hover:text-fg-1"
         >
           ⬈
@@ -460,7 +463,7 @@ function TerminalTile({
           onClick={onUndock}
           onMouseDown={(e) => e.stopPropagation()}
           onTouchStart={(e) => e.stopPropagation()}
-          title="Remove from grid — the session keeps running; find it in the tray."
+          title="Remove from grid - the session keeps running; find it in the tray."
           className="rounded px-1.5 text-[12px] leading-none text-fg-3 hover:bg-white/10 hover:text-fg-1"
         >
           ▭
@@ -470,7 +473,7 @@ function TerminalTile({
           onClick={onClose}
           onMouseDown={(e) => e.stopPropagation()}
           onTouchStart={(e) => e.stopPropagation()}
-          title="Stop & close — ends the process."
+          title="Stop & close - ends the process."
           className="rounded px-1.5 text-[12px] leading-none text-fg-3 hover:bg-white/10 hover:text-danger"
         >
           ✕
@@ -503,7 +506,7 @@ function TombstoneTile({
       <div className="text-[12px] text-fg-3">
         {pending ? "Reconnecting…" : "Session ended or is no longer running."}
       </div>
-      <div className="font-mono text-[10px] text-fg-4">{token.slice(0, 12)}</div>
+      <div className="font-mono text-[10px] text-fg-4" title={token}>{fmtShortId(token, 12)}</div>
       {!pending && !readOnly && (
         <button
           type="button"

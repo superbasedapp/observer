@@ -41,7 +41,7 @@ func TestDumpRealVSCDB(t *testing.T) {
 		len(entries), withWS, withTitle, withCreated, withModel)
 	rootHisto := map[string]int{}
 	for _, r := range rows {
-		root, _ := decodeFileURIToRoot(r.ws)
+		root, _, _ := decodeFileURIToRoot(r.ws)
 		rootHisto[root]++
 	}
 	t.Logf("=== resolved project_roots histogram ===")
@@ -53,13 +53,13 @@ func TestDumpRealVSCDB(t *testing.T) {
 		if i >= 6 {
 			break
 		}
-		root, _ := decodeFileURIToRoot(r.ws)
+		root, _, _ := decodeFileURIToRoot(r.ws)
 		t.Logf("[%d] %s ws=%q -> %s  title=%q  created=%s",
 			i, r.uuid, r.ws, root, r.title, r.created)
 	}
 	for _, r := range rows {
 		if r.uuid == "fb48b020-3513-4298-8ea2-bbce3756bd31" {
-			root, _ := decodeFileURIToRoot(r.ws)
+			root, _, _ := decodeFileURIToRoot(r.ws)
 			t.Logf("FB48 ws=%q -> %s  title=%q  created=%s",
 				r.ws, root, r.title, r.created)
 		}

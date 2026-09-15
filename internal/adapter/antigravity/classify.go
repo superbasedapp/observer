@@ -72,9 +72,9 @@ func (a *Adapter) classify(path, conversationID string, plaintext []byte, idx *i
 		startTime = idx.created
 	}
 
-	projectRoot, gitRemote := "[antigravity]", ""
+	projectRoot, gitRemote, projectIdentity := "[antigravity]", "", git.Identity{}
 	if idx != nil && idx.workspaceURI != "" {
-		projectRoot, gitRemote = decodeFileURIToRoot(idx.workspaceURI)
+		projectRoot, gitRemote, projectIdentity = decodeFileURIToRoot(idx.workspaceURI)
 	}
 
 	sessionID := conversationID
@@ -192,6 +192,7 @@ func (a *Adapter) classify(path, conversationID string, plaintext []byte, idx *i
 	if len(res.ToolEvents) == 0 && len(res.TokenEvents) == 0 {
 		warnings = append(warnings, "antigravity.classify: walked plaintext yielded no events; the .proto shape may have drifted")
 	}
+	adapter.ApplyProjectIdentity(&res, projectIdentity)
 	return res, warnings, nil
 }
 
@@ -433,9 +434,14 @@ func mapToolName(name string) string {
 	switch key {
 	case "readfile", "read", "viewfile", "view", "cat":
 		return models.ActionReadFile
-	case "writefile", "write", "createfile", "create":
+	// "writetofile" / "replacefilecontent" / "listdir" / "findbyname" are
+	// the desktop IDE's tool_calls[].name spellings, live-grounded
+	// 2026-09-03 from brain/<uuid>/.system_generated/logs/transcript.jsonl
+	// (transcript.go). Every case here needs a matching row in
+	// internal/tooltax/table.go::antigravityRows (conformance-pinned).
+	case "writefile", "write", "createfile", "create", "writetofile":
 		return models.ActionWriteFile
-	case "replace", "edit", "editfile", "applypatch", "patch":
+	case "replace", "edit", "editfile", "applypatch", "patch", "replacefilecontent":
 		return models.ActionEditFile
 	case "runshellcommand", "shell", "bash", "exec", "execute", "runcommand", "run",
 		"powershell", "pwsh", "cmd", "cmdexe":
@@ -446,7 +452,7 @@ func mapToolName(name string) string {
 		return models.ActionWebFetch
 	case "grep", "searchtext", "findtext":
 		return models.ActionSearchText
-	case "glob", "findfiles", "filesearch", "ls", "listfiles":
+	case "glob", "findfiles", "filesearch", "ls", "listfiles", "listdir", "findbyname":
 		return models.ActionSearchFiles
 	default:
 		if strings.HasPrefix(key, "mcp") || strings.Contains(name, "__") {
@@ -567,10 +573,10 @@ func stableSourceID(seen map[string]bool, kind, path, sessionID, key string, ext
 // (Antigravity sometimes records a recently-edited file as the
 // workspace URI rather than the workspace folder itself) and
 // git.Resolve walks happen as before.
-func decodeFileURIToRoot(uri string) (root, remote string) {
+func decodeFileURIToRoot(uri string) (root, remote string, id git.Identity) {
 	root = strings.TrimSpace(uri)
 	if root == "" {
-		return "[antigravity]", ""
+		return "[antigravity]", "", git.Identity{}
 	}
 	// vscode-remote:// is antigravity-specific; pathnorm doesn't
 	// model it, so strip the scheme + percent-decode here and let
@@ -593,15 +599,16 @@ func decodeFileURIToRoot(uri string) (root, remote string) {
 	// pass through the remaining layers.
 	root = pathnorm.Normalize(root)
 	if root == "" {
-		return "[antigravity]", ""
+		return "[antigravity]", "", git.Identity{}
 	}
 	if ext := filepath.Ext(root); ext != "" {
 		if dir := filepath.Dir(root); dir != "" && dir != "." && dir != "/" {
 			root = dir
 		}
 	}
-	if info, err := git.Resolve(root); err == nil {
-		return info.Root, git.NormalizeRemote(info.Remote)
+	if identity, err := git.ResolveIdentity(root, git.IdentityOptions{}); err == nil {
+		// identity.Remote is already NormalizeRemote'd by ResolveIdentity.
+		return identity.Root, identity.Remote, identity
 	}
-	return root, ""
+	return root, "", git.Identity{}
 }

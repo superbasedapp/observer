@@ -5,9 +5,16 @@ package dashboard
 //
 //	GET  /api/sessions/tags          → vocabulary + per-tag cost/token rollup (V)
 //	POST /api/sessions/tags/manage   → rename / delete a tag globally (Execute)
-//	POST /api/session/<id>/tags      → per-session add/remove/favorite/note (Execute,
-//	                                   dispatched from handleSessionDetail's suffix
-//	                                   table + sessionSubRouteCapabilities)
+//	GET  /api/session/<id>/tags      → read-only snapshot of one session's
+//	                                   tags/favorite/note/rating/title (View —
+//	                                   the base /api/session/ route's GET tier)
+//	POST /api/session/<id>/tags      → per-session add/remove/favorite/note/
+//	                                   rating/title (Execute, dispatched from
+//	                                   handleSessionDetail's suffix table +
+//	                                   sessionSubRouteCapabilities; the
+//	                                   method-aware View→Execute escalation in
+//	                                   requiredCapability is what actually
+//	                                   protects the POST)
 //
 // Execute (not Local) is deliberate: tagging from a phone during remote review
 // is a primary flow, and the Execute class already covers strictly more
@@ -45,28 +52,35 @@ type tagRollupRow struct {
 	Tokens   int64   `json:"tokens"`
 }
 
-// sessionTagsRequest is the POST /api/session/<id>/tags body. Favorite, Note
-// and Rating are POINTERS so an omitted (or null) field means "leave unchanged"
-// — the star toggle, the note editor and the rating control each write
-// independently. Rating 0 clears (unrated); 1-10 is a score.
+// sessionTagsRequest is the POST /api/session/<id>/tags body. Favorite, Note,
+// Rating and Title are POINTERS so an omitted (or null) field means "leave
+// unchanged" — the star toggle, the note editor, the rating control and the
+// title editor each write independently. Rating 0 clears (unrated); 1-10 is a
+// score. Title "" clears the developer's own title (falling back to the AI
+// title, if any, on every rendering surface); <= store.MaxTitleLen chars,
+// no newline.
 type sessionTagsRequest struct {
 	Add      []string `json:"add"`
 	Remove   []string `json:"remove"`
 	Favorite *bool    `json:"favorite"`
 	Note     *string  `json:"note"`
 	Rating   *int     `json:"rating"`
+	Title    *string  `json:"title"`
 }
 
-// sessionTagsResponse is the post-mutation state of one session's
-// classification, echoed by POST /api/session/<id>/tags so the caller never has
-// to re-fetch. Rating carries omitempty so an unrated session emits the
-// byte-identical payload it did before ratings existed.
+// sessionTagsResponse is the current state of one session's classification —
+// echoed by POST /api/session/<id>/tags so the caller never has to re-fetch,
+// and returned as-is by GET /api/session/<id>/tags for a component that only
+// needs to DISPLAY it (SessionEnrichmentHeader). Rating and Title carry
+// omitempty so a session with neither emits the byte-identical payload it did
+// before those fields existed.
 type sessionTagsResponse struct {
 	SessionID string   `json:"session_id"`
 	Tags      []string `json:"tags"`
 	Favorite  bool     `json:"favorite"`
 	Note      string   `json:"note"`
 	Rating    int      `json:"rating,omitempty"`
+	Title     string   `json:"title,omitempty"`
 }
 
 // tagsManageRequest is the POST /api/sessions/tags/manage body. Exactly one of
@@ -212,17 +226,24 @@ func (s *Server) handleSessionsTagsManage(w http.ResponseWriter, r *http.Request
 	writeJSON(w, map[string]any{"affected": affected})
 }
 
-// handleSessionTags serves POST /api/session/<id>/tags — the per-session
-// classification mutation. Body: {"add":[],"remove":[],"favorite":bool|null,
-// "note":string|null}; a null/absent favorite or note leaves that field
-// untouched. Responds with the session's resulting tags/favorite/note.
+// handleSessionTags serves /api/session/<id>/tags. POST is the per-session
+// classification mutation: body {"add":[],"remove":[],"favorite":bool|null,
+// "note":string|null,"rating":int|null,"title":string|null} — a null/absent
+// field leaves it untouched. GET is a read-only snapshot of the same shape
+// (handleSessionTagsGet), for a caller that only needs to DISPLAY the current
+// annotation rather than parse it out of the larger session detail payload.
+// Both respond with the session's current tags/favorite/note/rating/title.
 func (s *Server) handleSessionTags(w http.ResponseWriter, r *http.Request, sessionID string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	if sessionID == "" {
 		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+	if r.Method == http.MethodGet {
+		s.handleSessionTagsGet(w, r, sessionID)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var body sessionTagsRequest
@@ -235,7 +256,7 @@ func (s *Server) handleSessionTags(w http.ResponseWriter, r *http.Request, sessi
 	// annotation write are two store calls, so a body whose tags are valid but
 	// whose note is over-long would otherwise commit the tags and then 400 —
 	// a partial write indistinguishable, to the caller, from a total failure.
-	if err := store.ValidateClassificationInput(body.Add, body.Remove, body.Note, body.Rating); err != nil {
+	if err := store.ValidateClassificationInput(body.Add, body.Remove, body.Note, body.Rating, body.Title); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -252,9 +273,10 @@ func (s *Server) handleSessionTags(w http.ResponseWriter, r *http.Request, sessi
 			return
 		}
 	}
-	if body.Favorite != nil || body.Note != nil || body.Rating != nil {
-		if err := st.SetSessionAnnotation(r.Context(), sessionID, body.Favorite, body.Note, body.Rating); err != nil {
-			if errors.Is(err, store.ErrNoteTooLong) || errors.Is(err, store.ErrInvalidRating) {
+	if body.Favorite != nil || body.Note != nil || body.Rating != nil || body.Title != nil {
+		if err := st.SetSessionAnnotation(r.Context(), sessionID, body.Favorite, body.Note, body.Rating, body.Title); err != nil {
+			if errors.Is(err, store.ErrNoteTooLong) || errors.Is(err, store.ErrInvalidRating) ||
+				errors.Is(err, store.ErrTitleTooLong) || errors.Is(err, store.ErrInvalidTitle) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -263,6 +285,21 @@ func (s *Server) handleSessionTags(w http.ResponseWriter, r *http.Request, sessi
 		}
 	}
 
+	s.writeSessionTagsState(w, r, sessionID)
+}
+
+// handleSessionTagsGet serves GET /api/session/<id>/tags: the same response
+// shape POST returns, with no write. Never fails on an unclassified session —
+// it degrades to the zero annotation like GetSessionAnnotation does.
+func (s *Server) handleSessionTagsGet(w http.ResponseWriter, r *http.Request, sessionID string) {
+	s.writeSessionTagsState(w, r, sessionID)
+}
+
+// writeSessionTagsState loads and writes one session's current
+// tags/favorite/note/rating/title — the shared tail of both the GET read and
+// the POST mutation's response.
+func (s *Server) writeSessionTagsState(w http.ResponseWriter, r *http.Request, sessionID string) {
+	st := store.New(s.db())
 	tags, err := st.SessionTags(r.Context(), sessionID)
 	if err != nil {
 		writeErr(w, err)
@@ -282,5 +319,6 @@ func (s *Server) handleSessionTags(w http.ResponseWriter, r *http.Request, sessi
 		Favorite:  annot.Favorite,
 		Note:      annot.Note,
 		Rating:    annot.Rating,
+		Title:     annot.Title,
 	})
 }

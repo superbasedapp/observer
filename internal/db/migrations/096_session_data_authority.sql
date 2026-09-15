@@ -1,0 +1,50 @@
+-- 096: Per-session data-authority stamp (CI-P1 Lane B — cloud-intelligence
+-- Azure Foundry plan of record,
+-- docs/plans/cloud-intelligence-azure-foundry-plan-of-record-2026-08-30.md
+-- §3 items 1-2 / §4 / §6 "CI-P1" bullet "dataauthority wiring").
+--
+-- These two columns carry the internal/dataauthority.Classification for a
+-- session: which plane OWNS the session's data — the individual's personal
+-- cloud plane, or an org — and the classifier contract Version it was
+-- computed under. They are CONTENT-FREE by construction: an enum string
+-- ('personal'/'org') and an integer version only, never any text drawn from
+-- a request/response body, path, or prompt.
+--
+--   authority                    'personal' — captured on a node that was
+--                                             definitively unenrolled at
+--                                             first capture (eligible for
+--                                             personal-cloud enrichment,
+--                                             subject to the later
+--                                             developer-consent gate).
+--                                'org'      — captured while org-enrolled
+--                                             (either product posture), OR a
+--                                             session that was EVER org (the
+--                                             sticky rule, dataauthority.Combine).
+--                                             INELIGIBLE for personal cloud.
+--                                NULL       — UNKNOWN. Every pre-096 legacy
+--                                             row STAYS NULL (no backfill, no
+--                                             inference from present-day
+--                                             enrolment), and a first capture
+--                                             whose live enrolment state could
+--                                             not be determined (fail-closed
+--                                             resolver) is stamped NULL too.
+--                                             UNKNOWN IS INELIGIBLE.
+--   authority_classifier_version the dataauthority.Version the authority was
+--                                computed under (currently 1); NULL whenever
+--                                authority is NULL.
+--
+-- NULLABLE, NO DEFAULT, NO BACKFILL — this is load-bearing. A default of
+-- 'personal' (or any backfill) would silently re-own every legacy session to
+-- the personal plane; the plan of record forbids inferring authority for old
+-- rows from present-day enrolment. Absence of a stamp must read as UNKNOWN,
+-- never as personal.
+--
+-- NODE-LOCAL. These columns are NOT added to the org-push wire: the sessions
+-- SELECT in internal/store/orgpush.go::SelectUnpushedSince enumerates its
+-- columns explicitly (no SELECT *), so an additive column here never ships.
+-- Additive with no default, and every read/write path lists explicit
+-- columns, so a pre-096 binary reading a 096+ database and a 096+ binary
+-- reading a pre-096 database both work unchanged. No down-migration is
+-- provided.
+ALTER TABLE sessions ADD COLUMN authority TEXT;
+ALTER TABLE sessions ADD COLUMN authority_classifier_version INTEGER;

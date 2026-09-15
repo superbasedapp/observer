@@ -83,10 +83,41 @@ func matchesShape(path string) bool {
 // resolved $HOME so a WSL2 observer picks up Windows-side sessions on
 // /mnt/c/Users/<u>/.kimi-code and vice versa. kimi-code uses the same
 // ~/.kimi-code layout on every OS (not %APPDATA%).
+//
+// $KIMI_CODE_HOME wins on the native side when set: the kimi-code bundle
+// resolves its own storage root from KIMI_CODE_HOME before falling back
+// to os.homedir()/.kimi-code, so an operator who relocated the home sees
+// their traces under $KIMI_CODE_HOME/sessions and nowhere else. Like
+// clinecli's CLINE_DIR handling, the env var is only meaningful for THIS
+// process's environment, so it is not re-resolved per cross-mount home —
+// the per-home defaults below still contribute their own
+// `.kimi-code/sessions` paths. The value is absolutized before use (see
+// adapter.AbsEnvRoot) so a relative KIMI_CODE_HOME can never become a relative
+// watch root. Empty/duplicate candidates are dropped so WatchPaths never
+// carries the same directory twice.
 func defaultRoots() []string {
 	var roots []string
+	seen := map[string]struct{}{}
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		p = filepath.Clean(p)
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		roots = append(roots, p)
+	}
+
+	if home := adapter.AbsEnvRoot("KIMI_CODE_HOME"); home != "" {
+		add(filepath.Join(home, "sessions"))
+	}
 	for _, h := range crossmount.AllHomes() {
-		roots = append(roots, filepath.Join(h.Path, ".kimi-code", "sessions"))
+		if h.Path == "" {
+			continue
+		}
+		add(filepath.Join(h.Path, ".kimi-code", "sessions"))
 	}
 	return roots
 }
@@ -129,10 +160,12 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	lineNum := 0
 	for {
 		if ctx.Err() != nil {
+			adapter.ApplyProjectIdentity(&res, st.identity)
 			return res, ctx.Err()
 		}
 		lineStr, readErr := reader.ReadString('\n')
 		if readErr != nil && readErr != io.EOF {
+			adapter.ApplyProjectIdentity(&res, st.identity)
 			return res, fmt.Errorf("kimicode.ParseSessionFile: read: %w", readErr)
 		}
 		hasNewline := strings.HasSuffix(lineStr, "\n")
@@ -168,6 +201,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		}
 	}
 	st.flagPendingOutcomes(&res)
+	adapter.ApplyProjectIdentity(&res, st.identity)
 	return res, nil
 }
 
@@ -210,6 +244,11 @@ type parseState struct {
 	resolvedRoot string
 	gitBranch    string
 	gitRemote    string
+	// identity is the Project Identity Resolver v2 bundle (2026-09-06,
+	// §3.1 / W1) resolved alongside gitBranch/gitRemote, applied to
+	// every event in the ParseResult via adapter.ApplyProjectIdentity
+	// before ParseSessionFile returns.
+	identity git.Identity
 	// lastCwd is a project-root fallback lifted from a tool.call display
 	// hint when the sibling state.json is unavailable.
 	lastCwd string
@@ -470,15 +509,17 @@ func (st *parseState) projectRoot() string {
 	}
 	st.rootResolved = true
 	cwd = crossmount.TranslateForeignPath(cwd)
-	info, err := git.Resolve(cwd)
+	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
 		st.resolvedRoot = cwd
 		return cwd
 	}
-	st.resolvedRoot = info.Root
-	st.gitBranch = info.Branch
-	st.gitRemote = git.NormalizeRemote(info.Remote)
-	return info.Root
+	st.resolvedRoot = id.Root
+	st.gitBranch = id.Branch
+	// id.Remote is already NormalizeRemote'd by ResolveIdentity.
+	st.gitRemote = id.Remote
+	st.identity = id
+	return id.Root
 }
 
 // workDirFromState reads the session-root state.json (two levels up from

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ChartShell, SlideOver, StatCard, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { useApi } from "@/lib/useApi";
-import { fmtBytes, fmtInt } from "@/lib/format";
+import { fmtBytes, fmtDateTime, fmtInt } from "@/lib/format";
 import type { EnrolmentInvite, EnrolmentStatus } from "@/lib/types";
 
 // EnrolmentSection is the Settings → Enrolment page: it shows whether this
@@ -38,7 +38,7 @@ export function EnrolmentSection() {
   return (
     <ChartShell
       title="Organisation enrolment"
-      sub="Teams visibility: when enrolled, this agent shares content-free activity rollups (counts, costs, timings, paths — never prompt text or tool output) with your organisation's SuperBased server. Enrol with `observer enroll <org-url> <token>`; unenrol any time below."
+      sub="Teams visibility: when enrolled, this agent shares content-free activity rollups (counts, costs, timings, paths - never prompt text or tool output) with your organisation's SuperBased server. Enrol with `observer enroll <org-url> <token>`; unenrol any time below."
       right={
         enrolled ? (
           <div className="flex items-center gap-2 text-[11px]">
@@ -96,7 +96,7 @@ export function EnrolmentSection() {
         {!enrolled ? (
           <div className="rounded-2 border border-dashed border-line-2 bg-bg-3/40 px-4 py-3 text-[12px] text-fg-2">
             <div className="mb-1 font-medium text-fg-1">Not enrolled</div>
-            This agent is not enrolled in an organisation — nothing is shared.
+            This agent is not enrolled in an organisation - nothing is shared.
             To join, ask an admin for a one-time token and run{" "}
             <code className="font-mono text-fg-1">observer enroll &lt;org-url&gt; &lt;token&gt;</code>,
             then set <code className="font-mono text-fg-1">[org_client] enabled = true</code> and
@@ -111,21 +111,22 @@ export function EnrolmentSection() {
               >
                 Teams getting-started guide
               </a>{" "}
-              — bring one up locally in about five minutes.
+              - bring one up locally in about five minutes.
             </div>
           </div>
         ) : (
           <div className="space-y-4">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
-              <StatCard label="Organisation" value={data?.org_name || "—"} sub={data?.org_id} />
-              <StatCard label="You" value={data?.user_email || "—"} />
-              <StatCard label="Server" value={<Mono>{data?.org_server_url || "—"}</Mono>} />
+              <StatCard label="Organisation" value={data?.org_name || "-"} sub={data?.org_id} />
+              <StatCard label="You" value={data?.user_email || "-"} />
+              <StatCard label="Server" value={<Mono>{data?.org_server_url || "-"}</Mono>} />
               <StatCard
                 label="Credential store"
-                value={data?.credential_store || "—"}
-                sub={data?.enrolled_at ? `enrolled ${data.enrolled_at}` : undefined}
+                value={data?.credential_store || "-"}
+                sub={data?.enrolled_at ? `enrolled ${fmtDateTime(data.enrolled_at)}` : undefined}
               />
             </div>
+            <PushPaused paused={data?.push_paused} />
             <LastPush push={data?.last_push} />
             <InviteTeammate />
           </div>
@@ -137,11 +138,38 @@ export function EnrolmentSection() {
   );
 }
 
+// PushPaused renders the OPEN oversized-batch circuit. It is deliberately the
+// loudest thing on the page while it is up: the push loop is parked for an hour
+// and nothing is reaching the org server, which is otherwise only inferable from
+// a "failed" row in the push history. The copy names the actual cause and the
+// three knobs that fix it (the honest-disabled-copy rule: say WHICH dependency
+// is at fault, never a bare "unavailable").
+function PushPaused({ paused }: { paused?: EnrolmentStatus["push_paused"] }) {
+  if (!paused) return null;
+  return (
+    <div className="rounded-2 border border-danger/40 bg-danger/5 px-3 py-2 text-[11.5px]">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.06em] text-danger">
+        Pushes paused
+      </div>
+      <div className="text-fg-2">
+        The composed rollup is larger than the accepted push limit, so nothing is reaching the org
+        server. The loop retries at <b>{paused.until}</b>.
+      </div>
+      {paused.reason && <div className="mt-1 text-fg-3">{paused.reason}</div>}
+      <div className="mt-1 text-fg-3">
+        Raise <Mono>[org_client].max_push_bytes</Mono>, narrow <Mono>[org_client.scope]</Mono>, or
+        turn off a large <Mono>[org_client.share]</Mono> tier. The org server enforces its own body
+        limit too, so raising the node-side value alone may not be enough.
+      </div>
+    </div>
+  );
+}
+
 function LastPush({ push }: { push?: EnrolmentStatus["last_push"] }) {
   if (!push) {
     return (
       <div className="rounded-2 border border-line-1 bg-bg-2 px-3 py-2 text-[11.5px] text-fg-3">
-        No push yet — the first content-free rollup is shared on the next push interval.
+        No push yet - the first content-free rollup is shared on the next push interval.
       </div>
     );
   }
@@ -156,7 +184,7 @@ function LastPush({ push }: { push?: EnrolmentStatus["last_push"] }) {
           status{" "}
           <b className={ok ? "text-success" : "text-danger"}>{push.status}</b>
         </span>
-        <span>{push.pushed_at}</span>
+        <span>{fmtDateTime(push.pushed_at)}</span>
         <span>{fmtInt(push.row_count)} rows</span>
         <span>{fmtBytes(push.bytes)}</span>
         {push.error && <span className="text-danger">{push.error}</span>}
@@ -225,7 +253,7 @@ function InviteTeammate() {
     return (
       <div className="rounded-2 border border-dashed border-line-2 bg-bg-3/40 px-4 py-3 text-[12px] text-fg-2">
         <span className="font-medium text-fg-1">Working in a team?</span> Invite a teammate
-        who is already a member of this organisation — they get a one-time enrolment token.{" "}
+        who is already a member of this organisation - they get a one-time enrolment token.{" "}
         <button
           type="button"
           onClick={() => setOpen(true)}
@@ -257,7 +285,7 @@ function InviteTeammate() {
         <div className="space-y-2">
           <div className="text-fg-2">
             One-time token for <b className="text-fg-1">{invite.user_email}</b>. Send them this
-            command — it works once and expires {invite.expires_at}.
+            command - it works once and expires {fmtDateTime(invite.expires_at)}.
           </div>
           <div className="flex items-center gap-2">
             <code className="flex-1 break-all rounded-2 border border-line-1 bg-bg-1 px-2 py-1 font-mono text-[11.5px] text-fg-1">
@@ -275,7 +303,7 @@ function InviteTeammate() {
             </button>
           </div>
           <div className="text-warn">
-            Shown once. Nothing here is stored on this machine — close this panel and the token
+            Shown once. Nothing here is stored on this machine - close this panel and the token
             is gone.
           </div>
           {invite.monthly_cap > 0 && (
@@ -294,7 +322,7 @@ function InviteTeammate() {
       ) : (
         <form onSubmit={mint} className="space-y-2">
           <div className="text-fg-3">
-            They must already be a member of your organisation — an invite hands over a token, it
+            They must already be a member of your organisation - an invite hands over a token, it
             does not create an account.
           </div>
           <div className="flex items-center gap-2">
@@ -357,7 +385,7 @@ function RawPayloadDrawer({ open, onClose }: { open: boolean; onClose: () => voi
       open={open}
       onClose={onClose}
       title="Last shared payload"
-      subtitle="The exact content-free rollup last pushed to your org — byte-for-byte. No prompt text or tool output is ever included."
+      subtitle="The exact content-free rollup last pushed to your org - byte-for-byte. No prompt text or tool output is ever included."
       width={760}
     >
       <div className="p-4">

@@ -10,7 +10,7 @@ import {
 import { ChartState } from "@/components/ChartState";
 import { SessionDetailPanel } from "@/components/SessionDetailPanel";
 import { useApi } from "@/lib/useApi";
-import { fmtCompact, fmtDuration, fmtInt, fmtUSD } from "@/lib/format";
+import { fmtCompact, fmtDateTime, fmtDuration, fmtInt, fmtUSD } from "@/lib/format";
 import type { LiveResponse, LiveSession } from "@/lib/types";
 
 // Live session view (P6.1): the "now playing" panel. One /api/live
@@ -36,7 +36,7 @@ export function LivePage() {
     <div className="space-y-6 p-6">
       <PageHeader
         title="Live"
-        sub="Now playing — sessions with activity in the last 15 minutes. Refreshes every 5 seconds while this tab is visible; cost and token rollups cover each session's lifetime."
+        sub="Now playing - sessions with activity in the last 15 minutes. Refreshes every 5 seconds while this tab is visible; cost and token rollups cover each session's lifetime."
         helpId="tab.live"
         right={
           active.length > 0 ? (
@@ -65,7 +65,7 @@ export function LivePage() {
               >
                 Compression page
               </Link>{" "}
-              — then watch this page while you work.
+              - then watch this page while you work.
             </p>
           </div>
         ) : (
@@ -170,7 +170,7 @@ function LiveSessionCard({ s, onOpen }: { s: LiveSession; onOpen: () => void }) 
               <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-fg-3">
                 {a.target}
               </span>
-              <Tooltip content={a.timestamp}>
+              <Tooltip content={fmtDateTime(a.timestamp)}>
                 <span
                   tabIndex={0}
                   className="shrink-0 cursor-help tabular-nums text-[10.5px] text-fg-3 focus:outline-none"
@@ -197,7 +197,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 function relTime(iso: string): string {
   const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "—";
+  if (!Number.isFinite(t)) return "-";
   const diff = Date.now() - t;
   if (diff < 0) return "now";
   if (diff < 10_000) return "just now";

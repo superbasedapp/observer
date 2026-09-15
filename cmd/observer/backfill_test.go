@@ -6,13 +6,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/claudecode"
 	"github.com/marmutapp/superbased-observer/internal/adapter/cursor"
+	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/scrub"
+	"github.com/marmutapp/superbased-observer/internal/store"
+	"github.com/marmutapp/superbased-observer/internal/watcher"
 )
 
 // TestBackfillCacheTier_RecoversNullColumns simulates the pre-migration-008
@@ -489,6 +497,9 @@ func TestBackfillsAllPrepareCleanlyOnEmptyDB(t *testing.T) {
 	}
 	if _, err := backfillCursorSubagents(ctx, database, emptyDir, 0); err != nil {
 		t.Errorf("backfillCursorSubagents: %v", err)
+	}
+	if _, err := store.New(database).BackfillTaskItems(ctx, 0); err != nil {
+		t.Errorf("BackfillTaskItems: %v", err)
 	}
 }
 
@@ -1728,6 +1739,79 @@ func TestBackfillCursorModel(t *testing.T) {
 	}
 }
 
+// TestBackfillSessionModels pins the --session-models CLI wiring over
+// store.BackfillSessionModels: the rollup is ADAPTER-AGNOSTIC (unlike
+// --cursor-model), fills only an empty sessions.model, takes the NEWEST
+// model-bearing token row, leaves a session with no such row alone, and
+// is idempotent on a second run.
+func TestBackfillSessionModels(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "obs.db")
+	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO projects (id, root_path, created_at) VALUES (1, '/tmp/test', '2026-04-30T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []struct{ id, tool, model string }{
+		{"s1", "codex", ""},        // empty + token rows → filled with the newest
+		{"s2", "cline", ""},        // empty + no token row → untouched
+		{"s3", "cowork", "opus-4"}, // already set → never overwritten
+	} {
+		if _, err := database.ExecContext(ctx,
+			`INSERT INTO sessions (id, tool, model, started_at, project_id)
+			 VALUES (?, ?, ?, '2026-04-30T00:00:00Z', 1)`, s.id, s.tool, s.model); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tk := range []struct{ session, model, ts, evt string }{
+		{"s1", "gpt-5-mini", "2026-04-30T00:00:00Z", "s1-a"},
+		{"s1", "gpt-5", "2026-04-30T01:00:00Z", "s1-b"}, // newest wins
+		{"s3", "haiku-4-5", "2026-04-30T02:00:00Z", "s3-a"},
+	} {
+		if _, err := database.ExecContext(ctx,
+			`INSERT INTO token_usage (session_id, timestamp, tool, model, source_file, source_event_id, input_tokens, output_tokens, source, reliability)
+			 VALUES (?, ?, 'codex', ?, '/tmp/x.jsonl', ?, 10, 5, 'jsonl', 'estimated')`,
+			tk.session, tk.ts, tk.model, tk.evt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := backfillSessionModels(ctx, database)
+	if err != nil {
+		t.Fatalf("backfillSessionModels: %v", err)
+	}
+	if res.SessionsUpdated != 1 {
+		t.Errorf("SessionsUpdated = %d, want 1 (only s1)", res.SessionsUpdated)
+	}
+	for _, c := range []struct{ id, want string }{
+		{"s1", "gpt-5"},
+		{"s2", ""},
+		{"s3", "opus-4"},
+	} {
+		var got sql.NullString
+		if err := database.QueryRowContext(ctx,
+			`SELECT model FROM sessions WHERE id = ?`, c.id).Scan(&got); err != nil {
+			t.Fatalf("query %s: %v", c.id, err)
+		}
+		if got.String != c.want {
+			t.Errorf("session %s: model = %q, want %q", c.id, got.String, c.want)
+		}
+	}
+
+	again, err := backfillSessionModels(ctx, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.SessionsUpdated != 0 {
+		t.Errorf("second run not idempotent: %d", again.SessionsUpdated)
+	}
+}
+
 // TestBackfillCodexReasoning pins the codex agent_message → preceding_reasoning
 // pass: agent_message text per turn lands on every action row with
 // the matching message_id (turn_id).
@@ -1944,6 +2028,156 @@ func TestBackfillCodexProjectRoot_ReattributesWindowsCwd(t *testing.T) {
 	if res2.SessionsReattributed != 0 || res2.ActionsUpdated != 0 {
 		t.Errorf("second run not idempotent: %+v", res2)
 	}
+}
+
+// gitAvailableForBackfill skips a test when the git binary isn't on PATH,
+// mirroring internal/git's own gitAvailable helper (unexported there, so
+// this package needs its own copy).
+func gitAvailableForBackfill(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+}
+
+// initRepoWithRemote creates a real git repo with one commit and an
+// "origin" remote, so a backfill call site's git.Resolve sees a real
+// info.Remote to normalize (B3 reattribution residual).
+func initRepoWithRemote(t *testing.T, remoteURL string) string {
+	t.Helper()
+	gitAvailableForBackfill(t)
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"symbolic-ref", "HEAD", "refs/heads/main"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "test"},
+		{"remote", "add", "origin", remoteURL},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# repo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"commit", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return dir
+}
+
+// TestBackfillProjectRootReattribution_CarriesNormalizedRemote is the B3
+// residual regression test: cmd/observer/backfill.go's five re-attribution
+// call sites (codex, claudecode, cowork, openclaw, antigravity) used to
+// hardcode "" for store.UpsertProject's remote argument even when the
+// resolved cwd sat inside a real git working tree with an "origin" remote
+// available — so a backfill-driven reattribution could never populate
+// projects.git_remote the way a live parse does. This exercises the codex
+// and claudecode paths (both call git.Resolve directly) end-to-end and
+// asserts the stored git_remote is the SAME normalized form git.NormalizeRemote
+// produces for the live adapters.
+func TestBackfillProjectRootReattribution_CarriesNormalizedRemote(t *testing.T) {
+	ctx := context.Background()
+	remoteURL := "git@github.com:acme/widget.git"
+	wantRemote := git.NormalizeRemote(remoteURL) // "github.com/acme/widget"
+
+	t.Run("codex", func(t *testing.T) {
+		root := t.TempDir()
+		dbPath := filepath.Join(root, "obs.db")
+		database, err := db.Open(ctx, db.Options{Path: dbPath})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer database.Close()
+
+		realProject := initRepoWithRemote(t, remoteURL)
+
+		sessionsDir := filepath.Join(root, "codex-sessions")
+		if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		rollout := filepath.Join(sessionsDir, "rollout-s-cx-remote.jsonl")
+		body := strings.Join([]string{
+			`{"timestamp":"2026-04-30T00:00:01.000Z","type":"session_meta","payload":{"id":"s-cx-remote","cwd":` + jsonString(realProject) + `,"model":"gpt-5"}}`,
+			"",
+		}, "\n")
+		if err := os.WriteFile(rollout, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		res, err := backfillCodexProjectRoot(ctx, database, []string{sessionsDir}, 0)
+		if err != nil {
+			t.Fatalf("backfillCodexProjectRoot: %v", err)
+		}
+		if res.FilesScanned != 1 {
+			t.Fatalf("FilesScanned = %d, want 1", res.FilesScanned)
+		}
+
+		var gotRemote string
+		if err := database.QueryRowContext(
+			ctx,
+			`SELECT git_remote FROM projects WHERE root_path = ?`, realProject,
+		).Scan(&gotRemote); err != nil {
+			t.Fatal(err)
+		}
+		if gotRemote != wantRemote {
+			t.Errorf("projects.git_remote = %q, want %q", gotRemote, wantRemote)
+		}
+	})
+
+	t.Run("claudecode", func(t *testing.T) {
+		root := t.TempDir()
+		dbPath := filepath.Join(root, "obs.db")
+		database, err := db.Open(ctx, db.Options{Path: dbPath})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer database.Close()
+
+		realProject := initRepoWithRemote(t, remoteURL)
+
+		projectsDir := filepath.Join(root, "claude-projects")
+		if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		transcript := filepath.Join(projectsDir, "s-cc-remote.jsonl")
+		body := strings.Join([]string{
+			`{"sessionId":"s-cc-remote","cwd":` + jsonString(realProject) + `,"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2026-04-30T00:00:01.000Z"}`,
+			"",
+		}, "\n")
+		if err := os.WriteFile(transcript, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		res, err := backfillClaudecodeProjectRoot(ctx, database, []string{projectsDir}, 0)
+		if err != nil {
+			t.Fatalf("backfillClaudecodeProjectRoot: %v", err)
+		}
+		if res.FilesScanned != 1 {
+			t.Fatalf("FilesScanned = %d, want 1", res.FilesScanned)
+		}
+
+		var gotRemote string
+		if err := database.QueryRowContext(
+			ctx,
+			`SELECT git_remote FROM projects WHERE root_path = ?`, realProject,
+		).Scan(&gotRemote); err != nil {
+			t.Fatal(err)
+		}
+		if gotRemote != wantRemote {
+			t.Errorf("projects.git_remote = %q, want %q", gotRemote, wantRemote)
+		}
+	})
 }
 
 // codexForkDedupRolloutBody builds a synthetic codex fork/subagent
@@ -2427,5 +2661,273 @@ func TestBackfillDryRun_RefusesOverwrite(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("error text: %v (want 'already exists')", err)
+	}
+}
+
+// --- observer backfill --content ---
+//
+// TestBackfillContent_GatedOff exercises `--content` through the real cobra
+// command: contentCaptureBlockReason short-circuits before buildWatcher is
+// ever called, so the test never touches anything outside its own temp dir
+// and is safe to run as written.
+//
+// The two gate-OPEN tests below (CaptureParity, Idempotent) deliberately do
+// NOT go through the cobra command / buildWatcher. buildWatcher registers
+// EVERY adapter via adapterdefaults.Adapters(), and claude-code's default
+// WatchPaths() walks crossmount.AllHomes() — which on a WSL2 host
+// unconditionally scans /mnt/c/Users for a Windows-side ~/.claude/projects
+// tree (internal/platform/crossmount/crossmount.go::wslWindowsHomes; no env
+// var or config knob disables it, by design — the doc comment there says as
+// much — and t.Setenv("HOME", ...) only redirects the *native* home
+// candidate, not this one). On a machine with a real Windows Claude Code
+// install, a naive cobra-level test therefore reads and parses the
+// OPERATOR'S OWN live session history during `go test`: an earlier draft of
+// this test parsed 56 real transcripts instead of the 1-file fixture it
+// asked for, and failed its exact files_processed assertion because of it.
+//
+// The two tests below instead hand-build the exact same production chain
+// (wireContentCapture -> registry -> watcher.New -> Rescan ->
+// Store.Ingest -> captureMessageContent) via runScopedContentRescan, using
+// claudecode.NewWithOptions(scrub.New(), watchRoot) — an EXPLICIT watch
+// root, which Adapter.WatchPaths() returns verbatim instead of consulting
+// crossmount.AllHomes(). Same adapter, same watcher, same store seam
+// production uses; only the registry's adapter LIST differs (one adapter
+// with an explicit root, vs adapterdefaults.Adapters()'s full ~37-adapter
+// default registry) — a test-hermeticity substitution, not a second
+// implementation of the rescan logic. The CLI-level flag/gate/message
+// wiring itself is covered by TestBackfillContent_GatedOff (blocked
+// branch); the unblocked branch in backfill.go's --content block is a
+// two-line composition of buildWatcher + Rescan + fmt.Sprintf over pieces
+// already pinned here and in content_capture_wire_test.go /
+// internal/store/messagecontent_test.go.
+
+// contentFixtureSession writes one Claude Code session JSONL (a user prompt
+// + an assistant text reply) predating the message-content producer
+// (263a3cadc) under <tmp>/projects/demo/sess-content.jsonl — simulating
+// exactly the historical-session gap --content exists to close — and
+// returns the projects directory, suitable as an adapter's explicit
+// watchRoot.
+func contentFixtureSession(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects", "demo")
+	if err := os.MkdirAll(projects, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Join([]string{
+		`{"sessionId":"sess-content","cwd":"/tmp","timestamp":"2026-05-12T00:00:00Z","uuid":"u-prompt","message":{"role":"user","content":[{"type":"text","text":"hello there"}]}}`,
+		`{"sessionId":"sess-content","cwd":"/tmp","timestamp":"2026-05-12T00:00:01Z","uuid":"u-asst","message":{"id":"msg_1","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"hi there"}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(projects, "sess-content.jsonl"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(root, "projects")
+}
+
+// runScopedContentRescan hand-builds the same wireContentCapture ->
+// registry -> watcher.New -> Rescan chain `observer backfill --content`
+// composes in backfill.go, scoped to a single claude-code adapter with an
+// explicit watchRoot (see the package comment above for why this bypasses
+// buildWatcher). Content sharing is turned on exactly as
+// [org_client.share] full_content = true resolves via
+// contentCapturePosture/wireContentCapture — the same production seam,
+// asserted open first so a regression there fails loudly instead of
+// silently producing zero rows.
+func runScopedContentRescan(t *testing.T, ctx context.Context, dbPath, watchRoot string) watcher.ScanResult {
+	t.Helper()
+	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	st := store.New(database)
+	cfg := config.Config{OrgClient: config.OrgClientConfig{
+		Share: config.OrgClientShareConfig{FullContent: true},
+	}}
+	if reason := contentCaptureBlockReason(cfg); reason != "" {
+		t.Fatalf("fixture cfg should leave the content-capture gate open, got block reason: %q", reason)
+	}
+	wireContentCapture(cfg, st)
+
+	reg := adapter.NewRegistry()
+	reg.Register(claudecode.NewWithOptions(scrub.New(), watchRoot))
+	w := watcher.New(st, reg, watcher.Options{Allow: []string{"claude-code"}})
+
+	res, err := w.Rescan(ctx)
+	if err != nil {
+		t.Fatalf("Rescan: %v", err)
+	}
+	return res
+}
+
+// runBackfillContent invokes `observer backfill --content --config
+// configPath` through the real cobra command and returns its combined
+// stdout/stderr. Only used by TestBackfillContent_GatedOff — see the
+// package comment above for why the gate-open tests use
+// runScopedContentRescan instead.
+func runBackfillContent(t *testing.T, configPath string) string {
+	t.Helper()
+	var out strings.Builder
+	cmd := newBackfillCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--content", "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("backfill --content: %v", err)
+	}
+	return out.String()
+}
+
+// countOTelContentRows opens dbPath and returns the total otel_content row
+// count.
+func countOTelContentRows(t *testing.T, ctx context.Context, dbPath string) int {
+	t.Helper()
+	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var n int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM otel_content`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestBackfillContent_GatedOff pins the honest no-op contract for
+// `observer backfill --content` when the node's content-capture gate is
+// closed — the default posture, no [org_client.share] section at all. It
+// must not populate otel_content, and must print a message naming the
+// specific blocking config key rather than a bare "did nothing"
+// (CLAUDE.md's honest-disabled-copy convention).
+//
+// Mutation-proof target: deleting the
+//
+//	if reason := contentCaptureBlockReason(gateCfg); reason != "" { ... }
+//
+// gate check in backfill.go's --content block (so it always falls through
+// to buildWatcher+Rescan) makes this test fail by name — the skip message
+// disappears from stdout and/or otel_content gains rows it must not have on
+// a metadata-only node.
+func TestBackfillContent_GatedOff(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "obs.db")
+
+	configPath := filepath.Join(root, "config.toml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`[observer]
+db_path = %q
+log_level = "warn"
+
+[observer.watch]
+poll_interval_seconds = 2
+max_file_size_mb = 64
+enabled_adapters = ["claude-code"]
+
+[observer.scrubber]
+enabled = true
+
+[observer.proxy]
+enabled = false
+
+[observer.mcp]
+enabled = false
+`, dbPath)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runBackfillContent(t, configPath)
+
+	if !strings.Contains(out, "content backfill skipped:") {
+		t.Errorf("output missing skip message: %q", out)
+	}
+	if !strings.Contains(out, "[org_client.share]") {
+		t.Errorf("skip message must name the blocking key: %q", out)
+	}
+
+	if n := countOTelContentRows(t, ctx, dbPath); n != 0 {
+		t.Errorf("otel_content rows = %d, want 0 (gate was closed)", n)
+	}
+}
+
+// TestBackfillContent_CaptureParity backfills a fixture session predating
+// the message-content producer and verifies the --content chain (see
+// runScopedContentRescan) reproduces exactly the otel_content rows live
+// ingest would have written for the same transcript: one kindPrompt row for
+// the user turn and one kindAssistant row for the reply — parsed through
+// the adapter's own real parser (internal/adapter/claudecode), not a second
+// hand-rolled implementation.
+func TestBackfillContent_CaptureParity(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "obs.db")
+	watchRoot := contentFixtureSession(t)
+
+	res := runScopedContentRescan(t, ctx, dbPath, watchRoot)
+	if res.FilesProcessed != 1 || res.Errors != 0 {
+		t.Fatalf("ScanResult = %+v, want FilesProcessed=1 Errors=0", res)
+	}
+
+	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	rows, err := database.QueryContext(ctx,
+		`SELECT kind, content FROM otel_content WHERE session_id = 'sess-content' ORDER BY kind`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var kind, content string
+		if err := rows.Scan(&kind, &content); err != nil {
+			t.Fatal(err)
+		}
+		got[kind] = content
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"assistant": "hi there", "prompt": "hello there"}
+	if len(got) != len(want) {
+		t.Fatalf("otel_content rows = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("otel_content[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestBackfillContent_Idempotent runs the --content chain (see
+// runScopedContentRescan) twice over the same unmodified session file and
+// asserts the otel_content row count is identical both times: the table's
+// (content_hash, kind, request_id, tool_use_id) UNIQUE key — tool_use_id
+// carrying a session-scoped event key — must absorb the re-parse via ON
+// CONFLICT DO NOTHING rather than duplicating rows.
+//
+// Mutation-proof target: dropping InsertOTelContent's ON CONFLICT clause
+// (or un-scoping eventContentKey back to a bare per-event id) makes this
+// test fail by name — the second run's count comes back doubled instead of
+// unchanged.
+func TestBackfillContent_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "obs.db")
+	watchRoot := contentFixtureSession(t)
+
+	runScopedContentRescan(t, ctx, dbPath, watchRoot)
+	first := countOTelContentRows(t, ctx, dbPath)
+	if first == 0 {
+		t.Fatal("first rescan produced 0 otel_content rows; fixture not being captured")
+	}
+
+	runScopedContentRescan(t, ctx, dbPath, watchRoot)
+	second := countOTelContentRows(t, ctx, dbPath)
+
+	if second != first {
+		t.Errorf("otel_content rows after 2nd rescan = %d, want %d (unchanged — re-parse must not duplicate)", second, first)
 	}
 }

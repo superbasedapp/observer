@@ -50,3 +50,37 @@ func (c LanguageCapability) CanCollapse() bool {
 func ExactParser(parser string) bool {
 	return parser == "goast" || (len(parser) >= 11 && parser[:11] == "treesitter:") || parser == "treesitter"
 }
+
+// ParserReplayable reports whether a cold-storage copy produced by the named
+// parser backend can still be replayed into the hot index verbatim, or whether
+// the project must be re-indexed instead (corpus archival P2.2,
+// docs/plans/observer-corpus-archival-lazyload-design-2026-08-26.md §4.2).
+//
+// A codeintel row encodes the parser that produced it
+// (memory:feedback_db_rows_encode_parser_version), so this is the one place
+// that knows which of those identities THIS build still produces. It lives
+// here, beside ExactParser, rather than in the archival packages: the archive
+// mover must not carry a second copy of the code-intelligence backend
+// vocabulary that goes stale silently — it takes this as an injected predicate.
+//
+// The current answer is "every backend we have ever written": goast,
+// treesitter:*, and the heuristic fallback are all still produced, so no
+// archived copy is stale today. The seam exists so that when a backend IS
+// retired, retiring it is one line here rather than an archaeology exercise —
+// and a false answer is not a failure, it routes the rehydrate to
+// `observer index`, which always works because the source is the repository.
+//
+// An EMPTY parser is treated as replayable: rows written before the column was
+// populated are not evidence of a retired backend.
+func ParserReplayable(parser string) bool {
+	switch {
+	case parser == "":
+		return true
+	case ExactParser(parser):
+		return true
+	case parser == "heuristic":
+		return true
+	default:
+		return false
+	}
+}

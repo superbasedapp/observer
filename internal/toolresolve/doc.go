@@ -16,6 +16,19 @@
 //   - foreign_only  only a Windows install exists — NOT launchable here
 //   - not_found     nothing anywhere
 //
+// Two facts the resolver reports alongside the verdict serve the EXECUTION
+// side (the launcher), not the resolution side:
+//
+//   - Resolution.LoginOnlyDirs — the merged-PATH dirs the login shell
+//     contributed that the daemon's own process PATH lacks. A launcher
+//     prepends them to the child's PATH; MergedPathDirs exposes the same
+//     merge to callers that need it before a Resolve.
+//   - Resolution.Interpreter — the `#!/usr/bin/env <name>` interpreter of the
+//     chosen binary. An npm shim launched by a daemon whose PATH lacks node
+//     starts fine and dies at exit 127; when the interpreter is off the
+//     process PATH the resolver says so in a Note rather than letting the
+//     launch fail silently later.
+//
 // The package is PURE (CLAUDE.md "Module Boundaries" #1): all I/O — stat,
 // symlink evaluation, globbing, and the login-shell PATH capture — is
 // injected through the Env struct. imports_test.go pins it free of

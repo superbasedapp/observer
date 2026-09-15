@@ -219,6 +219,103 @@ func TestEvaluate_DisabledRule(t *testing.T) {
 	}
 }
 
+// TestManagedBudgetProtection pins the policy engine's trust boundary: rows
+// that came from an organization-authoritative hard budget survive local
+// disables and weakening overrides. The internal soft-window override remains
+// able to preserve the administrator's advisory decision.
+func TestManagedBudgetProtection(t *testing.T) {
+	t.Parallel()
+	flag := DecisionFlag
+	allow := DecisionAllow
+
+	t.Run("hard cost and token rows survive local policy", func(t *testing.T) {
+		t.Parallel()
+		eng, err := New(Config{
+			Mode: ModeEnforce, BudgetHard: true,
+			BudgetProtection: BudgetProtection{DailyUSD: true, DailyTokens: true},
+			BudgetDailyUSD:   1, BudgetDailyTokens: 100,
+			Disabled:  []string{"B-602"},
+			Overrides: []Override{{RuleID: "B-622", Decision: &allow, Source: "user"}},
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		for _, tc := range []struct {
+			name string
+			ev   Event
+			id   string
+		}{
+			{name: "disabled cost row", ev: Event{Kind: KindAPIRequest, DailyCostUSD: 2}, id: "B-602"},
+			{name: "overridden token row", ev: Event{Kind: KindAPIRequest, DailyTokens: 101}, id: "B-622"},
+		} {
+			v := eng.Evaluate(tc.ev)
+			if v.RuleID != tc.id || v.Decision != DecisionDeny {
+				t.Errorf("%s = %s/%s, want %s/deny", tc.name, v.RuleID, v.Decision, tc.id)
+			}
+			if !eng.BudgetRuleProtected(tc.id) {
+				t.Errorf("%s is not reported as protected", tc.id)
+			}
+		}
+	})
+
+	t.Run("armed B-625 survives local policy", func(t *testing.T) {
+		t.Parallel()
+		eng, err := New(Config{
+			Mode: ModeEnforce, BudgetRequired: true,
+			Disabled:  []string{"B-625"},
+			Overrides: []Override{{RuleID: "B-625", Decision: &allow, Source: "user"}},
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		v := eng.Evaluate(Event{Kind: KindAPIRequest})
+		if v.RuleID != "B-625" || v.Decision != DecisionDeny {
+			t.Fatalf("B-625 = %s/%s, want B-625/deny", v.RuleID, v.Decision)
+		}
+		if !eng.BudgetRuleProtected("B-625") {
+			t.Error("armed B-625 is not reported as protected")
+		}
+	})
+
+	t.Run("organization soft window stays advisory", func(t *testing.T) {
+		t.Parallel()
+		eng, err := New(Config{
+			Mode:              ModeEnforce,
+			BudgetHard:        true,
+			BudgetDailyTokens: 100,
+			Overrides:         []Override{{RuleID: "B-622", Decision: &flag, Source: SourceOrgBudget}},
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		v := eng.Evaluate(Event{Kind: KindAPIRequest, DailyTokens: 101})
+		if v.RuleID != "B-622" || v.Decision != DecisionFlag {
+			t.Fatalf("soft B-622 = %s/%s, want B-622/flag", v.RuleID, v.Decision)
+		}
+		if eng.BudgetRuleProtected("B-622") {
+			t.Error("an organization-authored soft row must remain approval/advisory behavior")
+		}
+	})
+
+	t.Run("local hard budget remains customizable", func(t *testing.T) {
+		t.Parallel()
+		eng, err := New(Config{
+			Mode: ModeEnforce, BudgetHard: true, BudgetDailyTokens: 100,
+			Overrides: []Override{{RuleID: "B-622", Decision: &flag, Source: "user"}},
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		v := eng.Evaluate(Event{Kind: KindAPIRequest, DailyTokens: 101})
+		if v.RuleID != "B-622" || v.Decision != DecisionFlag {
+			t.Fatalf("local B-622 = %s/%s, want B-622/flag", v.RuleID, v.Decision)
+		}
+		if eng.BudgetRuleProtected("B-622") {
+			t.Error("a local hard budget must not be reported as organization-protected")
+		}
+	})
+}
+
 // TestEvaluate_ConcurrencySafe hammers one engine from many
 // goroutines; the race detector (gates run with -race) pins the
 // immutability claim.

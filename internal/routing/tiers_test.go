@@ -183,12 +183,44 @@ func TestTierTable_OpusFivePlacement(t *testing.T) {
 		{"claude-opus-4-8", TierOpusClass},
 		{"claude-opus-4-1", TierOpusClass},
 		{"claude-fable-5", TierOpusClass},
+		{"claude-fable-5-1", TierOpusClass}, // 2026-09-01 Fable flagship — explicit seed pin
+
 		{"claude-sonnet-4-6", TierSonnetClass},
 		{"claude-haiku-4-5", TierHaikuClass},
 	} {
 		if got, src := tbl.Lookup(tc.model); got != tc.want || src != TierSourceExact {
 			t.Errorf("Lookup(%q) = (%s,%s), want (%s, exact)", tc.model, got, src, tc.want)
 		}
+	}
+}
+
+// TestTierTable_MythosAndMinistralSeeds pins two 2026-09-07 seed additions
+// that a missing row would silently strand at TierUnclassified:
+//
+//   - claude-mythos-5-1 has no bare "claude-mythos" (or "claude-mythos-5")
+//     family row in this seed table, so it needs its own explicit entry —
+//     same tier as its Fable 5.1 twin (identical rate card in pricing.go).
+//   - ministral-3b/8b/14b cannot inherit the bare "mistral" family row:
+//     "mistral" is not a string prefix of "ministral-*" (the leading "mi"
+//     breaks the match), so each needs its own entry too.
+func TestTierTable_MythosAndMinistralSeeds(t *testing.T) {
+	t.Parallel()
+	r := NewTierResolver()
+	for _, tc := range []struct {
+		model string
+		want  Tier
+	}{
+		{"claude-mythos-5-1", TierOpusClass},
+		{"ministral-3b", TierHaikuClass},
+		{"ministral-8b", TierHaikuClass},
+		{"ministral-14b", TierHaikuClass},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			if tier, src := r.Lookup(tc.model); tier != tc.want || src != TierSourceExact {
+				t.Errorf("Lookup(%q) = (%s,%s), want (%s, exact)", tc.model, tier, src, tc.want)
+			}
+		})
 	}
 }
 
@@ -267,5 +299,32 @@ func TestTierTable_NilSafety(t *testing.T) {
 	var r *TierResolver
 	if r.Table() != nil {
 		t.Error("nil resolver Table != nil")
+	}
+}
+
+// TestTierTable_OrgObserverUnpricedIDs2026Q3 pins the tier placement for the
+// Cursor-Grok and Codex-auto-review ids added alongside the cost-registry fix
+// (F-MODELS3, org-observer UI review 2026-09-02). The -high effort variant
+// must resolve via the cursor-grok family; the base ids exactly.
+func TestTierTable_OrgObserverUnpricedIDs2026Q3(t *testing.T) {
+	t.Parallel()
+	r := NewTierResolver()
+	cases := []struct {
+		model string
+		want  Tier
+	}{
+		{"cursor-grok", TierSonnetClass},
+		{"cursor-grok-4.5-high", TierSonnetClass},
+		{"cursor-grok-4.6-high", TierSonnetClass},
+		{"codex-auto-review", TierSonnetClass},
+	}
+	for _, tc := range cases {
+		got, src := r.Lookup(tc.model)
+		if got != tc.want {
+			t.Errorf("Lookup(%q) = %s (%s); want %s", tc.model, got, src, tc.want)
+		}
+		if got == TierUnclassified {
+			t.Errorf("Lookup(%q) unclassified; want %s", tc.model, tc.want)
+		}
 	}
 }

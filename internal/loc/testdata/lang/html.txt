@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html>
+<!-- A comment -->
+<!-- multi
+     line -->
+<body class="a -- b">
+
+</body>
+</html>

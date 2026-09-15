@@ -66,8 +66,8 @@ func TestBuildHookEvent_UserPromptSubmit(t *testing.T) {
 	if ev.Target != "What does this project do?" {
 		t.Errorf("Target=%q", ev.Target)
 	}
-	if ev.MessageID != "turn-7" {
-		t.Errorf("MessageID=%q (want turn id passthrough)", ev.MessageID)
+	if ev.MessageID != "user:turn-7" {
+		t.Errorf("MessageID=%q (want user-scoped turn id)", ev.MessageID)
 	}
 }
 

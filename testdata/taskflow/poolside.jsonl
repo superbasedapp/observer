@@ -1,0 +1,3 @@
+{"tool":"poolside","raw_tool_name":"todo_action","raw_tool_input":"{\"action\":\"add\",\"content\":\"Fix the login redirect bug\\nDraft the migration script\"}","raw_tool_output":""}
+{"tool":"poolside","raw_tool_name":"todo_action","raw_tool_input":"{\"action\":\"set_in_progress\",\"content\":\"Fix the login redirect bug\"}","raw_tool_output":""}
+{"tool":"poolside","raw_tool_name":"todo_action","raw_tool_input":"{\"action\":\"complete\",\"content\":\"Fix the login redirect bug\"}","raw_tool_output":""}

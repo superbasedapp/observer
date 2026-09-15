@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/pidbridge"
+	"github.com/marmutapp/superbased-observer/internal/runstate"
 )
 
 // arena.go — SQL seams for the Agent Arena tables (migration 088). The
@@ -340,4 +341,121 @@ func (s *Store) UnbindArenaProcess(ctx context.Context, pid int, sessionID strin
 		return fmt.Errorf("store.UnbindArenaProcess: %w", err)
 	}
 	return nil
+}
+
+// ReconcileStaleArena moves stranded in-flight Arena rows to a terminal status
+// so the run history stops lying about what is still live. It is the store seam
+// for the runstate primitive (the pure decision authority): this method loads
+// only the small in-flight set, asks runstate for a verdict per row, and
+// persists the changed ones.
+//
+// Two strandings are closed: (a) a candidate left "pending"/"running" under a
+// run that has itself reached complete/failed (its driver goroutine finished or
+// died without finalizing the child), closed immediately; and (b) a run — and
+// its candidates — left in-flight far past any real drive (a daemon crash
+// mid-run leaves nothing to re-drive), closed by age. Runs whose id is in
+// liveRunIDs are being driven by THIS process and are never reconciled. Returns
+// the number of rows updated.
+func (s *Store) ReconcileStaleArena(ctx context.Context, now time.Time, liveRunIDs map[string]bool) (int, error) {
+	rules := runstate.DefaultRules()
+	changed := 0
+
+	// (1) Runs first, so a newly-failed run's candidates then close via the
+	// parent-terminal rule in the same pass.
+	runRows, err := s.db.QueryContext(ctx, `
+		SELECT id, status, updated_at FROM arena_runs
+		 WHERE status IN (?, ?, ?)`,
+		models.ArenaRunStatusPending, models.ArenaRunStatusRunning, models.ArenaRunStatusJudging)
+	if err != nil {
+		return 0, fmt.Errorf("store.ReconcileStaleArena: runs: %w", err)
+	}
+	type runState struct{ id, status string }
+	var staleRuns []runState
+	terminalRun := map[string]bool{}
+	func() {
+		defer runRows.Close()
+		for runRows.Next() {
+			var id, status, updated string
+			if scanErr := runRows.Scan(&id, &status, &updated); scanErr != nil {
+				err = scanErr
+				return
+			}
+			out := runstate.Reconcile(rules, runstate.Signal{
+				Kind:      runstate.KindArenaRun,
+				Status:    status,
+				Age:       now.Sub(parseStamp(updated)),
+				KnownLive: liveRunIDs[id],
+			})
+			if out.Changed {
+				staleRuns = append(staleRuns, runState{id: id, status: out.To})
+				terminalRun[id] = true
+			}
+		}
+		err = runRows.Err()
+	}()
+	if err != nil {
+		return 0, fmt.Errorf("store.ReconcileStaleArena: runs scan: %w", err)
+	}
+	for _, r := range staleRuns {
+		if uErr := s.UpdateArenaRunStatus(ctx, r.id, r.status); uErr != nil {
+			return changed, fmt.Errorf("store.ReconcileStaleArena: update run: %w", uErr)
+		}
+		changed++
+	}
+
+	// (2) Candidates. A candidate's parent is terminal if the run was just
+	// reconciled OR was already complete/failed on disk.
+	candRows, err := s.db.QueryContext(ctx, `
+		SELECT c.id, c.status, c.updated_at, r.id, r.status
+		  FROM arena_candidates c JOIN arena_runs r ON r.id = c.run_id
+		 WHERE c.status IN (?, ?)`,
+		models.ArenaCandidateStatusPending, models.ArenaCandidateStatusRunning)
+	if err != nil {
+		return changed, fmt.Errorf("store.ReconcileStaleArena: candidates: %w", err)
+	}
+	type candFix struct {
+		id, status, reason string
+	}
+	var fixes []candFix
+	func() {
+		defer candRows.Close()
+		for candRows.Next() {
+			var id, status, updated, runID, runStatus string
+			if scanErr := candRows.Scan(&id, &status, &updated, &runID, &runStatus); scanErr != nil {
+				err = scanErr
+				return
+			}
+			parentTerminal := terminalRun[runID] ||
+				runStatus == models.ArenaRunStatusComplete || runStatus == models.ArenaRunStatusFailed
+			out := runstate.Reconcile(rules, runstate.Signal{
+				Kind:           runstate.KindArenaCandidate,
+				Status:         status,
+				Age:            now.Sub(parseStamp(updated)),
+				KnownLive:      liveRunIDs[runID],
+				ParentTerminal: parentTerminal,
+			})
+			if out.Changed {
+				fixes = append(fixes, candFix{id: id, status: out.To, reason: out.Reason})
+			}
+		}
+		err = candRows.Err()
+	}()
+	if err != nil {
+		return changed, fmt.Errorf("store.ReconcileStaleArena: candidates scan: %w", err)
+	}
+	for _, f := range fixes {
+		res, uErr := s.db.ExecContext(ctx, `
+			UPDATE arena_candidates
+			   SET status = ?, error = ?, updated_at = ?
+			 WHERE id = ? AND status IN (?, ?)`,
+			f.status, "reconciled: "+f.reason, timestamp(now.UTC()), f.id,
+			models.ArenaCandidateStatusPending, models.ArenaCandidateStatusRunning)
+		if uErr != nil {
+			return changed, fmt.Errorf("store.ReconcileStaleArena: update candidate: %w", uErr)
+		}
+		if n, _ := res.RowsAffected(); n == 1 {
+			changed++
+		}
+	}
+	return changed, nil
 }

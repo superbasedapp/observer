@@ -25,6 +25,7 @@ func TestFamilyClosedVocabTotal(t *testing.T) {
 		{"claude-opus-4-8", FamilyClaudeOpus},
 		{"claude-3-opus-20240229", FamilyClaudeOpus},
 		{"claude-fable-5", FamilyClaudeOpus},
+		{"claude-fable-5-1", FamilyClaudeOpus}, // 2026-09-01 Fable flagship — "fable" substring covers it
 		{"claude-sonnet-5", FamilyClaudeSonnet},
 		{"claude-3-5-sonnet-20241022", FamilyClaudeSonnet},
 		{"stealth/claude-sonnet-4.6", FamilyClaudeSonnet},

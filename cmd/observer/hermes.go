@@ -242,14 +242,15 @@ func newHermesCmd() *cobra.Command {
 				}
 			}
 			return runEnvLauncher(envLauncherSpec{
-				tool:     "hermes",
-				bin:      bin,
-				args:     forwarded,
-				dir:      continueDir,
-				proxyURL: resolved,
-				env:      nil, // hermes routes via config.yaml, not an env var
-				dbPath:   cfg.Observer.DBPath,
-				stderr:   cmd.ErrOrStderr(),
+				tool:       "hermes",
+				bin:        bin,
+				args:       forwarded,
+				configPath: configPath,
+				dir:        continueDir,
+				proxyURL:   resolved,
+				env:        nil, // hermes routes via config.yaml, not an env var
+				dbPath:     cfg.Observer.DBPath,
+				stderr:     cmd.ErrOrStderr(),
 			})
 		},
 	}

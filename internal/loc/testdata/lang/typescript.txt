@@ -1,0 +1,7 @@
+interface A {
+  // field comment
+  name: string;
+}
+
+/** JSDoc */
+export const x: A = { name: "a // b" };

@@ -1,0 +1,12 @@
+// revision-unhealthy.kql — a Container App revision (sbci-api or sbci-worker)
+// left the Healthy state. Source: ContainerAppSystemLogs_CL (container
+// lifecycle: pull/start/ProcessExited — see runbook §10), which is the table
+// the launch runbook already used to diagnose the DSN double-quote crash-loop.
+// Fires on ANY "Unhealthy"/"Failed" system-log line for either app in the
+// window; a healthy steady state produces zero rows.
+ContainerAppSystemLogs_CL
+| where TimeGenerated > ago(10m)
+| where ContainerAppName_s in ("sbci-api", "sbci-worker")
+| where Log_s has_any ("Unhealthy", "Failed", "ProcessExited", "Deployment Progress Deadline Exceeded")
+| project TimeGenerated, ContainerAppName_s, RevisionName_s, Log_s
+| order by TimeGenerated desc

@@ -26,6 +26,7 @@ func newDoctorCmd() *cobra.Command {
 	var (
 		configPath string
 		jsonOut    bool
+		probeHook  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "doctor [tool]",
@@ -36,7 +37,13 @@ func newDoctorCmd() *cobra.Command {
 			"Pass an optional tool name to scope the output to one integration,\n" +
 			"e.g. `observer doctor opencode` (provider-compatibility probe) or\n" +
 			"`observer doctor org` (enrolment). The name is matched as a\n" +
-			"substring against check ids.",
+			"substring against check ids.\n\n" +
+			"--probe-hook fires a synthetic, obviously-fake secret through the\n" +
+			"REGISTERED prompt-submit hook command exactly as the host tool\n" +
+			"would invoke it, and reports whether it actually got blocked —\n" +
+			"the live counterpart of the PromptLane=hook registry claim. With\n" +
+			"a tool argument, probes just that tool; without one, probes every\n" +
+			"PromptLane=hook tool.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, database, cleanup, err := loadConfigAndDB(cmd.Context(), configPath)
@@ -49,6 +56,31 @@ func newDoctorCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			if probeHook {
+				var tools []string
+				if len(args) == 1 {
+					tools = []string{args[0]}
+				} else {
+					tools = probeHookToolCandidates()
+				}
+				var checks []diag.Check
+				for _, tool := range tools {
+					checks = append(checks, runProbeHook(cmd.Context(), binary, configPath, tool))
+				}
+				report := diag.Report{Checks: checks}
+				if jsonOut {
+					body, _ := json.MarshalIndent(report, "", "  ")
+					fmt.Fprintln(cmd.OutOrStdout(), string(body))
+				} else {
+					printReport(cmd.OutOrStdout(), report)
+				}
+				if report.Failed() {
+					return errors.New("one or more probes failed")
+				}
+				return nil
+			}
+
 			report := diag.Run(cmd.Context(), diag.DoctorOptions{
 				Config:     cfg,
 				DB:         database,
@@ -86,6 +118,7 @@ func newDoctorCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON instead of formatted output")
+	cmd.Flags().BoolVar(&probeHook, "probe-hook", false, "Fire a synthetic secret through the registered prompt-submit hook and report whether it actually blocked")
 	return cmd
 }
 

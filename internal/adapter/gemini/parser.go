@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 )
@@ -252,8 +253,13 @@ type sessionState struct {
 	ProjectHash   string
 	ProjectRoot   string
 	ProjectRemote string
-	Model         string
-	StartTime     time.Time
+	// ProjectIdentity is the Project Identity Resolver v2 bundle
+	// (2026-09-06, §3.1 / W1) resolved alongside ProjectRoot/ProjectRemote,
+	// applied to every event in the ParseResult via
+	// adapter.ApplyProjectIdentity before the top-level parse returns.
+	ProjectIdentity git.Identity
+	Model           string
+	StartTime       time.Time
 }
 
 // parseLegacy handles a single-object JSON session file. Re-reads the
@@ -294,12 +300,12 @@ func (a *Adapter) parseLegacy(ctx context.Context, path string, fi os.FileInfo, 
 	// downstream emission uses a stable project root.
 	for _, m := range legacy.Messages {
 		if strings.TrimSpace(m.Cwd) != "" {
-			state.ProjectRoot, state.ProjectRemote = resolveProjectRoot(path, m.Cwd)
+			state.ProjectRoot, state.ProjectRemote, state.ProjectIdentity = resolveProjectRoot(path, m.Cwd)
 			break
 		}
 	}
 	if state.ProjectRoot == "" {
-		state.ProjectRoot, state.ProjectRemote = resolveProjectRoot(path, "")
+		state.ProjectRoot, state.ProjectRemote, state.ProjectIdentity = resolveProjectRoot(path, "")
 	}
 
 	for i, msg := range legacy.Messages {
@@ -466,7 +472,7 @@ func (a *Adapter) parseJSONL(ctx context.Context, path string, fi os.FileInfo, f
 				state.StartTime = parseTimestamp(line.StartTime)
 			}
 			if state.ProjectRoot == "" {
-				state.ProjectRoot, state.ProjectRemote = resolveProjectRoot(path, line.Cwd)
+				state.ProjectRoot, state.ProjectRemote, state.ProjectIdentity = resolveProjectRoot(path, line.Cwd)
 			}
 		case "user", "gemini", "model", "tool":
 			// Convert event record → legacy-message shape and reuse emitMessage.
@@ -483,7 +489,7 @@ func (a *Adapter) parseJSONL(ctx context.Context, path string, fi os.FileInfo, f
 				Thoughts:  line.Thoughts,
 			}
 			if state.ProjectRoot == "" {
-				state.ProjectRoot, state.ProjectRemote = resolveProjectRoot(path, msg.Cwd)
+				state.ProjectRoot, state.ProjectRemote, state.ProjectIdentity = resolveProjectRoot(path, msg.Cwd)
 			}
 			a.emitMessage(path, lineNum, msg, &state, &res)
 		case "message_update":
@@ -517,7 +523,7 @@ func (a *Adapter) parseJSONL(ctx context.Context, path string, fi os.FileInfo, f
 		// Backfill: if no metadata line landed, give every event a root
 		// derived from the path. emitMessage already handled per-line
 		// resolution but a fully empty file would leave it blank.
-		state.ProjectRoot, state.ProjectRemote = resolveProjectRoot(path, "")
+		state.ProjectRoot, state.ProjectRemote, state.ProjectIdentity = resolveProjectRoot(path, "")
 	}
 	return res, nil
 }
@@ -553,7 +559,7 @@ func applyUntypedHeaderLine(path string, line rawJSONL, state *sessionState) (ha
 			state.StartTime = parseTimestamp(line.StartTime)
 		}
 		if state.ProjectRoot == "" {
-			state.ProjectRoot, state.ProjectRemote = resolveProjectRoot(path, line.Cwd)
+			state.ProjectRoot, state.ProjectRemote, state.ProjectIdentity = resolveProjectRoot(path, line.Cwd)
 		}
 	}
 	return true
@@ -563,7 +569,7 @@ func applyUntypedHeaderLine(path string, line rawJSONL, state *sessionState) (ha
 // TokenEvent records to res. Shared between legacy + JSONL paths.
 func (a *Adapter) emitMessage(path string, idx int, msg rawLegacyMsg, state *sessionState, res *adapter.ParseResult) {
 	if msg.Cwd != "" && state.ProjectRoot == "" {
-		state.ProjectRoot, state.ProjectRemote = resolveProjectRoot(path, msg.Cwd)
+		state.ProjectRoot, state.ProjectRemote, state.ProjectIdentity = resolveProjectRoot(path, msg.Cwd)
 	}
 	if msg.Model != "" {
 		state.Model = msg.Model
@@ -600,20 +606,27 @@ func (a *Adapter) emitMessage(path string, idx int, msg rawLegacyMsg, state *ses
 			}
 		}
 		res.ToolEvents = append(res.ToolEvents, models.ToolEvent{
-			SourceFile:    path,
-			SourceEventID: firstNonEmpty(msg.ID, fmt.Sprintf("user:%s:%d", state.SessionID, idx)),
-			SessionID:     state.SessionID,
-			ProjectRoot:   state.ProjectRoot,
-			GitRemote:     state.ProjectRemote,
-			Timestamp:     ts,
-			Model:         state.Model,
-			Tool:          models.ToolGeminiCLI,
-			ActionType:    models.ActionUserPrompt,
-			Target:        truncate(text, 200),
-			Success:       true,
-			RawToolName:   "message.user",
-			RawToolInput:  a.scrubber.String(text),
-			MessageID:     "user:" + firstNonEmpty(msg.ID, fmt.Sprintf("L%d", idx)),
+			SourceFile:         path,
+			SourceEventID:      firstNonEmpty(msg.ID, fmt.Sprintf("user:%s:%d", state.SessionID, idx)),
+			SessionID:          state.SessionID,
+			ProjectRoot:        state.ProjectRoot,
+			GitRemote:          state.ProjectRemote,
+			GitUpstreamRemote:  state.ProjectIdentity.UpstreamRemote,
+			GitRemoteOwner:     state.ProjectIdentity.RemoteOwner,
+			GitUpstreamOwner:   state.ProjectIdentity.UpstreamOwner,
+			RootCommitSHA:      state.ProjectIdentity.RootCommitSHA,
+			ContentFingerprint: state.ProjectIdentity.ContentFingerprint,
+			Workspace:          state.ProjectIdentity.Workspace,
+			IsWorktree:         state.ProjectIdentity.IsWorktree,
+			Timestamp:          ts,
+			Model:              state.Model,
+			Tool:               models.ToolGeminiCLI,
+			ActionType:         models.ActionUserPrompt,
+			Target:             truncate(text, 200),
+			Success:            true,
+			RawToolName:        "message.user",
+			RawToolInput:       a.scrubber.String(text),
+			MessageID:          "user:" + firstNonEmpty(msg.ID, fmt.Sprintf("L%d", idx)),
 		})
 	case "gemini", "model", "assistant":
 		// Reasoning arrives in one of two shapes: legacy `thought` content
@@ -710,6 +723,13 @@ func (a *Adapter) assistantTextEvent(path string, msg rawLegacyMsg, partIdx, msg
 		SessionID:          state.SessionID,
 		ProjectRoot:        state.ProjectRoot,
 		GitRemote:          state.ProjectRemote,
+		GitUpstreamRemote:  state.ProjectIdentity.UpstreamRemote,
+		GitRemoteOwner:     state.ProjectIdentity.RemoteOwner,
+		GitUpstreamOwner:   state.ProjectIdentity.UpstreamOwner,
+		RootCommitSHA:      state.ProjectIdentity.RootCommitSHA,
+		ContentFingerprint: state.ProjectIdentity.ContentFingerprint,
+		Workspace:          state.ProjectIdentity.Workspace,
+		IsWorktree:         state.ProjectIdentity.IsWorktree,
 		Timestamp:          ts,
 		Model:              state.Model,
 		Tool:               models.ToolGeminiCLI,
@@ -945,6 +965,13 @@ func (a *Adapter) toolCallEvent(path string, msg rawLegacyMsg, partIdx int, ts t
 		SessionID:          state.SessionID,
 		ProjectRoot:        state.ProjectRoot,
 		GitRemote:          state.ProjectRemote,
+		GitUpstreamRemote:  state.ProjectIdentity.UpstreamRemote,
+		GitRemoteOwner:     state.ProjectIdentity.RemoteOwner,
+		GitUpstreamOwner:   state.ProjectIdentity.UpstreamOwner,
+		RootCommitSHA:      state.ProjectIdentity.RootCommitSHA,
+		ContentFingerprint: state.ProjectIdentity.ContentFingerprint,
+		Workspace:          state.ProjectIdentity.Workspace,
+		IsWorktree:         state.ProjectIdentity.IsWorktree,
 		Timestamp:          ts,
 		Model:              state.Model,
 		Tool:               models.ToolGeminiCLI,
@@ -993,21 +1020,28 @@ func tokenEventFor(path, msgID string, ts time.Time, modelHint string, state *se
 	}
 	reasoning := maxInt64(t.ThoughtsTokens, t.Thoughts)
 	return models.TokenEvent{
-		SourceFile:      path,
-		SourceEventID:   "usage:" + msgID,
-		SessionID:       state.SessionID,
-		ProjectRoot:     state.ProjectRoot,
-		GitRemote:       state.ProjectRemote,
-		Timestamp:       ts,
-		Tool:            models.ToolGeminiCLI,
-		Model:           firstNonEmpty(modelHint, state.Model),
-		InputTokens:     netInput,
-		OutputTokens:    t.Output,
-		CacheReadTokens: cacheRead,
-		ReasoningTokens: reasoning,
-		Source:          models.TokenSourceJSONL,
-		Reliability:     models.ReliabilityApproximate,
-		MessageID:       msgID,
+		SourceFile:         path,
+		SourceEventID:      "usage:" + msgID,
+		SessionID:          state.SessionID,
+		ProjectRoot:        state.ProjectRoot,
+		GitRemote:          state.ProjectRemote,
+		GitUpstreamRemote:  state.ProjectIdentity.UpstreamRemote,
+		GitRemoteOwner:     state.ProjectIdentity.RemoteOwner,
+		GitUpstreamOwner:   state.ProjectIdentity.UpstreamOwner,
+		RootCommitSHA:      state.ProjectIdentity.RootCommitSHA,
+		ContentFingerprint: state.ProjectIdentity.ContentFingerprint,
+		Workspace:          state.ProjectIdentity.Workspace,
+		IsWorktree:         state.ProjectIdentity.IsWorktree,
+		Timestamp:          ts,
+		Tool:               models.ToolGeminiCLI,
+		Model:              firstNonEmpty(modelHint, state.Model),
+		InputTokens:        netInput,
+		OutputTokens:       t.Output,
+		CacheReadTokens:    cacheRead,
+		ReasoningTokens:    reasoning,
+		Source:             models.TokenSourceJSONL,
+		Reliability:        models.ReliabilityApproximate,
+		MessageID:          msgID,
 	}
 }
 

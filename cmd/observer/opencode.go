@@ -205,7 +205,7 @@ func runOpencodeLauncher(opts opencodeLauncherOptions) error {
 	// SMB/NFS HOME (e.g. a containerized node on Azure Files) can't break
 	// OpenCode's openrouter-provider npm/bun install (adapter-agnostic; no-op
 	// unless [launch].agent_runtime_dir is set).
-	env, baseURL, preset := prepareOpencodeEnv(applyAgentRuntimeEnv(os.Environ(), agentRuntimeDir()), proxyURL)
+	env, baseURL, preset := prepareOpencodeEnv(applyChildPATH(applyAgentRuntimeEnv(os.Environ(), agentRuntimeDir()), daemonLoginPathDirs(), bin), proxyURL)
 	if preset {
 		fmt.Fprintf(opts.stderr,
 			"observer opencode: OPENAI_BASE_URL already set in env (%s); using yours.\n", baseURL)
@@ -217,13 +217,22 @@ func runOpencodeLauncher(opts opencodeLauncherOptions) error {
 	} else {
 		fmt.Fprintf(opts.stderr, "observer opencode: routing via %s\n", baseURL)
 	}
+	evidence := envBudgetLaunchEvidence("opencode", proxyURL,
+		map[string]string{"OPENAI_BASE_URL": strings.TrimRight(proxyURL, "/") + "/v1"},
+		env, opts.opencodeArgs)
+	evidence.Executable = bin
+	evidence.Arguments = opts.opencodeArgs
+	if err := enforceBudgetControlledLaunch(context.Background(), opts.configPath, "opencode", evidence); err != nil {
+		return err
+	}
 
 	child := exec.Command(bin, opts.opencodeArgs...) //nolint:gosec // user-launched tool, args are theirs
-	child.Env = env
-	child.Dir = opts.dir // "" inherits the caller's cwd; set by --continue-from to the source project root
+	child.Env = scrubOOBEnv(env)                     // strip the trusted OOB channel env
+	child.Dir = opts.dir                             // "" inherits the caller's cwd; set by --continue-from to the source project root
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
+	discovery := prepareGenericDiscovery(context.Background(), "opencode", opts.dir)
 	if rErr := child.Start(); rErr != nil {
 		return fmt.Errorf("exec opencode: %w", rErr)
 	}
@@ -237,7 +246,7 @@ func runOpencodeLauncher(opts opencodeLauncherOptions) error {
 	// to an adapter that declares session-file watch roots. Cancel the
 	// instant the child exits so a window cut short by exit never announces a
 	// candidate that only looked unique because the scan stopped early.
-	discoverCancel := maybeStartGenericDiscovery(context.Background(), "opencode", opts.dir)
+	discoverCancel := discovery.start()
 	if discoverCancel != nil {
 		defer discoverCancel()
 	}

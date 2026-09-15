@@ -36,9 +36,11 @@
 // column, because an adapter may re-tag its events per-file: the cline
 // adapter watches both the Cline and the Roo Code VS Code task dirs and
 // picks the emitted Tool from the enclosing extension directory, so
-// "roo-code" is a real tool VALUE with no adapter of its own. Such a tool
-// gets tooltax vocabulary rows (tooltax is keyed on the emitted column,
-// which is what Resolve is handed at read time) but NO capability row —
+// "roo-code" is a real tool VALUE with no adapter of its own (as is
+// "zoo-code", the ZooCode community continuation of Roo Code added
+// 2026-09-03 via the same table). Such a tool gets tooltax vocabulary
+// rows (tooltax is keyed on the emitted column, which is what Resolve
+// is handed at read time) but NO capability row —
 // every cell would be either zero or copied from the host adapter, and
 // copying would break the registry's honesty rule that a zero value means
 // "no grounded capability", never an inferred one. Contrast kilo-code,

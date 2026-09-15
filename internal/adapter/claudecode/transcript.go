@@ -58,18 +58,30 @@ func (a *Adapter) readTranscript(ctx context.Context, sess models.Session, sourc
 		return nil, fmt.Errorf("claudecode.ReadTranscript: %w", err)
 	}
 	defer f.Close()
-	return parseTranscript(ctx, f, builder)
+	parent, agent := subagentFileIdentity(path)
+	return parseTranscriptScoped(ctx, f, builder, parent != "" && sess.ID == subagentSessionID(parent, agent))
 }
 
 func (a *Adapter) transcriptPath(sessionID string, hints []string) (string, error) {
 	for _, h := range hints {
+		parent, agent := subagentFileIdentity(h)
+		if strings.Contains(sessionID, ":agent:") && (parent == "" || sessionID != subagentSessionID(parent, agent)) {
+			continue
+		}
+		if parent != "" && sessionID != subagentSessionID(parent, agent) {
+			continue
+		}
 		if strings.HasSuffix(h, ".jsonl") && fileExists(h) {
 			return h, nil
 		}
 	}
 	var candidates []string
 	for _, root := range a.WatchPaths() {
-		m, _ := filepath.Glob(filepath.Join(root, "*", sessionID+".jsonl"))
+		pattern := filepath.Join(root, "*", sessionID+".jsonl")
+		if parent, agent, ok := strings.Cut(sessionID, ":agent:"); ok && parent != "" && agent != "" && !strings.ContainsAny(parent+agent, `/\*?[]`) {
+			pattern = filepath.Join(root, "*", parent, "subagents", "agent-"+agent+".jsonl")
+		}
+		m, _ := filepath.Glob(pattern)
 		candidates = append(candidates, m...)
 	}
 	if len(candidates) == 0 {
@@ -107,9 +119,9 @@ type transcriptBlock struct {
 	Content   json.RawMessage `json:"content"`
 }
 
-func parseTranscript(ctx context.Context, r io.Reader, builder *transcriptutil.Builder) ([]models.TranscriptMessage, error) {
+func parseTranscriptScoped(ctx context.Context, r io.Reader, builder *transcriptutil.Builder, includeSidechain bool) ([]models.TranscriptMessage, error) {
 	br := bufio.NewReaderSize(r, 1<<20)
-	b := transcriptBuilder{b: builder}
+	b := transcriptBuilder{b: builder, includeSidechain: includeSidechain}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -128,7 +140,8 @@ func parseTranscript(ctx context.Context, r io.Reader, builder *transcriptutil.B
 // transcriptBuilder wraps the shared exchange builder with claude-code's
 // record dispatch (meta-prefix filtering, block walking).
 type transcriptBuilder struct {
-	b *transcriptutil.Builder
+	b                *transcriptutil.Builder
+	includeSidechain bool
 }
 
 func (b *transcriptBuilder) line(line string) {
@@ -140,7 +153,7 @@ func (b *transcriptBuilder) line(line string) {
 	if err := json.Unmarshal([]byte(line), &rec); err != nil {
 		return // malformed lines are skipped, not fatal
 	}
-	if rec.IsSidechain || (rec.Type != "user" && rec.Type != "assistant") || len(rec.Message) == 0 {
+	if (rec.IsSidechain && !b.includeSidechain) || (rec.Type != "user" && rec.Type != "assistant") || len(rec.Message) == 0 {
 		return
 	}
 	var msg transcriptInnerMessage

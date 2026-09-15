@@ -130,20 +130,21 @@ a websocket — so it works uniformly whether the daemon is local, on a remote
 host, or in WSL while your browser is on Windows (no `wt.exe`/interop, no
 cross-OS shell).
 
-- **Launchable set** — **twenty-two** launchers, declared as
+- **Launchable set** — **twenty-seven** launchers, declared as
   `HandoffCapability.Launch` in `internal/integration` (the button is hidden
   for every other target, and for all targets when the feature is disabled).
   Two launch **modes** (dispatched on `LaunchSpec.Mode`, never a tool name):
-  - **Seeded** (twenty): the handover is injected as the tool's first
+  - **Seeded** (twenty-four): the handover is injected as the tool's first
     interactive prompt — **claude-code, codex, gemini-cli, pi, opencode,
     copilot-cli, cline-cli, kilo-code-cli, cursor, openclaw, antigravity-cli,
     qwen-code, kiro-cli, grok, qoder, goose, devin, droid, open-interpreter,
-    command-code**.
+    command-code, muse, prime-agent, zcode, mistral-code**.
     See the per-adapter seed-contract table below for the exact
     flag/positional each uses.
-  - **DocAssisted** (two): **hermes** and **kimi-code** — their TUIs take no
-    initial-prompt seed (upstream gaps), so the launcher writes the handover
-    doc and opens the TUI for you to reference/paste (details below).
+  - **DocAssisted** (three): **hermes**, **kimi-code**, and **freebuff** —
+    their TUIs take no initial-prompt seed (upstream gaps), so the launcher
+    writes the handover doc and opens the TUI for you to reference/paste
+    (details below).
 
   `kilo-code-cli` (`observer kilo`), `cursor` (`observer cursor`),
   `openclaw` (`observer openclaw --continue-from`), `antigravity-cli`
@@ -221,6 +222,48 @@ cross-OS shell).
   paths typed as `C:\Users\…` are translated to the `/mnt/c/Users/…`
   equivalent before validation. Design of record:
   [`docs/plans/tool-binary-resolution-and-guided-install-plan-2026-07-23.md`](plans/tool-binary-resolution-and-guided-install-plan-2026-07-23.md).
+- **`--config` inheritance (2026-09-03).** A dashboard-launched child now
+  runs with the same `--config <path>` the daemon itself was started with
+  (`setDaemonConfigPath` in `cmd/observer/start.go`; the launch manager
+  prefixes it onto every one of the 27 launcher subcommands — `shell` and
+  `ssh` runs are excluded by construction, since they have no `observer
+  <tool>` subcommand to prefix). Before this fix a dashboard-launched child
+  always re-derived config from the **default** path, so an operator running
+  the daemon with a non-default `[proxy].port` or `db_path` got a child that
+  silently pointed at the wrong proxy port and wrote attribution to the
+  wrong (or a nonexistent) database, while printing a message that misnamed
+  the cause ("start it with `observer start`" when the daemon was already
+  running). See
+  [`docs/plans/dashboard-install-gap-remediation-research-2026-09-02.md`](plans/dashboard-install-gap-remediation-research-2026-09-02.md)
+  §9 (Q1 plumbing bug P1) for the finding and fix.
+- **`allowed_project_roots` asymmetry (DI-18).** With
+  `[terminal.launch].allowed_project_roots = []`, an explicit `project_root`
+  passed on a launch request is **refused**, but an *omitted* `project_root`
+  **succeeds** — the child simply inherits the daemon's own working
+  directory (`has_project_root:false`, `dir_set:false` in the launch log).
+  This is a real inconsistency, left as documented behaviour rather than
+  changed (see the audit's DI-18 finding,
+  `docs/audits/dashboard-install-audit-2026-09-02.md`): a caller that wants
+  a specific project root must add it to the allow-list, but a caller
+  willing to accept "wherever the daemon happens to be running from" needs
+  no allow-list entry at all. Note that the daemon's cwd as an implicit
+  project root is itself a surprising default worth knowing about — a
+  daemon started from a git worktree hands every rootless launch that
+  worktree as its project (observed in the 2026-09-02 first-launch probe:
+  `pi` picked up the worktree's own `AGENTS.md`).
+
+**GUI launches (IDE / desktop apps) are a different shape — none of this
+section applies to them.** The New Terminal picker's "IDE / desktop app"
+group (`docs/plans/ide-desktop-launch-plan-2026-09-03.md`) launches a
+DETACHED GUI process (`kind:"gui"` on `POST /api/terminal/launch`), and a
+detached GUI process has no PTY: no bytes stream into a browser panel, so
+there is nothing to "launch here" in the sense this section means. Concretely
+that means no `--continue-from` handover seed, no resume, no attach, no
+Jump-in, and no terminal tab docked in the dashboard — a successful GUI
+launch returns a receipt (pid + whether the routing wrap actually reached
+the child) rather than a session token. See `docs/adapters.md` "IDE /
+desktop-app launch rows" for the launch-row shape and
+`docs/plans/ide-desktop-launch-plan-2026-09-03.md` §9 for what shipped.
 
 ## Session attach — default-on, and the Terminal Workspace
 
@@ -298,7 +341,7 @@ viewer #1.
   `daemon_shutdown`. For any launcher whose tool grounds a **native resume**,
   the attach client then offers prompt-with-timeout auto-resume ("resuming
   session <id> in 5s — Enter now, Ctrl-C skip") onto the SAME transcript via
-  the tool's own resume mechanism. As of 2026-08-06 that is **23 of the 24
+  the tool's own resume mechanism. As of 2026-08-27 that is **26 of the 27
   launchers**: the flagships `claude` (`--resume`) and `codex` (`resume`), plus
   the live-verified wave `opencode` / `kilo` / `cline-cli` / `gemini` /
   `copilot-cli` / `pi` / `qwen` / `grok` / `kimi` / `devin` / `hermes` /
@@ -310,7 +353,9 @@ viewer #1.
   sibling is optional-value AND name-resolving, so the required-value
   `--session` is the one used), plus the 2026-08-06 wave `muse` (`resume
   <session-uuid>`, subcommand shape) and `prime-agent` (`--resume <path|id>`,
-  required-value flag). Each observer launcher
+  required-value flag), plus `zcode` (`--resume`), `mistral-code`'s `vibe`
+  (`--resume <8hex>`, required-value flag on the session dir's 8-hex
+  suffix), and `freebuff` (`--continue`). Each observer launcher
   exposes a uniform `--resume <id>` flag and translates it to the tool's own
   argv (e.g. `opencode --session <id>`, `kiro-cli chat --resume-id <id>`,
   `goose session --resume --session-id <id>`); the registry declares the
@@ -325,7 +370,7 @@ viewer #1.
   both are given.
   `cursor` was grounded on **2026-07-25** once the operator authenticated
   `cursor-agent`, taking the set to 18 of 19 *at that time* (the current count
-  is the 21 of 22 above). It takes `cursor-agent
+  is the 26 of 27 above). It takes `cursor-agent
   --resume=<chatId>` and the chatId **is our SessionID verbatim** — no
   transform — because Cursor names its on-disk chat directories with the same
   uuid our adapter stores. **Pass the id JOINED with `=`.** The flag takes an
@@ -806,12 +851,12 @@ behavior. History of the failed bridge attempts:
   row from migration 057, or parsed from a `HANDOFF-<shortid>.md` doc
   name for pre-057 rows), and a candidate session with a readable
   transcript in the same project.
-- `--continue-from` is wired on **twenty-two** launchers (see the per-adapter
-  seed-contract table above). Twenty are **Seeded** (claude, codex, gemini,
+- `--continue-from` is wired on **twenty-seven** launchers (see the per-adapter
+  seed-contract table above). Twenty-four are **Seeded** (claude, codex, gemini,
   pi, opencode, copilot-cli, cline-cli, kilo, cursor, openclaw,
   antigravity-cli, qwen, kiro, grok, qoder, goose, devin, droid,
-  open-interpreter, command-code);
-  **hermes** and **kimi-code** are
+  open-interpreter, command-code, muse, prime-agent, zcode, vibe);
+  **hermes**, **kimi-code**, and **freebuff** are
   **DocAssisted** (no TUI seed flag exists — upstream gaps — so the launcher
   writes the doc + opens the TUI). openclaw's `--continue-from` launches
   **non-proxied** to avoid the known `--local` proxy stall

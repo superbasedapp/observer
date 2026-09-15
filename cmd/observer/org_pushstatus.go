@@ -118,6 +118,24 @@ func newOrgPushStatusCmd() *cobra.Command {
 			}
 			fmt.Fprintf(out, "Next attempt:      %s\n", nextAttempt(running, st.LastPush, interval))
 
+			// An open oversized-batch circuit overrides the cadence above:
+			// nothing is shipping, and the reason is a local payload problem the
+			// operator can actually fix. Say so instead of leaving them to infer
+			// it from a 'failed' row in the history.
+			if p := st.PushPaused; p != nil {
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, "PUSHES PAUSED — the composed rollup is larger than the accepted push limit,")
+				fmt.Fprintln(out, "so no telemetry is reaching the org server right now.")
+				fmt.Fprintf(out, "  Resumes:  %s\n", p.Until.Local().Format(time.RFC3339))
+				if p.Reason != "" {
+					fmt.Fprintf(out, "  Detail:   %s\n", p.Reason)
+				}
+				fmt.Fprintln(out, "  Fix:      raise [org_client].max_push_bytes, narrow [org_client.scope],")
+				fmt.Fprintln(out, "            or turn off a large [org_client.share] tier. The org server")
+				fmt.Fprintln(out, "            enforces its own body limit too, so a node-side raise alone")
+				fmt.Fprintln(out, "            may not be enough.")
+			}
+
 			if reason := pushEligibilityReason(eligible, historicalTotal(maxIDs), st.LastPush); reason != "" {
 				fmt.Fprintln(out)
 				fmt.Fprintln(out, "Why eligible = 0:")

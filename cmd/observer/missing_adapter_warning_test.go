@@ -61,10 +61,20 @@ func TestWarnMissingDefaultsFromAllowList_NamesEveryGap(t *testing.T) {
 			mustOmit: []string{"\"missing\":\"claude-code\"", "\"missing\":\"codex\""},
 		},
 		{
+			name:     "one missing — names the exact remedy command",
+			allow:    []string{"claude-code", "codex"},
+			wantWarn: true,
+			mustHave: []string{
+				"observer config adopt-defaults",
+				"--write",
+				"not be captured",
+			},
+		},
+		{
 			name:     "multiple missing — names all in stable order",
 			allow:    []string{"codex"},
 			wantWarn: true,
-			mustHave: []string{"claude-code", "cowork"},
+			mustHave: []string{"claude-code", "cowork", "observer config adopt-defaults"},
 		},
 		{
 			name:     "user list has extra unknown tool — only reports missing-from-defaults",

@@ -417,7 +417,7 @@ func TestExtractToolUses(t *testing.T) {
 // TestGuardDenyBody pins both provider error shapes.
 func TestGuardDenyBody(t *testing.T) {
 	t.Parallel()
-	anth := guardDenyBody(models.ProviderAnthropic, "R-172", "reason text")
+	anth := guardDenyBody(models.ProviderAnthropic, "R-172", "reason text", 403)
 	var a struct {
 		Type  string `json:"type"`
 		Error struct {
@@ -428,7 +428,7 @@ func TestGuardDenyBody(t *testing.T) {
 	if err := json.Unmarshal(anth, &a); err != nil || a.Type != "error" || a.Error.Type != "invalid_request_error" {
 		t.Fatalf("anthropic deny body = %s (err %v)", anth, err)
 	}
-	oai := guardDenyBody(models.ProviderOpenAI, "R-172", "reason text")
+	oai := guardDenyBody(models.ProviderOpenAI, "R-172", "reason text", 403)
 	var o struct {
 		Error struct {
 			Message string `json:"message"`
@@ -444,4 +444,409 @@ func TestGuardDenyBody(t *testing.T) {
 			t.Errorf("deny body %s missing the rule marker", b)
 		}
 	}
+}
+
+// TestGuardDenyBody_GeminiShape closes the gap the prompt-submit
+// intervention contract documented (§3.1): a Gemini-routed R-172 deny
+// previously fell through to the OpenAI error shape, which a Gemini
+// client does not parse as an error. Google's own error envelope
+// (google.aip.dev/193) is {"error":{"code","message","status"}}. The
+// plain "deny" action always renders at 403 (serveGuardDeny's own
+// default; guard.ProxyRequestResult carries no Status for this path),
+// so 403 is what this test exercises.
+func TestGuardDenyBody_GeminiShape(t *testing.T) {
+	t.Parallel()
+	body := guardDenyBody(models.ProviderGoogle, "R-172", "reason text", 403)
+	var g struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Status  string `json:"status"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &g); err != nil {
+		t.Fatalf("gemini deny body is not JSON: %v (%s)", err, body)
+	}
+	if g.Error.Code != 403 || g.Error.Status != "PERMISSION_DENIED" {
+		t.Errorf("gemini deny body = %+v, want code=403 status=PERMISSION_DENIED", g.Error)
+	}
+	if !bytes.Contains(body, []byte("[observer-guard R-172]")) {
+		t.Errorf("gemini deny body %s missing the rule marker", body)
+	}
+}
+
+// TestGeminiErrorBody_StatusPassesThrough pins the NIT fix (phase-3b
+// review): the Gemini error envelope's own {"code",...} field must
+// track the REAL HTTP status passed in — not a hardcoded 400 — across
+// every status this package ever calls it with, plus a defensive
+// unmapped value.
+func TestGeminiErrorBody_StatusPassesThrough(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		status     int
+		wantStatus string
+	}{
+		{400, "INVALID_ARGUMENT"},
+		{403, "PERMISSION_DENIED"},
+		{500, "UNKNOWN"}, // defensive: should be unreachable in practice
+	}
+	for _, tc := range tests {
+		body := geminiErrorBody("reason text", tc.status)
+		var g struct {
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+				Status  string `json:"status"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &g); err != nil {
+			t.Fatalf("status %d: gemini error body is not JSON: %v (%s)", tc.status, err, body)
+		}
+		if g.Error.Code != tc.status || g.Error.Status != tc.wantStatus {
+			t.Errorf("status %d: gemini error body = %+v, want code=%d status=%s", tc.status, g.Error, tc.status, tc.wantStatus)
+		}
+	}
+}
+
+// TestGuardPromptDenyBody pins the prompt-submit intervention PROXY
+// LANE's error shapes (contract §3.2's error-body table): all three
+// provider envelopes, and — unlike guardDenyBody — NO
+// "[observer-guard ...] request blocked by Observer policy:"
+// wrapping, since reason already is the complete, house-styled
+// developer-facing message.
+func TestGuardPromptDenyBody(t *testing.T) {
+	t.Parallel()
+	const reason = "observer: detected credit_card×1 (16 chars). Send it again unchanged to confirm, or edit it out."
+
+	anth := guardPromptDenyBody(models.ProviderAnthropic, reason, 400)
+	var a struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(anth, &a); err != nil || a.Type != "error" || a.Error.Type != "invalid_request_error" || a.Error.Message != reason {
+		t.Fatalf("anthropic prompt-deny body = %s (err %v)", anth, err)
+	}
+
+	oai := guardPromptDenyBody(models.ProviderOpenAI, reason, 400)
+	var o struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(oai, &o); err != nil || o.Error.Type != "invalid_request_error" || o.Error.Code != "observer_prompt_guard" || o.Error.Message != reason {
+		t.Fatalf("openai prompt-deny body = %s (err %v)", oai, err)
+	}
+
+	gem := guardPromptDenyBody(models.ProviderGoogle, reason, 400)
+	var g struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Status  string `json:"status"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(gem, &g); err != nil || g.Error.Code != 400 || g.Error.Status != "INVALID_ARGUMENT" || g.Error.Message != reason {
+		t.Fatalf("gemini prompt-deny body = %s (err %v)", gem, err)
+	}
+
+	for _, b := range [][]byte{anth, oai, gem} {
+		if bytes.Contains(b, []byte("[observer-guard")) || bytes.Contains(b, []byte("egress policy")) {
+			t.Errorf("prompt-deny body %s wrongly carries the agent-facing egress framing", b)
+		}
+	}
+}
+
+// TestGuardPromptDeny pins the prompt-submit intervention PROXY LANE's
+// end-to-end deny (contract §3): the "prompt_deny" action renders at
+// the SCANNER-CHOSEN status (400 here, a fresh ask-once interrupt),
+// with the developer-facing body — never a connection drop, never the
+// egress-policy framing.
+func TestGuardPromptDeny(t *testing.T) {
+	t.Parallel()
+	g := &stubGuard{result: GuardRequestResult{
+		Action: "prompt_deny", RuleID: "R-190", Status: 400,
+		Reason: "observer: detected credit_card×1 (16 chars). Send it again unchanged to confirm, or edit it out.",
+	}}
+	p, sink, gotBody, closeUp := newGuardedTestProxy(t, g, anthropicOKBody)
+	defer closeUp()
+	ts := httptest.NewServer(p.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/messages", "application/json",
+		strings.NewReader(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"x"}]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var envelope struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("prompt-deny body is not JSON: %v (%s)", err, body)
+	}
+	if envelope.Type != "error" || envelope.Error.Type != "invalid_request_error" {
+		t.Errorf("prompt-deny body envelope = %+v, want Anthropic error shape", envelope)
+	}
+	if !strings.HasPrefix(envelope.Error.Message, "observer: ") {
+		t.Errorf("prompt-deny message %q, want the developer-facing house message", envelope.Error.Message)
+	}
+	if *gotBody != nil {
+		t.Error("upstream received a prompt-denied request")
+	}
+	turns := sink.all()
+	if len(turns) != 1 || turns[0].HTTPStatus != http.StatusBadRequest {
+		t.Fatalf("turns = %+v, want one 400 error turn", turns)
+	}
+}
+
+// TestGuardPromptDeny_UnsetStatusDefaultsTo403 pins the safe fallback
+// for a GuardRequestResult that never sets Status (never 429, never a
+// 5xx even by omission).
+func TestGuardPromptDeny_UnsetStatusDefaultsTo403(t *testing.T) {
+	t.Parallel()
+	g := &stubGuard{result: GuardRequestResult{
+		Action: "prompt_deny", RuleID: "R-190",
+		Reason: "observer: edit it out before sending.",
+	}}
+	p, _, _, closeUp := newGuardedTestProxy(t, g, anthropicOKBody)
+	defer closeUp()
+	ts := httptest.NewServer(p.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/messages", "application/json",
+		strings.NewReader(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"x"}]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (the safe unset-Status default)", resp.StatusCode)
+	}
+}
+
+// TestGuardPromptDeny_ClampsUnsafeStatus pins F8 (phase-3b review):
+// serveGuardPromptDeny does not trust an arbitrary Status value from
+// the guard scanner — contract §3.3 allows exactly {400, 403}, so
+// anything else (a scanner-side bug that produced, say, 429 — the
+// exact value the contract singles out as unsafe because every major
+// SDK retries it by default) is clamped to the conservative 403
+// default rather than reaching the client verbatim.
+func TestGuardPromptDeny_ClampsUnsafeStatus(t *testing.T) {
+	t.Parallel()
+	g := &stubGuard{result: GuardRequestResult{
+		Action: "prompt_deny", RuleID: "R-190", Status: http.StatusTooManyRequests,
+		Reason: "observer: edit it out before sending.",
+	}}
+	p, _, _, closeUp := newGuardedTestProxy(t, g, anthropicOKBody)
+	defer closeUp()
+	ts := httptest.NewServer(p.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/messages", "application/json",
+		strings.NewReader(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"x"}]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 429 clamped to 403", resp.StatusCode)
+	}
+}
+
+// stubPhaseGuard implements PromptPhaseScanner on top of stubGuard: the
+// prompt phase denies when the ORIGINAL body still carries a key-shaped
+// marker, and both phases record the bodies they were handed.
+type stubPhaseGuard struct {
+	stubGuard
+	promptBodies [][]byte
+	afterBodies  [][]byte
+}
+
+func (s *stubPhaseGuard) ScanPrompt(_ context.Context, _ string, body []byte, _ string) GuardRequestResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.promptBodies = append(s.promptBodies, append([]byte(nil), body...))
+	if strings.Contains(string(body), "sk-ant-") {
+		return GuardRequestResult{Action: "prompt_deny", RuleID: "R-172", Reason: "observer: secret-shaped content in the prompt", Status: 400}
+	}
+	if strings.Contains(string(body), "MASKME") {
+		return GuardRequestResult{Action: "mask", Body: []byte(strings.ReplaceAll(string(body), "MASKME", "[REDACTED:test]"))}
+	}
+	return GuardRequestResult{}
+}
+
+// captureCompressor forwards its input unchanged and records it, so a
+// test can prove which body the compressor was handed.
+type captureCompressor struct {
+	mu     sync.Mutex
+	inputs [][]byte
+}
+
+func (c *captureCompressor) Compress(_ context.Context, _ string, body []byte) CompressionResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.inputs = append(c.inputs, append([]byte(nil), body...))
+	return CompressionResult{Body: body, OriginalBytes: len(body), CompressedBytes: len(body)}
+}
+
+// TestGuardPromptPhaseMaskFeedsCompressor pins the phase-1 redact branch
+// (proxy.go `case "mask"`): the masked body is what the compressor, phase
+// 2 and upstream all see — the original secret text never leaves phase 1.
+func TestGuardPromptPhaseMaskFeedsCompressor(t *testing.T) {
+	t.Parallel()
+	const original = `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"token MASKME here"}]}`
+	const masked = `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"token [REDACTED:test] here"}]}`
+	var gotUpstream []byte
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUpstream, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(anthropicOKBody))
+	}))
+	defer up.Close()
+	g := &stubPhaseGuard{}
+	comp := &captureCompressor{}
+	p, err := New(Options{AnthropicUpstream: up.URL, OpenAIUpstream: up.URL, Sink: &fakeSink{}, Guard: g, Compressor: comp})
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	ts := httptest.NewServer(p.Handler())
+	defer ts.Close()
+	resp, err := http.Post(ts.URL+"/v1/messages", "application/json", strings.NewReader(original))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200 (redact forwards)", resp.StatusCode)
+	}
+	comp.mu.Lock()
+	if len(comp.inputs) != 1 || string(comp.inputs[0]) != masked {
+		t.Fatalf("compressor input = %q, want the phase-1 masked body", comp.inputs)
+	}
+	comp.mu.Unlock()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.afterBodies) != 1 || string(g.afterBodies[0]) != masked {
+		t.Fatalf("phase 2 saw %q, want the masked body", g.afterBodies)
+	}
+	if string(gotUpstream) != masked {
+		t.Fatalf("upstream saw %q, want the masked body", gotUpstream)
+	}
+	if strings.Contains(string(gotUpstream), "MASKME") {
+		t.Fatalf("original secret text reached upstream")
+	}
+}
+
+func (s *stubPhaseGuard) ScanRequestAfterPrompt(_ context.Context, _ string, body []byte, _ string) GuardRequestResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.afterBodies = append(s.afterBodies, append([]byte(nil), body...))
+	return s.result
+}
+
+// TestGuardPromptPhaseScansPreCompressionBody pins the LIVE CORRECTION of
+// 2026-09-07: conversation compression forward-scrubs the outbound body,
+// so the prompt lane must see the ORIGINAL body (phase 1, before the
+// compressor) — a single post-compression scan saw [REDACTED] where the
+// pasted secret was and two live Codex Desktop turns went upstream
+// silently redacted with no ask, no event and no message. Phase 2 then
+// runs on the final body and the legacy ScanRequest is never called.
+func TestGuardPromptPhaseScansPreCompressionBody(t *testing.T) {
+	t.Parallel()
+	const original = `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"my key is sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"}]}`
+	const scrubbed = `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"my key is [REDACTED]"}]}`
+	const benign = `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"refactor the parser"}]}`
+	const benignCompressed = `{"model":"claude-opus-4-8","messages":[{"role":"user","content":"refactor"}]}`
+
+	newProxy := func(t *testing.T, g GuardScanner, compressed string, hits *int) *httptest.Server {
+		t.Helper()
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*hits++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(anthropicOKBody))
+		}))
+		t.Cleanup(up.Close)
+		p, err := New(Options{
+			AnthropicUpstream: up.URL,
+			OpenAIUpstream:    up.URL,
+			Sink:              &fakeSink{},
+			Guard:             g,
+			Compressor: stubCompressor{result: CompressionResult{
+				Body: []byte(compressed), OriginalBytes: len(original), CompressedBytes: len(compressed), CompressedCount: 1,
+			}},
+		})
+		if err != nil {
+			t.Fatalf("proxy.New: %v", err)
+		}
+		ts := httptest.NewServer(p.Handler())
+		t.Cleanup(ts.Close)
+		return ts
+	}
+
+	t.Run("secret in the original body is denied before compression can scrub it", func(t *testing.T) {
+		g := &stubPhaseGuard{}
+		hits := 0
+		ts := newProxy(t, g, scrubbed, &hits)
+		resp, err := http.Post(ts.URL+"/v1/messages", "application/json", strings.NewReader(original))
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 400 {
+			t.Fatalf("status = %d, want 400 (prompt-lane ask-once interrupt); body=%s", resp.StatusCode, body)
+		}
+		if hits != 0 {
+			t.Fatalf("upstream was reached %d times; a prompt deny must never forward", hits)
+		}
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if len(g.promptBodies) != 1 || !strings.Contains(string(g.promptBodies[0]), "sk-ant-") {
+			t.Fatalf("prompt phase saw %q, want the ORIGINAL body carrying the secret", g.promptBodies)
+		}
+		if len(g.afterBodies) != 0 || len(g.scanned) != 0 {
+			t.Fatalf("after-phase=%d legacy=%d calls after a prompt deny, want 0/0", len(g.afterBodies), len(g.scanned))
+		}
+	})
+
+	t.Run("benign prompt: phase 1 sees the original, phase 2 the compressed body, legacy ScanRequest never called", func(t *testing.T) {
+		g := &stubPhaseGuard{}
+		hits := 0
+		ts := newProxy(t, g, benignCompressed, &hits)
+		resp, err := http.Post(ts.URL+"/v1/messages", "application/json", strings.NewReader(benign))
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if hits != 1 {
+			t.Fatalf("upstream hits = %d, want 1", hits)
+		}
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if len(g.promptBodies) != 1 || string(g.promptBodies[0]) != benign {
+			t.Fatalf("prompt phase saw %q, want the original body", g.promptBodies)
+		}
+		if len(g.afterBodies) != 1 || string(g.afterBodies[0]) != benignCompressed {
+			t.Fatalf("after phase saw %q, want the post-compression body", g.afterBodies)
+		}
+		if len(g.scanned) != 0 {
+			t.Fatalf("legacy ScanRequest called %d times for a two-phase scanner, want 0", len(g.scanned))
+		}
+	})
 }

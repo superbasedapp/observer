@@ -74,7 +74,7 @@ func newCrushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runSeedOnlyLaunchSeeded(cfg.Observer.DBPath, "crush", "crush", bin, args, "")
+			return runSeedOnlyLaunchSeeded(configPath, cfg.Observer.DBPath, "crush", "crush", bin, args, "")
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")

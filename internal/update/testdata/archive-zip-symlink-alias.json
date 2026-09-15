@@ -1,0 +1,4 @@
+[
+  {"name": "observer.exe", "kind": "file", "size": 80112233},
+  {"name": "superbased.exe", "kind": "symlink", "link_target": "observer.exe"}
+]

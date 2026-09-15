@@ -141,6 +141,7 @@ func Run(ctx context.Context, opts DoctorOptions) Report {
 	r.add(checkClaudeCodeTeams(opts.Config))
 	r.add(checkCodexTeams(opts.Config))
 	r.add(checkCopilotTeams(opts.Config))
+	r.add(checkPromptGuardWiring(opts.Config))
 	for _, c := range opts.ExtraChecks {
 		r.add(c)
 	}
@@ -227,15 +228,45 @@ func checkOrgEnrolment(ctx context.Context, database *sql.DB, cfg config.Config)
 		shareStatus = StatusWarn
 	}
 	details = append(details, "share mode:    "+shareMsg)
-	// Tracker #41 second half: the push loop reads the enrolment row's URL
-	// from the DB, but the guard policy-bundle runner and the disclosure
-	// surfaces read [org_client].org_server_url from config — enrolled with
-	// the key unset leaves the guard's org layer silently unwired.
-	if strings.TrimSpace(cfg.OrgClient.OrgServerURL) == "" {
+	// Tracker #41 second half — REVISED after a code review (BLOCK-1)
+	// rejected the prior version of this check, which treated a blank
+	// [org_client].org_server_url as "NOT enrolled" full stop. That was
+	// wrong for a real, live shape: this function only reaches here when
+	// an org_enrolment row already exists (see the `enrolled == 0` early
+	// return above), and cmd/observer/start.go's construction gate
+	// (orgClientShouldStart) starts the WHOLE org client — push, guard-
+	// policy poll, announcement/routing-policy fetch, grant renewal —
+	// whenever EITHER the config carries a URL OR a persisted row exists.
+	// A row existing here means the node IS active: the push loop dials
+	// the ROW's own server URL (orgURL below), which
+	// internal/orgclient.Client.PushOnce reads from the store, never from
+	// this config field. `ensureOrgClientBlock` (cmd/observer/org.go) is
+	// header-idempotent — an existing [org_client] table header means
+	// org_server_url is never (re)written — so a node enrolled before that
+	// field existed, or re-enrolled without a full `observer unenroll`
+	// first, can carry a blank org_server_url indefinitely while staying
+	// genuinely, fully enrolled.
+	//
+	// What a blank org_server_url DOES still affect: it is NOT the guard
+	// policy-bundle poll's dial target — that poll (like every other org
+	// loop) reads enr.OrgServerURL from the PERSISTED row via
+	// internal/orgclient's FetchPolicyBundle (LoadEnrolment →
+	// genClient(enr.OrgServerURL)), never from this config field. A code
+	// review corrected an earlier version of this check that claimed
+	// otherwise. The one real, cosmetic effect: cmd/observer/start.go
+	// passes this config field into newPolicyBundleRunner purely as R-205
+	// audit metadata (policybundle.go's orgURL field), used only to build
+	// the Target string on a bundle-REJECTED guard finding
+	// (orgURL+"/api/v1/policy-bundle"). With this field blank, that one
+	// Target string loses its server-URL prefix (becomes just
+	// "/api/v1/policy-bundle") — the finding itself, the R-205 rule, and
+	// every loop's actual behavior are all unaffected. That is cosmetic,
+	// not a degradation, so it does not raise this check's status.
+	orgServerURLUnset := strings.TrimSpace(cfg.OrgClient.OrgServerURL) == ""
+	if orgServerURLUnset {
 		details = append(details, fmt.Sprintf(
-			"config gap:    [org_client].org_server_url is unset — the org guard-policy layer cannot poll; add org_server_url = %q to config.toml", orgURL,
+			"config gap:    [org_client].org_server_url is unset — the node stays fully ACTIVE (push/announcement/routing-policy/guard-policy-poll all dial the persisted enrolment's server, %q, directly); the only effect is cosmetic — an R-205 bundle-rejection finding's Target string loses its server-URL prefix. Add org_server_url = %q to config.toml to restore that prefix", orgURL, orgURL,
 		))
-		shareStatus = worseStatus(shareStatus, StatusWarn)
 	}
 	if len(cfg.OrgClient.Share.TargetActionAllowlist) > 0 {
 		details = append(details, fmt.Sprintf("target allow:  %v", cfg.OrgClient.Share.TargetActionAllowlist))
@@ -271,10 +302,17 @@ func checkOrgEnrolment(ctx context.Context, database *sql.DB, cfg config.Config)
 			shareStatus = worseStatus(shareStatus, StatusWarn)
 		}
 	}
+	msg := "enrolled — " + shareMsg
+	if orgServerURLUnset {
+		msg = fmt.Sprintf(
+			"enrolled — ACTIVE, dialing the persisted server %s (org_server_url is unset in config; see the config gap detail for the one cosmetic thing that affects) — %s",
+			orgURL, shareMsg,
+		)
+	}
 	return Check{
 		Name:    "org enrolment",
 		Status:  shareStatus,
-		Message: "enrolled — " + shareMsg,
+		Message: msg,
 		Details: details,
 	}
 }

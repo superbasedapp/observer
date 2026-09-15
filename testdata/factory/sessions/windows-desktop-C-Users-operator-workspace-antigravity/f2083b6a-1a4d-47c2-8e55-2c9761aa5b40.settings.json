@@ -1,0 +1,36 @@
+{
+  "model": "auto",
+  "reasoningEffort": "none",
+  "interactionMode": "auto",
+  "autonomyLevel": "off",
+  "autonomyMode": "normal",
+  "providerLock": "anthropic",
+  "providerLockTimestamp": "2026-09-03T10:09:41.529Z",
+  "assistantActiveTimeMs": 3486,
+  "tokenUsage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "thinkingTokens": 0,
+    "factoryCredits": 0
+  },
+  "inclusiveTokenUsage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 0,
+    "thinkingTokens": 0,
+    "factoryCredits": 0
+  },
+  "childInclusiveTokenUsageBySessionId": {},
+  "toolExecutionMode": "direct_only",
+  "allowSubagentsInScripts": false,
+  "compactionThresholdCheckEnabled": true,
+  "effectiveFactoryRouterModel": {
+    "modelId": "claude-opus-5",
+    "reasoningEffort": "high",
+    "fallbacks": []
+  },
+  "archivedAt": "2026-09-03T10:11:26.897Z"
+}

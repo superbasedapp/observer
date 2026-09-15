@@ -53,7 +53,7 @@ func newNodeDigestRunner(cfg config.Config, db *sql.DB, notifier *email.Notifier
 	r := &nodeDigestRunner{
 		cfg:      cfg,
 		db:       db,
-		engine:   cost.NewEngine(cfg.Intelligence),
+		engine:   acquireProcessCostEngine(context.Background(), cfg, db, logger),
 		notifier: notifier,
 		logger:   logger,
 		now:      digestClock,

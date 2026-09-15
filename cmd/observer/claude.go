@@ -170,6 +170,12 @@ func runClaudeLauncher(ctx context.Context, opts claudeLauncherOptions) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// P6 item 5: refuse a bare launch of an org-disallowed tool (node.features
+	// tools.disallow). "claude-code" is claude's integration-registry key.
+	if err := refuseIfToolDisallowedCfg(cfg, "claude-code", opts.stderr); err != nil {
+		return err
+	}
+
 	proxyURL := opts.proxyURL
 	if proxyURL == "" {
 		port := cfg.Proxy.Port
@@ -399,7 +405,7 @@ func runClaudeLauncher(ctx context.Context, opts claudeLauncherOptions) error {
 	// proxyRouteProceed → the routed launch below (proxy reachable, and no
 	// baked-in route pointing at a dead proxy).
 
-	return runClaudeRoutedLaunch(opts, bin, proxyURL, launchArgs, continueDir)
+	return runClaudeRoutedLaunch(opts, bin, proxyURL, route, launchArgs, continueDir)
 }
 
 // runClaudeRoutedLaunch prepares the claude child environment (OAuth token
@@ -408,7 +414,7 @@ func runClaudeLauncher(ctx context.Context, opts claudeLauncherOptions) error {
 // claude on the proxy-routed path. Extracted from runClaudeLauncher to keep its
 // cyclomatic complexity in bounds; reached only on a proxyRouteProceed verdict
 // (proxy reachable, no baked-in route into a dead proxy).
-func runClaudeRoutedLaunch(opts claudeLauncherOptions, bin, proxyURL string, launchArgs []string, continueDir string) error {
+func runClaudeRoutedLaunch(opts claudeLauncherOptions, bin, proxyURL string, route claudeRouteResolution, launchArgs []string, continueDir string) error {
 	credPath := claudeCredentialsPath()
 	env, info, err := prepareClaudeEnv(os.Environ(), proxyURL, credPath)
 	if err != nil {
@@ -470,7 +476,12 @@ func runClaudeRoutedLaunch(opts claudeLauncherOptions, bin, proxyURL string, lau
 		launchArgs = forceClaudeSessionID(launchArgs)
 	}
 
-	return execClaudeChild(bin, launchArgs, env, continueDir, opts.configPath)
+	evidence := budgetLaunchEvidence{Route: budgetLaunchRouteUnknown}
+	if route.class == claudeRouteObserver ||
+		(route.class == claudeRouteNone && urlRoutesToProxy(envValue(env, "ANTHROPIC_BASE_URL"), proxyURL)) {
+		evidence = budgetLaunchEvidence{Route: budgetLaunchRouteObserverProxy, ProxyURL: proxyURL}
+	}
+	return execClaudeChild(bin, launchArgs, env, continueDir, opts.configPath, evidence)
 }
 
 // claudeAttachEnv builds the profile env forwarded across the attach socket to
@@ -791,6 +802,10 @@ type claudeEnvInfo struct {
 //   - Anything the user already exported wins. The launcher never
 //     overrides explicit env state.
 func prepareClaudeEnv(parent []string, proxyURL, credentialsPath string) ([]string, claudeEnvInfo, error) {
+	// The env this builds is handed to the untrusted claude child, so drop the
+	// trusted-OOB-channel vars up front — they must never reach the child (the
+	// per-session auth secret would let it forge frames on the trusted channel).
+	parent = scrubOOBEnv(parent)
 	env := make(map[string]string, len(parent))
 	keys := make([]string, 0, len(parent)) // preserve order for determinism
 	for _, kv := range parent {

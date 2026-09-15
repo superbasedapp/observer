@@ -44,9 +44,11 @@ const stateDBKey = "antigravityUnifiedStateSync.trajectorySummaries"
 // collision.
 func (a *Adapter) lookupIndexEntry(sessionPath, conversationID string) *indexEntry {
 	switch classifyLayout(sessionPath) {
-	case LayoutCLI:
+	case LayoutCLI, LayoutCLIDB:
 		return a.lookupCLIIndexEntry(sessionPath, conversationID)
-	case LayoutDesktop:
+	case LayoutDesktop, LayoutDesktopTranscript, LayoutDesktopDB:
+		// Every desktop shape sits under the same ~/.gemini parent, so
+		// stateDBPathFor's walk-up resolves the same state.vscdb.
 		return a.lookupDesktopIndexEntry(sessionPath, conversationID)
 	}
 	return nil

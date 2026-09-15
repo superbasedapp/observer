@@ -82,4 +82,20 @@
 // events.jsonl row without double-counting. Same-session cross-tier
 // dedup is handled at the store layer (see
 // store.InsertTokenEvents).
+//
+// # Capture surface
+//
+// `workspace.yaml`'s `client_name` line is the ONE grounded
+// discriminator for which client drove a session — surface.go resolves
+// it into a models.SessionSurface stamp (`JetBrains.<Product>` →
+// ide/jetbrains-<product>; `github/cli` → cli/copilot-cli; anything
+// else → no stamp). It is read through the SAME
+// resolveProjectFromWorkspaceYAML that already resolves the project
+// root, from both the events.jsonl and the process-log lanes, so there
+// is one reader of that file and one owner of the mapping. Nothing in
+// the event stream itself distinguishes the lanes:
+// `session.start.data.producer` is "copilot-agent" and `copilotVersion`
+// is just the CLI build in both cases. See surface.go's file doc for
+// the honesty rules, and testdata/copilotcli/README.md for the
+// grounding capture.
 package copilotcli

@@ -33,7 +33,14 @@ func ptySupported() bool { return true }
 type unixSpawner struct{}
 
 func (unixSpawner) Spawn(spec Spec) (PTY, error) {
-	argv := spec.argv()
+	// Resolve argv[0] through the shared helper rather than leaving it to
+	// exec.Command's implicit LookPath, so the Spec argv contract (and the
+	// cwd-only refusal) lives in ONE place for both platforms. exec.Command
+	// then finds cmd.Path already absolute and re-runs a no-op lookup.
+	argv, err := resolveSpawnArgv(spec.argv())
+	if err != nil {
+		return nil, err
+	}
 	//nolint:gosec // argv is fully server-derived from a validated Spec
 	// (BinPath from os.Executable, Subcommand from the capability registry,
 	// SessionID/Carry validated by the dashboard) — never client argv.

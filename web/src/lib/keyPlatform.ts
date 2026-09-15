@@ -248,7 +248,7 @@ export function keyLabels(platform: KeyPlatform) {
  * terminal application (⌘C = copy) and never becomes a byte on the wire, so
  * there is nothing for a button here to send.
  */
-export const CMD_NOTE = "⌘ never reaches a terminal — your terminal app keeps it";
+export const CMD_NOTE = "⌘ never reaches a terminal - your terminal app keeps it";
 
 /**
  * platformPrefLabel is the ⋯-menu row copy for each preference state.

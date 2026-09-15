@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/processobs"
 )
@@ -306,6 +307,30 @@ func (s *Store) PersistRuns(ctx context.Context, runs []processobs.ProcessRun) (
 		return 0, fmt.Errorf("store.PersistRuns: commit: %w", err)
 	}
 	return len(runs), nil
+}
+
+// ClassifySinkError implements [processobs.SinkErrorClassifier]: it tells the
+// process observer whether a PersistRuns failure is worth retrying.
+//
+// It exists because processobs is a pure package that performs no I/O and must
+// never learn what SQLite is — so the only place that can read the DRIVER's
+// structured result code is here, at the seam that owns the driver. That
+// matters: SQLITE_BUSY is the single most common failure on a box with a
+// competing writer, and its message text has been reworded across driver
+// versions, so classifying it by substring alone is a bet on wording. A
+// structured code is a fact.
+//
+// Anything the code check cannot answer falls through to the shared
+// processobs table, so the string half has ONE owner rather than a copy here
+// that drifts (CLAUDE.md rule 4).
+func (s *Store) ClassifySinkError(err error) processobs.SinkErrorClass {
+	if err == nil {
+		return processobs.SinkErrorUnknown
+	}
+	if db.IsTransientWriteError(err) {
+		return processobs.SinkErrorTransient
+	}
+	return processobs.ClassifySinkError(err)
 }
 
 // PersistProcessEvents implements [processobs.EventSink]. It inserts

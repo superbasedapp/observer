@@ -32,7 +32,7 @@ type PairState = "pairing" | "error";
 // whole app rather than sitting behind a half-rendered dashboard, because with
 // no session EVERY panel is empty and the old behaviour ("api 401 …" strings in
 // a working-looking shell) read as a broken product.
-const EXPIRED_TITLE = "Session expired — pair this device again";
+const EXPIRED_TITLE = "Session expired - pair this device again";
 const EXPIRED_BODY =
   "This device's secure session with your SuperBased dashboard has ended, so it can't load your data. On the host machine open Remote → Pair a device, then scan the QR code (or open the pairing link) here to sign back in.";
 
@@ -77,7 +77,7 @@ export function RemotePairingGate({ children }: { children: ReactNode }) {
         setMsg(
           e instanceof ApiError && e.status === 409
             ? "This host already has the maximum number of paired devices. On the host dashboard open Remote → Paired devices, revoke one you no longer use, then open this pairing link again."
-            : "This pairing link didn't work — it may have expired or been rotated. Generate a fresh pairing link on the host dashboard (Remote → Enable / Rotate) and open it again.",
+            : "This pairing link didn't work - it may have expired or been rotated. Generate a fresh pairing link on the host dashboard (Remote → Enable / Rotate) and open it again.",
         );
       }
     })();

@@ -12,7 +12,6 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/advisor"
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/selfobs/conformance"
 	"github.com/marmutapp/superbased-observer/internal/selfobs/run"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -55,7 +54,7 @@ func newAdviseCmd() *cobra.Command {
 				ProjectRoot:   projectRoot,
 				MinConfidence: cfg.Advisor.MinConfidence,
 				MinSavingsUSD: cfg.Advisor.MinSavingsUSD,
-				CostEngine:    cost.NewEngine(cfg.Intelligence),
+				CostEngine:    acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default()),
 				GuardMode:     guardMode,
 				RoutingMode:   routingMode,
 				RoutingShadow: shadow,
@@ -184,7 +183,7 @@ func advisorPostureInputs(ctx context.Context, cfg config.Config, st *store.Stor
 	if cfg.Routing.Enabled {
 		routingMode = cfg.Routing.Mode
 	}
-	rep, err := st.AdviseShadowSignal(ctx, days, routingPriceFn(cost.NewEngine(cfg.Intelligence)))
+	rep, err := st.AdviseShadowSignal(ctx, days, routingPriceFn(acquireProcessCostEngine(ctx, cfg, nil, slog.Default())))
 	if err != nil {
 		return guardMode, routingMode, nil
 	}

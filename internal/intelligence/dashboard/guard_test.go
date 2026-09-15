@@ -9,9 +9,46 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
+
+// wantWatcherRows derives the expected §6.5 watcher-row count from the
+// live default adapter roster instead of a literal that goes stale
+// every time an adapter joins EnabledAdapters (it has moved at least
+// three times: 37 -> 38 -> ...). Every enabled adapter gets a watcher
+// row except the *-web browser-extension rows (browserchat capture is
+// native-messaging, not a watched local store — no watcher channel).
+func wantWatcherRows() int {
+	n := 0
+	for _, tool := range config.Default().Observer.Watch.EnabledAdapters {
+		if !strings.HasSuffix(tool, "-web") {
+			n++
+		}
+	}
+	return n
+}
+
+// wantBlockerRows derives the expected §6.5 block-capable channel count
+// from the same guard.ConformanceMatrix() the endpoint serves, rather
+// than a literal that goes stale every time a block-capable hook lane
+// joins the matrix (it has moved from 4 — claude-code PreToolUse +
+// cursor before×3 — to include the whole prompt-submit intervention
+// set: UserPromptSubmit / beforeSubmitPrompt / BeforeAgent /
+// transformInput / pre_user_prompt across many clients). The check
+// still pins that every CanBlock channel survives the handler's copy
+// and the JSON round-trip.
+func wantBlockerRows() int {
+	n := 0
+	for _, e := range guard.ConformanceMatrix() {
+		if e.Caps.CanBlock {
+			n++
+		}
+	}
+	return n
+}
 
 // seedGuardEvents writes three verdict rows through the one-owner
 // store helper: two recent (one enforced deny), one old.
@@ -215,11 +252,11 @@ func TestAPIGuardConformance(t *testing.T) {
 			t.Errorf("%s/%s missing notes", e.Client, e.Channel)
 		}
 	}
-	if blockers != 4 {
-		t.Errorf("block-capable channels = %d, want 4 (claude-code PreToolUse + cursor before×3)", blockers)
+	if want := wantBlockerRows(); blockers != want {
+		t.Errorf("block-capable channels = %d, want %d (every guard.ConformanceMatrix CanBlock channel: claude-code PreToolUse + cursor before×3 + the prompt-submit intervention lanes)", blockers, want)
 	}
-	if watchers != 37 {
-		t.Errorf("watcher rows = %d, want 37 (every enabled non-browser adapter: 42 EnabledAdapters minus the 5 *-web browser-extension rows; deepseek + junie joined 2026-08-17)", watchers)
+	if want := wantWatcherRows(); watchers != want {
+		t.Errorf("watcher rows = %d, want %d (every enabled non-browser adapter: %d EnabledAdapters minus the *-web browser-extension rows)", watchers, want, len(config.Default().Observer.Watch.EnabledAdapters))
 	}
 }
 

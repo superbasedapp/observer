@@ -402,6 +402,11 @@ type Session struct {
 	// immutable for the session's lifetime, so it needs no lock — the pid of a
 	// spawned child never changes, and liveness is read from doneAt.
 	pid int
+	// startIdentity is the immutable OS process-birth identity captured before
+	// the exit waiter can reap the PTY child. It is empty when the platform or
+	// backend cannot establish one, which keeps identity-based attribution
+	// unavailable without affecting the terminal launch.
+	startIdentity string
 
 	lastAct  atomic.Int64 // unixnano of the last PTY I/O
 	doneAt   atomic.Int64 // unixnano the process exited (0 = still running)
@@ -1243,6 +1248,13 @@ func (m *Manager) Create(spec Spec) (string, error) {
 		if len(spec.ShellArgv) == 0 || spec.ShellArgv[0] == "" {
 			return "", ErrInvalidSpec
 		}
+	case SpecSSH:
+		// An SSH session runs a fixed, server-derived OpenSSH argv composed by
+		// internal/sshprofile; no BinPath/Subcommand/SessionID apply, and (see
+		// SpecSSH's doc comment) no isolation wrapper is applied either.
+		if len(spec.SSHArgv) == 0 || spec.SSHArgv[0] == "" {
+			return "", ErrInvalidSpec
+		}
 	default:
 		// BinPath + Subcommand are always required; SessionID is required only
 		// for a handoff launch (ArgvModeHandoff) — a fresh/attach/resume launch
@@ -1331,6 +1343,12 @@ func (m *Manager) Create(spec Spec) (string, error) {
 		releaseReservation()
 		return "", err
 	}
+	// Capture the child birth before starting its exit waiter. Until Wait reaps
+	// the child, this PID cannot be reused for a different process; an already
+	// exited zombie is rejected by the platform helper. Failure is deliberately
+	// non-fatal because process identity is optional attribution evidence.
+	pid := ptyPID(p)
+	startIdentity := processStartIdentity(pid)
 
 	handle, err := newToken()
 	if err != nil {
@@ -1342,7 +1360,8 @@ func (m *Manager) Create(spec Spec) (string, error) {
 	s := &Session{
 		spec:                 spec,
 		pty:                  p,
-		pid:                  ptyPID(p),
+		pid:                  pid,
+		startIdentity:        startIdentity,
 		out:                  newOutBuf(m.ringBytes),
 		createdAt:            m.now(),
 		now:                  m.now,
@@ -1417,6 +1436,60 @@ func (m *Manager) PIDForHandle(handle string) (int, bool) {
 		return 0, false
 	}
 	return s.pid, true
+}
+
+// ProcessAttributionForHandle returns the OS pid and launch time of a
+// handle's PTY child REGARDLESS of live/exited state — unlike PIDForHandle,
+// which withholds a pid the instant the child exits (correctly, for its own
+// live-attribution purpose). This accessor exists for the opposite case: a
+// caller correlating a run's exit against an external observation (e.g. a
+// node-intervention audit row keyed by pid + timestamp) needs the pid AT THE
+// MOMENT the exit fired, which is exactly when PIDForHandle stops answering.
+// ok is false when the handle is unknown or the backend never reported a
+// pid. The handle stays resolvable for as long as the session's exit-linger
+// window keeps it in m.sessions (see endedHandleGrace in termsvc), which is
+// ample for a caller reacting to the exit itself.
+func (m *Manager) ProcessAttributionForHandle(handle string) (pid int, launchedAt time.Time, ok bool) {
+	m.mu.Lock()
+	s := m.sessions[handle]
+	m.mu.Unlock()
+	if s == nil || s.pid <= 0 {
+		return 0, time.Time{}, false
+	}
+	return s.pid, s.createdAt, true
+}
+
+// ProcessIdentityForHandle returns the observed OS identity of a terminal's
+// PTY child when the manager has not recorded its exit and the process birth
+// observed during this call matches the immutable value captured immediately
+// after spawn. Unsupported platforms, PID-less backends, unreadable process
+// metadata, and stale or exited handles return ok=false.
+func (m *Manager) ProcessIdentityForHandle(handle string) (pid int, startIdentity string, ok bool) {
+	m.mu.Lock()
+	s := m.sessions[handle]
+	m.mu.Unlock()
+	if s == nil || s.pid <= 0 || s.startIdentity == "" {
+		return 0, "", false
+	}
+	if exited, _ := s.Exited(); exited {
+		return 0, "", false
+	}
+	if current := processStartIdentity(s.pid); current == "" || current != s.startIdentity {
+		return 0, "", false
+	}
+	// The process metadata read above may overlap exit/reaping. Recheck both
+	// session registration and the manager's exit observation before returning
+	// the birth that was current during this call.
+	m.mu.Lock()
+	registered := m.sessions[handle] == s
+	m.mu.Unlock()
+	if !registered {
+		return 0, "", false
+	}
+	if exited, _ := s.Exited(); exited {
+		return 0, "", false
+	}
+	return s.pid, s.startIdentity, true
 }
 
 // waitExit blocks on the process and records its exit. The session lingers
@@ -1558,6 +1631,32 @@ type Info struct {
 	InitialCols uint16
 	Rows        uint16
 	Cols        uint16
+}
+
+// LiveCount returns the number of registered PTY sessions.
+//
+// It is the node-quiescence seam of the enterprise-update-management plan
+// (§3.7 step 4a): an in-place binary update DEFERS while a dashboard
+// terminal is live, and only `--force` inside an admin maintenance window
+// proceeds — after the owners have been warned. The count is deliberately
+// the whole seam: the updater is told how many, never which, whose, or in
+// what directory.
+//
+// It counts REGISTERED sessions, not m.pending. A pending entry is a
+// concurrency reservation held by an in-flight Create that has not attached
+// a PTY yet; counting it would let a racing launch make an apply defer
+// forever, while ignoring it can at worst let an apply proceed a few
+// milliseconds before a terminal appears — and that terminal's own Create
+// would then fail against a swapped binary, which the handshake rolls back.
+// A nil Manager reports zero so a --no-dashboard daemon needs no branch at
+// the call site.
+func (m *Manager) LiveCount() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.sessions)
 }
 
 // Snapshot returns the current live sessions.

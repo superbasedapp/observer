@@ -57,6 +57,19 @@ const (
 	OriginForeignProbe Origin = "foreign_probe"
 )
 
+// NoGroundedInstallMsg is the ONE sentence every surface renders when a tool
+// carries no grounded install command for the daemon's OS. The registry's
+// honesty rule is that a missing install hint is a zero value, never a
+// fabricated command — so the launcher stderr (FormatVerdict), `observer
+// doctor <tool>` (internal/diag) and the dashboard install dialog must all say
+// exactly this, from here, rather than each spelling their own near-copy.
+const NoGroundedInstallMsg = "no grounded install command — see the vendor's docs"
+
+// shebangHeadBytes bounds the interpreter sniff: a "#!" line is the first line
+// of the file and is far shorter than this, so reading more would only cost I/O
+// on a real binary.
+const shebangHeadBytes = 256
+
 // Candidate is one binary the resolver found (or a foreign shim it saw). Real
 // is the EvalSymlinks target ("" when it could not be resolved). Foreign marks
 // a hit that lives under, or symlinks into, /mnt on a WSL daemon.
@@ -73,14 +86,21 @@ type Candidate struct {
 // binary. Considered is the complete ordered evidence trail. Installs are the
 // grounded install hints filtered to the daemon OS. Notes are honest one-line
 // advisories (login-merge failures, PATH hygiene, shim warnings).
+// LoginOnlyDirs are the merged-PATH dirs contributed by the login shell that
+// are NOT on the daemon's own process PATH — the launcher prepends them to a
+// child's PATH so a `#!/usr/bin/env node` shim can find its interpreter
+// (DI-04b). Interpreter is the `#!/usr/bin/env <name>` interpreter of Bin ("" for
+// an absolute shebang, a non-script, or a nil Env.ReadHead).
 type Resolution struct {
-	Verdict    Verdict
-	Bin        string
-	Chosen     *Candidate
-	Shadowing  []Candidate
-	Considered []Candidate
-	Installs   []integration.InstallHint
-	Notes      []string
+	Verdict       Verdict
+	Bin           string
+	Chosen        *Candidate
+	Shadowing     []Candidate
+	Considered    []Candidate
+	Installs      []integration.InstallHint
+	Notes         []string
+	LoginOnlyDirs []string
+	Interpreter   string
 }
 
 // Env is the injected I/O surface. Every field is data or a func so the
@@ -93,7 +113,14 @@ type Resolution struct {
 // ".CMD"]) used to order the Windows candidate spellings so resolution follows
 // the operator's real PATHEXT rather than a hardcoded order; empty (the normal
 // case off Windows) keeps the spec's candidate order. Stat/EvalSymlinks/Glob
-// are the filesystem probes.
+// are the filesystem probes — each is nil-safe (a nil Stat resolves NO
+// candidates, the honest "cannot tell", never an assumed hit; the same
+// contract statDir documents). Getenv reads one environment variable (nil-safe;
+// used ONLY to expand a ProbeDir.EnvRoot such as %ProgramFiles%, never to read
+// PATH — that arrives as data in ProcessPath). NpmPrefix returns `npm prefix
+// -g` (nil disables the probe; an error becomes an honest Note, never a
+// failure). ReadHead reads the first n bytes of a file (nil disables the
+// `#!/usr/bin/env` interpreter sniff).
 type Env struct {
 	GOOS         string
 	WSL          bool
@@ -105,6 +132,9 @@ type Env struct {
 	Stat         func(string) (fs.FileInfo, error)
 	EvalSymlinks func(string) (string, error)
 	Glob         func(string) ([]string, error)
+	Getenv       func(string) string
+	NpmPrefix    func() (string, error)
+	ReadHead     func(path string, n int) ([]byte, error)
 }
 
 // pathEntry is one merged-PATH dir plus which list it came from.
@@ -142,23 +172,13 @@ func Resolve(spec integration.BinaryResolveSpec, env Env) Resolution {
 		}
 	}
 
-	// 2. Native probe dirs (common table + per-tool extras for the native OS).
-	if env.Home != "" {
-		nativeOS := integration.ProbeUnix
-		if env.GOOS == "windows" {
-			nativeOS = integration.ProbeWindows
-		}
-		rels := append([]string{}, commonNativeProbeDirs...)
-		for _, pd := range spec.ProbeDirs {
-			if pd.OS == nativeOS {
-				rels = append(rels, pd.Rel)
-			}
-		}
-		for _, dir := range expandProbeDirs(env, env.Home, rels) {
-			for _, name := range names {
-				if c, ok := statCandidate(env, filepath.Join(dir, name), OriginProbeDir); ok {
-					considered = append(considered, c)
-				}
+	// 2. Native probe dirs (OS-selected common table + per-tool extras + the
+	// absolute table + the injected npm -g prefix).
+	probeDirs := nativeProbeDirs(spec, env, &notes)
+	for _, dir := range probeDirs {
+		for _, name := range names {
+			if c, ok := statCandidate(env, filepath.Join(dir, name), OriginProbeDir); ok {
+				considered = append(considered, c)
 			}
 		}
 	}
@@ -185,8 +205,206 @@ func Resolve(spec integration.BinaryResolveSpec, env Env) Resolution {
 	res := classify(considered)
 	res.Considered = considered
 	res.Installs = filterInstalls(spec.Installs, env.GOOS)
+	res.LoginOnlyDirs = loginOnlyDirs(merged)
+	applyInterpreterNote(&res, env, merged, probeDirs)
 	res.Notes = append(notes, res.Notes...)
 	return res
+}
+
+// MergedPathDirs returns the ordered, deduped merged PATH the resolver walks —
+// all is the process PATH followed by the login-only entries, login is just the
+// login-only subset a launcher prepends to a child's PATH (DI-04b). It reuses
+// the resolver's own mergePath so the launcher's PATH and the resolver's
+// evidence trail can never drift apart (never a copy). A login-capture error is
+// swallowed here (Resolve surfaces it as a Note); an empty/relative entry is
+// dropped, as it is for resolution — a child must never resolve a binary from
+// the daemon's cwd.
+func MergedPathDirs(env Env) (all, login []string) {
+	var discard []string
+	merged := mergePath(env, &discard)
+	for _, e := range merged {
+		all = append(all, e.dir)
+		if e.login {
+			login = append(login, e.dir)
+		}
+	}
+	return all, login
+}
+
+// loginOnlyDirs projects the login-contributed entries out of a merged PATH.
+func loginOnlyDirs(merged []pathEntry) []string {
+	var out []string
+	for _, e := range merged {
+		if e.login {
+			out = append(out, e.dir)
+		}
+	}
+	return out
+}
+
+// nativeProbeDirs builds the ordered ABSOLUTE probe dirs for the daemon's own
+// OS: the OS-selected common HOME-relative table plus the per-tool extras for
+// that OS (both joined to Home, skipped entirely when Home is unknown), then
+// the per-tool ABSOLUTE and EnvRoot dirs (walked verbatim / rooted at an
+// environment variable instead of HOME, the latter skipped when the variable is
+// unset), then — off Windows — the absolute table, then the injected
+// `npm prefix -g` dir. Glob segments are expanded newest-first. A failing npm
+// probe appends an honest Note and is otherwise ignored.
+func nativeProbeDirs(spec integration.BinaryResolveSpec, env Env, notes *[]string) []string {
+	var dirs []string
+	if env.Home != "" {
+		rels := append([]string{}, nativeProbeTable(env.GOOS)...)
+		for _, pd := range spec.ProbeDirs {
+			if probeOSMatchesDaemon(pd.OS, env.GOOS) && !pd.Abs && pd.EnvRoot == "" {
+				rels = append(rels, pd.Rel)
+			}
+		}
+		for _, rel := range rels {
+			dirs = append(dirs, filepath.Join(env.Home, rel))
+		}
+	}
+
+	// Per-tool ABSOLUTE and EnvRoot dirs, resolved by SHAPE through the one
+	// helper the GUI ladder also uses, so the two can never disagree about
+	// what a ProbeDir means. The HOME-relative rows are already folded in
+	// above (unchanged order); this pass contributes only the rows that have
+	// a root other than HOME.
+	for _, pd := range spec.ProbeDirs {
+		if !probeOSMatchesDaemon(pd.OS, env.GOOS) || (!pd.Abs && pd.EnvRoot == "") {
+			continue
+		}
+		dirs = append(dirs, resolveProbeDirRoot(pd, env)...)
+	}
+
+	// The absolute table is Unix-only (Homebrew/snap/go prefixes).
+	if env.GOOS != "windows" {
+		dirs = append(dirs, commonNativeAbsProbeDirs...)
+	}
+
+	// The npm -g prefix is a capability, not a tool fact: a binary found under
+	// the operator's own npm prefix is evidence for EVERY tool, so the probe
+	// runs unconditionally when the Env supplies it. On Windows npm lays the
+	// shim trio directly in the prefix dir; elsewhere it uses <prefix>/bin.
+	if env.NpmPrefix != nil {
+		prefix, err := env.NpmPrefix()
+		switch {
+		case err != nil:
+			*notes = append(*notes, fmt.Sprintf("npm prefix not probed: %v", err))
+		case strings.TrimSpace(prefix) == "":
+			// Nothing to probe; stay silent rather than invent a note.
+		case env.GOOS == "windows":
+			dirs = append(dirs, filepath.Clean(prefix))
+		default:
+			dirs = append(dirs, filepath.Join(prefix, "bin"))
+		}
+	}
+
+	return expandGlobDirs(env, dirs)
+}
+
+// applyInterpreterNote records the chosen binary's `#!/usr/bin/env <name>`
+// interpreter and, when that interpreter is NOT reachable from the daemon's own
+// process PATH, appends the honest Note that explains the DI-04b failure class:
+// the shim launches fine from an interactive shell and exits 127 under the
+// daemon. It runs only for the launchable verdicts (ok / ok_off_path) — a tool
+// that is not launchable has a bigger problem to report first.
+func applyInterpreterNote(res *Resolution, env Env, merged []pathEntry, probeDirs []string) {
+	if res.Bin == "" || (res.Verdict != VerdictOK && res.Verdict != VerdictOKOffPath) {
+		return
+	}
+	interp := interpreterOf(env, res.Bin)
+	if interp == "" {
+		return
+	}
+	res.Interpreter = interp
+
+	// On the daemon's own PATH ⇒ the child inherits a working interpreter.
+	for _, e := range merged {
+		if e.login {
+			continue
+		}
+		if _, ok := statCandidate(env, filepath.Join(e.dir, interp), OriginProcessPath); ok {
+			return
+		}
+	}
+	// Off-PATH but reachable: name the dir the launcher will prepend.
+	var search []string
+	for _, e := range merged {
+		if e.login {
+			search = append(search, e.dir)
+		}
+	}
+	search = append(search, probeDirs...)
+	for _, dir := range search {
+		if _, ok := statCandidate(env, filepath.Join(dir, interp), OriginProbeDir); ok {
+			res.Notes = append(res.Notes, fmt.Sprintf(
+				"%s is a #!/usr/bin/env %s shim; %s is not on the daemon's PATH (found at %s) — "+
+					"the launcher prepends that directory to the child's PATH; add it to the daemon's PATH to silence this",
+				filepath.Base(res.Bin), interp, interp, dir,
+			))
+			return
+		}
+	}
+	res.Notes = append(res.Notes, fmt.Sprintf(
+		"%s is a #!/usr/bin/env %s shim; %s is not found anywhere on the merged PATH — "+
+			"the child will fail at startup until %s is installed or added to PATH",
+		filepath.Base(res.Bin), interp, interp, interp,
+	))
+}
+
+// interpreterOf reads the head of bin and returns its `#!/usr/bin/env <name>`
+// interpreter, or "" when no reader is injected, the read fails, or the file is
+// not an env-shebang script.
+func interpreterOf(env Env, bin string) string {
+	if env.ReadHead == nil || bin == "" {
+		return ""
+	}
+	head, err := env.ReadHead(bin, shebangHeadBytes)
+	if err != nil {
+		return ""
+	}
+	return parseEnvShebang(head)
+}
+
+// parseEnvShebang returns the interpreter NAME of a `#!/usr/bin/env <name>`
+// shebang and "" for everything else. Only the first line is considered. An
+// ABSOLUTE interpreter (`#!/home/u/.local/share/uv/tools/x/bin/python`, what uv
+// writes) returns "" on purpose: such a script carries its own interpreter path
+// and needs no PATH help. `env` flags (-S, -i, -u NAME, --) and leading
+// NAME=VALUE assignments are skipped, so `#!/usr/bin/env -S node --enable-x`
+// yields "node".
+func parseEnvShebang(head []byte) string {
+	s := string(head)
+	if !strings.HasPrefix(s, "#!") {
+		return ""
+	}
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	fields := strings.Fields(strings.TrimSpace(s[2:]))
+	if len(fields) == 0 {
+		return ""
+	}
+	if filepath.Base(fields[0]) != "env" {
+		return ""
+	}
+	for i := 1; i < len(fields); i++ {
+		f := fields[i]
+		switch {
+		case f == "--":
+			continue
+		case f == "-u" || f == "--unset":
+			i++ // -u takes a variable NAME operand
+			continue
+		case strings.HasPrefix(f, "-"):
+			continue
+		case strings.Contains(f, "="):
+			continue // NAME=VALUE assignment, not the interpreter
+		default:
+			return filepath.Base(f)
+		}
+	}
+	return ""
 }
 
 // classify walks the verdict table top-down over the ordered evidence trail.
@@ -357,6 +575,9 @@ func mergePath(env Env, notes *[]string) []pathEntry {
 // best-effort symlink target; Foreign is set when the path or its target lives
 // under /mnt on a WSL daemon.
 func statCandidate(env Env, path string, origin Origin) (Candidate, bool) {
+	if env.Stat == nil {
+		return Candidate{}, false
+	}
 	fi, err := env.Stat(path)
 	if err != nil || !fi.Mode().IsRegular() {
 		return Candidate{}, false
@@ -387,6 +608,9 @@ func statCandidate(env Env, path string, origin Origin) (Candidate, bool) {
 // a regular file (no execute-bit gate — Windows binaries need none) and is
 // always classified Foreign.
 func statForeignCandidate(env Env, path string) (Candidate, bool) {
+	if env.Stat == nil {
+		return Candidate{}, false
+	}
 	fi, err := env.Stat(path)
 	if err != nil || !fi.Mode().IsRegular() {
 		return Candidate{}, false
@@ -411,13 +635,21 @@ func evalReal(env Env, path string) string {
 	return ""
 }
 
-// expandProbeDirs joins each HOME-relative dir to home, expanding a single
-// glob segment via env.Glob. Non-glob dirs pass through verbatim.
+// expandProbeDirs joins each HOME-relative dir to home and glob-expands it.
 func expandProbeDirs(env Env, home string, rels []string) []string {
-	var out []string
+	full := make([]string, 0, len(rels))
 	for _, rel := range rels {
-		full := filepath.Join(home, rel)
-		if strings.Contains(rel, "*") {
+		full = append(full, filepath.Join(home, rel))
+	}
+	return expandGlobDirs(env, full)
+}
+
+// expandGlobDirs expands a single glob segment in each ABSOLUTE dir via
+// env.Glob. Non-glob dirs pass through verbatim.
+func expandGlobDirs(env Env, dirs []string) []string {
+	var out []string
+	for _, full := range dirs {
+		if strings.Contains(full, "*") {
 			if env.Glob != nil {
 				if matches, err := env.Glob(full); err == nil {
 					// Probe newest-first: sort DESCENDING so a higher version

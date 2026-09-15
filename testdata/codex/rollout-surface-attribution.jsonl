@@ -1,0 +1,4 @@
+{"timestamp":"2026-09-02T09:00:00.000Z","type":"session_meta","payload":{"id":"surface-001","timestamp":"2026-09-02T09:00:00.000Z","cwd":"/tmp/superbased-fixture-codex-surface","originator":"codex_exec","cli_version":"0.150.0","source":"exec","model_provider":"openai"}}
+{"timestamp":"2026-09-02T09:00:00.500Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-surface-A"}}
+{"timestamp":"2026-09-02T09:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"hello from a codex exec run"}}
+{"timestamp":"2026-09-02T09:00:02.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-surface-A","last_agent_message":"done","completed_at":1778000002,"duration_ms":1500}}

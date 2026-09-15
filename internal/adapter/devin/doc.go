@@ -14,6 +14,14 @@
 // every cross-mount-resolved home so a WSL2 observer reaches a
 // Windows-side store (and vice-versa).
 //
+// Devin Desktop (the renamed Windsurf VS Code fork) writes the SAME
+// store — verified live 2026-09-03 on Windows, where its
+// %APPDATA%\Devin\cli\sessions.db is the same case-insensitive
+// directory as the Windows root above, with an identical schema
+// (refinery version 16). No desktop-specific root exists or is watched;
+// the lanes are told apart per session in surface.go. See
+// docs/devin-adapter.md §"Devin Desktop".
+//
 // # Store shape (live-verified 2026-07-09)
 //
 //   - sessions(id, working_directory, backend_type, model, agent_mode,
@@ -44,9 +52,12 @@
 // columns"), the WSL capture recorded real per-message token counts in
 // metadata.metrics. This adapter emits one approximate TokenEvent per
 // assistant node that carries metrics, keyed by the node's message_id.
-// The backend is "Windsurf" and models look like `swe-1-6-slow`; the
-// cache_* fields were null in every captured row (so cache tokens are 0
-// in practice and whether input_tokens is gross-of-cache is unverified).
+// The backend is "Windsurf" and models look like `swe-1-6-slow`.
+// cache_read_tokens IS populated (grounded 2026-09-03 on the desktop
+// capture; the July CLI capture had it null throughout) and input_tokens
+// is NET of it — input + cache_read equals the node's own
+// num_tokens_preceding — so neither needs adjusting.
+// cache_creation_tokens is still null in every captured row.
 // Devin exposes no base-URL override, so there is no proxy tier — tokens
 // come only from this store.
 //

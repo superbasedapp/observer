@@ -2,7 +2,13 @@
 // coding agent (npm `freebuff`; the Manicode -> Codebuff -> Freebuff
 // lineage, which is why the store lives under a legacy `manicode` dir).
 //
-// On-disk layout (same on Linux, macOS, and Windows — Freebuff uses
+// TWO LAYOUTS, ONE TOOL ID. Freebuff ships a CLI and a desktop app; both are
+// the same product line, so both report `models.ToolFreebuff` and differ only
+// in their store shape and their capture-surface stamp (see layoutSurfaces).
+// The layout is resolved from the path SHAPE at the boundary — never by
+// branching on tool identity downstream (CLAUDE.md module rule #3).
+//
+// Layout 1 — CLI chats (same on Linux, macOS, and Windows: Freebuff uses
 // ~/.config/manicode on every OS, per the CodebuffAI/freebuff Windows
 // bug report referencing .config\manicode\freebuff.exe):
 //
@@ -14,17 +20,37 @@
 //	  run-state.json      large state sidecar; sessionState.fileContext.
 //	                      projectRoot is the ONLY statement of the real cwd.
 //
-// THIN store: Freebuff records NO per-turn token accounting (run-state has a
-// running contextTokenCount, which is a context-window size, not billable
-// usage), so this adapter emits sessions + actions only — no TokenEvents.
+// THIN store: the CLI layout records NO per-turn token accounting (run-state
+// has a running contextTokenCount, which is a context-window size, not
+// billable usage), so it emits sessions + actions only — no TokenEvents.
+//
+// Layout 2 — Freebuff Desktop (also `.config` on every OS):
+//
+//	~/.config/freebuff-desktop/projects/<name>-<uuid>/
+//	  desktop-v2.db   the store: SQLite in WAL mode (the live data is
+//	                  usually in the -wal). Tables projects / threads /
+//	                  messages (+ queue_items, thread_deliveries, ...). One
+//	                  thread = one session; one assistant `messages` row
+//	                  holds the WHOLE turn in an ordered parts_json array.
+//	  project.json    {projectId, projectPath, database} — the last-resort
+//	                  project-root fallback.
+//
+// Unlike the CLI, the Desktop DOES persist real per-turn usage
+// (messages.metrics_json), so the desktop layout emits TokenEvents; input is
+// OpenAI-style GROSS and is netted against cachedInputTokens. See
+// desktop.go::desktopTokenEvent.
 //
 // Off-limits (never read): credentials.json, the freebuff ELF/exe binary,
 // message-history.json (raw input strings), and log.jsonl (which carries
-// hostname / userId / userEmail PII) — this adapter reads only
-// chat-messages.json + its sibling run-state.json. The avoidance is
-// structural: IsSessionFile matches ONLY chat-messages.json under
-// projects/<slug>/chats, and the sole sibling read is run-state.json.
-// TestOffLimitsFilesNeverDispatchedOrIngested pins it against regression.
+// hostname / userId / userEmail PII) on the CLI side; `state.json` (which
+// holds an OAuth-style auth TOKEN plus the operator's name and email under
+// `authSessions`) and `state.json.orchestrator-lock.sqlite` on the Desktop
+// side. This adapter reads only chat-messages.json + its sibling
+// run-state.json (CLI) and desktop-v2.db + its sibling project.json
+// (Desktop). The avoidance is structural: IsSessionFile matches ONLY those
+// two entry points, and the sibling reads are the two named files.
+// TestOffLimitsFilesNeverDispatchedOrIngested and
+// TestDesktopOffLimitsFilesNeverDispatchedOrIngested pin it.
 package freebuff
 
 import (
@@ -48,6 +74,18 @@ const (
 	chatsSegment    = "/chats/"
 	messagesName    = "chat-messages.json"
 	runStateName    = "run-state.json"
+
+	// Desktop layout.
+	desktopProjectsSubpath = "/freebuff-desktop/projects/"
+	desktopDBName          = "desktop-v2.db"
+	desktopProjectJSONName = "project.json"
+	// desktopStateName holds an auth TOKEN plus the operator's name and
+	// email under `authSessions`; desktopStateLockDBName is its sibling
+	// orchestrator lock. Both are named ONLY so isDesktopOffLimits can
+	// reject them by name — neither is ever opened.
+	desktopStateName       = "state.json"
+	desktopStateLockDBName = "state.json.orchestrator-lock.sqlite"
+
 	maxTargetLen    = 500
 	maxReasoningLen = 2000
 	// maxAgentNestDepth caps recursive descent into agent blocks' own
@@ -85,39 +123,109 @@ func (*Adapter) Name() string { return models.ToolFreebuff }
 // WatchPaths implements adapter.Adapter.
 func (a *Adapter) WatchPaths() []string { return a.roots }
 
-// defaultRoots returns ~/.config/manicode/projects across every detected home
-// (Freebuff uses .config/manicode on every OS).
+// layout names one of Freebuff's two on-disk store shapes.
+type layout uint8
+
+const (
+	// layoutUnknown is "not a freebuff session file".
+	layoutUnknown layout = iota
+	// layoutCLIChats is ~/.config/manicode/projects/<slug>/chats/<ts>/chat-messages.json.
+	layoutCLIChats
+	// layoutDesktop is ~/.config/freebuff-desktop/projects/<name>-<uuid>/desktop-v2.db.
+	layoutDesktop
+)
+
+// layoutSurfaces is the ONE table mapping a store layout onto its
+// capture-surface stamp. The path SHAPE is the grounded discriminator: the
+// CLI writes only under `manicode/projects/.../chats`, the Desktop only under
+// `freebuff-desktop/projects`, and (as of the 2026-09-03 grounding) neither
+// writes the other's store. Same pattern as kirocli's layoutSurfaces.
+var layoutSurfaces = map[layout]models.SessionSurface{
+	layoutCLIChats: {Surface: models.SurfaceCLI, SurfaceHost: "freebuff"},
+	layoutDesktop:  {Surface: models.SurfaceDesktop, SurfaceHost: "freebuff-desktop"},
+}
+
+// surfaceFor returns the surface stamp for one session of a given layout.
+// An unknown layout stamps nothing (the honest "no grounded discriminator").
+func surfaceFor(l layout, sessionID string) models.SessionSurface {
+	s, ok := layoutSurfaces[l]
+	if !ok {
+		return models.SessionSurface{}
+	}
+	s.SessionID = sessionID
+	return s
+}
+
+// defaultRoots returns both layouts' project directories across every
+// detected home. Freebuff uses `.config` on EVERY OS for both stores —
+// `.config/manicode` for the CLI (per the CodebuffAI/freebuff Windows bug
+// report referencing `.config\manicode\freebuff.exe`) and
+// `.config/freebuff-desktop` for the Desktop (grounded 2026-09-03 against a
+// native Windows install at `C:\Users\<u>\.config\freebuff-desktop`) — so
+// there is no per-OS subpath table here, unlike goose or kiro-cli.
 func defaultRoots() []string {
 	seen := map[string]bool{}
 	var roots []string
+	add := func(p string) {
+		if seen[p] {
+			return
+		}
+		seen[p] = true
+		roots = append(roots, p)
+	}
 	for _, h := range crossmount.AllHomes() {
 		if h.Path == "" {
 			continue
 		}
-		p := filepath.Join(h.Path, ".config", "manicode", "projects")
-		if !seen[p] {
-			seen[p] = true
-			roots = append(roots, p)
-		}
+		add(filepath.Join(h.Path, ".config", "manicode", "projects"))
+		add(filepath.Join(h.Path, ".config", "freebuff-desktop", "projects"))
 	}
 	return roots
 }
 
 // IsSessionFile implements adapter.Adapter: the per-chat chat-messages.json
-// under a watch root. run-state.json is read as a sibling, not tracked.
+// (CLI) or the per-project desktop-v2.db (Desktop) under a watch root.
+// run-state.json and project.json are read as siblings, not tracked.
 func (a *Adapter) IsSessionFile(path string) bool {
-	if !matchesShape(path) {
+	if layoutFor(path) == layoutUnknown {
 		return false
 	}
 	return adapter.UnderAnyWatchRoot(path, a.WatchPaths())
 }
 
-func matchesShape(path string) bool {
+// layoutFor resolves a path onto its store layout by SHAPE alone (no I/O).
+func layoutFor(path string) layout {
 	lower := strings.ReplaceAll(strings.ToLower(path), `\`, "/")
-	if filepath.Base(lower) != messagesName {
-		return false
+	base := filepath.Base(lower)
+	switch {
+	case isDesktopOffLimits(base):
+		return layoutUnknown
+	case base == messagesName &&
+		strings.Contains(lower, projectsSubpath) && strings.Contains(lower, chatsSegment):
+		return layoutCLIChats
+	case (base == desktopDBName || base == desktopDBName+"-wal" || base == desktopDBName+"-shm") &&
+		strings.Contains(lower, desktopProjectsSubpath):
+		// The `-wal` / `-shm` siblings are CLAIMED (the pattern every
+		// WAL-SQLite adapter here uses — cline-cli, kirocli, antigravity):
+		// a live capture lives almost entirely in the WAL (1.28 MB of WAL
+		// against a 4 KB main file on the grounding run), and the
+		// watcher's cursor poll cannot re-fire this layout — it gates on
+		// file size vs cursor, and the cursor is an epoch-ms watermark far
+		// above any file size. fsnotify on the sidecars is what keeps the
+		// store live; parseDesktopStore maps them back onto the main db
+		// (desktopMainDBPath) so every row keys on one SourceFile.
+		return layoutDesktop
+	default:
+		return layoutUnknown
 	}
-	return strings.Contains(lower, projectsSubpath) && strings.Contains(lower, chatsSegment)
+}
+
+// isDesktopOffLimits names the Desktop files that must never be dispatched
+// to the parser, regardless of where they sit. `state.json` carries an auth
+// token and the operator's identity; its orchestrator lock is a private
+// SQLite sibling.
+func isDesktopOffLimits(base string) bool {
+	return base == desktopStateName || base == desktopStateLockDBName
 }
 
 // freebuffMessage is one element of chat-messages.json.
@@ -155,6 +263,14 @@ type freebuffBlock struct {
 // message — block SourceEventIDs are stable so the store dedupes), and returns
 // the new message count. No TokenEvents (Freebuff records no per-turn usage).
 func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
+	if layoutFor(path) == layoutDesktop {
+		return a.parseDesktopStore(ctx, path, fromOffset)
+	}
+	return a.parseCLIChats(path, fromOffset)
+}
+
+// parseCLIChats is the CLI (manicode/chats) layout's parser.
+func (a *Adapter) parseCLIChats(path string, fromOffset int64) (adapter.ParseResult, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // watched session file
 	if err != nil {
 		return adapter.ParseResult{}, nil // vanished mid-poll; retry later
@@ -165,7 +281,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	}
 
 	sessID := sessionIDFromPath(path)
-	root, branch := a.resolveProjectRoot(path)
+	root, branch, projectIdentity := a.resolveProjectRoot(path)
 	base := parseChatDirTime(sessID)
 
 	res := adapter.ParseResult{NewOffset: int64(len(msgs))}
@@ -178,6 +294,8 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		ts := base.Add(time.Duration(i) * time.Second)
 		a.emitMessage(&res, path, sessID, root, branch, ts, i, msgs[i])
 	}
+	adapter.ApplyProjectIdentity(&res, projectIdentity)
+	res.SessionSurfaces = append(res.SessionSurfaces, surfaceFor(layoutCLIChats, sessID))
 	return res, nil
 }
 
@@ -315,10 +433,14 @@ func mapFreebuffTool(name string, input json.RawMessage) (string, string) {
 	case "set_output":
 		return models.ActionTaskComplete, target
 	default:
-		// tmux_cli, read_subtree, render_ui, gravity_index, file_picker,
-		// context_pruner: present in the app's capability-list toolNames but
-		// never observed as an actual invocation — left honestly unmapped
-		// rather than guessed. See docs/freebuff-adapter.md known gaps.
+		// suggest_prompts (desktop) / suggest_followups (CLI) ARE observed
+		// live but are not tools the model acts with (they render UI
+		// suggestions) — deliberately rowless, ActionUnknown with the raw
+		// name preserved. tmux_cli, read_subtree, render_ui, gravity_index,
+		// file_picker, context_pruner: present in the app's capability-list
+		// toolNames but never observed as an actual invocation — left
+		// honestly unmapped rather than guessed. See
+		// docs/freebuff-adapter.md known gaps.
 		return models.ActionUnknown, target
 	}
 }
@@ -348,10 +470,10 @@ func targetFromInput(raw json.RawMessage) string {
 	return ""
 }
 
-func (a *Adapter) resolveProjectRoot(messagesPath string) (root, branch string) {
+func (a *Adapter) resolveProjectRoot(messagesPath string) (root, branch string, id git.Identity) {
 	data, err := os.ReadFile(filepath.Join(filepath.Dir(messagesPath), runStateName)) //nolint:gosec // sibling of a watched file
 	if err != nil {
-		return "[freebuff]", ""
+		return "[freebuff]", "", git.Identity{}
 	}
 	var rs struct {
 		SessionState struct {
@@ -362,18 +484,26 @@ func (a *Adapter) resolveProjectRoot(messagesPath string) (root, branch string) 
 		} `json:"sessionState"`
 	}
 	if err := json.Unmarshal(data, &rs); err != nil {
-		return "[freebuff]", ""
+		return "[freebuff]", "", git.Identity{}
 	}
 	cwd := strings.TrimSpace(firstNonEmpty(rs.SessionState.FileContext.ProjectRoot, rs.SessionState.FileContext.Cwd))
 	if cwd == "" {
-		return "[freebuff]", ""
+		return "[freebuff]", "", git.Identity{}
 	}
 	cwd = crossmount.TranslateForeignPath(cwd)
-	info, err := git.Resolve(cwd)
-	if err != nil {
-		return cwd, ""
+	// STAT-GATE before git.ResolveIdentity (the goose / crush precedent): a
+	// path that isn't locally reachable is returned verbatim, because
+	// filepath.Abs would otherwise CWD-prefix the foreign string onto the
+	// observer's own drive (a WSL cwd read on a Windows host becomes
+	// `D:\home\dev\...`).
+	if _, err := os.Stat(cwd); err != nil {
+		return cwd, "", git.Identity{}
 	}
-	return info.Root, info.Branch
+	identity, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
+	if err != nil {
+		return cwd, "", git.Identity{}
+	}
+	return identity.Root, identity.Branch, identity
 }
 
 // sessionIDFromPath returns the chat dir name — the RFC3339 timestamp that is

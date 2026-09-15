@@ -387,3 +387,30 @@ echo spent > "`+marker+`"
 		t.Fatalf("harness continued after attribution failure: %v", err)
 	}
 }
+
+func TestExecuteDrive_AdmissionFailureNeverStartsHarness(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "spent.txt")
+	bin := fakeBin(t, t.TempDir(), "admission-fail-fake", `
+echo spent > "`+marker+`"
+`)
+	ic, _ := integration.For("claude-code")
+	wantErr := errors.New("managed budget refused")
+	_, err := executeDrive(context.Background(), bin, ic.Headless, driveRequest{
+		Tool:      "claude-code",
+		Prompt:    "p",
+		ProxyURL:  "http://127.0.0.1:8820",
+		ConfigDir: t.TempDir(),
+		Admission: func(ctx context.Context, tool, proxyURL string) error {
+			if ctx == nil || tool != "claude-code" || proxyURL != "http://127.0.0.1:8820" {
+				t.Fatalf("admission inputs: ctx=%v tool=%q proxy=%q", ctx, tool, proxyURL)
+			}
+			return wantErr
+		},
+	})
+	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "arena.executeDrive: admission") {
+		t.Fatalf("executeDrive error = %v, want wrapped admission error", err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("harness started before admission: %v", statErr)
+	}
+}

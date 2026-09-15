@@ -80,20 +80,33 @@ func (*Adapter) Name() string { return models.ToolMistralCode }
 // WatchPaths implements adapter.Adapter.
 func (a *Adapter) WatchPaths() []string { return a.roots }
 
-// defaultRoots returns ~/.vibe/logs/session across every detected home, plus
-// $VIBE_HOME/logs/session when the operator has overridden vibe's home dir
-// (VIBE_HOME is vibe's own documented override — `vibe --help` lists it
-// alongside LOG_LEVEL/LOG_MAX_BYTES/VIBE_*; only meaningful for THIS
-// process's env, so it isn't resolved per cross-mount home). vibe uses the
-// same layout on Linux, macOS, and Windows (the `vibe` / `vibe-acp.exe` CLI
-// is `uv tool`-installed; the session tree is under the user home on both),
-// so one join per cross-mount-resolved $HOME covers a WSL2 observer reading
-// a foreign Windows home too.
+// defaultRoots returns the watch roots for BOTH of this package's layouts
+// (see ide.go's header for why one package owns two stores):
+//
+//   - the `vibe` CLI: ~/.vibe/logs/session across every detected home,
+//     plus $VIBE_HOME/logs/session when the operator has overridden vibe's
+//     home dir (VIBE_HOME is vibe's own documented override — `vibe --help`
+//     lists it alongside LOG_LEVEL/LOG_MAX_BYTES/VIBE_*; only meaningful
+//     for THIS process's env, so it isn't resolved per cross-mount home).
+//     vibe uses the same layout on Linux, macOS, and Windows (the `vibe` /
+//     `vibe-acp.exe` CLI is `uv tool`-installed; the session tree is under
+//     the user home on both), so one join per cross-mount-resolved $HOME
+//     covers a WSL2 observer reading a foreign Windows home too.
+//   - the Continue-fork IDE store: ~/.mistralcode/sessions across every
+//     detected home, plus $MISTRALCODE_GLOBAL_DIR/sessions (ide.go's
+//     ideRoots).
+//
+// Duplicate and empty candidates are dropped so WatchPaths never carries
+// the same directory twice.
 func defaultRoots() []string {
 	seen := map[string]bool{}
 	var roots []string
 	add := func(p string) {
-		if p == "" || seen[p] {
+		if p == "" {
+			return
+		}
+		p = filepath.Clean(p)
+		if seen[p] {
 			return
 		}
 		seen[p] = true
@@ -102,19 +115,35 @@ func defaultRoots() []string {
 	if vh := strings.TrimSpace(os.Getenv("VIBE_HOME")); vh != "" {
 		add(filepath.Join(vh, "logs", "session"))
 	}
-	for _, h := range crossmount.AllHomes() {
-		if h.Path == "" {
-			continue
-		}
-		add(filepath.Join(h.Path, ".vibe", "logs", "session"))
+	for _, h := range homeRoots() {
+		add(filepath.Join(h, ".vibe", "logs", "session"))
+	}
+	for _, p := range ideRoots() {
+		add(p)
 	}
 	return roots
 }
 
-// IsSessionFile implements adapter.Adapter: the per-session messages.jsonl
-// under a watch root. meta.json is read as a sibling, not tracked directly.
+// homeRoots returns every cross-mount-resolved $HOME with a non-empty
+// path, so both layouts enumerate the same home surface.
+func homeRoots() []string {
+	var homes []string
+	for _, h := range crossmount.AllHomes() {
+		if h.Path == "" {
+			continue
+		}
+		homes = append(homes, h.Path)
+	}
+	return homes
+}
+
+// IsSessionFile implements adapter.Adapter. A path qualifies when it is
+// under a watch root AND matches one of the two layouts: the vibe CLI's
+// per-session messages.jsonl (meta.json is read as a sibling, not tracked
+// directly) or the IDE store's <sessionId>.json document (sessions.json is
+// read as a sibling, not tracked directly).
 func (a *Adapter) IsSessionFile(path string) bool {
-	if !matchesShape(path) {
+	if classifyLayout(path) == layoutNone {
 		return false
 	}
 	return adapter.UnderAnyWatchRoot(path, a.WatchPaths())
@@ -185,14 +214,32 @@ type vibeToolCall struct {
 	} `json:"function"`
 }
 
-// ParseSessionFile implements adapter.Adapter. It re-reads the sibling
+// ParseSessionFile implements adapter.Adapter. It dispatches on the file's
+// LAYOUT (a path SHAPE, never a client identity) between the Continue-fork
+// IDE store's whole-document sessions and the `vibe` CLI's append-only
+// transcript.
+//
+// The IDE shape is the discriminating one, so it is tested first and the
+// vibe transcript parser is the default: callers that hand us a transcript
+// from outside a canonical `~/.vibe/logs/session` tree (fixtures, backfill
+// over a copied store) keep the behaviour they had before the IDE layout
+// existed. IsSessionFile stays strict — it gates on classifyLayout — so
+// the watcher never widens.
+func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
+	if classifyLayout(path) == layoutIDE {
+		return a.parseIDESession(ctx, path)
+	}
+	return a.parseVibeSession(ctx, path, fromOffset)
+}
+
+// parseVibeSession parses the `vibe` CLI layout. It re-reads the sibling
 // meta.json every call (the only statement of the project root, model, and
 // session token stats), streams messages.jsonl from fromOffset to the last
 // complete line, and emits ToolEvents plus one session-level TokenEvent.
-func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
+func (a *Adapter) parseVibeSession(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
 	meta := a.readMeta(path)
 	sessID := sessionIDFromPath(path, meta)
-	root, branch := resolveProjectRoot(meta.Environment.WorkingDirectory)
+	root, branch, projectIdentity := resolveProjectRoot(meta.Environment.WorkingDirectory)
 	if branch == "" {
 		branch = meta.GitBranch
 	}
@@ -285,6 +332,17 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 
 	if tk, ok := a.tokenEvent(path, sessID, root, meta); ok {
 		res.TokenEvents = append(res.TokenEvents, tk)
+	}
+	adapter.ApplyProjectIdentity(&res, projectIdentity)
+	if sessID != "" {
+		// The vibe layout IS the terminal CLI by construction — the
+		// store is written only by the `vibe` binary — so the kind is
+		// grounded in the path shape, not guessed.
+		res.SessionSurfaces = append(res.SessionSurfaces, models.SessionSurface{
+			SessionID:   sessID,
+			Surface:     models.SurfaceCLI,
+			SurfaceHost: surfaceHostCLI,
+		})
 	}
 	return res, nil
 }
@@ -465,17 +523,17 @@ func sessionIDFromPath(messagesPath string, meta vibeMeta) string {
 	return dir
 }
 
-func resolveProjectRoot(rawCWD string) (root, branch string) {
+func resolveProjectRoot(rawCWD string) (root, branch string, id git.Identity) {
 	cwd := strings.TrimSpace(rawCWD)
 	if cwd == "" {
-		return "[mistral-code]", ""
+		return "[mistral-code]", "", git.Identity{}
 	}
 	cwd = crossmount.TranslateForeignPath(cwd)
-	info, err := git.Resolve(cwd)
+	identity, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
-		return cwd, ""
+		return cwd, "", git.Identity{}
 	}
-	return info.Root, info.Branch
+	return identity.Root, identity.Branch, identity
 }
 
 func parseTime(s string) time.Time {

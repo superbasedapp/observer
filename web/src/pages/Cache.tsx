@@ -22,7 +22,7 @@ import {
   windowParams,
 } from "@/lib/filters";
 import { useApi } from "@/lib/useApi";
-import { fmtCompact, fmtInt, fmtPct, fmtUSD } from "@/lib/format";
+import { fmtCompact, fmtDateTime, fmtInt, fmtPct, fmtShortId, fmtUSD } from "@/lib/format";
 import type {
   CacheEntryStatesResponse,
   CacheEventRow,
@@ -151,7 +151,7 @@ export function CachePage() {
     filtersActive && corpusHasEvents
       ? "No cache events match the current filters. Try widening the window, clearing the tool / project filter, or resetting from the TopBar."
       : hasUntracked && !corpusHasEvents && !hasImplicit
-        ? `Recent traffic is dominated by ${health.data?.untracked_provider_top_tool || "non-Anthropic"} sessions. These route through the implicit-cache surface, but no implicit-cache events were captured — the running binary may pre-date implicit support (restart on the current build), or retrofit history via Settings → Backfill → cache-rescan.`
+        ? `Recent traffic is dominated by ${health.data?.untracked_provider_top_tool || "non-Anthropic"} sessions. These route through the implicit-cache surface, but no implicit-cache events were captured - the running binary may pre-date implicit support (restart on the current build), or retrofit history via Settings → Backfill → cache-rescan.`
         : "No cache events recorded yet. Cache tracking is on by default (toggle under Settings → Cache tracking); to retrofit historical transcripts, run cache-rescan from Settings → Backfill.";
   const [openSessionId, setOpenSessionId] = useState<string | null>(null);
 
@@ -350,7 +350,7 @@ function CacheContent({
           label={`Cache ratio (${winLabel})`}
           helpId="tile.cache_ratio"
           icon={<DatabaseIcon />}
-          value={ratio > 0 ? `${ratio.toFixed(1)}×` : "—"}
+          value={ratio > 0 ? `${ratio.toFixed(1)}×` : "-"}
           sub={
             ratio > 0
               ? `R ${fmtCompact(readTokens)} · W ${fmtCompact(writeTokens)} tokens`
@@ -550,7 +550,7 @@ function CacheContent({
         sub="cache_entries grouped by state · live = healthy warm; unverified / expired / invalidated = engine declared stale"
       >
         {!entryStates || entryStates.rows.length === 0 ? (
-          <EmptyHint text="No cache entries yet — the engine populates this table as it sees writes." />
+          <EmptyHint text="No cache entries yet - the engine populates this table as it sees writes." />
         ) : (
           <EntryStatesBar rows={entryStates.rows} total={entryStates.total} />
         )}
@@ -607,7 +607,7 @@ function CacheContent({
           sub="ranked by rewrite count · click a row to open the session's cache timeline"
         >
           {data.worst_sessions.length === 0 ? (
-            <EmptyHint text="No rewrites yet — the cache hasn't been invalidated for any session in the corpus." />
+            <EmptyHint text="No rewrites yet - the cache hasn't been invalidated for any session in the corpus." />
           ) : (
             <WorstSessionsTable
               rows={data.worst_sessions}
@@ -639,7 +639,7 @@ function MispredictRateTile({
         label="Mispredict rate"
         helpId="tile.cache_mispredict_rate"
         icon={<BoltIcon />}
-        value="—"
+        value="-"
         sub="loading engine health"
       />
     );
@@ -651,7 +651,7 @@ function MispredictRateTile({
   const warnNow = !belowMinimum && !health.gate_passed;
   let sub: string;
   if (belowMinimum) {
-    sub = `${fmtInt(denom)}/${fmtInt(minEvents)} graded — below grading minimum`;
+    sub = `${fmtInt(denom)}/${fmtInt(minEvents)} graded - below grading minimum`;
   } else if (warnNow) {
     sub = `${fmtInt(health.mispredicts)} mispredicts / ${fmtInt(denom)} graded · >${fmtPct(health.max_rate_threshold)} gate`;
   } else {
@@ -662,7 +662,7 @@ function MispredictRateTile({
       label="Anthropic mispredict rate"
       helpId="tile.cache_mispredict_rate"
       icon={<BoltIcon />}
-      value={denom > 0 ? fmtPct(pct) : "—"}
+      value={denom > 0 ? fmtPct(pct) : "-"}
       sub={sub}
       warn={warnNow}
     />
@@ -696,7 +696,7 @@ function ImplicitCacheTile({
       label="Implicit prefix-survival"
       helpId="tile.cache_implicit_prefix_survival"
       icon={<DropletIcon />}
-      value={hits + misses > 0 ? fmtPct(churn) : "—"}
+      value={hits + misses > 0 ? fmtPct(churn) : "-"}
       sub={
         consistencyDenom > 0
           ? `${fmtInt(hits)}H / ${fmtInt(misses)}M · engine consistency ${fmtPct(consistency)} (lower fidelity)`
@@ -751,7 +751,7 @@ function UntrackedProviderBanner({
             {implicitEvents === 1 ? "" : "s"}
           </strong>{" "}
           tracked via §15.3 reduced attribution (lower fidelity than the
-          Anthropic marker-aware path — graded on per-session prefix
+          Anthropic marker-aware path - graded on per-session prefix
           estimates, not provider markers). Prefix-survival {fmtPct(churn)}
           {consistency > 0 ? ` · engine consistency ${fmtPct(consistency)}` : ""}
           . Anthropic §10 gate is unmoved.
@@ -774,7 +774,7 @@ function UntrackedProviderBanner({
           {untrackedSessions === 1 ? "" : "s"}
         </strong>{" "}
         ({fmtInt(untrackedTurns)} turn{untrackedTurns === 1 ? "" : "s"}) in the
-        last 7 days but captured zero implicit-cache events — the daemon
+        last 7 days but captured zero implicit-cache events - the daemon
         binary may pre-date §15.3 (rebuild + restart). Tokens, cost, and
         actions are captured normally for these sessions either way.
       </span>
@@ -801,7 +801,7 @@ function CacheHealthBanner({ health }: { health: CacheHealthSummary | null }) {
       <span
         key="dominant"
         className="inline-flex items-center gap-1.5 rounded-2 border border-warn/40 bg-warn-soft px-2.5 py-1 text-[10.5px] font-medium text-warn"
-        title="A non-baseline cause exceeds the 80% share threshold over graded events — likely an over-firing rule. Open the engine-health entry in the help drawer for the full check list."
+        title="A non-baseline cause exceeds the 80% share threshold over graded events - likely an over-firing rule. Open the engine-health entry in the help drawer for the full check list."
       >
         <span aria-hidden>!</span>
         {c.cause} dominates ({fmtPct(c.share)} of {fmtInt(c.count)} events)
@@ -813,7 +813,7 @@ function CacheHealthBanner({ health }: { health: CacheHealthSummary | null }) {
       <span
         key="inconsistent"
         className="inline-flex items-center gap-1.5 rounded-2 border border-warn/40 bg-warn-soft px-2.5 py-1 text-[10.5px] font-medium text-warn"
-        title="Rewrite events with tokens_read > 3× tokens_written are mechanically inconsistent with a real invalidation — the cause may be mislabeled."
+        title="Rewrite events with tokens_read > 3× tokens_written are mechanically inconsistent with a real invalidation - the cause may be mislabeled."
       >
         <span aria-hidden>!</span>
         {fmtInt(health.inconsistent_rewrite_count)} inconsistent rewrite
@@ -826,7 +826,7 @@ function CacheHealthBanner({ health }: { health: CacheHealthSummary | null }) {
       <span
         key="bucket"
         className="inline-flex items-center gap-1.5 rounded-2 border border-warn/40 bg-warn-soft px-2.5 py-1 text-[10.5px] font-medium text-warn"
-        title="bucket(predicted) ≠ bucket(observed) — engine drift the grading-rate gate is blind to (growth-turn mispredicts can land in the same hit-vs-write bucket and slip past the rate check)."
+        title="bucket(predicted) ≠ bucket(observed) - engine drift the grading-rate gate is blind to (growth-turn mispredicts can land in the same hit-vs-write bucket and slip past the rate check)."
       >
         <span aria-hidden>!</span>
         {fmtInt(health.bucket_mispredicts)} bucket-mismatch event
@@ -932,7 +932,7 @@ function ByDimensionTable({
                 </Td>
                 <Td align="right" mono>
                   <strong className="text-fg-0">
-                    {r.ratio > 0 ? `${r.ratio.toFixed(1)}×` : "—"}
+                    {r.ratio > 0 ? `${r.ratio.toFixed(1)}×` : "-"}
                   </strong>
                 </Td>
                 <Td align="right" mono>
@@ -947,7 +947,7 @@ function ByDimensionTable({
                       {fmtUSD(r.avoidable)}
                     </span>
                   ) : (
-                    <span className="text-fg-3">—</span>
+                    <span className="text-fg-3">-</span>
                   )}
                 </Td>
               </tr>
@@ -1042,12 +1042,12 @@ function WorstSessionsTable({
             >
               <Td mono title={s.session_id}>
                 <span className="font-mono text-accent">
-                  {s.session_id.slice(0, 8)}…
+                  {fmtShortId(s.session_id, 8)}
                 </span>
               </Td>
               <Td mono>
                 <span className="block max-w-[180px] truncate">
-                  {s.model || "—"}
+                  {s.model || "-"}
                 </span>
               </Td>
               <Td>
@@ -1069,7 +1069,7 @@ function WorstSessionsTable({
                     flagged={s.top_cause === "tools_changed"}
                   />
                 ) : (
-                  <span className="text-fg-3">—</span>
+                  <span className="text-fg-3">-</span>
                 )}
               </Td>
             </tr>
@@ -1088,7 +1088,7 @@ function WorstSessionsTable({
 // tier renders as a plain dash so the table doesn't carry a
 // misleading pill on legacy rows.
 function TierPill({ tier }: { tier?: string }) {
-  if (!tier) return <span className="text-fg-3">—</span>;
+  if (!tier) return <span className="text-fg-3">-</span>;
   if (tier === "proxy") return <Pill variant="info">{tier}</Pill>;
   if (tier === "transcript") return <Pill variant="neutral">{tier}</Pill>;
   if (tier === "mixed") return <Pill variant="warn">{tier}</Pill>;
@@ -1349,15 +1349,15 @@ function RecentEventsTable({
               }
               onClick={() => onOpen(ev.session_id)}
             >
-              <Td mono>{fmtShortTimestamp(ev.timestamp)}</Td>
+              <Td mono title={fmtDateTime(ev.timestamp)}>{fmtShortTimestamp(ev.timestamp)}</Td>
               <Td mono title={ev.session_id}>
                 <span className="font-mono text-accent">
-                  {ev.session_id.slice(0, 8)}…
+                  {fmtShortId(ev.session_id, 8)}
                 </span>
               </Td>
               <Td mono>
                 <span className="block max-w-[180px] truncate">
-                  {ev.model || "—"}
+                  {ev.model || "-"}
                 </span>
               </Td>
               <Td>
@@ -1373,7 +1373,7 @@ function RecentEventsTable({
                     flagged={ev.cause === "tools_changed"}
                   />
                 ) : (
-                  <span className="text-fg-3">—</span>
+                  <span className="text-fg-3">-</span>
                 )}
               </Td>
               <Td mono>
@@ -1384,14 +1384,14 @@ function RecentEventsTable({
                     }
                     title={
                       ev.predicted_kind !== ev.kind
-                        ? `Predicted ${ev.predicted_kind}, observed ${ev.kind} — possible engine drift`
+                        ? `Predicted ${ev.predicted_kind}, observed ${ev.kind} - possible engine drift`
                         : undefined
                     }
                   >
                     {ev.predicted_kind}
                   </span>
                 ) : (
-                  <span className="text-fg-3">—</span>
+                  <span className="text-fg-3">-</span>
                 )}
               </Td>
               <Td align="right" mono>
@@ -1529,7 +1529,7 @@ function escapeCsv(s: string): string {
 }
 
 // isoDateStamp returns today's date as YYYY-MM-DD without pulling
-// a date library — used to disambiguate exported CSV file names.
+// a date library - used to disambiguate exported CSV file names.
 function isoDateStamp(): string {
   return new Date().toISOString().slice(0, 10);
 }

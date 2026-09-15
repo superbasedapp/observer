@@ -1,0 +1,2 @@
+{"tool":"droid","raw_tool_name":"TodoWrite","raw_tool_input":"{\"todos\":[{\"content\":\"Fix the login redirect bug\",\"status\":\"in_progress\"},{\"content\":\"Draft the migration script\",\"status\":\"pending\"}]}","raw_tool_output":""}
+{"tool":"droid","raw_tool_name":"TodoWrite","raw_tool_input":"{\"todos\":\"1. [completed] Fix the login redirect bug\\n2. [in_progress] Draft the migration script\"}","raw_tool_output":""}

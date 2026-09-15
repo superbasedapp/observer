@@ -392,12 +392,185 @@ func TestObserverDeepEnrichGatedByCapturePolicy(t *testing.T) {
 func TestObserverSinkErrorIsNonFatal(t *testing.T) {
 	t.Parallel()
 	be := &FakeBackend{Events: attributedSequence()}
-	sink := &SliceSink{Err: errors.New("db locked")}
+	// A PERMANENT failure: no retry can fix a constraint violation, so it is
+	// dropped at once and counted under its own reason.
+	sink := &SliceSink{Err: errors.New("constraint failed: process_runs.process_key")}
 	o := NewObserver(Options{Backend: be, Attributor: NewAttributor(bridgeSeed(100, "s", "claude-code", 1), nil, nil), Sink: sink, FlushInterval: time.Hour})
 	if err := o.Run(context.Background()); err != nil {
 		t.Fatalf("sink error must not fail Run: %v", err)
 	}
-	if o.Health().Snapshot().Dropped["sink_error"] == 0 {
-		t.Error("sink error should be recorded as a drop, not crash the daemon")
+	if o.Health().Snapshot().Dropped[DropSinkError] == 0 {
+		t.Error("permanent sink error should be recorded as a drop, not crash the daemon")
+	}
+}
+
+// flakySink fails its first FailFirst PersistRuns calls with Err, then
+// succeeds. It is the whole point of the 9c fix: a sink that is momentarily
+// unavailable must not cost the daemon the batch it was holding.
+type flakySink struct {
+	Err       error
+	FailFirst int
+
+	Calls int
+	Runs  []ProcessRun
+}
+
+func (f *flakySink) PersistRuns(_ context.Context, runs []ProcessRun) (int, error) {
+	f.Calls++
+	if f.Calls <= f.FailFirst {
+		return 0, f.Err
+	}
+	f.Runs = append(f.Runs, runs...)
+	return len(runs), nil
+}
+
+// sinkKeys is the set of process keys a sink actually persisted, so a test can
+// assert on IDENTITY rather than on a count that a re-offered batch inflates.
+func sinkKeys(runs []ProcessRun) map[string]bool {
+	m := make(map[string]bool, len(runs))
+	for _, r := range runs {
+		m[r.ProcessKey] = true
+	}
+	return m
+}
+
+// TestObserverRetainsBatchOnTransientSinkFailure is the 9c regression: one
+// `database is locked` used to destroy the entire in-flight batch (up to 250
+// runs of process history) with nothing but a counter to show for it. The
+// batch must now survive the failure and land on the next flush.
+func TestObserverRetainsBatchOnTransientSinkFailure(t *testing.T) {
+	t.Parallel()
+	be := &FakeBackend{Events: attributedSequence()}
+	// BatchSize 1 makes every persisted run its own flush, so the first flush
+	// fails and the second carries BOTH the retained run and the new one.
+	sink := &flakySink{Err: errors.New("database is locked (5)"), FailFirst: 1}
+	o := NewObserver(Options{
+		Backend: be, Attributor: NewAttributor(bridgeSeed(100, "s", "claude-code", 1), nil, nil),
+		Sink: sink, BatchSize: 1, FlushInterval: time.Hour,
+	})
+	if err := o.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// All four runs of attributedSequence reach the sink: the one the failed
+	// flush was holding, plus the three that followed.
+	if got := len(sinkKeys(sink.Runs)); got != 2 {
+		// attributedSequence covers two distinct processes (pid 100, pid 200),
+		// each persisted twice (exec + exit).
+		t.Errorf("distinct persisted process keys = %d, want 2", got)
+	}
+	if len(sink.Runs) != 4 {
+		t.Errorf("persisted %d run snapshots, want 4 — a transient failure must lose none", len(sink.Runs))
+	}
+	h := o.Health().Snapshot()
+	if len(h.Dropped) != 0 {
+		t.Errorf("Dropped = %+v, want empty: nothing was lost, only delayed", h.Dropped)
+	}
+	if h.SinkRetained != 0 {
+		t.Errorf("SinkRetained = %d, want 0 once the sink recovered", h.SinkRetained)
+	}
+}
+
+// TestObserverRetentionIsBounded pins the other half of the contract: the
+// retention must never grow without bound against a sink that never recovers,
+// and every run it releases must be COUNTED — no silent loss, which is what
+// made the original anomaly undiagnosable from outside the daemon.
+func TestObserverRetentionIsBounded(t *testing.T) {
+	t.Parallel()
+	be := &FakeBackend{Events: attributedSequence()}
+	sink := &SliceSink{Err: errors.New("database is locked (5)")}
+	o := NewObserver(Options{
+		Backend: be, Attributor: NewAttributor(bridgeSeed(100, "s", "claude-code", 1), nil, nil),
+		Sink: sink, BatchSize: 1, MaxRetainedRuns: 1, FlushInterval: time.Hour,
+	})
+	if err := o.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	h := o.Health().Snapshot()
+	if h.Dropped[DropSinkRetryExhausted] == 0 {
+		t.Errorf("Dropped = %+v, want sink_retry_exhausted > 0 once the cap is overrun", h.Dropped)
+	}
+	if h.Dropped[DropSinkShutdown] == 0 {
+		t.Errorf("Dropped = %+v, want sink_shutdown > 0: rows still retained at the final flush are a real loss", h.Dropped)
+	}
+	// The conservation law: with a sink that persisted nothing, every run
+	// snapshot the pipeline produced must appear in the drop counters exactly
+	// once. A retained run that is neither persisted nor counted is the class
+	// of silent loss this whole task exists to eliminate.
+	var accounted int64
+	for _, n := range h.Dropped {
+		accounted += n
+	}
+	if accounted != 4 {
+		t.Errorf("drop counters total %d, want 4 (every run snapshot accounted for): %+v", accounted, h.Dropped)
+	}
+	if h.SinkRetained != 0 {
+		t.Errorf("SinkRetained = %d, want 0 after the final flush released everything", h.SinkRetained)
+	}
+}
+
+// TestObserverPermanentSinkErrorIsNotRetained pins the counterweight: a
+// failure no retry can fix must NOT occupy the retention, or a single
+// malformed batch would block rows that could still land.
+func TestObserverPermanentSinkErrorIsNotRetained(t *testing.T) {
+	t.Parallel()
+	be := &FakeBackend{Events: attributedSequence()}
+	sink := &flakySink{Err: errors.New("store.PersistRuns: exec[0]: no such table: process_runs"), FailFirst: 1}
+	o := NewObserver(Options{
+		Backend: be, Attributor: NewAttributor(bridgeSeed(100, "s", "claude-code", 1), nil, nil),
+		Sink: sink, BatchSize: 1, FlushInterval: time.Hour,
+	})
+	if err := o.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	h := o.Health().Snapshot()
+	if h.Dropped[DropSinkError] != 1 {
+		t.Errorf("Dropped[sink_error] = %d, want 1 — a permanent failure is released immediately: %+v", h.Dropped[DropSinkError], h.Dropped)
+	}
+	if h.Dropped[DropSinkRetryExhausted] != 0 {
+		t.Errorf("Dropped = %+v, want no retry_exhausted: the batch was never retained", h.Dropped)
+	}
+	// The three later runs still land — a permanent failure on one batch must
+	// not poison the ones after it.
+	if len(sink.Runs) != 3 {
+		t.Errorf("persisted %d runs after the permanent failure, want 3", len(sink.Runs))
+	}
+}
+
+// classifierSink declares the optional SinkErrorClassifier capability, the way
+// the store does for its driver's structured codes.
+type classifierSink struct {
+	SliceSink
+	class SinkErrorClass
+}
+
+func (c *classifierSink) ClassifySinkError(error) SinkErrorClass { return c.class }
+
+// TestObserverSinkClassifierCapabilityOutranksTable pins the capability seam:
+// a sink that KNOWS its driver's structured code decides, and the shared
+// string table is only the fallback. Branching on the capability (never on the
+// sink's concrete type) is what keeps this rule-compliant.
+func TestObserverSinkClassifierCapabilityOutranksTable(t *testing.T) {
+	t.Parallel()
+	// The message reads permanent to the table ("constraint failed"), but the
+	// sink itself says transient — so it must be retained, not dropped.
+	sink := &classifierSink{
+		SliceSink: SliceSink{Err: errors.New("constraint failed")},
+		class:     SinkErrorTransient,
+	}
+	o := NewObserver(Options{
+		Backend:    &FakeBackend{Events: attributedSequence()},
+		Attributor: NewAttributor(bridgeSeed(100, "s", "claude-code", 1), nil, nil),
+		Sink:       sink, BatchSize: 1, FlushInterval: time.Hour,
+	})
+	if err := o.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	h := o.Health().Snapshot()
+	if h.Dropped[DropSinkError] != 0 {
+		t.Errorf("Dropped = %+v, want no sink_error: the sink's own classifier said transient", h.Dropped)
+	}
+	if h.Dropped[DropSinkShutdown] == 0 {
+		t.Errorf("Dropped = %+v, want sink_shutdown: retained rows lost at the final flush are still counted", h.Dropped)
 	}
 }

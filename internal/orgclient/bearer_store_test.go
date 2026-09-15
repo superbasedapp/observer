@@ -90,7 +90,20 @@ func TestBearerStore_RoundTrip(t *testing.T) {
 				t.Fatalf("LoadAgentKey returned a different key")
 			}
 
-			// Clear removes both; loads then report ErrNoSecret.
+			// Save + load the virtual key (third slot, P5a).
+			if _, _, err := st.LoadVirtualKey(); !errors.Is(err, ErrNoSecret) {
+				t.Fatalf("LoadVirtualKey before save: err = %v, want ErrNoSecret", err)
+			}
+			const vkey = "sbo-vk-abc123"
+			if err := st.SaveVirtualKey(vkey, 7); err != nil {
+				t.Fatalf("SaveVirtualKey: %v", err)
+			}
+			gotKey, gotGen, err := st.LoadVirtualKey()
+			if err != nil || gotKey != vkey || gotGen != 7 {
+				t.Fatalf("LoadVirtualKey = %q, %d, %v; want %q, 7, nil", gotKey, gotGen, err, vkey)
+			}
+
+			// Clear removes all three; loads then report ErrNoSecret.
 			if err := st.Clear(); err != nil {
 				t.Fatalf("Clear: %v", err)
 			}
@@ -99,6 +112,9 @@ func TestBearerStore_RoundTrip(t *testing.T) {
 			}
 			if _, err := st.LoadAgentKey(); !errors.Is(err, ErrNoSecret) {
 				t.Fatalf("LoadAgentKey after Clear: err = %v, want ErrNoSecret", err)
+			}
+			if _, _, err := st.LoadVirtualKey(); !errors.Is(err, ErrNoSecret) {
+				t.Fatalf("LoadVirtualKey after Clear: err = %v, want ErrNoSecret", err)
 			}
 
 			// Clear again is a no-op (absence is not an error).
@@ -139,5 +155,19 @@ func TestDecodeAgentKey_Rejects(t *testing.T) {
 	}
 	if _, err := decodeAgentKey("YWJj"); err == nil { // "abc", wrong size
 		t.Fatal("expected error for wrong-size key")
+	}
+}
+
+func TestVirtualKeyCodec(t *testing.T) {
+	enc, err := encodeVirtualKey("sbo-vk-xyz", 42)
+	if err != nil {
+		t.Fatalf("encodeVirtualKey: %v", err)
+	}
+	key, gen, err := decodeVirtualKey(enc)
+	if err != nil || key != "sbo-vk-xyz" || gen != 42 {
+		t.Fatalf("decodeVirtualKey round-trip = %q, %d, %v; want sbo-vk-xyz, 42, nil", key, gen, err)
+	}
+	if _, _, err := decodeVirtualKey("not-json"); err == nil {
+		t.Fatal("expected error decoding non-JSON virtual key record")
 	}
 }

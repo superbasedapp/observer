@@ -1,0 +1,23 @@
+{
+ "session_id": "sess0003-0000-4000-8000-000000000003",
+ "cwd": "C:\\Users\\<u>\\demo-workspace\\antigravity",
+ "created_at": "2026-09-03T09:37:07.499166Z",
+ "updated_at": "2026-09-03T09:38:46.787561400Z",
+ "title": "Please give me a one-paragraph summary of the current project.",
+ "session_created_reason": "subagent",
+ "session_state": {
+  "version": "v1",
+  "conversation_metadata": {
+   "user_turn_metadatas": []
+  },
+  "rts_model_state": {
+   "conversation_id": "sess0003-0000-4000-8000-000000000003",
+   "model_info": {
+    "model_id": "auto",
+    "context_window_tokens": 200000
+   },
+   "context_usage_percentage": 1.3934001
+  },
+  "agent_name": "kiro_default"
+ }
+}

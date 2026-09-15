@@ -62,3 +62,92 @@ actually invoked in the captured session, so their `input`/`output`
 shapes are ungrounded. `mapFreebuffTool` deliberately leaves them
 unmapped (`ActionUnknown`) rather than guessing — see
 `docs/freebuff-adapter.md`'s known-gaps section.
+
+---
+
+# Freebuff Desktop fixture (layout 2)
+
+**Captured**: 2026-09-03 against a live, signed-in **Freebuff Desktop**
+run on native Windows 11, in
+`C:\Users\<u>\.config\freebuff-desktop\projects\<name>-<uuid>\`. The
+prompt kit was a single message asking for five things (summarise the
+project / create + run `hello_world.py` / edit it to "Hello Universe" +
+run / delete it / verify the deletion), which the app recorded as ONE
+user `messages` row and ONE assistant `messages` row.
+
+## File inventory
+
+| Path | Purpose |
+|------|---------|
+| `freebuff-desktop/projects/demo-11111111-2222-3333-4444-555555555555/desktop-v2.sql` | The store, as a **text `.sql` seed** (the repo tracks no SQLite binaries — tree-wide `*.db` gitignore — so `internal/adapter/freebuff/desktop_test.go::desktopFixture` materializes it into a temp `desktop-v2.db` per run, exactly the `testdata/devin/desktop/sessions.sql` convention). Schema + rows for `projects` / `threads` / `messages` / `queue_items` / `freebuff_storage_metadata`. |
+| `freebuff-desktop/projects/demo-11111111-2222-3333-4444-555555555555/project.json` | The real sibling sidecar (`{version, projectId, projectPath, database}`) — the LAST project-root fallback, after `threads.project_path` and `projects.root_path`. |
+
+## What the captured data covers
+
+- **Two layouts, one tool id.** The desktop store re-tags nothing: every
+  row still reports `models.ToolFreebuff`. Only the store shape and the
+  capture-surface stamp differ (`desktop` / `freebuff-desktop` vs the CLI's
+  `cli` / `freebuff`).
+- **The whole turn in one row.** `messages.parts_json` is an ordered array
+  of parts: `text`, `reasoning` (`id`/`text`/`open`/`collapse`), `tool`
+  (`id`/`toolName`/`input`, plus `status`+`output` only where the tool
+  produced one), `ad`, and a trailing `changes` part carrying the turn's
+  per-file workspace diff.
+- **Real per-turn usage** — unlike the CLI layout. `messages.metrics_json`
+  carries `usage.{inputTokens,cachedInputTokens,outputTokens,totalTokens}`
+  and `costUsd`. The fixture keeps the real numbers
+  (108245 / 94208 / 1622 / 109867, `costUsd` 0), which is what pins the
+  GROSS-input netting: `108245 = 14037 fresh + 94208 cached`, and
+  `totalTokens = inputTokens + outputTokens`.
+- **The `changes`-vs-tool-parts dedupe.** The single changed file
+  (`hello_world.py`) is covered by BOTH a `write_file` and a `str_replace`
+  tool part AND the `changes` part, so the fixture is the regression case
+  for the per-message dedupe.
+- **`changes.status` is not history.** The captured `changes` part reports
+  `hello_world.py` as `"added"` even though the same turn ended by deleting
+  it — evidence the part is a point-in-time diff panel, not an event log.
+- **A genuinely-unmapped real tool name**, `suggest_prompts` (the Desktop
+  sibling of the CLI's `suggest_followups`), landing honestly on
+  `ActionUnknown`.
+- **Status is usually absent.** Only `run_terminal_command` persisted
+  `status`/`output`; `list_directory` / `read_files` / `write_file` /
+  `str_replace` / `suggest_prompts` carry neither, by design.
+
+## Anonymisation — what was withheld
+
+- **`state.json` is NOT here, and was never read.** The real file (at the
+  `freebuff-desktop` root, beside `projects/`) carries an OAuth-style auth
+  **token** plus the operator's name and email under `authSessions`. Neither
+  it nor its `state.json.orchestrator-lock.sqlite` sibling is copied,
+  quoted, or opened; `layoutFor` rejects both by name.
+- **Ad payloads are placeholders.** The real `ad` parts embed a
+  `clickUrl` whose path is a signed JWT containing the operator's own user
+  id (`"u":"<uuid>"`), plus BuySellAds impression/click URLs. The fixture
+  keeps three `ad` parts so the skip path is exercised, but with an inert
+  payload (`https://example.invalid/plans`, no click/impression URLs, no
+  ids). The adapter's `desktopPart` struct declares **no** `ad` field at
+  all, so the payload is never even decoded.
+- **Identifiers are fixture-shaped.** The real project dir
+  (`antigravity-<uuid>`), thread uuid, queue-item uuid, project path
+  (a real `C:\Users\<u>\...` workspace) and the `ls -la` output's owner
+  column are all replaced. `projects.id` is kept as a PATH, because that
+  is genuinely what the Desktop stores there.
+- **Prose was shortened.** Reasoning / assistant text bodies are short
+  synthetic stand-ins of the real ones; structure, part order and part
+  kinds are byte-faithful to the capture.
+- **`threads.harness_state`** (a large engine-internal blob, in the real
+  capture a full `sessionState` with the workspace file tree) is replaced
+  by a one-key sentinel object. The adapter never reads the column, and
+  `TestDesktopOffLimitsFilesNeverDispatchedOrIngested` asserts the
+  sentinel never reaches a row.
+
+## Finding: there is no CLI twin
+
+On the grounding host the Desktop wrote **no** `~/.config/manicode` store
+at all — it is not a front-end over the CLI's chats directory, it is a
+separate store. So the two layouts cannot double-count the same run today.
+Their `SourceEventID` shapes are disjoint anyway (`<kind>:<thread
+uuid>:<messages.seq>:<part id>` vs `<kind>:<RFC3339 chat dir>:<message
+index>:<block path>`), so a future build that wrote both stores would
+still produce two clearly-distinguishable row sets rather than silently
+merged ones.

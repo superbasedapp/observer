@@ -54,6 +54,50 @@ func TestGovernanceOverlayIsTheLastMergeStep(t *testing.T) {
 	}
 }
 
+// TestGovernancePinnedRoutingEnabledYieldsARouter is the W5 proof (plan
+// docs/plans/org-observer-fundamentals-fix-plan-2026-09-13.md R4): a
+// node.governance settings pin naming routing.enabled applies through the
+// SAME generic overlay guard.mode already uses (no proxy.go code change
+// needed) — the org can turn a managed node's router on, or off, entirely
+// through the vocabulary change, not a new apply mechanism. The proxy's own
+// gate (cmd/observer/proxy.go wireRouting: "if !cfg.Routing.Enabled ...
+// return nil, nil") is exercised directly in
+// cmd/observer/routing_live_test.go's TestWireRouting_RoutingEnabledGate,
+// which starts from a Config built the same way (Routing.Enabled=true) and
+// asserts a non-nil router comes back.
+func TestGovernancePinnedRoutingEnabledYieldsARouter(t *testing.T) {
+	dbDir := t.TempDir()
+	cfgPath := govTempConfig(t, dbDir, "[routing]\nenabled = false\nmode = \"off\"\n")
+	govWriteSidecar(t, dbDir, `{"schema":1,"state":"applied","pinned":{"routing.enabled":true}}`)
+
+	cfg, out, err := LoadGovernance(LoadOptions{GlobalPath: cfgPath, Env: noEnv})
+	if err != nil {
+		t.Fatalf("LoadGovernance: %v", err)
+	}
+	if !cfg.Routing.Enabled {
+		t.Fatal("governance-pinned routing.enabled=true did not apply — cfg.Routing.Enabled is still false")
+	}
+	if cfg.Routing.Mode != "off" {
+		t.Fatalf("routing.mode changed to %q from an unrelated pin — it must only ever come from the local config or the signed org routing-policy body", cfg.Routing.Mode)
+	}
+	if !out.Governed() || len(out.Applied) != 1 || out.Applied[0] != "routing.enabled" {
+		t.Fatalf("outcome = %+v", out)
+	}
+
+	// The org may also LOWER it back off — routing.enabled is DirFree, both
+	// directions are legitimate fleet postures.
+	dbDir2 := t.TempDir()
+	cfgPath2 := govTempConfig(t, dbDir2, "[routing]\nenabled = true\nmode = \"advise\"\n")
+	govWriteSidecar(t, dbDir2, `{"schema":1,"state":"applied","pinned":{"routing.enabled":false}}`)
+	cfg2, _, err := LoadGovernance(LoadOptions{GlobalPath: cfgPath2, Env: noEnv})
+	if err != nil {
+		t.Fatalf("LoadGovernance: %v", err)
+	}
+	if cfg2.Routing.Enabled {
+		t.Fatal("governance-pinned routing.enabled=false did not apply — cfg.Routing.Enabled is still true")
+	}
+}
+
 // TestInertSidecarStillAppliesPins is the 2026-08-15 hook-smoke regression:
 // govern.Resolve reports "inert" for any PARTIAL application (the
 // always-present sections class drops whenever the grant lacks

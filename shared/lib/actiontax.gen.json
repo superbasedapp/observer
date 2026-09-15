@@ -1,0 +1,646 @@
+{
+  "generated": {
+    "by": "web/taxgen",
+    "from": "internal/tooltax",
+    "output": "shared/lib",
+    "regenerate": "make taxonomy-build",
+    "gate": "make verify-taxonomy-build",
+    "doNotEdit": true
+  },
+  "categories": [
+    "file",
+    "cmd",
+    "search",
+    "web",
+    "agent",
+    "skill",
+    "mcp",
+    "user",
+    "meta",
+    "fail"
+  ],
+  "surfaces": [
+    "builtin",
+    "mcp",
+    "orchestration",
+    "meta"
+  ],
+  "fallbackCategory": "meta",
+  "actionTypes": {
+    "agent_control": {
+      "category": "agent",
+      "label": "Agent control"
+    },
+    "agent_message": {
+      "category": "agent",
+      "label": "Agent message"
+    },
+    "api_error": {
+      "category": "fail",
+      "label": "API error"
+    },
+    "ask_user": {
+      "category": "user",
+      "label": "Ask user"
+    },
+    "assistant_message": {
+      "category": "meta",
+      "label": "Assistant message"
+    },
+    "browser_action": {
+      "category": "web",
+      "label": "Browser action"
+    },
+    "config_change": {
+      "category": "meta",
+      "label": "Config change"
+    },
+    "context_compacted": {
+      "category": "meta",
+      "label": "Context compacted"
+    },
+    "cwd_change": {
+      "category": "meta",
+      "label": "CWD change"
+    },
+    "edit_file": {
+      "category": "file",
+      "label": "Edit file"
+    },
+    "harness_call": {
+      "category": "meta",
+      "label": "Harness call"
+    },
+    "instructions_loaded": {
+      "category": "meta",
+      "label": "Instructions loaded"
+    },
+    "mcp_call": {
+      "category": "mcp",
+      "label": "MCP call"
+    },
+    "notification": {
+      "category": "meta",
+      "label": "Notification"
+    },
+    "permission_denied": {
+      "category": "fail",
+      "label": "Permission denied"
+    },
+    "permission_mode": {
+      "category": "meta",
+      "label": "Permission mode"
+    },
+    "permission_request": {
+      "category": "meta",
+      "label": "Permission request"
+    },
+    "post_tool_batch": {
+      "category": "meta",
+      "label": "Post-tool batch"
+    },
+    "prompt_context": {
+      "category": "meta",
+      "label": "Prompt context"
+    },
+    "rate_limit": {
+      "category": "meta",
+      "label": "Rate limit"
+    },
+    "read_file": {
+      "category": "file",
+      "label": "Read file"
+    },
+    "run_command": {
+      "category": "cmd",
+      "label": "Run command"
+    },
+    "schedule": {
+      "category": "meta",
+      "label": "Schedule"
+    },
+    "search_files": {
+      "category": "search",
+      "label": "Search files"
+    },
+    "search_text": {
+      "category": "search",
+      "label": "Search text"
+    },
+    "session_end": {
+      "category": "meta",
+      "label": "Session end"
+    },
+    "session_start": {
+      "category": "meta",
+      "label": "Session start"
+    },
+    "setup": {
+      "category": "meta",
+      "label": "Setup"
+    },
+    "skill_invoke": {
+      "category": "skill",
+      "label": "Invoke skill"
+    },
+    "spawn_subagent": {
+      "category": "agent",
+      "label": "Spawn subagent"
+    },
+    "stdin_write": {
+      "category": "agent",
+      "label": "Write stdin"
+    },
+    "subagent_start": {
+      "category": "agent",
+      "label": "Subagent start"
+    },
+    "subagent_stop": {
+      "category": "agent",
+      "label": "Subagent stop"
+    },
+    "subagent_wait": {
+      "category": "agent",
+      "label": "Wait for subagent"
+    },
+    "system_prompt": {
+      "category": "meta",
+      "label": "System prompt"
+    },
+    "task_complete": {
+      "category": "meta",
+      "label": "Task complete"
+    },
+    "todo_update": {
+      "category": "meta",
+      "label": "Todo update"
+    },
+    "tool_failure": {
+      "category": "fail",
+      "label": "Tool failure"
+    },
+    "tool_search": {
+      "category": "meta",
+      "label": "Tool search"
+    },
+    "turn_aborted": {
+      "category": "meta",
+      "label": "Turn aborted"
+    },
+    "unknown": {
+      "category": "meta",
+      "label": "Unknown"
+    },
+    "user_prompt": {
+      "category": "user",
+      "label": "User prompt"
+    },
+    "user_prompt_expansion": {
+      "category": "user",
+      "label": "Prompt expansion"
+    },
+    "web_fetch": {
+      "category": "web",
+      "label": "Web fetch"
+    },
+    "web_search": {
+      "category": "web",
+      "label": "Web search"
+    },
+    "worktree_create": {
+      "category": "meta",
+      "label": "Worktree create"
+    },
+    "worktree_remove": {
+      "category": "meta",
+      "label": "Worktree remove"
+    },
+    "write_file": {
+      "category": "file",
+      "label": "Write file"
+    }
+  },
+  "toolCoverage": {
+    "aider": {
+      "categories": [
+        "file",
+        "cmd"
+      ]
+    },
+    "antigravity": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web"
+      ]
+    },
+    "antigravity-cli": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web"
+      ]
+    },
+    "claude-code": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
+        "user",
+        "meta"
+      ]
+    },
+    "cline": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "cline-cli": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "codex": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "command-code": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "user",
+        "meta"
+      ]
+    },
+    "copilot": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "meta"
+      ]
+    },
+    "copilot-cli": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "cowork": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "crush": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent"
+      ]
+    },
+    "cursor": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "agent",
+        "mcp",
+        "meta"
+      ]
+    },
+    "deepseek": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
+        "user",
+        "meta"
+      ]
+    },
+    "devin": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "user",
+        "meta"
+      ]
+    },
+    "droid": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "user",
+        "meta"
+      ]
+    },
+    "freebuff": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
+        "user",
+        "meta"
+      ]
+    },
+    "gemini-cli": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "mcp",
+        "meta"
+      ]
+    },
+    "goose": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web"
+      ]
+    },
+    "grok": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "meta"
+      ]
+    },
+    "hermes": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "junie": {
+      "categories": [
+        "file",
+        "cmd",
+        "search"
+      ]
+    },
+    "kilo-code": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "kilo-code-cli": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "meta"
+      ]
+    },
+    "kimi-code": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "meta"
+      ]
+    },
+    "kiro-cli": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "meta"
+      ]
+    },
+    "kiro-crew": {
+      "categories": [
+        "file",
+        "cmd"
+      ]
+    },
+    "mistral-code": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
+        "user",
+        "meta"
+      ]
+    },
+    "muse": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
+        "user",
+        "meta"
+      ]
+    },
+    "open-interpreter": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "openclaw": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "mcp"
+      ]
+    },
+    "opencode": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "meta"
+      ]
+    },
+    "pi": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web"
+      ]
+    },
+    "poolside": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "meta"
+      ]
+    },
+    "prime-agent": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web"
+      ]
+    },
+    "qoder": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "user",
+        "meta"
+      ]
+    },
+    "qwen-code": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "roo-code": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "zcode": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "meta"
+      ]
+    },
+    "zed": {
+      "categories": [
+        "file",
+        "cmd",
+        "search"
+      ]
+    },
+    "zoo-code": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    }
+  },
+  "mcp": {
+    "prefix": "mcp__",
+    "separator": "__",
+    "separatorMinIndex": 1,
+    "targetSeparator": ":",
+    "note": "Canonical MCP tool-name form is prefix + <server> + separator + <tool>. On a display-normalised TARGET the colon form <server>:<tool> is also accepted (emitted by the codex adapter; 151 rows in the 321,675-row corpus measured 2026-07-31). The third historical form <server>/<tool> is DROPPED: zero corpus rows, and '/' is the path separator, so a path-shaped target would fabricate a server name. A separator at an offset below separatorMinIndex is NOT a split point — see internal/tooltax.MCPSeparatorMinIndex."
+  }
+}

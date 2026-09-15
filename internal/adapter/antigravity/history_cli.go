@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
@@ -186,6 +187,12 @@ func synthesizeHistoryUserPrompts(
 // only because desktop's plaintext trace wasn't known; that gating
 // is now in the caller's responsibility (it isn't — see adapter.go).
 func (a *Adapter) augmentResultFromHistory(sessionPath, conversationID, projectRoot, gitRemote string, res *adapter.ParseResult) int {
+	// identity mirrors projectRoot/gitRemote's own "pull from an
+	// existing event" derivation (Project Identity Resolver v2,
+	// 2026-09-06, §3.1 / W1): synthesized rows below attribute
+	// identically to the bridge/decrypt-surfaced rows for the same
+	// conversation.
+	identity := identityFromResult(res)
 	// Primary: layout-appropriate brain/<uuid> transcript (CLI:
 	// transcript.jsonl; desktop: overview.txt). Both decode through
 	// readCLITranscriptEntries — same schema.
@@ -213,6 +220,8 @@ func (a *Adapter) augmentResultFromHistory(sessionPath, conversationID, projectR
 				extraU, extraA,
 			)
 			if len(synth) > 0 {
+				scoped := adapter.ParseResult{ToolEvents: synth}
+				adapter.ApplyProjectIdentity(&scoped, identity)
 				res.ToolEvents = append(res.ToolEvents, synth...)
 			}
 			return len(synth)
@@ -235,6 +244,8 @@ func (a *Adapter) augmentResultFromHistory(sessionPath, conversationID, projectR
 	if len(synth) == 0 {
 		return 0
 	}
+	scoped := adapter.ParseResult{ToolEvents: synth}
+	adapter.ApplyProjectIdentity(&scoped, identity)
 	res.ToolEvents = append(res.ToolEvents, synth...)
 	return len(synth)
 }
@@ -277,6 +288,50 @@ func gitRemoteFromResult(res *adapter.ParseResult, conversationID string) string
 	return ""
 }
 
+// identityFromResult is projectRootFromResult/gitRemoteFromResult's
+// sibling for the full Project Identity Resolver v2 bundle: it pulls
+// every additive field off the same ToolEvent that carried the
+// project root, so synthesized history/transcript rows attribute
+// identically to the bridge/decrypt-surfaced rows for the same
+// conversation. Returns a zero Identity when no event carries one.
+func identityFromResult(res *adapter.ParseResult) git.Identity {
+	if res == nil {
+		return git.Identity{}
+	}
+	for _, ev := range res.ToolEvents {
+		if ev.ProjectRoot == "" {
+			continue
+		}
+		return git.Identity{
+			UpstreamRemote:     ev.GitUpstreamRemote,
+			RemoteOwner:        ev.GitRemoteOwner,
+			UpstreamOwner:      ev.GitUpstreamOwner,
+			RootCommitSHA:      ev.RootCommitSHA,
+			ContentFingerprint: ev.ContentFingerprint,
+			Workspace:          ev.Workspace,
+			IsWorktree:         ev.IsWorktree,
+		}
+	}
+	// Fall back to TokenEvents: parseCLIDB's gen_metadata pass only ever
+	// produces TokenEvents before augmentResultFromHistory runs, so the
+	// ToolEvents-only scan above would otherwise always miss it.
+	for _, tk := range res.TokenEvents {
+		if tk.ProjectRoot == "" {
+			continue
+		}
+		return git.Identity{
+			UpstreamRemote:     tk.GitUpstreamRemote,
+			RemoteOwner:        tk.GitRemoteOwner,
+			UpstreamOwner:      tk.GitUpstreamOwner,
+			RootCommitSHA:      tk.RootCommitSHA,
+			ContentFingerprint: tk.ContentFingerprint,
+			Workspace:          tk.Workspace,
+			IsWorktree:         tk.IsWorktree,
+		}
+	}
+	return git.Identity{}
+}
+
 // historyOnlyResult builds a ParseResult populated entirely from
 // on-disk plaintext sources — used in the decrypt + gRPC double-
 // failure branch as a final escape hatch. Returns nil when no source
@@ -311,9 +366,9 @@ func (a *Adapter) historyOnlyResult(sessionPath string, fi os.FileInfo) *adapter
 		return nil
 	}
 	conversationID := uuidFromFilename(sessionPath)
-	projectRoot, gitRemote := "[antigravity]", ""
+	projectRoot, gitRemote, projectIdentity := "[antigravity]", "", git.Identity{}
 	if idx := a.lookupIndexEntry(sessionPath, conversationID); idx != nil && idx.workspaceURI != "" {
-		projectRoot, gitRemote = decodeFileURIToRoot(idx.workspaceURI)
+		projectRoot, gitRemote, projectIdentity = decodeFileURIToRoot(idx.workspaceURI)
 	}
 	// Primary: layout-appropriate brain/<uuid>/...txt|jsonl.
 	if path := transcriptPathFor(sessionPath, conversationID); path != "" {
@@ -342,7 +397,7 @@ func (a *Adapter) historyOnlyResult(sessionPath string, fi os.FileInfo) *adapter
 				if layout == LayoutDesktop {
 					sourceName = "overview.txt"
 				}
-				return &adapter.ParseResult{
+				out := &adapter.ParseResult{
 					NewOffset:  fi.Size(),
 					ToolEvents: synth,
 					Warnings: []string{
@@ -351,6 +406,8 @@ func (a *Adapter) historyOnlyResult(sessionPath string, fi os.FileInfo) *adapter
 							" event(s) from " + sourceName,
 					},
 				}
+				adapter.ApplyProjectIdentity(out, projectIdentity)
+				return out
 			}
 		}
 	}
@@ -373,7 +430,7 @@ func (a *Adapter) historyOnlyResult(sessionPath string, fi os.FileInfo) *adapter
 	if len(synth) == 0 {
 		return nil
 	}
-	return &adapter.ParseResult{
+	out := &adapter.ParseResult{
 		NewOffset:  fi.Size(),
 		ToolEvents: synth,
 		Warnings: []string{
@@ -382,4 +439,6 @@ func (a *Adapter) historyOnlyResult(sessionPath string, fi os.FileInfo) *adapter
 				" user_prompt(s) from history.jsonl (no assistant responses available without the bridge)",
 		},
 	}
+	adapter.ApplyProjectIdentity(out, projectIdentity)
+	return out
 }

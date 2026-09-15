@@ -23,9 +23,11 @@ import {
 } from "@/components/charts";
 import { ChartState } from "@/components/ChartState";
 import { BudgetCard } from "@/components/BudgetCard";
+import { LOCPerDollarTile } from "@/components/LOCPerDollarTile";
 import { HeroWordmark } from "@/components/HeroWordmark";
 import {
   useFilters,
+  windowDaysApprox,
   windowLabel,
   windowParams,
   windowSpanHours,
@@ -46,6 +48,10 @@ export function CostPage() {
   const winParams = windowParams(win, customRange);
   const bucket = windowSpanHours(win, customRange) <= 48 ? "hour" : "day";
   const winLbl = windowLabel(win, customRange);
+  // /api/loc/summary is day-granular only, so the LOC-per-$ tile takes the
+  // window rounded up to whole days and fetches its own denominator at the
+  // same day count rather than reusing this page's filtered cost.
+  const locDays = windowDaysApprox(win, customRange);
   const projectParam = project === "all" ? undefined : project;
   const toolParam = tool === "all" ? undefined : tool;
 
@@ -78,7 +84,7 @@ export function CostPage() {
     <div className="space-y-6 p-6">
       <PageHeader
         title="Cost"
-        sub="Per-model token consumption split into the four billable buckets — net input, cache read, cache write, output — with computed cost. Hover any column header for the formula."
+        sub="Per-model token consumption split into the four billable buckets - net input, cache read, cache write, output - with computed cost. Hover any column header for the formula."
         helpId="tab.cost"
         right={
           <Link
@@ -107,7 +113,7 @@ export function CostPage() {
           icon={<CoinsIcon />}
           loading={models.loading || costTs.loading}
           value={fmtUSD(summary.cost)}
-          sub={summary.reliability || "—"}
+          sub={summary.reliability || "-"}
           spark={sparks.cost}
           sparkColor="var(--accent)"
           accent
@@ -179,6 +185,16 @@ export function CostPage() {
           80/100% thresholds and a month-end forecast. */}
       <BudgetCard />
 
+      {/* AI code lines per dollar (lines-of-code tracking §3.4). Lives on
+          Cost because the denominator is this page's own subject and its
+          window control is already here; on Overview it would be a cost
+          question on a health page. */}
+      <LOCPerDollarTile
+        days={locDays}
+        windowLabel={winLbl}
+        filtered={tool !== "all" || project !== "all"}
+      />
+
       {/* Model table — unknown-model warning + Group/Export controls
           in panel header per design 1.13 / dC5. */}
       <ChartShell
@@ -187,7 +203,7 @@ export function CostPage() {
         right={
           <div className="flex items-center gap-2">
             {(models.data?.fast_turn_count ?? 0) > 0 && (
-              <Tooltip content="Turns served in a provider's low-latency fast tier — Anthropic Opus 4.8 (speed:&quot;fast&quot;) or OpenAI/Codex (service_tier:&quot;priority&quot;), billed at the model's fast-mode premium (2×–2.5×). Cost shown already includes the premium.">
+              <Tooltip content="Turns served in a provider's low-latency fast tier - Anthropic Opus 4.8 (speed:&quot;fast&quot;) or OpenAI/Codex (service_tier:&quot;priority&quot;), billed at the model's fast-mode premium (2×–2.5×). Cost shown already includes the premium.">
                 <span className="inline-flex items-center gap-1.5 rounded-2 border border-info/40 bg-info-soft px-2.5 py-1 text-[10.5px] font-medium text-info">
                   <span aria-hidden>⚡</span>
                   {fmtInt(models.data?.fast_turn_count)} fast-tier turn
@@ -360,10 +376,10 @@ function deriveSparks(ts?: CostTimeseries | null) {
 
 // Honesty rule (mirrors Overview.tsx's status.error / discover.data
 // pattern): a falsy `s` means "we don't have a resolved answer yet"
-// — either still loading or the query failed — never "the answer is
+// - either still loading or the query failed - never "the answer is
 // zero". Returning `undefined` fields here (instead of the old
-// all-zero object) lets fmtUSD/fmtInt/fmtCompact/fmtPct — which are
-// already null-safe, see lib/format.ts — render "—" for every tile
+// all-zero object) lets fmtUSD/fmtInt/fmtCompact/fmtPct - which are
+// already null-safe, see lib/format.ts - render "-" for every tile
 // below rather than a confident "$0.00" while nothing has loaded.
 // Once `s` resolves, a genuine zero renders as a genuine zero.
 function summarize(s?: CostSummary | null) {
@@ -534,7 +550,7 @@ function ModelRow({
         {fmtCompact(t.output)}
       </Td>
       <Td align="right" mono>
-        {t.reasoning > 0 ? fmtCompact(t.reasoning) : "—"}
+        {t.reasoning > 0 ? fmtCompact(t.reasoning) : "-"}
       </Td>
       <Td align="right" mono>
         {fmtInt(row.turn_count)}
@@ -543,7 +559,7 @@ function ModelRow({
         {fmtUSD(row.ai_cost_usd)}
       </Td>
       <Td align="right" mono>
-        {row.tool_cost_usd > 0 ? fmtUSD(row.tool_cost_usd) : "—"}
+        {row.tool_cost_usd > 0 ? fmtUSD(row.tool_cost_usd) : "-"}
       </Td>
       <Td align="right" mono>
         <strong className="text-fg-0">{fmtUSD(row.cost_usd)}</strong>
@@ -567,7 +583,7 @@ function SourcePill({ source }: { source: string }) {
     case "mixed":
       return <Pill variant="warn">mixed</Pill>;
     default:
-      return <Pill>—</Pill>;
+      return <Pill>-</Pill>;
   }
 }
 
@@ -663,10 +679,10 @@ function CoworkReconcileCard({ data }: { data: CoworkReconcileResult }) {
                 key={r.session_id}
                 className="border-b border-line-1 last:border-b-0 hover:bg-bg-3/40"
               >
-                <Td mono>{r.process_name || "—"}</Td>
+                <Td mono>{r.process_name || "-"}</Td>
                 <Td>
                   <span className="line-clamp-1 max-w-[280px] text-fg-2">
-                    {r.title || <em className="text-fg-4">—</em>}
+                    {r.title || <em className="text-fg-4">-</em>}
                   </span>
                 </Td>
                 <Td align="right" mono>
@@ -710,7 +726,7 @@ function CoworkReconcileCard({ data }: { data: CoworkReconcileResult }) {
 // toggles); real rewrites surface the warn variant; hit-
 // dominated rows render info.
 function CacheAnnotationPill({ cache }: { cache: SessionCacheAnnotation }) {
-  const ratio = cache.ratio > 0 ? `${cache.ratio.toFixed(1)}×` : "—";
+  const ratio = cache.ratio > 0 ? `${cache.ratio.toFixed(1)}×` : "-";
   let variant: "info" | "neutral" | "warn" = "info";
   if (cache.has_flagged_rewrites) {
     variant = "neutral";

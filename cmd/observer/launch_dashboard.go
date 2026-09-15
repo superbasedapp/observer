@@ -15,10 +15,13 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/remoteauth"
+	"github.com/marmutapp/superbased-observer/internal/sshforward"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/termlease"
 	"github.com/marmutapp/superbased-observer/internal/termrun"
@@ -57,6 +60,25 @@ type launchManagerAdapter struct {
 	// wired (auditing disabled). Built in buildTerminalStack over the SAME
 	// SpawnAuditKind vocabulary the dashboard resume handler uses.
 	attachAudit func(runID, tool, handle string)
+	// instances owns the instance switcher's SSH local port forwards
+	// (docs/ssh-terminals.md "Instance switcher"). Nil when the terminal stack
+	// was not built — the dashboard's optional-seam assertion still succeeds,
+	// and every verb then degrades honestly through the nil-safe Manager
+	// methods rather than panicking.
+	instances *sshforward.Manager
+	// guard is the process-wide egress-policy Guard (P7 gateway-arc item 3:
+	// the sandbox_enforce lane). Nil when guarding is disabled/no DB — every
+	// consumer must nil-check via guard.Mode(), which itself has no
+	// nil-receiver guard.
+	guard *guard.Guard
+	// sandboxProber backs the same B9 probe the dashboard's own
+	// /api/terminal/sandbox endpoint uses, reused here so CreateFresh's
+	// auto-upgrade decision and the dashboard's own availability display never
+	// disagree. Nil when [terminal.sandbox] is disabled.
+	sandboxProber dashboard.SandboxProber
+	// nf is the node.features policy handle (P7 gateway-arc item 4's
+	// org_disallow honor path). Nil-safe: a nil nf allows every tool.
+	nf *nodeFeaturesHandle
 }
 
 // newSpawnAuditSink builds the metadata-only spawn-audit closure (F4,
@@ -113,6 +135,18 @@ func terminalLaunchPolicy(tc config.TerminalConfig) termsvc.Policy {
 		AllowedTools:        tc.Launch.AllowedTools,
 		AllowedProjectRoots: tc.Launch.AllowedProjectRoots,
 		AllowShell:          tc.Enabled && tc.Launch.AllowShell,
+		// SSH remote-system shells. Like AllowShell this requires BOTH the
+		// terminal-wide surface and its OWN opt-in — an SSH shell runs
+		// arbitrary commands on ANOTHER machine, so [terminal.launch].
+		// allow_shell (a LOCAL shell) deliberately does not imply it.
+		//
+		// The profile list is threaded in whole: it IS the authorization model
+		// (a name the operator never wrote can never become a connection), so
+		// the daemon holds exactly the list config declared, converted once at
+		// this boundary into the pure sshprofile type.
+		AllowSSH:    tc.Enabled && tc.SSH.Enabled,
+		SSHProfiles: config.SSHProfiles(tc.SSH),
+		SSHOptions:  config.SSHOptions(tc.SSH),
 	}
 }
 
@@ -150,6 +184,35 @@ func (a *launchManagerAdapter) Create(spec dashboard.LaunchSpec) (string, error)
 }
 
 func (a *launchManagerAdapter) CreateFresh(spec dashboard.FreshLaunchSpec) (string, error) {
+	// P7 gateway-arc item 4: org_disallow honor path. Checked before termsvc's
+	// own AllowedTools/AllowedProjectRoots authorization, so a tool the org
+	// policy disallows never reaches the launcher at all. a.nf is nil-safe —
+	// no org policy (or no tools stanza) allows every tool.
+	if allowed, _ := a.nf.ToolAllowed(spec.Tool); !allowed {
+		return "", dashboard.ErrLaunchToolNotAllowed
+	}
+	// P7 gateway-arc item 3: sandbox-enforce lane. When the process-wide
+	// guard is in enforce mode and the integration registry's EFFECTIVE
+	// enforcement channel for this tool (accounting for sandbox availability
+	// on THIS platform, via the same prober the dashboard's own
+	// /api/terminal/sandbox endpoint consults) is sandbox_enforce,
+	// auto-upgrade an unsandboxed request rather than silently letting a
+	// hookless tool launch unguarded. Never downgrades an already-sandboxed
+	// request; never forces a sandbox that isn't actually available —
+	// EffectiveEnforcement degrades to recorded_acceptance in that case, so
+	// the request proceeds unsandboxed honestly rather than failing closed
+	// on a platform that can't sandbox at all.
+	if a.guard != nil && a.guard.Mode() == policy.ModeEnforce && !spec.Sandbox {
+		if c, ok := integration.For(spec.Tool); ok {
+			sandboxAvailable := false
+			if a.sandboxProber != nil {
+				sandboxAvailable = a.sandboxProber.ProbeSandbox(context.Background()).Available
+			}
+			if c.EffectiveEnforcement(sandboxAvailable) == integration.EnforceSandbox {
+				spec.Sandbox = true
+			}
+		}
+	}
 	res, err := a.svc.LaunchFresh(context.Background(), termsvc.FreshRequest{
 		Tool:        spec.Tool,
 		Subcommand:  spec.Subcommand,
@@ -171,6 +234,173 @@ func (a *launchManagerAdapter) CreateFresh(spec dashboard.FreshLaunchSpec) (stri
 		return "", mapFreshErr(err)
 	}
 	return res.Handle, nil
+}
+
+// CreateSSH spawns an OUTBOUND SSH remote-system shell through the terminal
+// application service (docs/plans/ssh-remote-profiles-plan-2026-08-27.md).
+//
+// Note what is NOT here: no crossmount.TranslateForeignPath, no project root,
+// no subcommand, no model. The spec carries a profile NAME and the PTY
+// geometry; the service resolves every connection parameter from the operator's
+// own config. Errors map through mapSSHErr onto the dashboard sentinels.
+func (a *launchManagerAdapter) CreateSSH(spec dashboard.SSHLaunchSpec) (string, error) {
+	res, err := a.svc.LaunchSSH(context.Background(), termsvc.SSHRequest{
+		Profile: spec.Profile,
+		Rows:    spec.Rows,
+		Cols:    spec.Cols,
+	})
+	if err != nil {
+		return "", mapSSHErr(err)
+	}
+	return res.Handle, nil
+}
+
+// SSHProfiles projects the service's configured profiles onto the dashboard's
+// picker rows. It is a pure projection of config — never a mutation — and it
+// deliberately narrows what crosses the seam: the full key PATH stays behind,
+// and only its BASENAME (KeyHint) is exposed, so the dashboard never discloses
+// the operator's filesystem layout.
+func (a *launchManagerAdapter) SSHProfiles() (bool, []dashboard.SSHProfileInfo) {
+	enabled, profiles := a.svc.SSHProfileList()
+	if len(profiles) == 0 {
+		return enabled, nil
+	}
+	out := make([]dashboard.SSHProfileInfo, 0, len(profiles))
+	for _, p := range profiles {
+		out = append(out, dashboard.SSHProfileInfo{
+			Name:    p.Name,
+			Label:   p.Display(),
+			Target:  p.Target(),
+			Jump:    p.Jump,
+			HasKey:  p.KeyPath != "",
+			KeyHint: p.KeyHint(),
+		})
+	}
+	return enabled, out
+}
+
+// --- dashboard instanceManager implementation (instance switcher) ---
+//
+// The three methods below satisfy the dashboard's OPTIONAL instanceManager
+// seam. They are pure projections of the sshforward.Manager: this adapter adds
+// no policy of its own, because every authorization decision (feature enabled,
+// profile known, profile still valid, host key trusted) already lives in the
+// one owner. A nil manager is honest rather than fatal — Enabled/List are
+// nil-safe, and the verbs return ErrDisabled.
+
+// Instances lists the operator's configured remote Observer installs plus each
+// one's live forward state. Like SSHProfiles this narrows what crosses the
+// seam: the key PATH stays behind and only its basename travels.
+func (a *launchManagerAdapter) Instances() (bool, []dashboard.InstanceInfo) {
+	if a == nil {
+		return false, nil
+	}
+	rows := a.instances.List()
+	if len(rows) == 0 {
+		return a.instances.Enabled(), nil
+	}
+	out := make([]dashboard.InstanceInfo, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, instanceInfo(r))
+	}
+	return a.instances.Enabled(), out
+}
+
+// ConnectInstance opens (or re-uses) the local port forward for a profile.
+func (a *launchManagerAdapter) ConnectInstance(name string) (dashboard.InstanceInfo, error) {
+	if a == nil || a.instances == nil {
+		return dashboard.InstanceInfo{}, dashboard.ErrInstancesDisabled
+	}
+	inst, err := a.instances.Connect(name)
+	if err != nil {
+		return dashboard.InstanceInfo{}, mapInstanceErr(err)
+	}
+	return instanceInfo(inst), nil
+}
+
+// DisconnectInstance closes the forward and returns the resulting row. The
+// post-disconnect snapshot is read back rather than synthesized so the UI is
+// updated from the manager's own state, not from this adapter's assumption
+// about it.
+func (a *launchManagerAdapter) DisconnectInstance(name string) (dashboard.InstanceInfo, error) {
+	if a == nil || a.instances == nil {
+		return dashboard.InstanceInfo{}, dashboard.ErrInstancesDisabled
+	}
+	if err := a.instances.Disconnect(name); err != nil {
+		return dashboard.InstanceInfo{}, mapInstanceErr(err)
+	}
+	inst, ok := a.instances.Get(name)
+	if !ok {
+		return dashboard.InstanceInfo{}, dashboard.ErrInstanceUnknown
+	}
+	return instanceInfo(inst), nil
+}
+
+// TestInstance runs the bounded, non-interactive connectivity probe
+// (sshforward.Manager.Test) for a profile and projects the result onto the
+// dashboard wire shape. Like Connect/Disconnect it re-validates the profile
+// first (inside Manager.Test), so a request can never probe a machine the
+// operator did not write down; unlike them it opens no forward and leaves no
+// live state, so it needs no post-call snapshot read-back.
+func (a *launchManagerAdapter) TestInstance(name string) (dashboard.InstanceTestResult, error) {
+	if a == nil || a.instances == nil {
+		return dashboard.InstanceTestResult{}, dashboard.ErrInstancesDisabled
+	}
+	result, err := a.instances.Test(name)
+	if err != nil {
+		return dashboard.InstanceTestResult{}, mapInstanceErr(err)
+	}
+	return instanceTestResult(result), nil
+}
+
+// instanceInfo projects one manager row onto the dashboard wire shape.
+func instanceInfo(r sshforward.Instance) dashboard.InstanceInfo {
+	return dashboard.InstanceInfo{
+		Name:          r.Name,
+		Label:         r.Label,
+		Target:        r.Target,
+		DashboardPort: r.DashboardPort,
+		HasKey:        r.HasKey,
+		KeyHint:       r.KeyHint,
+		Jump:          r.Jump,
+		State:         string(r.State),
+		LocalPort:     r.LocalPort,
+		URL:           r.URL,
+		Error:         r.Error,
+	}
+}
+
+// instanceTestResult projects sshforward's TestResult onto the dashboard wire
+// shape (milliseconds rather than a time.Duration, so the JSON stays a plain
+// number).
+func instanceTestResult(r sshforward.TestResult) dashboard.InstanceTestResult {
+	return dashboard.InstanceTestResult{
+		KnownHostsChecked: r.KnownHostsChecked,
+		KnownHostsOK:      r.KnownHostsOK,
+		AuthOK:            r.AuthOK,
+		LatencyMS:         r.Latency.Milliseconds(),
+		Stderr:            r.Stderr,
+	}
+}
+
+// mapInstanceErr maps sshforward's sentinels onto the dashboard's, keeping the
+// manager's own message (which is where the actionable known_hosts guidance
+// lives) by wrapping rather than replacing.
+func mapInstanceErr(err error) error {
+	switch {
+	case errors.Is(err, sshforward.ErrDisabled):
+		return dashboard.ErrInstancesDisabled
+	case errors.Is(err, sshforward.ErrUnknownProfile):
+		return fmt.Errorf("%w: %w", dashboard.ErrInstanceUnknown, err)
+	case errors.Is(err, sshforward.ErrInvalidProfile):
+		return fmt.Errorf("%w: %w", dashboard.ErrInstanceInvalid, err)
+	case errors.Is(err, sshforward.ErrHostKeyUnknown):
+		return fmt.Errorf("%w: %w", dashboard.ErrInstanceHostKeyUnknown, err)
+	case errors.Is(err, sshforward.ErrForwardFailed):
+		return fmt.Errorf("%w: %w", dashboard.ErrInstanceForwardFailed, err)
+	default:
+		return err
+	}
 }
 
 // CreateResume spawns a NATIVE resume of a closed session (session-attach
@@ -209,7 +439,7 @@ func (a *launchManagerAdapter) CreateSetup(spec dashboard.SetupSpec) (string, er
 		Kind:       termsession.SpecSetup,
 		SetupArgv:  spec.Argv,
 		SetupLabel: spec.Label, // keys the setup single-flight (one PTY per kind)
-		Env:        setupChildEnv(),
+		Env:        setupChildEnvFor(setupProgram(spec.Argv)),
 		Rows:       spec.Rows,
 		Cols:       spec.Cols,
 	})
@@ -217,6 +447,18 @@ func (a *launchManagerAdapter) CreateSetup(spec dashboard.SetupSpec) (string, er
 		return "", mapLaunchErr(err)
 	}
 	return handle, nil
+}
+
+// setupProgram returns the PROGRAM a setup argv runs (its head), or "" for an
+// empty argv. It is what setupChildEnvFor prepends the directory of, so a
+// guided install whose argv[0] dashboardInstallPlanFor already resolved to an
+// absolute path (DI-04a) also gets that directory on the setup PTY's own PATH
+// — which is how an npm shim in a login-only prefix finds its node (DI-04b).
+func setupProgram(argv []string) string {
+	if len(argv) == 0 {
+		return ""
+	}
+	return argv[0]
 }
 
 func (a *launchManagerAdapter) Subscribe(handle string) (dashboard.LaunchSubscription, error) {
@@ -399,25 +641,72 @@ func (a *launchManagerAdapter) wireRemoteExecute(authz dashboard.TerminalControl
 // no-op — leaving AcquireWriterRemote fail-closed (ErrLaunchExecuteUnavailable) —
 // when either is absent. Both `observer dashboard` and `observer start` call it
 // with the identical assembly, so the two commands share one authorization path.
+// browsableRoot is the ONE owner of "which directory does the Files/Git surface
+// serve for this run" — consulted by BOTH the panel's token→root seam
+// (projectRootResolver) and the Snapshot flag that enables its buttons
+// (LaunchInfo.HasProjectRoot), so the button and the endpoint can never
+// disagree.
+//
+// Two answers, in order:
+//
+//   - svc.ProjectRoot — the AUTHORIZED root, present only when the launch
+//     requested a root the operator allow-listed under
+//     [terminal.launch].allowed_project_roots. Reported Authorized=true.
+//   - svc.SpawnDir — the FACTUAL directory the run's child executes in (the
+//     daemon's own cwd for a default-cwd launch). Reported Authorized=false.
+//
+// Serving the second is the 2026-08-28 operator ruling, deliberately overruling
+// the previous conservative gating that left Files/Git disabled for every
+// default-cwd launch. The allow-list governs which roots a dashboard client may
+// REQUEST at launch time; it was never a statement about which directory an
+// already-running, owner-local terminal may browse. What widens is WHICH root is
+// browsable, not who may browse: the panel handlers keep every per-request
+// containment guard (fsview traversal/symlink re-verification, gitview argv
+// hardening) and the remote [remote].allow_terminal_view gate unchanged.
+//
+// SSH runs are the one exclusion, and on shape rather than tool name: a
+// termrun.KindSSH child's shell lives on ANOTHER machine, so its local spawn dir
+// (the daemon's cwd, where the ssh client happens to run) is not the terminal's
+// working directory at all. Browsing it would be a false claim, so the zero
+// TerminalRoot is returned and the buttons stay honestly disabled.
+//
+// The zero value means "nothing browsable" and never carries a path.
+func browsableRoot(svc *termsvc.Service, handle string) dashboard.TerminalRoot {
+	if svc == nil {
+		return dashboard.TerminalRoot{}
+	}
+	if root, ok := svc.ProjectRoot(handle); ok && root != "" {
+		return dashboard.TerminalRoot{Path: root, Authorized: true}
+	}
+	if kind, _, ok := svc.KindForHandle(handle); ok && kind == termrun.KindSSH {
+		return dashboard.TerminalRoot{}
+	}
+	spawnDir, ok := svc.SpawnDir(handle)
+	if !ok || spawnDir == "" {
+		return dashboard.TerminalRoot{}
+	}
+	return dashboard.TerminalRoot{Path: spawnDir}
+}
+
 // projectRootResolver adapts the launch manager's termsvc.Service into the
-// dashboard's token→project-root seam (Arc A project panel). It reports
-// known=false for an unknown OR exited token (RunIDForHandle tracks LIVE runs
-// only — an exited handle lingers in byMeta for classification but is not
-// browsable) and (root="", known=true) for a live run launched with the default
-// cwd. Returns nil when the manager isn't the concrete adapter (or has no
-// service), which leaves the panel endpoints disabled (404).
-func projectRootResolver(launchMgr dashboard.LaunchManager) func(string) (string, bool) {
+// dashboard's token→root seam (Arc A project panel). It reports known=false for
+// an unknown OR exited token (RunIDForHandle tracks LIVE runs only — an exited
+// handle lingers in byMeta for classification but is not browsable) and
+// (Path="", known=true) for a live run with no local directory to browse.
+// The directory decision itself belongs to browsableRoot. Returns nil when the
+// manager isn't the concrete adapter (or has no service), which leaves the panel
+// endpoints disabled (404).
+func projectRootResolver(launchMgr dashboard.LaunchManager) func(string) (dashboard.TerminalRoot, bool) {
 	a, ok := launchMgr.(*launchManagerAdapter)
 	if !ok || a == nil || a.svc == nil {
 		return nil
 	}
 	svc := a.svc
-	return func(token string) (string, bool) {
+	return func(token string) (dashboard.TerminalRoot, bool) {
 		if _, live := svc.RunIDForHandle(token); !live {
-			return "", false
+			return dashboard.TerminalRoot{}, false
 		}
-		root, _ := svc.ProjectRoot(token)
-		return root, true
+		return browsableRoot(svc, token), true
 	}
 }
 
@@ -615,8 +904,10 @@ func (a *launchManagerAdapter) Snapshot() []dashboard.LaunchInfo {
 		// HasProjectRoot drives the dashboard's Files/Git panel button enablement
 		// straight from the snapshot — the raw path is NOT carried on the wire
 		// (LaunchInfo flows to remote viewers); only the gated panel endpoint
-		// serves it.
-		if _, ok := a.svc.ProjectRoot(s.ID); ok {
+		// serves it. It reads the SAME browsableRoot decision the panel endpoint
+		// resolves, so a default-cwd launch enables the buttons on its own working
+		// directory (operator ruling 2026-08-28) and an SSH run leaves them off.
+		if browsableRoot(a.svc, s.ID).Path != "" {
 			info.HasProjectRoot = true
 		}
 		// B9 (plan §6): the "sandboxed" pill on the Terminals list/header,
@@ -734,10 +1025,13 @@ func newLeaseAuditSink(database *sql.DB) func(termsession.LeaseEvent) {
 // dashResolveEnvTTL bounds how long the dashboard reuses a captured
 // toolresolve.Env before rebuilding it. A short window (not a forever-memoized
 // value) is what keeps the "a fresh install becomes visible in a daemon-side
-// preflight without a restart" story honest (F7): host.NewEnv does a crossmount
-// home walk + a bounded (≤1.5s) login-shell PATH capture, so per-call rebuilds
-// would be wasteful, but a process-lifetime memo would pin the PATH snapshot
-// taken at first launch forever.
+// preflight without a restart" story honest (F7): a rebuild is not free — the
+// crossmount home walk, a login-shell PATH capture bounded at 3s PER ATTEMPT
+// (bash/zsh try `-lic` first and fall back to `-lc`, so up to two), and the
+// lazy `npm prefix -g` probe bounded at a further 3s on the first Resolve that
+// reaches it — so per-call rebuilds would be wasteful, but a process-lifetime
+// memo would pin the PATH snapshot taken at first launch forever. Each probe is
+// memoized ON the Env, so those costs are paid once per rebuild, not per tool.
 var dashResolveEnvTTL = 30 * time.Second
 
 var (
@@ -789,7 +1083,9 @@ func installOSForGOOS(goos string) string {
 // resolves a launchable tool NAME to a dashboard.ToolPreflight verdict via the
 // SAME ladder the actual launcher (cmd/observer/launch.go resolveToolBin)
 // honors, so a preflight never diverges from the launch it predicts (F1). It
-// reports ok=false for an unknown tool, a non-launchable tool, or one with no
+// reports ok=false for an unknown tool, a tool that is not
+// integration.TerminalLaunchable (no grounded LaunchSpec, or a deprecated /
+// dead product the harness lifecycle policy stops advertising), or one with no
 // grounded Binary spec (the honest floor the endpoint turns into a 400).
 //
 // Ladder, mirroring resolveToolBin (the --<tool>-path FLAG has no dashboard
@@ -812,8 +1108,13 @@ func installOSForGOOS(goos string) string {
 func toolPreflightSeam(configPath string, allowInstall func() bool) func(string) (dashboard.ToolPreflight, bool) {
 	return func(tool string) (dashboard.ToolPreflight, bool) {
 		ic, ok := integration.For(tool)
-		if !ok || !ic.Handoff.Launchable() || ic.Binary == nil {
-			return dashboard.ToolPreflight{}, false
+		if !ok || !integration.TerminalLaunchable(ic) || ic.Binary == nil {
+			// ONE lookup ladder (T2): an id that is not a terminal-launchable
+			// tool may still be an ADVERTISED GUI launch row. The dashboard
+			// handler stays name-free — it asks this seam and renders whatever
+			// comes back — so the decision about which registry the id belongs
+			// to lives here, in one place, and never in an HTTP handler.
+			return guiPreflight(tool, configPath, allowInstall)
 		}
 		// Step 1: config override parity with resolveToolBin. Fail open on a
 		// config load error so a broken config never blocks the ladder.
@@ -846,12 +1147,54 @@ func toolPreflightSeam(configPath string, allowInstall func() bool) func(string)
 			Bin:     r.Bin,
 			Notes:   r.Notes,
 		}
-		if plan, ok := dashboardInstallPlanFor(ic.Binary.Installs, runtime.GOOS, dashboardInstallHome()); ok {
+		if plan, ok := dashboardInstallPlanFor(ic.Binary.Installs, runtime.GOOS, dashboardInstallHome(), dashInstallArgv0); ok {
 			pf.InstallCommand = plan.Display
 			pf.CanInstall = allowInstall != nil && allowInstall()
+			if plan.Note != "" {
+				pf.Notes = append(pf.Notes, plan.Note)
+			}
+		} else {
+			// No guided plan for this OS — say WHY rather than letting the
+			// dialog dead-end on "X is not installed." with no next step
+			// (DI-03). The reason is registry-grounded when the row carries
+			// one; otherwise it is the shared vendor-docs sentence.
+			pf.InstallNote = installNoteFor(ic.Binary, runtime.GOOS)
 		}
 		return pf, true
 	}
+}
+
+// installNoteFor renders the honest reason a launchable tool has no guided
+// install plan on this OS (audit DI-03). It is pure — no filesystem, no
+// registry lookup — so the sentence the dialog shows is table-testable.
+//
+// Two grounded carriers feed it, in the order the operator needs them:
+//
+//   - Binary.WindowsNote, when running on Windows and the row has no Windows
+//     binary spelling at all: that is the deeper "there is no Windows build"
+//     fact, and stating it first stops the operator hunting for an installer
+//     that cannot exist.
+//   - Binary.InstallNote, the per-row reason no InstallHint covers this OS.
+//
+// When neither is set the shared vendor-docs sentence is the floor — never a
+// fabricated channel, and never an empty string (the dialog would render
+// nothing, which is the DI-03 dead end itself).
+func installNoteFor(spec *integration.BinaryResolveSpec, goos string) string {
+	if spec == nil {
+		return toolresolve.NoGroundedInstallMsg
+	}
+	var parts []string
+	if goos == "windows" && len(spec.Names.Windows) == 0 {
+		if note := strings.TrimSpace(spec.WindowsNote); note != "" {
+			parts = append(parts, note)
+		}
+	}
+	if note := strings.TrimSpace(spec.InstallNote); note != "" {
+		parts = append(parts, note)
+	} else {
+		parts = append(parts, toolresolve.NoGroundedInstallMsg)
+	}
+	return strings.Join(parts, " — ")
 }
 
 // toolInstallHintSeam builds the dashboard.Options.ToolInstallHint closure: it
@@ -861,14 +1204,19 @@ func toolPreflightSeam(configPath string, allowInstall func() bool) func(string)
 // Exact-OS hints win over generic hints. Unix npm-global hints are made
 // permission-safe by installing beneath ~/.local instead of npm's frequently
 // root-owned /usr/lib/node_modules prefix. A tool with no usable grounded hint
-// yields ok=false (the endpoint's 400).
+// yields ok=false (the endpoint's 400), as does a row the harness lifecycle
+// policy no longer advertises (Capability.Advertised is false) — guided
+// install must never push an operator into a sunset or dead product. It is
+// deliberately gated on Advertised, not TerminalLaunchable: installing is not
+// launching (operator decision 2026-09-02), so a non-launchable but active row
+// keeps its install hint.
 func toolInstallHintSeam() func(string) ([]string, string, bool) {
 	return func(tool string) ([]string, string, bool) {
-		ic, ok := integration.For(tool)
-		if !ok || ic.Binary == nil {
+		installs, ok := installHintsFor(tool)
+		if !ok {
 			return nil, "", false
 		}
-		plan, ok := dashboardInstallPlanFor(ic.Binary.Installs, runtime.GOOS, dashboardInstallHome())
+		plan, ok := dashboardInstallPlanFor(installs, runtime.GOOS, dashboardInstallHome(), dashInstallArgv0)
 		if !ok {
 			return nil, "", false
 		}
@@ -876,9 +1224,150 @@ func toolInstallHintSeam() func(string) ([]string, string, bool) {
 	}
 }
 
+// installHintsFor is the ONE lookup ladder behind both install-facing seams: a
+// registry ADAPTER row first, then a GUI launch row. It returns the grounded
+// install hints for whichever carrier owns the id, gated on Advertised() in
+// both cases — guided install must never push an operator into a sunset or dead
+// product, nor into an UNVERIFIED GUI row whose executable was never grounded.
+//
+// Both rungs gate on Advertised() rather than launchability, because installing
+// is not launching (operator decision 2026-09-02, pinned by
+// TestTerminalInstallIsNotGatedByAllowedTools): a non-launchable but active row
+// keeps its install hint.
+func installHintsFor(id string) ([]integration.InstallHint, bool) {
+	if ic, ok := integration.For(id); ok && ic.Advertised() && ic.Binary != nil {
+		return ic.Binary.Installs, true
+	}
+	if g, ok := integration.GUILaunchFor(id); ok && g.Advertised() {
+		return g.Spec.Binary.Installs, true
+	}
+	return nil, false
+}
+
+// guiPreflight is the GUI rung of toolPreflightSeam: it resolves an ADVERTISED
+// GUI launch row through toolresolve.ResolveGUI and composes the SAME
+// install-plan / install-note surface a terminal tool gets, so the dialog
+// renders one shape for both kinds.
+//
+// Two GUI-specific honesty rules:
+//
+//   - A foreign_only verdict on a WSL daemon is reported as "ok_off_path", not
+//     as the terminal path's dead end: the daemon CAN exec a Windows .exe
+//     through interop, so the app is launchable — with the note that the
+//     routing environment will not cross the boundary. The verdict is derived
+//     through toolresolve.ForeignInteropLaunchable, the same read the launcher
+//     itself makes, so preflight and launch can never disagree.
+//   - A Windows packaged app resolves to verdict "ok" with an EMPTY Bin (the
+//     AUMID launch). The pure resolver cannot verify the AppX registration
+//     without touching the registry, and the cmd side deliberately does not add
+//     a probe here either — so the note says it was not probed rather than
+//     asserting the app is installed.
+func guiPreflight(id, configPath string, allowInstall func() bool) (dashboard.ToolPreflight, bool) {
+	g, ok := integration.GUILaunchFor(id)
+	if !ok || !g.Advertised() {
+		return dashboard.ToolPreflight{}, false
+	}
+	kind := string(integration.LaunchKindGUI)
+
+	// Config-override parity with the launcher's own first rung, exactly as the
+	// terminal arm above does it.
+	if cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath}); err == nil {
+		if tc, ok := cfg.Launch.Tools[id]; ok && tc.Path != "" {
+			key := fmt.Sprintf("[launch.tools.%s].path", id)
+			if fi, statErr := os.Stat(tc.Path); statErr != nil || fi.IsDir() {
+				return dashboard.ToolPreflight{
+					Tool: id, Kind: kind,
+					Verdict: string(toolresolve.VerdictNotFound),
+					Notes: []string{fmt.Sprintf(
+						"%s = %q is set but no binary is there — fix the path or remove the entry",
+						key, tc.Path)},
+				}, true
+			}
+			return dashboard.ToolPreflight{
+				Tool: id, Kind: kind,
+				Verdict: string(toolresolve.VerdictOK),
+				Bin:     tc.Path,
+				Notes:   []string{fmt.Sprintf("configured via %s", key)},
+			}, true
+		}
+	}
+
+	r := toolresolve.ResolveGUI(g.Spec, dashResolveEnv())
+	pf := dashboard.ToolPreflight{
+		Tool: id, Kind: kind,
+		Verdict: string(r.Verdict),
+		Bin:     r.Bin,
+		Notes:   r.Notes,
+	}
+	if _, interop := toolresolve.ForeignInteropLaunchable(r); interop && crossmount.IsWSL() {
+		pf.Verdict = string(toolresolve.VerdictOKOffPath)
+		pf.Notes = append(pf.Notes,
+			"Windows app, launched through WSL interop; routing env will not propagate")
+	}
+	if r.Verdict == toolresolve.VerdictOK && r.Bin == "" && g.Spec.AppsFolderAUMID != "" {
+		pf.Notes = append(pf.Notes, "packaged app (not probed)")
+	}
+	if plan, ok := dashboardInstallPlanFor(g.Spec.Binary.Installs, runtime.GOOS, dashboardInstallHome(), dashInstallArgv0); ok {
+		pf.InstallCommand = plan.Display
+		pf.CanInstall = allowInstall != nil && allowInstall()
+		if plan.Note != "" {
+			pf.Notes = append(pf.Notes, plan.Note)
+		}
+	} else {
+		pf.InstallNote = installNoteFor(&g.Spec.Binary, runtime.GOOS)
+	}
+	return pf, true
+}
+
 type dashboardInstallPlan struct {
 	Argv    []string
 	Display string
+	// Note is an honest caveat about the plan itself (empty when there is
+	// none) — today: the plan's program could not be resolved to an absolute
+	// path on this daemon, so the spawn falls back to a PATH lookup that may
+	// fail. It is surfaced through the preflight's Notes, never as an error:
+	// the plan is still the right command to show the operator.
+	Note string
+}
+
+// installArgv0Lookup resolves an install plan's PROGRAM name (argv[0], e.g.
+// "npm", "bash", "uv") to an absolute path, reporting ok=false when it is on
+// neither the daemon's PATH nor the operator's login-shell PATH. It is injected
+// so dashboardInstallPlanFor stays a pure, table-testable function (CLAUDE.md
+// #1); nil disables the resolution and keeps the registry's bare name.
+type installArgv0Lookup func(name string) (string, bool)
+
+// dashInstallArgv0 is the production installArgv0Lookup: it walks the SAME
+// merged PATH (process + login shell) internal/toolresolve resolves tools on,
+// and accepts the first regular, executable file with that name.
+//
+// This is audit DI-04a. The install PTY execs argv[0] through exec.Command,
+// which resolves it against the DAEMON's process PATH only — never the child
+// env we hand it — so on a daemon whose PATH lacks the operator's node prefix
+// every npm install plan failed before it started. Resolving the program here,
+// server-side, is not a widened trust surface: argv[0] is a compile-time
+// registry constant, never request-derived, and the request still contributes
+// only the tool name.
+func dashInstallArgv0(name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	if filepath.IsAbs(name) {
+		return name, true
+	}
+	dirs, _ := toolresolve.MergedPathDirs(dashResolveEnv())
+	for _, dir := range dirs {
+		cand := filepath.Join(dir, name)
+		fi, err := os.Stat(cand)
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if runtime.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0 {
+			continue
+		}
+		return cand, true
+	}
+	return "", false
 }
 
 func dashboardInstallHome() string {
@@ -894,7 +1383,7 @@ func dashboardInstallHome() string {
 // script beats an exact package-manager fallback: a user-local installer should
 // not lose to a generic npm -g (or Linux Homebrew) row merely because the
 // registry lists it first.
-func dashboardInstallPlanFor(hints []integration.InstallHint, goos, home string) (dashboardInstallPlan, bool) {
+func dashboardInstallPlanFor(hints []integration.InstallHint, goos, home string, lookArgv0 installArgv0Lookup) (dashboardInstallPlan, bool) {
 	want := installOSForGOOS(goos)
 	var chosen *integration.InstallHint
 	for i := range hints {
@@ -916,7 +1405,7 @@ func dashboardInstallPlanFor(hints []integration.InstallHint, goos, home string)
 
 	argv := append([]string(nil), chosen.Argv...)
 	if chosen.Channel != "npm" || goos == "windows" || !hasNPMGlobalFlag(argv) {
-		return dashboardInstallPlan{Argv: argv, Display: chosen.Display}, true
+		return resolvePlanArgv0(dashboardInstallPlan{Argv: argv, Display: chosen.Display}, goos, lookArgv0), true
 	}
 	if strings.TrimSpace(home) == "" {
 		// Do not fall back to a likely root-owned global prefix. An absent home is
@@ -938,14 +1427,52 @@ func dashboardInstallPlanFor(hints []integration.InstallHint, goos, home string)
 			localized = append(localized, arg)
 		}
 	}
-	return dashboardInstallPlan{Argv: localized, Display: displayInstallArgv(localized)}, true
+	return resolvePlanArgv0(
+		dashboardInstallPlan{Argv: localized, Display: displayInstallArgv(localized)},
+		goos, lookArgv0,
+	), true
 }
 
+// resolvePlanArgv0 rewrites a plan's argv[0] to the absolute program the merged
+// PATH resolves it to (DI-04a). Display is left alone — the operator should see
+// `npm install …`, not a 60-character absolute path — so the human command
+// and the executed program deliberately differ in spelling only.
+//
+// It is a no-op on Windows, where the spawner itself does the PATHEXT-aware
+// resolution (termsession.resolveSpawnArgv) and a bare name is correct. When
+// nothing resolves, the bare name is KEPT (exec.LookPath on the daemon PATH
+// stays the fallback) and the plan carries an honest Note instead of failing:
+// the command is still the right one to show, and installing its program may
+// well be the operator's next step.
+func resolvePlanArgv0(plan dashboardInstallPlan, goos string, look installArgv0Lookup) dashboardInstallPlan {
+	if goos == "windows" || look == nil || len(plan.Argv) == 0 || plan.Argv[0] == "" {
+		return plan
+	}
+	abs, ok := look(plan.Argv[0])
+	if !ok {
+		plan.Note = fmt.Sprintf(
+			"the install command runs %q, which is on neither the daemon's PATH nor the login shell's — install it first, or the guided install will fail",
+			plan.Argv[0])
+		return plan
+	}
+	argv := append([]string(nil), plan.Argv...)
+	argv[0] = abs
+	plan.Argv = argv
+	return plan
+}
+
+// dashboardInstallChannelRank ranks install CHANNELS for the guided dialog: a
+// vendor script (user-local, no privileges) beats a package manager, and a
+// package manager beats the npm fallback. scoop sits with brew/winget — the
+// same SHAPE (an OS package manager the operator already trusts); the row lists
+// exactly the closed Channel vocabulary (integration.InstallHint.Channel:
+// npm|script|brew|winget|uv|scoop — choco was deliberately NOT adopted), so a
+// newly grounded channel is added HERE when it is added there (CLAUDE.md #5).
 func dashboardInstallChannelRank(channel string) int {
 	switch channel {
 	case "script":
 		return 0
-	case "brew", "winget":
+	case "brew", "winget", "scoop":
 		return 1
 	default:
 		return 2
@@ -1072,6 +1599,22 @@ func mapLaunchErr(err error) error {
 
 // mapFreshErr translates the termsvc fresh-launch authorization sentinels (and
 // the underlying termsession spawn errors) onto the dashboard's.
+// mapSSHErr maps the termsvc SSH sentinels onto the dashboard's, falling
+// through to the shared spawn-error mapping (too-many-sessions, unsupported
+// platform) for everything else.
+func mapSSHErr(err error) error {
+	switch {
+	case errors.Is(err, termsvc.ErrSSHLaunchDisabled):
+		return dashboard.ErrLaunchSSHDisabled
+	case errors.Is(err, termsvc.ErrSSHProfileUnknown):
+		return dashboard.ErrLaunchSSHProfileUnknown
+	case errors.Is(err, termsvc.ErrSSHProfileInvalid):
+		return dashboard.ErrLaunchSSHProfileInvalid
+	default:
+		return mapLaunchErr(err)
+	}
+}
+
 func mapFreshErr(err error) error {
 	switch {
 	case errors.Is(err, termsvc.ErrFreshLaunchDisabled):

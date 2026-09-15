@@ -7,7 +7,7 @@ import { HelpInd } from "@/components/HelpInd";
 import { CopyOnClick } from "@/components/CopyOnClick";
 import { fetchJSON } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
-import { fmtClock, fmtCompact, fmtUSD } from "@/lib/format";
+import { fmtClock, fmtCompact, fmtShortId, fmtUSD } from "@/lib/format";
 import type {
   HandoffBoundary,
   HandoffResponse,
@@ -51,7 +51,7 @@ export function HandoffCard({
       <p className="mt-1 text-[10.5px] text-fg-3">
         Distill this session into a scrubbed handover doc another AI tool can
         pick up, forked from any stable point. The provider cache cannot move
-        with it — the estimate prices what rehydration costs instead.
+        with it - the estimate prices what rehydration costs instead.
       </p>
       {open && (
         <HandoffModal
@@ -73,8 +73,32 @@ const CARRY_OPTIONS = [
   { value: "full", label: "Full" },
   // full_cache = the un-excerpted read bodies inlined into the doc, so the
   // new session loads the source read cache up front (no MCP round-trips).
+  // Only grounded when the source adapter has a FullTranscriptReader
+  // (est.data.full_cache_available) — see carryOptionsFor below, which
+  // greys this entry out honestly instead of offering a choice that
+  // silently collapses to "full".
   { value: "full_cache", label: "Full + cache" },
 ];
+
+// carryOptionsFor marks "Full + cache" disabled — with the exact reason —
+// when the source adapter has no un-excerpted (FullTranscriptReader) read to
+// back it. `available` is undefined while the estimate is still loading, in
+// which case the option stays enabled rather than flashing disabled first;
+// the backend's own carry_used degrade (full_cache → full) already keeps
+// the priced table honest for that brief window.
+function carryOptionsFor(available: boolean | undefined) {
+  if (available !== false) return CARRY_OPTIONS;
+  return CARRY_OPTIONS.map((opt) =>
+    opt.value === "full_cache"
+      ? {
+          ...opt,
+          disabled: true,
+          disabledReason:
+            "Unavailable - this source has no full-body reader, so Full + cache would carry the same excerpted bodies as Full.",
+        }
+      : opt,
+  );
+}
 
 function HandoffModal({
   sessionId,
@@ -113,6 +137,22 @@ function HandoffModal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Don't leave the user stuck on a now-disabled choice: if they'd picked
+  // full_cache and the estimate comes back reporting the source has no
+  // full-body reader, drop back to the config default — full_cache would
+  // have degraded to an identical-to-full doc anyway (carry_used already
+  // reflects that), so this loses nothing.
+  useEffect(() => {
+    if (carry === "full_cache" && est.data?.full_cache_available === false) {
+      setCarry("");
+    }
+  }, [carry, est.data?.full_cache_available]);
+
+  const carryOptions = useMemo(
+    () => carryOptionsFor(est.data?.full_cache_available),
+    [est.data?.full_cache_available],
+  );
 
   const targetOptions = useMemo(
     () =>
@@ -198,7 +238,7 @@ function HandoffModal({
             Continue in…
             <span className="flex items-center gap-1.5 text-[11px] font-normal text-fg-3">
               <ToolBadge tool={sourceTool} />
-              <span className="font-mono">{sessionId.slice(0, 8)}…</span>
+              <span className="font-mono" title={sessionId}>{fmtShortId(sessionId, 8)}</span>
             </span>
           </span>
           <button
@@ -227,7 +267,7 @@ function HandoffModal({
                   size="sm"
                   value={carry || carryUsed}
                   onChange={setCarry}
-                  options={CARRY_OPTIONS}
+                  options={carryOptions}
                 />
                 {d?.estimate.target_model && (
                   <span className="text-[10.5px] text-fg-3">
@@ -272,7 +312,7 @@ function HandoffModal({
                       />
                     ) : (
                       <p className="text-[10.5px] text-fg-3">
-                        No readable transcript — the handoff proceeds with
+                        No readable transcript - the handoff proceeds with
                         action-derived metadata only, forked at the session
                         end.
                       </p>
@@ -297,7 +337,7 @@ function HandoffModal({
                 </span>
               )}
               {canLaunch && (
-                <Tooltip content="Start the tool here in an embedded terminal, seeded with the same handover — no local shell needed.">
+                <Tooltip content="Start the tool here in an embedded terminal, seeded with the same handover - no local shell needed.">
                   <span>
                     <button
                       type="button"
@@ -319,7 +359,7 @@ function HandoffModal({
                 content={
                   target
                     ? "Write the handover doc for the selected target tool."
-                    : "Pick a target tool first — the doc's header and pricing name it."
+                    : "Pick a target tool first - the doc's header and pricing name it."
                 }
               >
                 <span>
@@ -395,7 +435,7 @@ function EstimateTable({
       </table>
       {d.estimate.fork_share < 1 && (
         <p className="border-t bg-bg-2 px-3 py-1 text-[10px] text-fg-3">
-          Fork share {Math.round(d.estimate.fork_share * 100)}% — the full row
+          Fork share {Math.round(d.estimate.fork_share * 100)}% - the full row
           is scaled to the cut.
         </p>
       )}
@@ -429,7 +469,7 @@ function ForkPicker({
     <div className="space-y-1">
       <div className="flex items-center justify-between">
         <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-3">
-          Fork point — {boundaries.length} messages
+          Fork point - {boundaries.length} messages
         </span>
         <span className="text-[10px] text-fg-3">
           included ▸ marks the cut · cumulative weight = share of the
@@ -468,7 +508,7 @@ function ForkPicker({
                     </span>
                   </td>
                   <td className="w-24 whitespace-nowrap px-2 py-1 text-[10px] tabular-nums text-fg-3">
-                    {b.time ? fmtClock(b.time) : "—"}
+                    {b.time ? fmtClock(b.time) : "-"}
                   </td>
                   <td className="max-w-0 truncate px-2 py-1 text-fg-2">
                     {b.preview || (
@@ -512,7 +552,7 @@ function HandoffResult({
     <div className="space-y-3">
       <p className="text-[12px] text-fg-1">
         Handover written{result.target_tool ? ` for ${result.target_tool}` : ""}
-        {" — carry "}
+        {" - carry "}
         <span className="font-mono">{result.carry_used}</span>.
       </p>
       {result.doc_path && (
@@ -529,7 +569,7 @@ function HandoffResult({
       {result.gitignore_hint && (
         <p className="rounded-2 border border-warn/30 bg-warn/10 px-3 py-1.5 text-[10.5px] text-fg-2">
           Hint: add <span className="font-mono">HANDOFF-*.md</span> to
-          .gitignore — the handover carries conversation excerpts.
+          .gitignore - the handover carries conversation excerpts.
         </p>
       )}
       <button

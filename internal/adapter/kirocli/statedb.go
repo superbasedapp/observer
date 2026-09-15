@@ -149,6 +149,10 @@ func (a *Adapter) parseStateDB(ctx context.Context, trigger string, fromOffset i
 			sessionID = r.conversationID
 		}
 		a.emitConversation(&res, canonical, sessionID, r.key, conv)
+		// Surface stamp: conversations_v2 is written only by
+		// `--no-interactive` runs of the terminal binary, so the layout
+		// IS the discriminator (see layoutSurfaces).
+		res.SessionSurfaces = append(res.SessionSurfaces, surfaceFor(layoutSQLite, sessionID))
 	}
 	return res, nil
 }
@@ -209,7 +213,16 @@ func (a *Adapter) emitConversation(res *adapter.ParseResult, sourceFile, session
 	if cwd == "" && len(conv.History) > 0 {
 		cwd = conv.History[0].User.EnvContext.EnvState.CurrentWorkingDirectory
 	}
-	projectRoot, gitBranch, gitRemote := resolveProjectRoot(cwd)
+	projectRoot, gitBranch, gitRemote, projectIdentity := resolveProjectRoot(cwd)
+	// Snapshot append points so the identity backfill below touches only
+	// the events THIS conversation contributes to the shared res — a
+	// conversations_v2 file can hold several conversations with distinct
+	// cwds, each calling emitConversation against the same *ParseResult.
+	toolStart, tokenStart := len(res.ToolEvents), len(res.TokenEvents)
+	defer func() {
+		scoped := adapter.ParseResult{ToolEvents: res.ToolEvents[toolStart:], TokenEvents: res.TokenEvents[tokenStart:]}
+		adapter.ApplyProjectIdentity(&scoped, projectIdentity)
+	}()
 
 	// Pre-index every tool_use result so a tool_use event can attach its
 	// output + success in one pass.

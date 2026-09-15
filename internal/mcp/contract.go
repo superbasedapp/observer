@@ -81,6 +81,12 @@ var contractTools = []ContractTool{
 	{Name: "get_session_message", Tier: TierExperimental},
 	{Name: "get_session_recovery_context", Tier: TierStable},
 	{Name: "get_session_summary", Tier: TierStable},
+	// get_session_tasks (Phase 2 of docs/task-tracking.md) is new and its
+	// per-task attribution rule + bucket vocabulary (attributed_single /
+	// between_tasks / shared) hasn't ridden a minor release unchanged yet —
+	// experimental until the field set settles, same posture as
+	// get_output_composition.
+	{Name: "get_session_tasks", Tier: TierExperimental},
 	{Name: "get_suggestions", Tier: TierStable},
 	{Name: "get_symbols", Tier: TierConditional, ConfigGated: true},
 	{Name: "list_actions_around", Tier: TierStable},

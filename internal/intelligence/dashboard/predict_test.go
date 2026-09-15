@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/predict"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -345,5 +347,114 @@ func TestHandleSessionPredict_NoModel(t *testing.T) {
 	}
 	if resp.Reason == "" {
 		t.Errorf("expected a reason explaining the empty estimate")
+	}
+}
+
+// TestHandleSessionPredict_NoPricingKeepsTokenFacts pins the fix for the
+// predictor's facts/pricing coupling, reproduced from a real remote node:
+// an opencode session on the alias model "big-pickle" (no pricing entry)
+// with three observed turns carrying cache_read 8320/8320/8448.
+//
+// Before the fix the handler short-circuited on the pricing miss and
+// returned a zeroed estimate carrying a false no_session_history, so the
+// session-detail CONTEXT WINDOW USED card rendered "n/a, no prefix
+// observed yet" over three observed turns. The dollar half must still be
+// absent (the cost card's "no pricing entry" reason is the honest one),
+// but every token fact must survive.
+func TestHandleSessionPredict_NoPricingKeepsTokenFacts(t *testing.T) {
+	t.Parallel()
+	database, cleanup := openForecastTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	var projectID int64
+	if err := database.QueryRowContext(ctx,
+		`INSERT INTO projects (root_path, created_at) VALUES ('/tmp/pred-nopricing', '2026-06-09T00:00:00Z') RETURNING id`).
+		Scan(&projectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO sessions (id, tool, project_id, model, started_at)
+		 VALUES ('sUnpriced', 'opencode', ?, 'big-pickle', '2026-06-09T00:00:00Z')`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 6, 9, 0, 0, 0, 0, time.UTC)
+	turns := []struct {
+		minute                   int
+		input, output, cacheRead int64
+	}{
+		{2, 8440, 300, 8320},
+		{5, 8560, 700, 8320},
+		{9, 8808, 1500, 8448},
+	}
+	for i, tr := range turns {
+		if _, err := database.ExecContext(ctx,
+			`INSERT INTO token_usage
+			   (session_id, timestamp, tool, model, input_tokens, output_tokens, cache_read_tokens,
+			    source, reliability, source_file, source_event_id)
+			 VALUES (?, ?, 'opencode', 'big-pickle', ?, ?, ?, 'jsonl', 'medium', 'f', ?)`,
+			"sUnpriced", base.Add(time.Duration(tr.minute)*time.Minute).Format(time.RFC3339Nano),
+			tr.input, tr.output, tr.cacheRead, "tu-unpriced-"+itoa(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := &Server{opts: Options{DB: database, CostEngine: newForecastTestEngine(t)}}
+	req := httptest.NewRequest(http.MethodGet, "/api/session/sUnpriced/predict", nil)
+	rec := httptest.NewRecorder()
+	srv.handleSessionDetail(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp PredictResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v — body %s", err, rec.Body.String())
+	}
+
+	// Dollar half absent, and the reason names the PRICING gap.
+	if resp.Estimate.HasEstimate {
+		t.Errorf("an unpriced model must not produce a cost band")
+	}
+	if resp.Reason == "" || !strings.Contains(resp.Reason, "no pricing entry") {
+		t.Errorf("reason = %q, want the no-pricing explanation", resp.Reason)
+	}
+	if resp.Estimate.Mid.MessageUSD != 0 {
+		t.Errorf("mid message cost = %v, want 0 without pricing", resp.Estimate.Mid.MessageUSD)
+	}
+
+	// Fact half intact — this is the regression.
+	if !resp.Estimate.HasShape {
+		t.Fatalf("has_shape must be true: three turns were observed; warnings=%v", resp.Estimate.Warnings)
+	}
+	if resp.Estimate.PrefixTokens != 8448 {
+		t.Errorf("prefix tokens = %d, want 8448 (latest observed cache_read)", resp.Estimate.PrefixTokens)
+	}
+	if resp.Estimate.SampleTurns != 3 {
+		t.Errorf("sample turns = %d, want 3", resp.Estimate.SampleTurns)
+	}
+	if resp.Estimate.Mid.Output == 0 {
+		t.Errorf("mid output quantile should be observed, got 0")
+	}
+	if resp.Estimate.TurnsTier == "" {
+		t.Errorf("turns tier should be resolved even without pricing")
+	}
+	// A pricing gap must never be reported as a data gap.
+	for _, warn := range resp.Estimate.Warnings {
+		if warn == predict.WarnNoSessionHistory {
+			t.Errorf("no_session_history on a session with three observed turns: %v", resp.Estimate.Warnings)
+		}
+	}
+	var sawNoPricing bool
+	for _, warn := range resp.Estimate.Warnings {
+		if warn == predict.WarnNoPricing {
+			sawNoPricing = true
+		}
+	}
+	if !sawNoPricing {
+		t.Errorf("want no_pricing warning, got %v", resp.Estimate.Warnings)
+	}
+	if resp.Model != "big-pickle" {
+		t.Errorf("model = %q", resp.Model)
 	}
 }

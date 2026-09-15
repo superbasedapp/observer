@@ -155,14 +155,15 @@ func newCopilotCLICmd() *cobra.Command {
 				continueDir = cwd
 			}
 			return runEnvLauncher(envLauncherSpec{
-				tool:     "copilot-cli",
-				bin:      bin,
-				args:     args,
-				dir:      continueDir,
-				proxyURL: resolved,
-				env:      env,
-				dbPath:   cfg.Observer.DBPath,
-				stderr:   cmd.ErrOrStderr(),
+				tool:       "copilot-cli",
+				bin:        bin,
+				args:       args,
+				configPath: configPath,
+				dir:        continueDir,
+				proxyURL:   resolved,
+				env:        env,
+				dbPath:     cfg.Observer.DBPath,
+				stderr:     cmd.ErrOrStderr(),
 			})
 		},
 	}

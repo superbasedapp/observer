@@ -31,12 +31,12 @@ import type {
 export function CostTab({ d }: { d: SessionDetail }) {
   return (
     <div className="space-y-5">
-      <PredictorCard sessionId={d.id} />
+      <PredictorCard sessionId={d.id} tool={d.tool} />
       {d.model ? (
         <ForecastWidget sessionId={d.id} />
       ) : (
         <p className="rounded-3 border border-dashed border-line-2 px-4 py-3 text-[11.5px] text-fg-3">
-          Model-switch forecast unavailable — this session has no recorded
+          Model-switch forecast unavailable - this session has no recorded
           current model (<span className="font-mono">model</span> is empty on{" "}
           <span className="font-mono">/api/session/{d.id}</span>), and the
           forecast is a comparison against it.
@@ -52,7 +52,7 @@ export function CostTab({ d }: { d: SessionDetail }) {
 // until the proxy captures the provider's rate-limit headers).
 // Backed by GET /api/session/<id>/predict (pure read-side math over
 // token_usage — no new tables for the estimate half).
-function PredictorCard({ sessionId }: { sessionId: string }) {
+function PredictorCard({ sessionId, tool }: { sessionId: string; tool: string }) {
   const predict = useApi<PredictResponse>(
     `/api/session/${sessionId}/predict`,
     undefined,
@@ -68,7 +68,7 @@ function PredictorCard({ sessionId }: { sessionId: string }) {
         </span>
       </div>
       <p className="mt-1 text-[10.5px] text-fg-3">
-        Estimated cost of your next message on this session's current model —
+        Estimated cost of your next message on this session's current model -
         a low / typical / high range over the message's likely turn fan-out.
       </p>
 
@@ -79,13 +79,13 @@ function PredictorCard({ sessionId }: { sessionId: string }) {
         emptyHint="Loading estimate…"
         height={80}
       >
-        {predict.data && <PredictorBody data={predict.data} />}
+        {predict.data && <PredictorBody data={predict.data} tool={tool} />}
       </ChartState>
     </section>
   );
 }
 
-function PredictorBody({ data }: { data: PredictResponse }) {
+function PredictorBody({ data, tool }: { data: PredictResponse; tool: string }) {
   const est = data.estimate;
   return (
     <div className="mt-2 space-y-3">
@@ -122,7 +122,7 @@ function PredictorBody({ data }: { data: PredictResponse }) {
           </div>
           <div className="text-[10.5px] text-fg-3">
             <span className="font-mono text-fg-2">{est.model}</span> · cached
-            prefix {fmtCompact(est.prefix_tokens)} tok re-read — and billed —
+            prefix {fmtCompact(est.prefix_tokens)} tok re-read - and billed -
             each turn ·{" "}
             {est.turns_tier === "observed"
               ? `${fmtInt(est.sample_messages)} messages observed`
@@ -134,8 +134,7 @@ function PredictorBody({ data }: { data: PredictResponse }) {
           <span className="font-medium text-fg-1">No cost estimate yet.</span>{" "}
           {data.reason ||
             "This session has no model/token data captured."}{" "}
-          Route this client through the observer proxy (<code className="font-mono text-[10.5px] text-fg-2">observer init</code>) so future
-          messages capture token &amp; cost data.
+          {tool === "cursor" ? "Cursor must report usage through its hooks before a token-based estimate is available." : <>Route this client through the observer proxy (<code className="font-mono text-[10.5px] text-fg-2">observer init</code>) so future messages capture token &amp; cost data.</>}
         </div>
       )}
 
@@ -150,7 +149,7 @@ function PredictorBody({ data }: { data: PredictResponse }) {
 // finer precision only for sub-cent amounts that would otherwise round to
 // $0.00.
 function fmtPredictUSD(n: number): string {
-  if (!Number.isFinite(n)) return "—";
+  if (!Number.isFinite(n)) return "-";
   if (n > 0 && n < 0.01) return fmtUSD(n, true);
   return fmtUSD(n);
 }
@@ -213,7 +212,7 @@ function PredictBandStat({
           `Billed tokens = turns × (cached prefix + fresh input + output) = ` +
           `${band.turns} × (${fmtInt(prefixTokens)} + ${fmtInt(band.fresh_input)} + ${fmtInt(band.output)}) ` +
           `≈ ${fmtInt(tok.billed)}. Of that, ${fmtInt(tok.cached)} is the SAME cached prefix ` +
-          `re-read (and billed at the cache-read rate) on every turn — only ${fmtInt(tok.fresh)} is new. ` +
+          `re-read (and billed at the cache-read rate) on every turn - only ${fmtInt(tok.fresh)} is new. ` +
           `This is throughput, not context size. Cache-WRITE tokens are not included.`
         }
       >
@@ -243,6 +242,7 @@ function PredictWarningPill({ kind }: { kind: PredictWarning }) {
     empty_prefix: "no cache prefix yet",
     fast_mode_active: "model in fast tier (2×)",
     no_session_history: "no history",
+    no_pricing: "no pricing for this model",
   };
   const label = labels[kind];
   if (!label) return null;
@@ -319,7 +319,7 @@ function LimitWindowStat({
         {label}
       </span>
       <span className="tabular-nums text-[12.5px] font-semibold text-fg-1">
-        {remaining != null ? `${remaining}% left` : "—"}
+        {remaining != null ? `${remaining}% left` : "-"}
       </span>
       {reset != null && (
         <span className="mt-0.5 text-[10px] text-fg-3">
@@ -426,7 +426,7 @@ function ForecastWidget({ sessionId }: { sessionId: string }) {
         </span>
       </div>
       <p className="mt-1 text-[10.5px] text-fg-3">
-        Per-turn cost of switching this session's model — works for any session
+        Per-turn cost of switching this session's model - works for any session
         with token data; observed cache (claude-code/codex) additionally refines
         the one-time switch cost.
       </p>
@@ -485,7 +485,7 @@ function ForecastWidget({ sessionId }: { sessionId: string }) {
 
 // familyOf maps a model id to its family prefix so the dropdown
 // can label the row with a muted family chip. Returns "" when the
-// id doesn't match a known family — the row renders without the
+// id doesn't match a known family - the row renders without the
 // chip and the full id shows mono-spaced.
 function familyOf(modelId: string): string {
   if (modelId.startsWith("claude-")) return "claude";
@@ -593,7 +593,7 @@ function ForecastWarningPill({ kind }: { kind: CacheForecastWarning }) {
   const labels: Record<CacheForecastWarning, string> = {
     cache_wont_engage: "candidate cache won't engage yet",
     fast_mode_active: "current model in fast tier (2×)",
-    try_1h_tier: "session has > 5m gaps — try 1h TTL",
+    try_1h_tier: "session has > 5m gaps - try 1h TTL",
     switch_never_pays_off: "switch never recoups cold-write cost",
     empty_prefix: "no cache built yet on this session",
   };

@@ -50,6 +50,34 @@ func resolveProxyURL(cfgPort int, override string) string {
 	return "http://127.0.0.1:" + strconv.Itoa(cfgPort)
 }
 
+// proxyDownAdvice returns the honest "what to do about it" clause a launcher
+// appends when the observer proxy did not answer at the URL it resolved.
+//
+// It branches on a CAPABILITY the daemon itself stamps on every child it spawns
+// (OBSERVER_DAEMON_CHILD — see runningAsDaemonChild), never on a tool name
+// (CLAUDE.md #3). That marker settles the one thing the old copy got wrong: a
+// dashboard-launched terminal was told to "start it with `observer start`" even
+// though the daemon that spawned that very terminal was running. For such a
+// child the only remaining explanations are the daemon's own `[proxy]` block —
+// disabled, or listening on a different port than this launcher resolved — so
+// that is what the notice names.
+func proxyDownAdvice(daemonChild bool) string {
+	if daemonChild {
+		return "this terminal was launched BY the daemon, so the daemon IS running — check `[proxy] enabled` and `[proxy] port` in the config it was started with"
+	}
+	return "start it with `observer start`"
+}
+
+// proxyUnreachableNotice composes the single stderr line a simple base-URL
+// launcher prints when the proxy is unreachable: what failed, the consequence,
+// and the honest next step. Pure (no I/O, no env reads) so the daemon-child fact
+// is injected and the whole message is table-testable.
+func proxyUnreachableNotice(tool, proxyURL string, daemonChild bool) string {
+	return fmt.Sprintf(
+		"observer %s: warning — proxy not reachable at %s — turns are NOT captured for this run (%s)",
+		tool, proxyURL, proxyDownAdvice(daemonChild))
+}
+
 // agentRuntimeDir resolves the optional rename-safe runtime dir for launched
 // agents ([launch].agent_runtime_dir). The OBSERVER_AGENT_RUNTIME_DIR env var
 // wins over the config key so a container can set it without editing config;
@@ -258,11 +286,12 @@ func lookupEnvValue(env []string, key string) (string, bool) {
 // shape). Every field in env is a base-URL or non-secret routing hint —
 // NEVER an API key.
 type envLauncherSpec struct {
-	tool     string            // stderr label, e.g. "cline-cli"
-	bin      string            // resolved binary path
-	args     []string          // forwarded argv
-	proxyURL string            // resolved proxy base URL (for the reachability note)
-	env      map[string]string // base-URL (+ non-secret) vars to inject when unset
+	tool       string            // stderr label, e.g. "cline-cli"
+	bin        string            // resolved binary path
+	args       []string          // forwarded argv
+	configPath string            // launcher's --config override; used by cold budget admission
+	proxyURL   string            // resolved proxy base URL (for the reachability note)
+	env        map[string]string // base-URL (+ non-secret) vars to inject when unset
 	// dir is the child's working directory. Empty inherits the caller's
 	// cwd (the default). A `--continue-from` launch sets it to the source
 	// session's translated project root (via launchDir) so a cross-OS
@@ -288,10 +317,34 @@ type envLauncherSpec struct {
 // forwards its exit code (same shape as `observer run`). Pure exec — it does
 // not consult or set any secret.
 func runEnvLauncher(spec envLauncherSpec) error {
+	// P6 item 5: refuse a bare launch of an org-disallowed tool (node.features
+	// tools.disallow), read from the node-local LKG sidecar. seedTool is the
+	// exact integration-registry key the disallow list uses; fall back to the
+	// stderr label. Fail-open on any sidecar-read issue.
+	gateTool := spec.seedTool
+	if gateTool == "" {
+		gateTool = spec.tool
+	}
+	if err := refuseIfToolDisallowedDB(spec.dbPath, gateTool, spec.stderr); err != nil {
+		return err
+	}
 	// Layer the rename-safe agent runtime-dir env under the base-URL env, so
 	// an SMB/NFS HOME can't break the agent's provider-dependency install
 	// (adapter-agnostic; no-op unless [launch].agent_runtime_dir is set).
 	childEnv, applied, presets := applyBaseURLEnv(applyAgentRuntimeEnv(os.Environ(), agentRuntimeDir()), spec.env)
+	// PATH parity (audit DI-04b): the tool was RESOLVED over the merged PATH
+	// (process + login shell), so it must EXECUTE with that PATH too — an
+	// `#!/usr/bin/env node` shim found under a login-only npm prefix otherwise
+	// starts and dies at exit 127. Additive and last in the chain so it sees the
+	// final block; a no-op when there are no login-only dirs (the usual case for
+	// a launcher run from the operator's own shell).
+	childEnv = applyChildPATH(childEnv, daemonLoginPathDirs(), spec.bin)
+	evidence := envBudgetLaunchEvidence(gateTool, spec.proxyURL, spec.env, childEnv, spec.args)
+	evidence.Executable = spec.bin
+	evidence.Arguments = spec.args
+	if err := enforceBudgetControlledLaunch(context.Background(), spec.configPath, gateTool, evidence); err != nil {
+		return err
+	}
 
 	for _, k := range presets {
 		fmt.Fprintf(spec.stderr,
@@ -300,9 +353,7 @@ func runEnvLauncher(spec envLauncherSpec) error {
 
 	switch {
 	case !proxyReachable(spec.proxyURL, 250*time.Millisecond):
-		fmt.Fprintf(spec.stderr,
-			"observer %s: warning — proxy not reachable at %s (start it with `observer start`)\n",
-			spec.tool, spec.proxyURL)
+		fmt.Fprintln(spec.stderr, proxyUnreachableNotice(spec.tool, spec.proxyURL, runningAsDaemonChild()))
 	case len(applied) > 0:
 		fmt.Fprintf(spec.stderr,
 			"observer %s: routing via %s (set %s)\n",
@@ -312,11 +363,16 @@ func runEnvLauncher(spec envLauncherSpec) error {
 	}
 
 	child := exec.Command(spec.bin, spec.args...) //nolint:gosec // user-launched tool, args are theirs
-	child.Env = childEnv
-	child.Dir = spec.dir // "" inherits the caller's cwd (default)
+	child.Env = scrubOOBEnv(childEnv)             // strip the trusted OOB channel env
+	child.Dir = spec.dir                          // "" inherits the caller's cwd (default)
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
+	seedTool := spec.tool
+	if spec.seedTool != "" {
+		seedTool = spec.seedTool
+	}
+	discovery := prepareGenericDiscovery(context.Background(), seedTool, spec.dir)
 	if err := child.Start(); err != nil {
 		return fmt.Errorf("exec %s: %w", spec.tool, err)
 	}
@@ -324,10 +380,6 @@ func runEnvLauncher(spec envLauncherSpec) error {
 	// that Start has made it knowable; retract the seed when the child is
 	// reaped. Best-effort both ways — a seeding failure never affects the
 	// launch (see cmd/observer/launchseed.go).
-	seedTool := spec.tool
-	if spec.seedTool != "" {
-		seedTool = spec.seedTool
-	}
 	recordLaunchSeed(spec.dbPath, seedTool, spec.dir, child.Process.Pid, spec.stderr)
 	// Best-effort generic post-launch session discovery (WS-DISCOVERY): a
 	// no-op unless the trusted OOB channel is active AND seedTool resolves to
@@ -338,7 +390,7 @@ func runEnvLauncher(spec envLauncherSpec) error {
 	// Cancel the instant the child exits so a window cut short by exit never
 	// announces a candidate that only looked unique because the scan stopped
 	// early.
-	discoverCancel := maybeStartGenericDiscovery(context.Background(), seedTool, spec.dir)
+	discoverCancel := discovery.start()
 	if discoverCancel != nil {
 		defer discoverCancel()
 	}

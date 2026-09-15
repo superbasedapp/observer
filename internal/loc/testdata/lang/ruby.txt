@@ -1,0 +1,14 @@
+# frozen_string_literal: true
+
+=begin
+Block comment body.
+=end
+class Foo
+  def bar
+    puts "# not a comment"
+    text = <<~HEREDOC
+      # inside heredoc
+    HEREDOC
+    text
+  end
+end

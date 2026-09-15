@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -158,6 +159,154 @@ func TestSelectSessionProcessRows_ExcludesUnattributedAndOldRuns(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].RunKey != "proc-current" {
 		t.Fatalf("got = %+v, want exactly [proc-current]", got)
+	}
+}
+
+// TestSelectSessionProcessRows_MetricsMessageIDAndSampleCap pins the W-A
+// additions to the wire row: working_set_bytes / thread_count surface as
+// captured, message_id is resolved from the correlated action's
+// actions.message_id (process_runs has no message_id column of its own), and
+// the high-volume metric_samples_json ring is capped to the most-recent
+// sessionProcessMetricSampleCap samples under the byte ceiling.
+func TestSelectSessionProcessRows_MetricsMessageIDAndSampleCap(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	sessionID, projectID := mustProjectAndSession(t, s)
+	now := time.Now().UTC()
+
+	// An action carrying a message id, so the run correlated to it (by
+	// action_id) resolves MessageID through the actions.message_id join.
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO actions (session_id, project_id, timestamp, tool, action_type, message_id, success, source_file, source_event_id)
+		 VALUES (?, ?, ?, 'claude-code', 'run_command', 'msg_abc123', 1, 'p.jsonl', 'ev-mid')`,
+		sessionID, projectID, timestamp(now))
+	if err != nil {
+		t.Fatalf("insert correlated action: %v", err)
+	}
+	actionID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+
+	// 61 samples: one over the cap, so the wire keeps the last 60.
+	samples := make([]processobs.MetricSample, 0, 61)
+	for i := 0; i < 61; i++ {
+		samples = append(samples, processobs.MetricSample{
+			T: now.Add(time.Duration(i) * time.Second), CPUMs: int64(i), WorkingSet: int64(i) * 1024,
+		})
+	}
+	run := processobs.ProcessRun{
+		ProcessKey: "proc-metrics", BootID: "boot-1", PID: 500, StartTimeTicks: 500000,
+		ExePath: "/usr/bin/node", ExeBasename: "node", ArgvPreview: "node x.js", ArgvArgc: 2,
+		StartedAt: now, LastSeenAt: now,
+		WorkingSetBytes: 5 << 20, ThreadCount: 12,
+		MetricSamples: samples,
+		Attribution: processobs.Attribution{
+			SessionID: sessionID, Tool: "claude-code",
+			Source: processobs.AttrBridge, Confidence: processobs.ConfHigh,
+			ActionID: &actionID,
+		},
+	}
+	if _, err := s.PersistRuns(ctx, []processobs.ProcessRun{run}); err != nil {
+		t.Fatalf("PersistRuns: %v", err)
+	}
+
+	got, err := s.SelectSessionProcessRows(ctx)
+	if err != nil {
+		t.Fatalf("SelectSessionProcessRows: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	r := got[0]
+	if r.WorkingSetBytes != 5<<20 {
+		t.Errorf("WorkingSetBytes = %d, want %d", r.WorkingSetBytes, 5<<20)
+	}
+	if r.ThreadCount != 12 {
+		t.Errorf("ThreadCount = %d, want 12", r.ThreadCount)
+	}
+	if r.MessageID != "msg_abc123" {
+		t.Errorf("MessageID = %q, want msg_abc123 (resolved via actions.message_id by action_id)", r.MessageID)
+	}
+
+	var kept []processobs.MetricSample
+	if err := json.Unmarshal([]byte(r.MetricSamplesJSON), &kept); err != nil {
+		t.Fatalf("MetricSamplesJSON not a valid JSON array: %v (%q)", err, r.MetricSamplesJSON)
+	}
+	if len(kept) != sessionProcessMetricSampleCap {
+		t.Errorf("kept %d samples, want the cap %d", len(kept), sessionProcessMetricSampleCap)
+	}
+	if len(r.MetricSamplesJSON) > sessionProcessMetricSamplesMaxBytes {
+		t.Errorf("MetricSamplesJSON = %d bytes, exceeds ceiling %d", len(r.MetricSamplesJSON), sessionProcessMetricSamplesMaxBytes)
+	}
+	// The freshest sample (CPUMs=60) is kept, the oldest (CPUMs=0) dropped.
+	if kept[len(kept)-1].CPUMs != 60 {
+		t.Errorf("last kept sample CPUMs = %d, want 60 (freshest retained)", kept[len(kept)-1].CPUMs)
+	}
+	if kept[0].CPUMs != 1 {
+		t.Errorf("first kept sample CPUMs = %d, want 1 (sample 0 dropped by the cap)", kept[0].CPUMs)
+	}
+}
+
+// TestCapMetricSamples pins capMetricSamples in isolation: an empty or
+// non-array input drops to "", an under-cap array is preserved, an over-cap
+// array is trimmed to the freshest sessionProcessMetricSampleCap, and an array
+// that stays over the byte ceiling after trimming is dropped whole.
+func TestCapMetricSamples(t *testing.T) {
+	t.Parallel()
+
+	jsonArray := func(n int, elem func(i int) string) string {
+		var b strings.Builder
+		b.WriteByte('[')
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(elem(i))
+		}
+		b.WriteByte(']')
+		return b.String()
+	}
+
+	if got := capMetricSamples(""); got != "" {
+		t.Errorf("empty input: got %q, want \"\"", got)
+	}
+	if got := capMetricSamples("{not json"); got != "" {
+		t.Errorf("garbage input: got %q, want \"\"", got)
+	}
+	if got := capMetricSamples(`{"t":1}`); got != "" {
+		t.Errorf("object (not array): got %q, want \"\"", got)
+	}
+
+	// Under the cap: element count preserved.
+	under := jsonArray(10, func(i int) string { return fmt.Sprintf(`{"t":%d}`, i) })
+	var got10 []json.RawMessage
+	if err := json.Unmarshal([]byte(capMetricSamples(under)), &got10); err != nil {
+		t.Fatalf("under-cap output invalid: %v", err)
+	}
+	if len(got10) != 10 {
+		t.Errorf("under-cap kept %d, want 10", len(got10))
+	}
+
+	// Over the cap (small elements): trimmed to the freshest cap.
+	over := jsonArray(sessionProcessMetricSampleCap+25, func(i int) string { return fmt.Sprintf(`{"t":%d}`, i) })
+	var gotCap []json.RawMessage
+	if err := json.Unmarshal([]byte(capMetricSamples(over)), &gotCap); err != nil {
+		t.Fatalf("over-cap output invalid: %v", err)
+	}
+	if len(gotCap) != sessionProcessMetricSampleCap {
+		t.Errorf("over-cap kept %d, want %d", len(gotCap), sessionProcessMetricSampleCap)
+	}
+
+	// Over the byte ceiling even after trimming to the cap: dropped whole.
+	big := strings.Repeat("A", 300)
+	huge := jsonArray(sessionProcessMetricSampleCap, func(int) string { return fmt.Sprintf(`{"t":%q}`, big) })
+	if len(huge) <= sessionProcessMetricSamplesMaxBytes {
+		t.Fatalf("test fixture too small (%d bytes) to exceed the ceiling", len(huge))
+	}
+	if got := capMetricSamples(huge); got != "" {
+		t.Errorf("over-ceiling input: got %d bytes, want \"\" (dropped whole)", len(got))
 	}
 }
 

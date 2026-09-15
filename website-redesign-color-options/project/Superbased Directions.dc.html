@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  body { margin:0; background:#8b8f96; }
+  a { color:inherit; text-decoration:none; }
+  a:hover { text-decoration:none; }
+  @keyframes cursorBlink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+</style>
+</helmet>
+
+<section style="display:flex; flex-direction:column; gap:28px; padding:56px; font-family:'JetBrains Mono', monospace;">
+  <div style="display:flex; align-items:baseline; gap:16px; color:#fff;">
+    <span style="font-size:13px; letter-spacing:.18em; text-transform:uppercase; opacity:.75;">Turn 1 · three directions for superbased.app</span>
+    <span style="font-size:13px; opacity:.55;">same hero, same copy — palette + type only. Reference <a href="#1a" style="text-decoration:underline;">1a</a> / <a href="#1b" style="text-decoration:underline;">1b</a> / <a href="#1c" style="text-decoration:underline;">1c</a> in chat.</span>
+  </div>
+
+  <div style="display:flex; flex-wrap:wrap; gap:36px; align-items:flex-start;">
+
+    <!-- ============ 1a — PAPER TERMINAL ============ -->
+    <div id="1a" style="flex:none; width:1180px; display:flex; flex-direction:column; gap:12px;">
+      <div style="display:flex; align-items:center; gap:12px; color:#fff;">
+        <span style="font-size:12px; font-weight:700; letter-spacing:.14em; background:#fff; color:#111; padding:4px 9px;">1a</span>
+        <span style="font-size:14px; font-weight:600;">Paper Terminal</span>
+        <span style="font-size:12px; opacity:.65;">warm paper, ink, one rust accent · mono-led</span>
+      </div>
+
+      <div style="background:#F4F1EA; color:#16171B; border:1px solid rgba(0,0,0,.12);">
+        <!-- nav -->
+        <div style="display:flex; align-items:center; gap:22px; padding:14px 28px; border-bottom:1px solid rgba(0,0,0,.12);">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div style="display:grid; grid-template-columns:7px 11px; grid-template-rows:8px 12px; gap:3px; align-items:end;">
+              <div style="width:7px; height:7px; background:#16171B;"></div>
+              <div style="width:11px; height:11px; background:#16171B; align-self:start;"></div>
+              <div style="width:14px; height:14px; background:#16171B; grid-column:1/2;"></div>
+            </div>
+            <span style="font-size:19px; letter-spacing:.02em; font-weight:500;">superbased</span>
+          </div>
+          <div style="display:flex; gap:20px; margin-left:auto; align-items:center; font-size:13px; letter-spacing:.02em; color:rgba(22,23,27,.62);">
+            <span>Features</span><span>Docs</span><span>FAQ</span><span>Pricing</span><span>Model prices</span><span>Enterprise</span><span>GitHub</span>
+            <span style="background:#16171B; color:#F4F1EA; padding:8px 16px; font-weight:600; font-size:12.5px; letter-spacing:.03em;">Install free</span>
+          </div>
+        </div>
+        <!-- hero -->
+        <div style="display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr); gap:44px; padding:44px 28px 34px; align-items:center;">
+          <div>
+            <span style="display:inline-flex; align-items:center; gap:8px; font-size:11px; letter-spacing:.12em; color:rgba(22,23,27,.6); border:1px solid rgba(22,23,27,.22); padding:5px 11px;">
+              <span style="width:6px; height:6px; background:#B4471F;"></span>OPEN‑SOURCE CONTROL PLANE · LOCAL‑FIRST
+            </span>
+            <h1 style="font-family:'Space Grotesk',sans-serif; font-size:47px; line-height:1.1; letter-spacing:-.02em; font-weight:600; margin:20px 0 0;">The <span style="color:#B4471F;">control</span> plane for your AI coding agents.</h1>
+            <p style="font-family:'Space Grotesk',sans-serif; font-size:18px; line-height:1.55; color:rgba(22,23,27,.72); margin:18px 0 0; max-width:48ch; text-wrap:pretty;">See every agent action and the provider's own token counts across <b style="color:#16171B;">33 tools</b>.</p>
+            <p style="font-family:'Space Grotesk',sans-serif; font-size:16px; line-height:1.55; color:rgba(22,23,27,.58); margin:10px 0 0; max-width:52ch; text-wrap:pretty;">Then <b style="color:#16171B;">take control of the session</b>: launch it as a dashboard terminal, jump in while it runs, hand the keyboard around, take it back.</p>
+            <div style="display:flex; align-items:center; gap:0; margin-top:24px; border:1px solid #16171B; background:#fff;">
+              <span style="padding:0 12px; color:#B4471F; font-size:14px;">$</span>
+              <code style="font-size:14.5px; padding:13px 0; flex:1;">npx @superbased/observer</code>
+              <span style="background:#16171B; color:#F4F1EA; font-size:11.5px; font-weight:600; letter-spacing:.08em; padding:13px 16px;">COPY — SEE YOUR LAST 30 DAYS</span>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; font-size:10.5px; letter-spacing:.09em; color:rgba(22,23,27,.6);">
+              <span style="border:1px solid rgba(22,23,27,.2); padding:5px 10px;">ONE COMMAND · NO GLOBAL INSTALL</span>
+              <span style="border:1px solid rgba(22,23,27,.2); padding:5px 10px;">NO ACCOUNT · NO SIGNUP · NO TELEMETRY</span>
+            </div>
+            <div style="display:flex; gap:18px; margin-top:16px; font-size:13px;">
+              <span style="border-bottom:1px solid #16171B; padding-bottom:2px;">Read the docs</span>
+              <span style="border-bottom:1px solid rgba(22,23,27,.3); padding-bottom:2px; color:rgba(22,23,27,.7);">See every feature →</span>
+            </div>
+            <p style="font-size:11px; line-height:1.6; color:rgba(22,23,27,.5); margin:18px 0 0; max-width:60ch;">Reads your tools' own local session files, prints the table, keeps nothing. Estimated list price, not invoiced. Free forever for individuals · v1.30.0</p>
+          </div>
+          <div>
+            <div style="border:1px solid #16171B; background:#fff;">
+              <div style="display:flex; align-items:center; gap:7px; padding:9px 12px; border-bottom:1px solid rgba(22,23,27,.15);">
+                <span style="width:8px; height:8px; background:#B4471F;"></span>
+                <span style="width:8px; height:8px; background:rgba(22,23,27,.28);"></span>
+                <span style="width:8px; height:8px; background:rgba(22,23,27,.28);"></span>
+                <span style="font-size:11px; color:rgba(22,23,27,.55); margin-left:6px;">observer · localhost:8081</span>
+              </div>
+              <img src="assets/dashboard-overview.png" alt="SuperBased dashboard overview" style="display:block; width:100%; filter:saturate(.25) contrast(1.02);">
+            </div>
+            <p style="font-size:11.5px; color:rgba(22,23,27,.55); margin:10px 0 0;">Your local dashboard — see every agent and dollar, then take control.</p>
+          </div>
+        </div>
+        <!-- strip -->
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); border-top:1px solid rgba(22,23,27,.12);">
+          <div style="padding:18px 24px; border-right:1px solid rgba(22,23,27,.12);"><div style="font-size:22px; font-weight:600;">18,620</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(22,23,27,.55); margin-top:4px;">npm downloads (all-time)</div></div>
+          <div style="padding:18px 24px; border-right:1px solid rgba(22,23,27,.12);"><div style="font-size:22px; font-weight:600;">23,000+</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(22,23,27,.55); margin-top:4px;">PyPI downloads (all-time)</div></div>
+          <div style="padding:18px 24px; border-right:1px solid rgba(22,23,27,.12);"><div style="font-size:22px; font-weight:600; color:#B4471F;">Apache‑2.0</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(22,23,27,.55); margin-top:4px;">open-source license</div></div>
+          <div style="padding:18px 24px;"><div style="font-size:22px; font-weight:600; color:#B4471F;">Zero telemetry</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(22,23,27,.55); margin-top:4px;">nothing phones home</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 1b — PHOSPHOR ============ -->
+    <div id="1b" style="flex:none; width:1180px; display:flex; flex-direction:column; gap:12px;">
+      <div style="display:flex; align-items:center; gap:12px; color:#fff;">
+        <span style="font-size:12px; font-weight:700; letter-spacing:.14em; background:#fff; color:#111; padding:4px 9px;">1b</span>
+        <span style="font-size:14px; font-weight:600;">Phosphor</span>
+        <span style="font-size:12px; opacity:.65;">true-black CRT, amber signal, single accent · all mono</span>
+      </div>
+
+      <div style="background:#0B0B0C; color:#E8E6E1; border:1px solid rgba(232,230,225,.14); font-family:'IBM Plex Mono', monospace;">
+        <div style="display:flex; align-items:center; gap:22px; padding:14px 28px; border-bottom:1px solid rgba(232,230,225,.14);">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div style="display:grid; grid-template-columns:7px 11px; grid-template-rows:8px 12px; gap:3px; align-items:end;">
+              <div style="width:7px; height:7px; background:#E8E6E1;"></div>
+              <div style="width:11px; height:11px; background:#E8E6E1; align-self:start;"></div>
+              <div style="width:14px; height:14px; background:#FFB000; grid-column:1/2;"></div>
+            </div>
+            <span style="font-size:19px; letter-spacing:.02em; font-weight:500;">superbased</span>
+          </div>
+          <div style="display:flex; gap:20px; margin-left:auto; align-items:center; font-size:13px; letter-spacing:.02em; color:rgba(232,230,225,.6);">
+            <span>Features</span><span>Docs</span><span>FAQ</span><span>Pricing</span><span>Model prices</span><span>Enterprise</span><span>GitHub</span>
+            <span style="background:#FFB000; color:#0B0B0C; padding:8px 16px; font-weight:600; font-size:12.5px; letter-spacing:.03em;">Install free</span>
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr); gap:44px; padding:44px 28px 34px; align-items:center;">
+          <div>
+            <span style="display:inline-flex; align-items:center; gap:8px; font-size:11px; letter-spacing:.12em; color:rgba(232,230,225,.6); border:1px solid rgba(232,230,225,.22); padding:5px 11px;">
+              <span style="width:6px; height:6px; background:#FFB000;"></span>OPEN‑SOURCE CONTROL PLANE · LOCAL‑FIRST
+            </span>
+            <h1 style="font-size:44px; line-height:1.14; letter-spacing:-.03em; font-weight:600; margin:20px 0 0;">The <span style="color:#FFB000;">control</span> plane for your AI coding agents.<span style="display:inline-block; width:.55em; height:1em; background:#FFB000; margin-left:.12em; vertical-align:-.12em; animation:cursorBlink 1.1s steps(1) infinite;"></span></h1>
+            <p style="font-size:16.5px; line-height:1.6; color:rgba(232,230,225,.78); margin:18px 0 0; max-width:52ch; text-wrap:pretty;">See every agent action and the provider's own token counts across <b style="color:#E8E6E1;">33 tools</b>.</p>
+            <p style="font-size:14.5px; line-height:1.65; color:rgba(232,230,225,.55); margin:10px 0 0; max-width:58ch; text-wrap:pretty;">Then <b style="color:#E8E6E1;">take control of the session</b>: launch it as a dashboard terminal, jump in while it runs, hand the keyboard around, take it back.</p>
+            <div style="display:flex; align-items:center; gap:0; margin-top:24px; border:1px solid rgba(255,176,0,.55); background:rgba(255,176,0,.06);">
+              <span style="padding:0 12px; color:#FFB000; font-size:14px;">$</span>
+              <code style="font-size:14.5px; padding:13px 0; flex:1;">npx @superbased/observer</code>
+              <span style="background:#FFB000; color:#0B0B0C; font-size:11.5px; font-weight:600; letter-spacing:.08em; padding:13px 16px;">COPY — SEE YOUR LAST 30 DAYS</span>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; font-size:10.5px; letter-spacing:.09em; color:rgba(232,230,225,.55);">
+              <span style="border:1px solid rgba(232,230,225,.2); padding:5px 10px;">ONE COMMAND · NO GLOBAL INSTALL</span>
+              <span style="border:1px solid rgba(232,230,225,.2); padding:5px 10px;">NO ACCOUNT · NO SIGNUP · NO TELEMETRY</span>
+            </div>
+            <div style="display:flex; gap:18px; margin-top:16px; font-size:13px;">
+              <span style="border-bottom:1px solid #FFB000; padding-bottom:2px; color:#FFB000;">Read the docs</span>
+              <span style="border-bottom:1px solid rgba(232,230,225,.3); padding-bottom:2px; color:rgba(232,230,225,.72);">See every feature →</span>
+            </div>
+            <p style="font-size:11px; line-height:1.6; color:rgba(232,230,225,.45); margin:18px 0 0; max-width:60ch;">Reads your tools' own local session files, prints the table, keeps nothing. Estimated list price, not invoiced. Free forever for individuals · v1.30.0</p>
+          </div>
+          <div>
+            <div style="border:1px solid rgba(232,230,225,.18); background:#111112;">
+              <div style="display:flex; align-items:center; gap:7px; padding:9px 12px; border-bottom:1px solid rgba(232,230,225,.14);">
+                <span style="width:8px; height:8px; background:#FFB000;"></span>
+                <span style="width:8px; height:8px; background:rgba(232,230,225,.3);"></span>
+                <span style="width:8px; height:8px; background:rgba(232,230,225,.3);"></span>
+                <span style="font-size:11px; color:rgba(232,230,225,.5); margin-left:6px;">observer · localhost:8081</span>
+              </div>
+              <img src="assets/dashboard-overview.png" alt="SuperBased dashboard overview" style="display:block; width:100%; filter:saturate(.2) brightness(.92);">
+            </div>
+            <p style="font-size:11.5px; color:rgba(232,230,225,.5); margin:10px 0 0;">Your local dashboard — see every agent and dollar, then take control.</p>
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); border-top:1px solid rgba(232,230,225,.14);">
+          <div style="padding:18px 24px; border-right:1px solid rgba(232,230,225,.14);"><div style="font-size:22px; font-weight:600;">18,620</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(232,230,225,.5); margin-top:4px;">npm downloads (all-time)</div></div>
+          <div style="padding:18px 24px; border-right:1px solid rgba(232,230,225,.14);"><div style="font-size:22px; font-weight:600;">23,000+</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(232,230,225,.5); margin-top:4px;">PyPI downloads (all-time)</div></div>
+          <div style="padding:18px 24px; border-right:1px solid rgba(232,230,225,.14);"><div style="font-size:22px; font-weight:600; color:#FFB000;">Apache‑2.0</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(232,230,225,.5); margin-top:4px;">open-source license</div></div>
+          <div style="padding:18px 24px;"><div style="font-size:22px; font-weight:600; color:#FFB000;">Zero telemetry</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(232,230,225,.5); margin-top:4px;">nothing phones home</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 1c — BLUEPRINT ============ -->
+    <div id="1c" style="flex:none; width:1180px; display:flex; flex-direction:column; gap:12px;">
+      <div style="display:flex; align-items:center; gap:12px; color:#fff;">
+        <span style="font-size:12px; font-weight:700; letter-spacing:.14em; background:#fff; color:#111; padding:4px 9px;">1c</span>
+        <span style="font-size:14px; font-weight:600;">Blueprint</span>
+        <span style="font-size:12px; opacity:.65;">cool grey, graph-paper grid, ink blue · Swiss-technical</span>
+      </div>
+
+      <div style="background:#F2F4F7; color:#1A1D26; border:1px solid rgba(26,29,38,.14); background-image:linear-gradient(rgba(26,29,38,.045) 1px, transparent 1px), linear-gradient(90deg, rgba(26,29,38,.045) 1px, transparent 1px); background-size:22px 22px;">
+        <div style="display:flex; align-items:center; gap:22px; padding:14px 28px; border-bottom:1px solid rgba(26,29,38,.14); background:rgba(242,244,247,.9);">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div style="display:grid; grid-template-columns:7px 11px; grid-template-rows:8px 12px; gap:3px; align-items:end;">
+              <div style="width:7px; height:7px; background:#1A1D26;"></div>
+              <div style="width:11px; height:11px; background:#1A1D26; align-self:start;"></div>
+              <div style="width:14px; height:14px; background:#1A1D26; grid-column:1/2;"></div>
+            </div>
+            <span style="font-size:19px; letter-spacing:.02em; font-weight:500;">superbased</span>
+          </div>
+          <div style="display:flex; gap:20px; margin-left:auto; align-items:center; font-size:13px; letter-spacing:.02em; color:rgba(26,29,38,.6);">
+            <span>Features</span><span>Docs</span><span>FAQ</span><span>Pricing</span><span>Model prices</span><span>Enterprise</span><span>GitHub</span>
+            <span style="background:#2647E8; color:#fff; padding:8px 16px; font-weight:600; font-size:12.5px; letter-spacing:.03em;">Install free</span>
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr); gap:44px; padding:44px 28px 34px; align-items:center;">
+          <div>
+            <span style="display:inline-flex; align-items:center; gap:8px; font-size:11px; letter-spacing:.12em; color:rgba(26,29,38,.62); border:1px solid rgba(26,29,38,.2); background:#fff; padding:5px 11px;">
+              <span style="width:6px; height:6px; background:#2647E8;"></span>OPEN‑SOURCE CONTROL PLANE · LOCAL‑FIRST
+            </span>
+            <h1 style="font-family:'Space Grotesk',sans-serif; font-size:48px; line-height:1.08; letter-spacing:-.028em; font-weight:700; margin:20px 0 0;">The <span style="color:#2647E8;">control</span> plane for your AI coding agents.</h1>
+            <p style="font-family:'Space Grotesk',sans-serif; font-size:18px; line-height:1.55; color:rgba(26,29,38,.74); margin:18px 0 0; max-width:48ch; text-wrap:pretty;">See every agent action and the provider's own token counts across <b style="color:#1A1D26;">33 tools</b>.</p>
+            <p style="font-family:'Space Grotesk',sans-serif; font-size:16px; line-height:1.55; color:rgba(26,29,38,.58); margin:10px 0 0; max-width:52ch; text-wrap:pretty;">Then <b style="color:#1A1D26;">take control of the session</b>: launch it as a dashboard terminal, jump in while it runs, hand the keyboard around, take it back.</p>
+            <div style="display:flex; align-items:center; gap:0; margin-top:24px; border:1px solid rgba(26,29,38,.2); background:#fff; box-shadow:4px 4px 0 rgba(38,71,232,.12);">
+              <span style="padding:0 12px; color:#2647E8; font-size:14px;">$</span>
+              <code style="font-size:14.5px; padding:13px 0; flex:1;">npx @superbased/observer</code>
+              <span style="background:#2647E8; color:#fff; font-size:11.5px; font-weight:600; letter-spacing:.08em; padding:13px 16px;">COPY — SEE YOUR LAST 30 DAYS</span>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; font-size:10.5px; letter-spacing:.09em; color:rgba(26,29,38,.6);">
+              <span style="border:1px solid rgba(26,29,38,.18); background:#fff; padding:5px 10px;">ONE COMMAND · NO GLOBAL INSTALL</span>
+              <span style="border:1px solid rgba(26,29,38,.18); background:#fff; padding:5px 10px;">NO ACCOUNT · NO SIGNUP · NO TELEMETRY</span>
+            </div>
+            <div style="display:flex; gap:18px; margin-top:16px; font-size:13px;">
+              <span style="border-bottom:1px solid #2647E8; padding-bottom:2px; color:#2647E8;">Read the docs</span>
+              <span style="border-bottom:1px solid rgba(26,29,38,.3); padding-bottom:2px; color:rgba(26,29,38,.72);">See every feature →</span>
+            </div>
+            <p style="font-size:11px; line-height:1.6; color:rgba(26,29,38,.5); margin:18px 0 0; max-width:60ch;">Reads your tools' own local session files, prints the table, keeps nothing. Estimated list price, not invoiced. Free forever for individuals · v1.30.0</p>
+          </div>
+          <div>
+            <div style="border:1px solid rgba(26,29,38,.2); background:#fff; box-shadow:8px 8px 0 rgba(26,29,38,.06);">
+              <div style="display:flex; align-items:center; gap:7px; padding:9px 12px; border-bottom:1px solid rgba(26,29,38,.14);">
+                <span style="width:8px; height:8px; background:#2647E8;"></span>
+                <span style="width:8px; height:8px; background:rgba(26,29,38,.25);"></span>
+                <span style="width:8px; height:8px; background:rgba(26,29,38,.25);"></span>
+                <span style="font-size:11px; color:rgba(26,29,38,.55); margin-left:6px;">observer · localhost:8081</span>
+              </div>
+              <img src="assets/dashboard-overview.png" alt="SuperBased dashboard overview" style="display:block; width:100%; filter:saturate(.3) hue-rotate(190deg);">
+            </div>
+            <p style="font-size:11.5px; color:rgba(26,29,38,.55); margin:10px 0 0;">Your local dashboard — see every agent and dollar, then take control.</p>
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); border-top:1px solid rgba(26,29,38,.14); background:#fff;">
+          <div style="padding:18px 24px; border-right:1px solid rgba(26,29,38,.12);"><div style="font-size:22px; font-weight:600;">18,620</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(26,29,38,.55); margin-top:4px;">npm downloads (all-time)</div></div>
+          <div style="padding:18px 24px; border-right:1px solid rgba(26,29,38,.12);"><div style="font-size:22px; font-weight:600;">23,000+</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(26,29,38,.55); margin-top:4px;">PyPI downloads (all-time)</div></div>
+          <div style="padding:18px 24px; border-right:1px solid rgba(26,29,38,.12);"><div style="font-size:22px; font-weight:600; color:#2647E8;">Apache‑2.0</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(26,29,38,.55); margin-top:4px;">open-source license</div></div>
+          <div style="padding:18px 24px;"><div style="font-size:22px; font-weight:600; color:#2647E8;">Zero telemetry</div><div style="font-size:11px; letter-spacing:.06em; color:rgba(26,29,38,.55); margin-top:4px;">nothing phones home</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+</x-dc>
+</body>
+</html>

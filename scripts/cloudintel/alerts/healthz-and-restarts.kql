@@ -1,0 +1,21 @@
+// healthz-and-restarts.kql — best-effort proxy for "/healthz failures" (gap
+// 4.6). HONEST LIMITATION: the app has no per-request access log today (no
+// status-code line is emitted for any route, healthz included — grep
+// internal/cloudserver/api/*.go, there is no s.log call in the request path
+// other than a handful of error-branch Warns/Errors unrelated to healthz). A
+// direct "/healthz returned 5xx" alert therefore cannot be built from
+// Log Analytics as instrumented today; adding a structured per-request log
+// line (status, route, latency) is the owed follow-up that would make a real
+// version of this alert possible.
+//
+// Until then, this is the closest real signal: repeated container EXITS /
+// restarts on sbci-api, which is what a sustained /healthz failure produces
+// (ACA restarts a container whose configured liveness/startup probe — which
+// IS /healthz per the Container Apps default — keeps failing).
+ContainerAppSystemLogs_CL
+| where TimeGenerated > ago(15m)
+| where ContainerAppName_s == "sbci-api"
+| where Log_s has_any ("ProcessExited", "Started", "Pulling")
+| summarize restarts = countif(Log_s has "ProcessExited") by bin(TimeGenerated, 5m), RevisionName_s
+| where restarts >= 2
+| order by TimeGenerated desc

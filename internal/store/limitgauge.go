@@ -52,3 +52,18 @@ func (s *Store) SelectLimitGauges(ctx context.Context) ([]orgcontract.LimitGauge
 	}
 	return out, nil
 }
+
+// probeLimitSnapshots is the Track R2 change-detection probe for the
+// limit_gauge wire. It lives here — with the other limit_snapshots SQL — so
+// orgsnapgate.go and orgpush.go stay free of the table name.
+//
+// PROBE: COALESCE(MAX(id),0) — one index-endpoint seek, O(1).
+//
+// WHY THAT REFLECTS MUTATION: limit_snapshots is append-only; the proxy's
+// LimitSink only ever INSERTs a snapshot.
+//
+// RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: retention DELETEs inside the
+// trailing window are not detected until snapGate's maxSkipAge fires.
+func (s *Store) probeLimitSnapshots(ctx context.Context) (string, error) {
+	return s.snapProbeScalar(ctx, `SELECT 'ls' || COALESCE(MAX(id), 0) FROM limit_snapshots`)
+}

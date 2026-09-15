@@ -166,6 +166,52 @@ type ManagedIntegrityReport struct {
 	SiblingDetail    []string `json:"sibling_detail,omitempty"`
 	RouteDrift       int      `json:"route_drift"`
 	DriftedTools     []string `json:"drifted_tools,omitempty"`
+	// CaptureCheckVersion distinguishes an older node that never ran the
+	// capture-behavior checks from a current node that ran them and found no
+	// risk. CaptureRisks and UnknownChecks are closed, content-free labels.
+	CaptureCheckVersion int      `json:"capture_check_version,omitempty"`
+	CaptureRisks        []string `json:"capture_risks,omitempty"`
+	UnknownChecks       []string `json:"unknown_checks,omitempty"`
+}
+
+// ManagedCaptureCheckVersion is the capture-behavior check vocabulary this
+// binary reports. Unsupported versions remain unreported until the server can
+// interpret their complete vocabulary.
+const ManagedCaptureCheckVersion = 1
+
+// Closed capture-risk labels. These describe positive host observations only;
+// they never infer why a file or registration changed.
+const (
+	CaptureRiskHookRegistrationError = "hook_registration_error"
+	CaptureRiskHookBinaryMismatch    = "hook_binary_mismatch"
+	CaptureRiskHookConfigMissing     = "hook_config_missing"
+	CaptureRiskCodexHookUntrusted    = "codex_hook_untrusted"
+	CaptureRiskHookConfigChanged     = "hook_config_changed"
+)
+
+// Closed unknown-check labels. An unknown check is not a clean result and is
+// surfaced separately from positive capture-risk observations.
+const (
+	CaptureUnknownRegistryMissing    = "hook_registry_missing"
+	CaptureUnknownRegistryUnreadable = "hook_registry_unreadable"
+	CaptureUnknownRegistryInvalid    = "hook_registry_invalid"
+	CaptureUnknownRegistryEmpty      = "hook_registry_empty"
+	CaptureUnknownConfigUnreadable   = "hook_config_unreadable"
+	CaptureUnknownChecksumMissing    = "hook_checksum_missing"
+	CaptureUnknownBinaryPath         = "running_binary_unknown"
+	CaptureUnknownRecordedBinary     = "registered_binary_unknown"
+	CaptureUnknownCodexTrust         = "codex_trust_unknown"
+)
+
+// ManagedIntegrityDetail is the versioned, bounded JSON persisted in the
+// existing managed_integrity.detail column. It contains only server-normalized
+// coarse labels and lets old rows remain readable without a schema migration.
+type ManagedIntegrityDetail struct {
+	CaptureCheckVersion int      `json:"capture_check_version,omitempty"`
+	SiblingDetail       []string `json:"sibling_detail,omitempty"`
+	DriftedTools        []string `json:"drifted_tools,omitempty"`
+	CaptureRisks        []string `json:"capture_risks,omitempty"`
+	UnknownChecks       []string `json:"unknown_checks,omitempty"`
 }
 
 // ManagedIntegrityResponse is the 200 body of POST /api/agent/managed-integrity.
@@ -219,13 +265,46 @@ type BearerClaims struct {
 // ingest cursor so the server can ACK a next_cursor and the agent can
 // resume exactly once.
 type PushEnvelope struct {
-	AgentVersion string          `json:"agent_version"`
-	CursorFrom   int64           `json:"cursor_from"`
-	CursorTo     int64           `json:"cursor_to"`
-	Sessions     []SessionRow    `json:"sessions"`
-	Actions      []ActionRow     `json:"actions"`
-	APITurns     []APITurnRow    `json:"api_turns"`
-	TokenUsage   []TokenUsageRow `json:"token_usage"`
+	AgentVersion string `json:"agent_version"`
+	// MachineIdentity is the pushing node's org-salted machine fingerprint
+	// (machineid.ForOrg — the SAME opaque value ManagedBindRequest and
+	// PolicyStateReport carry), present ONLY for a node enrolled under
+	// managed tenancy. It is ENVELOPE-level, not a per-row column: one push
+	// comes from one machine, so repeating it on every session row would be
+	// pure redundancy.
+	//
+	// The individual/BYO plane sends nothing here (orgclient's
+	// ManagedMachineIdentity returns "" for an unmanaged enrolment, a host
+	// with no stable machine id, or any load error), and omitempty keeps
+	// those envelopes byte-identical to the pre-feature shape. The server
+	// stamps it onto the sessions rows this push inserts, which is what
+	// makes project_identity_signals.node_count a real count of MACHINES
+	// rather than a copy of the developer count. Empty is "not tracked",
+	// never "zero machines".
+	MachineIdentity string `json:"machine_identity,omitempty"`
+	// UpdatePosture is the OPTIONAL self-reported update state of this node
+	// (Enterprise Update Management §3.5): version / channel / os / arch /
+	// state / target / manifest version / error CLASS / install method /
+	// auto-apply / extension version. No hostname, no paths, no free text —
+	// see UpdatePostureRow in update.go for the field-by-field rationale and
+	// the structural pin that keeps it that way.
+	//
+	// ENVELOPE-level like MachineIdentity, and for the same reason: one push
+	// comes from one node, so this is one fact about the pusher, not a
+	// per-row column. It is composed by internal/store/updateposture.go and
+	// called BY orgpush.go, so the privacy sentinel keeps forbidding the
+	// node-local update_state / update_events table names inside that seam.
+	//
+	// omitempty keeps a pre-feature node's envelope BYTE-IDENTICAL to today's
+	// accepted shape, and a pre-feature server ignores the unknown key — the
+	// same compat invariant RoutingSummaries carries below.
+	UpdatePosture *UpdatePostureRow `json:"update_posture,omitempty"`
+	CursorFrom    int64             `json:"cursor_from"`
+	CursorTo      int64             `json:"cursor_to"`
+	Sessions      []SessionRow      `json:"sessions"`
+	Actions       []ActionRow       `json:"actions"`
+	APITurns      []APITurnRow      `json:"api_turns"`
+	TokenUsage    []TokenUsageRow   `json:"token_usage"`
 	// RoutingSummaries is the OPTIONAL §R19.4 aggregate (counts +
 	// dollars by tier/reason only) — present only when the node
 	// operator opted in via [org_client.share] routing_summary.
@@ -262,12 +341,42 @@ type PushEnvelope struct {
 	// directions like RoutingSummaries. See internal/orgcontract/verbosity.go.
 	SessionVerbositySummaries []SessionVerbosityRow `json:"session_verbosity,omitempty"`
 
+	// SessionLOC carries the Lines-of-Code per-session AGGREGATE (one row per
+	// session × project root: line counts by actor, the classifier version and
+	// the human-capture flag). Unlike the session-scoped wires around it, this
+	// one rides the DEFAULT metadata-only posture — a count of lines written is
+	// the same disclosure class as SessionRow.TotalActions. The one field
+	// gated on shipsRawContent() is the row's own LanguageMixJSON. Composed by
+	// store.SelectSessionLOCSummaries (internal/store/locsummary.go, a separate
+	// file so orgpush.go never names file_changes). Optional both directions
+	// like RoutingSummaries. See internal/orgcontract/loc.go.
+	SessionLOC []SessionLOCRow `json:"session_loc,omitempty"`
+
+	// LOCDays carries the day-bucketed (day, project root) line-count
+	// aggregate — the carrier for editor-reported human work that happens
+	// outside any session (plan §2). Same default posture as SessionLOC.
+	LOCDays []LOCDayRow `json:"loc_days,omitempty"`
+
 	// SessionCacheSummaries carries the W2.1 session-scoped cache summary
 	// (per session × model × kind × cause counts + token sums, no content) —
 	// present only under shipsRawContent() (full_content / admin_managed);
 	// the fleet day-aggregate CacheSummaries above is the separate teams-tier
 	// surface. Optional both directions. See internal/orgcontract/cachesession.go.
 	SessionCacheSummaries []SessionCacheRow `json:"session_cache,omitempty"`
+
+	// SessionCacheEvents carries the PER-EVENT cache timeline (one row per
+	// node cache_events row, capped per session) — the substrate the org
+	// drawer feeds to the SAME cachetrack.BuildTimeline the node uses, so the
+	// two Cache tabs cannot drift. Present only under shipsRawContent()
+	// (full_content / admin_managed / enterprise-granted), the SessionCache
+	// posture and deliberately NOT the teams-tier cache_detail flag, which
+	// gates the content-free FLEET aggregate above and stays orthogonal in
+	// both directions. The node's `detail` diagnostic JSON, the cache scope /
+	// prefix hashes and the node-local anchor ids are all excluded by
+	// construction. Composed by store.SelectSessionCacheEvents, which owns the
+	// node-local read — orgpush.go names no cache_* table. Optional both
+	// directions. See internal/orgcontract/cacheeventsession.go.
+	SessionCacheEvents []SessionCacheEventRow `json:"session_cache_events,omitempty"`
 
 	// SessionProcesses is the W2.2 session-scoped RAW process-run wire (one
 	// row per process run: exe/cwd/argv-preview/metrics, capped per session
@@ -286,6 +395,29 @@ type PushEnvelope struct {
 	// metadata-only BY CAPTURE, never an omission. See
 	// internal/orgcontract/networksession.go.
 	SessionNetworkEvents []SessionNetworkEventRow `json:"session_network_events,omitempty"`
+
+	// SessionTaskItems / SessionTaskTransitions are the W2 session task/todo
+	// checklist wires (node session-detail trickle-up plan §2 "W2"), present
+	// only when the node ships the task_detail tier (opt-in individual /
+	// admin-raised managed via the DISTINCT extract.tasks authority). The
+	// status vocabulary, counters and transitions ship under that tier alone;
+	// each item's PROSE (content/active_form/owner) additionally requires the
+	// node's raw-content posture. Composed by store.SelectSessionTaskItems /
+	// SelectSessionTaskTransitions, which own the node-local read — orgpush.go
+	// names the task_* tables nowhere. Optional both directions like
+	// RoutingSummaries. See internal/orgcontract/taskflowsession.go.
+	SessionTaskItems       []SessionTaskItemRow       `json:"session_task_items,omitempty"`
+	SessionTaskTransitions []SessionTaskTransitionRow `json:"session_task_transitions,omitempty"`
+
+	// SessionToolAccounts is the W3 vendor-login observation wire (§2 "W3"),
+	// present only when the node ships the tool_account_detail tier (opt-in
+	// individual / admin-raised managed via the DISTINCT extract.tool_accounts
+	// authority). Binding enums + the opaque account_key ship under that tier
+	// alone; the raw identity (email/name/account_id) additionally requires
+	// the node's raw-content posture (decision D2). Composed by
+	// store.SelectSessionToolAccounts, which owns the node-local read.
+	// Optional both directions. See internal/orgcontract/toolaccountsession.go.
+	SessionToolAccounts []SessionToolAccountRow `json:"session_tool_accounts,omitempty"`
 
 	// --- Org-parity Wave-3 per-developer enterprise wires. All ride
 	// shipsRawContent() (full_content / admin_managed) like the session-
@@ -415,13 +547,174 @@ type PushEnvelope struct {
 	// Populated only when the node has opted in via
 	// [org_client.share.obs].egress (default false). Optional both directions.
 	ObsEgressDecisions []ObsEgressRow `json:"obs_egress_decisions,omitempty"`
+
+	// BudgetPosture is the OPTIONAL enum-only self-report of whether the org's
+	// BUDGET is actually holding on this node (org-budget plan §3.3d): the
+	// enforcement point, the guard's mode, where the effective numbers came
+	// from, the last fetch's state, and the coverage limit. NO cap value and NO
+	// resolved scope — see BudgetPostureRow in budgetposture.go for why.
+	//
+	// ENVELOPE-level like MachineIdentity and UpdatePosture, and for the same
+	// reason: one push comes from one node, so this is one fact about the
+	// pusher, not a per-row column. It is composed by
+	// internal/store/budgetposture.go and called BY orgpush.go through a func
+	// seam, the RoutingSummaries pattern.
+	//
+	// omitempty keeps a pre-feature node's envelope BYTE-IDENTICAL to today's
+	// accepted shape, and a pre-feature server ignores the unknown key.
+	BudgetPosture *BudgetPostureRow `json:"budget_posture,omitempty"`
 }
 
 // PushResponse is the 200 body of POST /api/agent/push.
 type PushResponse struct {
+	// QueuedRows is the total row count of the envelope the collector durably
+	// queued onto the shared log (stateless-collectors-durable-log plan §4.3).
+	// It is the honest answer a stateless collector CAN give: the collector
+	// only enqueues, so it cannot yet know the true applied/deduped totals
+	// (those move to ingest health, computed by the apply worker).
+	//
+	// Compat rule (plan §6 criterion 10): a pre-arc node ignores this unknown
+	// key and reads accepted_rows, which the collector MIRRORS from
+	// queued_rows so the node still advances its cursor exactly as before; a
+	// post-arc node may prefer queued_rows. omitempty keeps a legacy
+	// synchronous-ingest response (QueuedRows == 0) byte-identical to today's
+	// shape, so no existing wire golden or client changes.
+	QueuedRows   int64 `json:"queued_rows,omitempty"`
 	AcceptedRows int64 `json:"accepted_rows"`
 	DedupedRows  int64 `json:"deduped_rows"`
 	NextCursor   int64 `json:"next_cursor"`
+
+	// GrantReplacement is the OPTIONAL delivery seam for an out-of-band
+	// authority change (Plane B dual-mode gateway/RBAC-IA design §5.3, Sol
+	// S4). The push cycle is the ONLY node->server round trip that both
+	// authenticates the calling node (claims.Sub) and always returns a body
+	// (no 304), so it is the smallest existing seam to hand an already-
+	// enrolled node its freshly-signed replacement. omitempty on both sides
+	// of the compat invariant: a pre-P2b server never emits it (nothing to
+	// accept); a pre-P2b agent ignores the unknown key. A P2b agent decodes it
+	// from the RAW response body (the generated client's typed 200 struct does
+	// not carry it, so no OpenAPI regeneration is needed) and feeds it to
+	// orgclient.Client.AcceptGrantReplacement, which verifies and applies it.
+	// The node reports adoption back via HeaderGrantReplacementAck on its next
+	// push — the fleet-ACK signal the server's posture-activation gate reads.
+	GrantReplacement *GrantReplacement `json:"grant_replacement,omitempty"`
+
+	// BreakGlassLeases is the OPTIONAL delivery seam for approved break-glass
+	// credential leases owed to THIS node (Plane B design §4.2 rung 3, operator
+	// Q5, P6). It rides the same already-authenticated push round trip as
+	// GrantReplacement, as an omitempty slice (a node may have one pending lease
+	// per provider upstream). Same compat invariant: a pre-P6 server never emits
+	// it; a pre-P6 node ignores the unknown key. Each lease is self-contained and
+	// signed (see breakglass.go); the node verifies, opens the per-machine seal,
+	// and reports adoption back via HeaderBreakGlassAck. Node-side redemption is
+	// a separate lane; this field only freezes the delivery contract.
+	BreakGlassLeases []BreakGlassLease `json:"break_glass_leases,omitempty"`
+
+	// BreakGlassRevokedLeaseIDs lists lease ids this node previously ACKed that
+	// the server has since REVOKED early (an admin revoke before TTL — G1-
+	// BREAKGLASS). TTL expiry needs no signal (the node enforces ExpiresAt
+	// itself); an explicit revoke does, or a pulled lease would stay usable on
+	// the node until its TTL. Advisory and idempotent: the node drops any
+	// matching local lease and forgets unknown ids. Same omitempty compat
+	// invariant as BreakGlassLeases.
+	BreakGlassRevokedLeaseIDs []string `json:"break_glass_revoked_lease_ids,omitempty"`
+
+	// PolicyVersions is the OPTIONAL policy-propagation nudge (2026-09-01):
+	// the latest published version per policy-resource family. A node compares
+	// it against what it last saw and triggers an immediate policy-resource
+	// fetch when the server is ahead, so a publish converges within one push
+	// interval instead of the policy poll interval (default hourly). This is a
+	// version-number HINT riding an already-authenticated response — it carries
+	// no body and forces nothing: delivery, the signature/pin gates, and the
+	// [org_client.policy] accept_families opt-in all stay node-owned exactly as
+	// before. Same omitempty compat invariant as the seams above: a pre-nudge
+	// server never emits it; a pre-nudge agent ignores the unknown key.
+	PolicyVersions map[string]int64 `json:"policy_versions,omitempty"`
+
+	// UpdateVersions is the OPTIONAL update nudge (Enterprise Update
+	// Management §3.5): the latest PUBLISHED manifest version this node is
+	// eligible for, per channel. A node compares it against its own
+	// last-accepted manifest version and fetches the SIGNED manifest with a
+	// separate authenticated GET when the server is ahead. It carries no
+	// document and forces nothing.
+	//
+	// Deliberately the same shape as PolicyVersions above rather than the
+	// manifest itself: it keeps the push response small, and it makes the
+	// manifest fetch independently authenticated and independently verifiable
+	// instead of something smuggled inside a batch ACK. (Announcements, which
+	// this rail is modelled on, do not ride the response body either — they
+	// are a separate GET on the same cycle.)
+	//
+	// Because the node only fetches when the nudge says the server is ahead,
+	// the steady state adds ZERO extra requests: with [update].enabled and no
+	// published manifest, a node makes exactly the same set of requests to
+	// exactly the same hosts as it does today.
+	//
+	// Same omitempty compat invariant as the seams above: a pre-feature
+	// server never emits it and the node stays inert; a pre-feature agent
+	// ignores the unknown key.
+	UpdateVersions map[string]int64 `json:"update_versions,omitempty"`
+}
+
+// HeaderGrantReplacementAck is the request header a node sets on POST
+// /api/agent/push to report the highest grant-replacement generation it has
+// adopted (its stored enrolment grant's ReplacementGeneration, 0 when none).
+// It is advisory bookkeeping over an ALREADY-authenticated push (the Ed25519
+// per-push proof is the sole authenticator); the header can only report the
+// node's OWN adoption and never widens access, exactly like
+// HeaderAgentKeyFingerprint. The server records it into
+// org_grant_replacement_ack, the fleet-ACK registry its posture-activation
+// gate reads.
+const HeaderGrantReplacementAck = "X-SBO-Grant-Replacement-Ack"
+
+// Product posture classes (design §5.2). The org's product posture is chosen
+// at org creation and served to both the dashboard and the fleet.
+//
+//   - ProductPostureTeams keeps today's opt-in algebra: under the teams posture
+//     sharing is node-side opt-in, never server-forced, and the privacy
+//     sentinel holds byte-for-byte (the posture-conditional truth of §5.3).
+//   - ProductPostureEnterprise inverts the default at the GRANT layer: under the
+//     enterprise posture enrolment auto-issues the full extract.* set (managed-
+//     consent class), so effective sharing is ALL by default with zero node-side
+//     edits — raw content ships via store.ShareOptions.EnterpriseGranted, a
+//     resolved enrolment grant, never a live remote command.
+//
+// The empty string is treated as ProductPostureTeams everywhere so a pre-P2b
+// server (which stores no posture) and a pre-P2b node behave exactly as teams.
+const (
+	ProductPostureTeams      = "teams"
+	ProductPostureEnterprise = "enterprise"
+)
+
+// ValidProductPosture reports whether s is a recognised posture class. The
+// empty string is INVALID here (callers normalise it to ProductPostureTeams
+// first); this is the set-time check that refuses an unknown class.
+func ValidProductPosture(s string) bool {
+	return s == ProductPostureTeams || s == ProductPostureEnterprise
+}
+
+// PostureState is the 200 body of GET /api/agent/posture (node-facing) and the
+// core of the dashboard's GET /api/org/posture. It is a READ of server state;
+// it carries NO authority and grants nothing — the authority a node actually
+// holds lives only in its signed EnrolmentGrant / GrantReplacement. It exists
+// so a node (and the personal-plane data-authority classifier) has one honest,
+// deterministic source for "what posture is this org, and what collection has
+// the admin turned off".
+type PostureState struct {
+	// Posture is the ACTIVE posture (teams|enterprise).
+	Posture string `json:"posture"`
+	// PendingPosture is the target of an in-flight teams->enterprise flip that
+	// has not yet cleared the fleet-ACK gate; empty when no flip is pending.
+	PendingPosture string `json:"pending_posture,omitempty"`
+	// ReplacementGeneration is the current fleet grant-replacement generation
+	// (0 = none issued). A node compares it against its own adopted generation.
+	ReplacementGeneration int64 `json:"replacement_generation"`
+	// Collection is the org-side per-share-tier collection toggle map (design
+	// §5.2 "org collection settings"): tier key -> enabled. Absent/true means
+	// "collect"; false means the admin has LOWERED that tier fleet-wide. Only
+	// tiers the admin has explicitly turned OFF are guaranteed present; a
+	// missing key is enabled (the default-ALL-ON posture).
+	Collection map[string]bool `json:"collection,omitempty"`
 }
 
 // PolicyBundle is the 200 body of GET /api/v1/policy-bundle (guard spec
@@ -547,9 +840,33 @@ type SignedPolicyResource struct {
 // filesystem layout.
 //
 // ProjectRoot + GitRemote are the raw / human-readable values; they ship
-// ONLY when the node operator has set [org_client.share].full_content = true
-// in their local config (a per-node opt-in; the org admin cannot force it
-// on). With the default config they are empty strings (json omitempty).
+// under store.ShareOptions.shipsRawContent() — TEAMS posture: ONLY when the
+// node operator has set [org_client.share].full_content = true in their
+// local config (a per-node opt-in; the org admin cannot force it on) OR the
+// node is admin_managed (itself a node-authored provisioning config, never a
+// remote toggle). ENTERPRISE posture adds a third, structurally distinct
+// path: a managed node's own enrolment grant may satisfy
+// govern.Effective.GrantsEnterpriseContent(), minted at enrolment under the
+// org's chosen product_posture — never a live remote command (see
+// internal/store/orgpush.go's ShareOptions doc for the full three-path
+// statement). With none of the three, these fields are empty strings (json
+// omitempty).
+//
+// Project Identity Resolver v2 (docs/plans/project-identity-resolver-v2-plan-2026-09-06.md
+// §3.2, agent migration 102 / server migration 121) widens the single origin
+// remote into a full identity bundle. GitUpstreamRemoteHash, GitRemoteOwnerHash,
+// GitUpstreamOwnerHash, RootCommitHash, ContentFingerprintHash, and
+// WorkspaceHash are unsalted sha256 hashes that ship ALWAYS — joinable across
+// nodes, disclosing nothing a raw value would not. IsWorktree is a
+// content-free bool and also always ships. GitUpstreamRemote and Workspace
+// are the two RAW counterparts among these new fields; like ProjectRoot /
+// GitRemote above, they ship ONLY under store.ShareOptions.shipsRawContent()
+// and are stripped per row in internal/store/orgpush.go::SelectUnpushedSince.
+// There is no raw counterpart for the other four hashes (the pre-images —
+// root_commit_sha, content_fingerprint — never leave the node in any share
+// mode; the owner hashes have no raw form on the wire at all). An older agent
+// omits every field in this block; the server degrades to remote-only
+// resolution. All additive/omitempty for compat in both directions.
 type SessionRow struct {
 	ID string `json:"id"`
 
@@ -569,6 +886,36 @@ type SessionRow struct {
 	TotalActions int    `json:"total_actions"`
 	OrgID        string `json:"org_id"`
 	UserEmail    string `json:"user_email"`
+
+	// Project Identity Resolver v2 additions — content-free hashes, always
+	// present when the node has resolved them (older agents omit them).
+	GitUpstreamRemoteHash  string `json:"git_upstream_remote_hash,omitempty"`
+	GitRemoteOwnerHash     string `json:"git_remote_owner_hash,omitempty"`
+	GitUpstreamOwnerHash   string `json:"git_upstream_owner_hash,omitempty"`
+	RootCommitHash         string `json:"root_commit_hash,omitempty"`
+	ContentFingerprintHash string `json:"content_fingerprint_hash,omitempty"`
+	WorkspaceHash          string `json:"workspace_hash,omitempty"`
+	IsWorktree             bool   `json:"is_worktree,omitempty"`
+
+	// Raw values — present only under shipsRawContent(). The only two
+	// resolver-v2 fields with a raw counterpart on the wire.
+	GitUpstreamRemote string `json:"git_upstream_remote,omitempty"`
+	Workspace         string `json:"workspace,omitempty"`
+
+	// Capture-surface attribution (node session-detail trickle-up W1;
+	// agent migration 107 / server migration 139). METADATA, not content:
+	// Surface is a CLOSED vocabulary (models.KnownSurface — cli | ide |
+	// desktop | sdk | web) that the node's Store.SetSessionSurface refuses
+	// to write outside of, and SurfaceHost is the bounded host token that
+	// refines it (vscode | cursor | jetbrains | neovim | kiro |
+	// claude-desktop | codex-desktop | ...). Neither can carry a path, a
+	// prompt or a branch name, so both ship BY DEFAULT — unconditionally
+	// populated by SelectUnpushedSince, with no share key and no
+	// shipsRawContent() gate. Empty means UNKNOWN (a pre-107 agent, or a
+	// session whose transcript was never re-scanned); a projection must
+	// render that absence honestly and NEVER as "cli".
+	Surface     string `json:"surface,omitempty"`
+	SurfaceHost string `json:"surface_host,omitempty"`
 }
 
 // ActionRow is an action as pushed to the server.
@@ -585,10 +932,16 @@ type SessionRow struct {
 //   - Target and SourceFile are the raw, human-readable values. The
 //     2026-06-02 teams test found that these were shipping raw and
 //     contained command bodies (run_command), assistant prose
-//     (task_complete), and raw filesystem paths. v1.8.0 ships them ONLY
-//     when the node operator has set [org_client.share].full_content = true
-//     — a per-node opt-in the org admin cannot force on. With the default
-//     config they are empty strings (json omitempty).
+//     (task_complete), and raw filesystem paths. v1.8.0 ships them under
+//     store.ShareOptions.shipsRawContent() — TEAMS posture: ONLY when the
+//     node operator has set [org_client.share].full_content = true (a
+//     per-node opt-in the org admin cannot force on) OR admin_managed
+//     (also node-authored, never a remote toggle). ENTERPRISE posture adds
+//     the structurally distinct enrolment-grant path
+//     (govern.Effective.GrantsEnterpriseContent(), minted at enrolment
+//     under the org's chosen product_posture, never a live remote command
+//     — see internal/store/orgpush.go's ShareOptions doc). With none of
+//     the three, these fields are empty strings (json omitempty).
 type ActionRow struct {
 	SessionID     string `json:"session_id"`
 	SourceEventID string `json:"source_event_id"`
@@ -619,6 +972,15 @@ type ActionRow struct {
 	Success     bool  `json:"success"`
 	DurationMs  int64 `json:"duration_ms"`
 	IsSidechain bool  `json:"is_sidechain"`
+	// MessageID is the id of the assistant/user MESSAGE this action belongs to
+	// (actions.message_id on the node, e.g. an Anthropic "msg_…"), the key the
+	// org message-metrics rollup buckets tool calls by. Without it the rollup
+	// falls back to SourceEventID, which differs per adapter and shows 0 tools
+	// per message for tools whose ids are not message ids (OpenCode, etc.).
+	// CONTENT-FREE (an opaque provider id, never prose), so it ships in every
+	// tier; empty when the node never recorded one. Additive/omitempty both
+	// directions: an older server ignores it, an older agent never sends it.
+	MessageID string `json:"message_id,omitempty"`
 	// EffortLevel is the reasoning-effort selection in force when the action
 	// ran (minimal | low | medium | high | xhigh | max — accepted verbatim,
 	// no enum check, matching the node's claudecode_effort sidecar posture).
@@ -629,8 +991,20 @@ type ActionRow struct {
 	// effort concept). Additive/omitempty both directions: an older server
 	// ignores it, an older agent never sends it.
 	EffortLevel string `json:"effort_level,omitempty"`
-	OrgID       string `json:"org_id"`
-	UserEmail   string `json:"user_email"`
+	// StopReason is the turn-completion reason recorded on the action
+	// (end_turn | max_tokens | stop_sequence | tool_use | …), extracted at
+	// push time from the node's actions.metadata JSON ($.stop_reason) exactly
+	// like EffortLevel. It is the JSONL-turn counterpart of APITurnRow's
+	// proxy-observed StopReason: proxy sessions carry it on the api_turn, but a
+	// JSONL-only (non-proxied) session records it only in the action metadata,
+	// so without this field the org message table has no stop reason for those
+	// turns. Content-free (a closed provider vocabulary, never prose), so it
+	// ships in every tier; empty when the node never captured one (pre-feature
+	// rows, tools without a stop-reason concept). Additive/omitempty both
+	// directions: an older server ignores it, an older agent never sends it.
+	StopReason string `json:"stop_reason,omitempty"`
+	OrgID      string `json:"org_id"`
+	UserEmail  string `json:"user_email"`
 }
 
 // APITurnRow is a proxy-observed API turn as pushed. Prompt/completion
@@ -665,6 +1039,21 @@ type APITurnRow struct {
 	ErrorClass            string  `json:"error_class,omitempty"`
 	OrgID                 string  `json:"org_id"`
 	UserEmail             string  `json:"user_email"`
+	// Route / RoutingGeneration / AuthoritySource are the Plane B per-turn
+	// authority stamps (Sol S5 / Luna L15). CONTENT-FREE metadata — enum
+	// strings + an integer generation, never any text from a request — so
+	// they ship UNCONDITIONALLY (not gated by ShareOptions.shipsRawContent,
+	// pinned by tests/invariant/privacy_test.go). omitempty on all three
+	// keeps the wire backward-compatible both directions: an old agent
+	// omits them and a new server reads direct/0/node defaults; a new agent
+	// sends them and an old server ignores unknown keys.
+	//
+	// Route is "direct" | "gateway" | "fallback"; AuthoritySource is
+	// "node" | "gateway" — the org rollup lets a gateway-authoritative row
+	// win on a request_id collision so a mixed-mode window single-counts.
+	Route             string `json:"route,omitempty"`
+	RoutingGeneration uint64 `json:"routing_generation,omitempty"`
+	AuthoritySource   string `json:"authority_source,omitempty"`
 }
 
 // GuardEventRow is a guard-layer audit event as pushed to the server
@@ -677,9 +1066,13 @@ type APITurnRow struct {
 //     content-free and always ship.
 //   - Reason, TargetExcerpt and TaintOrigin are content-bearing
 //     (verdict prose, a bounded excerpt of the command/path, a taint
-//     source description). They ship ONLY when the node operator has
-//     set [org_client.share].full_content = true — the same per-node
-//     opt-in gating actions.target; the org admin cannot force it on.
+//     source description). They ship under store.ShareOptions
+//     .shipsRawContent() — the same gate as actions.target: TEAMS posture
+//     ONLY when the node operator has set [org_client.share].full_content
+//     = true or admin_managed (both node-authored; the org admin cannot
+//     force either on), ENTERPRISE posture also via the structurally
+//     distinct enrolment-grant path (EnterpriseGranted, minted at
+//     enrolment, never a live remote command).
 //     With the default config they are empty strings (json omitempty).
 //   - ChainPrev/ChainHash are SHA-256 hex links of the node's
 //     tamper-evidence chain (guard spec §10.4) — content-free, shipped
@@ -745,8 +1138,26 @@ type TokenUsageRow struct {
 	SourceFileHash        string  `json:"source_file_hash"`
 	SourceFile            string  `json:"source_file,omitempty"`
 	SourceEventID         string  `json:"source_event_id"`
-	OrgID                 string  `json:"org_id"`
-	UserEmail             string  `json:"user_email"`
+	// MessageID is the per-API-call / per-message id this usage row belongs to
+	// (token_usage.message_id on the node), the key the org message-metrics
+	// rollup joins token/cost columns to actions by. CONTENT-FREE opaque id;
+	// empty when the node never recorded one. Additive/omitempty both
+	// directions: an older server ignores it, an older agent never sends it.
+	// (The proxy api_turn's message id is api_turns.request_id, already carried
+	// as APITurnRow.RequestID — no new field needed there.)
+	MessageID string `json:"message_id,omitempty"`
+	// IsSidechain reports whether this usage row was emitted inside a Claude
+	// Code sub-agent (Task) window — token_usage.is_sidechain on the node
+	// (agent migration 087), the token counterpart of the ActionRow.IsSidechain
+	// flag that has ridden the wire since the baseline. METADATA (one bool over
+	// a row that already ships, closed by construction), so it ships BY DEFAULT:
+	// populated unconditionally by SelectUnpushedSince with no share key and no
+	// shipsRawContent() gate. Additive/omitempty both directions — an older
+	// server ignores it, an older agent never sends it and the server lands the
+	// same honest false the node would have stored.
+	IsSidechain bool   `json:"is_sidechain,omitempty"`
+	OrgID       string `json:"org_id"`
+	UserEmail   string `json:"user_email"`
 }
 
 // OTelContentRow is one captured native-OTel content body on the wire
@@ -1394,6 +1805,17 @@ type PolicyStateReport struct {
 	// empty value is its own valid key, not a collision with every other
 	// unbindable report from the same user.
 	MachineIdentity string `json:"machine_identity,omitempty"`
+
+	// LiveCapabilities is the node's advertised capability-token list at report
+	// time (Plane B §3, Sol S3; P6b). It carries content-free capability tokens
+	// only — in particular the mode-capability token
+	// ModeCapabilityToken(providers.SupportedModeSchemaVersion) — from which the
+	// server derives the node's Gateway-Mode readiness
+	// (ParseModeCapabilityVersion → planebmode.RecordCapabilityAck). omitempty on
+	// both compat sides: a pre-P6 agent omits it (the server records no mode
+	// capability for that node, exactly as today); a pre-P6 server ignores it.
+	// This mirrors the node's own PolicyResourceOptions.LiveCapabilities.
+	LiveCapabilities []string `json:"live_capabilities,omitempty"`
 }
 
 // Policy-state Status enum (§3.3) — the CLOSED set of effective-state statuses a
@@ -1548,7 +1970,10 @@ type OrgAnnouncementDoc struct {
 	// Signature is base64(Ed25519 signature over
 	// AnnouncementSigningMessage(Version, Body)) made with the org
 	// server's distribution signing key — the SAME key that signs
-	// RoutingPolicyDoc (orgserver/routingpolicy.SigningKey).
+	// RoutingPolicyDoc, resolved through the one seam
+	// orgserver/routingpolicy.SigningKeyWith: the configured
+	// [policy].signing_key_path (the key the enrolment response delivers)
+	// when the org has one, the routing_policy_keys row otherwise.
 	//
 	// The signed message is domain-separated and version-bound, NOT the
 	// bare body: sharing one key across two rails is only safe if a

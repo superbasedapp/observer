@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -34,6 +33,12 @@ func newDashboardCmd() *cobra.Command {
 			"/api/discover, /api/patterns. Content-Type-agnostic clients (e.g.\n" +
 			"curl) can consume the /api/* JSON directly.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Match `observer start`: every child process launched by this
+			// standalone dashboard must resolve the same explicit config and DB.
+			// setDaemonConfigPath also absolutizes relative paths before a child
+			// changes its working directory to the selected project.
+			setDaemonConfigPath(configPath)
+
 			cfg, database, cleanup, err := loadConfigAndDB(cmd.Context(), configPath)
 			if err != nil {
 				return err
@@ -41,12 +46,12 @@ func newDashboardCmd() *cobra.Command {
 			defer cleanup()
 
 			resolvedConfigPath, _ := config.ResolveGlobalPath(configPath)
-			surfaces, err := buildTerminalSurfaces(cfg, database, slog.Default())
+			surfaces, err := buildTerminalSurfaces(cmd.Context(), cfg, database, slog.Default(), nil)
 			if err != nil {
 				return err
 			}
 			defer surfaces.close()
-			launchMgr, launchStatus := surfaces.launchMgr, surfaces.launchStatus
+			launchMgr, launchStatus, policyStop := surfaces.launchMgr, surfaces.launchStatus, surfaces.policyStop
 			remoteCtrl := buildRemoteController(cfg, database)
 			// Wire the §4.δ remote-execute authorizer onto the launch manager
 			// (no-op + fail-closed unless BOTH the [remote] substrate and the PTY
@@ -60,24 +65,38 @@ func newDashboardCmd() *cobra.Command {
 			govStore := store.New(database)
 			ngov := newNodeGovernanceHandle(governanceIdentityLoader(govStore), slog.Default())
 			loadNodeGovernanceLKG(cmd.Context(), cfg, govStore, ngov, slog.Default())
+			processArchive, closeArchive := openProcessArchiveReader(cmd.Context(), cfg)
+			defer closeArchive()
 			server, err := dashboard.New(dashboard.Options{
-				Governance:            ngov.Effective,
-				DB:                    database,
-				DBPath:                cfg.Observer.DBPath,
-				CostEngine:            cost.NewEngine(cfg.Intelligence),
-				Predict:               cfg.Predict,
-				CacheWarm:             cfg.CacheWarm,
-				Dashboard:             cfg.Dashboard,
-				MonthlyBudgetUSD:      cfg.Intelligence.MonthlyBudgetUSD,
-				ConfigPath:            resolvedConfigPath,
-				RecognizesSessionFile: recognizesSessionFile(),
-				CursorSemanticsFor:    cursorSemanticsFor(),
-				StashDir:              cfg.Compression.Conversation.Stash.Dir,
-				GuardEnabled:          cfg.Guard.Enabled,
-				GuardMode:             cfg.Guard.Mode,
-				GuardStrict:           cfg.Guard.Strict,
-				ToolCatalog:           toolCatalog(),
-				Version:               version,
+				ProcessArchive: processArchive,
+				Governance:     ngov.Effective,
+				DB:             database,
+				DBPath:         cfg.Observer.DBPath,
+				CostEngine:     acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default()),
+				Predict:        cfg.Predict,
+				CacheWarm:      cfg.CacheWarm,
+				Tasks:          cfg.Tasks,
+				// LOC editor endpoint credential — same resolution as
+				// `observer start`, so a developer running the dashboard
+				// standalone gets the identical posture.
+				LocEditorToken:         resolveLocEditorToken(locEditorTokenPath(cfg), slog.Default()),
+				LocEditorTokenRequired: cfg.Loc.EditorTokenRequired,
+				Dashboard:              cfg.Dashboard,
+				MonthlyBudgetUSD:       cfg.Intelligence.MonthlyBudgetUSD,
+				ConfigPath:             resolvedConfigPath,
+				RecognizesSessionFile:  recognizesSessionFile(),
+				CursorSemanticsFor:     cursorSemanticsFor(),
+				StashDir:               cfg.Compression.Conversation.Stash.Dir,
+				// Cloud account seam (cloudaccount_wire.go): local sign-in probe +
+				// `observer cloud login|logout` subprocess runner behind the Settings
+				// → Cloud Intelligence Sign-in button. Spawns the CLI; links nothing new.
+				CloudAccount:   newCloudAccountSeams(resolvedConfigPath),
+				ArenaAdmission: arenaBudgetAdmissionSeam(resolvedConfigPath),
+				GuardEnabled:   cfg.Guard.Enabled,
+				GuardMode:      cfg.Guard.Mode,
+				GuardStrict:    cfg.Guard.Strict,
+				ToolCatalog:    toolCatalog(),
+				Version:        version,
 				// Session handoff (docs/session-handoff.md P2): the shared
 				// handoffsvc runner behind /api/session/<id>/handoff*.
 				BuildHandoff: handoffRunner(cfg, database),
@@ -89,6 +108,10 @@ func newDashboardCmd() *cobra.Command {
 				// is false → the endpoints 503 and the button hides.
 				LaunchManager:  launchMgr,
 				TerminalStatus: launchStatus,
+				// Node-intervention policy-stop explanation (policystop.go).
+				// Nil unless the launch manager is also wired — a policy stop
+				// only ever concerns a dashboard-launched PTY run.
+				PolicyStop: policyStop,
 				// B9 sandboxed terminals: the availability probe behind
 				// GET /api/terminal/sandbox + the fail-closed launch validation.
 				// Nil unless [terminal.sandbox].enabled → endpoint reports

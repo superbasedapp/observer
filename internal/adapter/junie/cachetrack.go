@@ -115,6 +115,55 @@ func accumulateFileChangesCache(acc *cacheobs.Accumulator, cacheDone map[string]
 	}})
 }
 
+// accumulateMCPCache feeds an MCP block's tool name + arguments +
+// outcome summary into acc exactly once, at the point the block first
+// reaches a terminal status — mirroring accumulateTerminalCache's
+// reasoning exactly. Grounded on the 2026-09-03 IDE/MCP capture: an MCP
+// block's `details` MIRRORS its `input` while IN_PROGRESS and only
+// becomes the outcome summary at the terminal transition, and every one
+// of the 8 observed steps is then repeated byte-identical at the
+// enclosing task's completion rebroadcast — so gating on the first
+// terminal transition captures the block's full content exactly once.
+func accumulateMCPCache(acc *cacheobs.Accumulator, cacheDone map[string]bool, key string, ae *agentEventRaw) {
+	if cacheDone[key] {
+		return
+	}
+	if ae.Status != blockStatusCompleted && ae.Status != blockStatusFailed {
+		return
+	}
+	canon, ok := marshalMCPBlock(ae)
+	if !ok {
+		return
+	}
+	cacheDone[key] = true
+	acc.ObserveBlocks([]models.CacheBlockMeta{{
+		LevelLabel:     "message",
+		Kind:           "tool_result",
+		CanonicalBytes: canon,
+		Role:           "tool",
+	}})
+}
+
+// marshalMCPBlock produces the canonical form of an MCP block's tool
+// name + input + outcome summary.
+func marshalMCPBlock(ae *agentEventRaw) ([]byte, bool) {
+	if ae.ToolName == "" && ae.Input == "" && ae.Details == "" {
+		return nil, false
+	}
+	payload := struct {
+		Type    string `json:"type"`
+		Tool    string `json:"tool,omitempty"`
+		Input   string `json:"input,omitempty"`
+		Details string `json:"details,omitempty"`
+		Status  string `json:"status,omitempty"`
+	}{Type: "mcp", Tool: ae.ToolName, Input: ae.Input, Details: ae.Details, Status: ae.Status}
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	return buf, true
+}
+
 // accumulateResultCache feeds a Result block's title+result into acc,
 // once per stepId — on the block's FIRST occurrence only, unconditionally
 // (no terminal-status gate, unlike Terminal/FileChanges). Confirmed

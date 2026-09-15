@@ -362,6 +362,12 @@ type parserState struct {
 	remote         string
 	repository     string
 	projectRoot    string
+	// identity is the Project Identity Resolver v2 bundle (upstream
+	// remote/owner hashes, workspace, worktree flag, content
+	// fingerprint) resolved alongside projectRoot/remote by
+	// resolveProjectRoot. Zero value when resolveProjectRoot never ran
+	// or found no git repo (honest gap, not fabricated).
+	identity git.Identity
 	// effortLevel is the current session's reasoning-effort SETTING
 	// ("low"/"medium"/"high", etc). Copilot CLI surfaces it as a
 	// session-scoped knob (like st.model), never per-message: it rides
@@ -515,19 +521,31 @@ func (a *Adapter) parseEventsJSONL(_ context.Context, path string, fromOffset in
 	// the in-stream context. Mirrors what parseProcessLog already does
 	// for the log-file path.
 	yamlPath := filepath.Join(filepath.Dir(path), "workspace.yaml")
-	if yamlRoot, yamlBranch, yamlRemote := resolveProjectFromWorkspaceYAML(yamlPath); yamlRoot != "" {
-		st.projectRoot = yamlRoot
-		if yamlBranch != "" {
-			st.branch = yamlBranch
+	ws := resolveProjectFromWorkspaceYAML(yamlPath)
+	if ws.ProjectRoot != "" {
+		st.projectRoot = ws.ProjectRoot
+		if ws.Branch != "" {
+			st.branch = ws.Branch
 		}
-		if yamlRemote != "" {
-			st.remote = yamlRemote
+		if ws.Remote != "" {
+			st.remote = ws.Remote
 		}
+		st.identity = ws.Identity
 	} else {
-		st.projectRoot, st.remote = resolveProjectRoot(st)
+		st.projectRoot, st.remote, st.identity = resolveProjectRoot(st)
+	}
+	// Capture surface — the same workspace.yaml read carries the
+	// `client_name` of the client that drove the session (see
+	// surface.go). Emitted on every parse call, including a resumed
+	// one: SetSessionSurface is first-wins-unless-empty, so a repeat
+	// stamp is a no-op, and a session whose events.jsonl grew after the
+	// first poll still gets attributed.
+	if surf, ok := surfaceForClientName(st.sessionID, ws.ClientName); ok {
+		out.SessionSurfaces = append(out.SessionSurfaces, surf)
 	}
 	// Backfill ProjectRoot on emitted events (we built them before
 	// finalizing state).
+	adapter.ApplyProjectIdentity(&out, st.identity)
 	for i := range out.ToolEvents {
 		if out.ToolEvents[i].ProjectRoot == "" {
 			out.ToolEvents[i].ProjectRoot = st.projectRoot
@@ -1162,25 +1180,41 @@ func emitEvent(st *parserState, env eventEnvelope, path string, out *adapter.Par
 // are translated through crossmount.TranslateForeignPath so a Windows-
 // formatted path captured on WSL2 lands on the real /mnt/c/... mount
 // instead of being CWD-prefixed by filepath.Abs. remote is the
-// normalized "origin" remote when git.Resolve found a repo; "" when it
-// didn't (honest gap, not fabricated).
-func resolveProjectRoot(st *parserState) (root, remote string) {
+// normalized "origin" remote when git.ResolveIdentity found a repo; ""
+// when it didn't (honest gap, not fabricated). id carries the Project
+// Identity Resolver v2 bundle (upstream remote/owner hashes,
+// workspace, worktree flag, content fingerprint); the root-commit exec
+// is intentionally left nil here (adapters never shell out to git for
+// the lazy root-commit resolution — that runs once, store-side, behind
+// Store.RootCommitNeedsCheck).
+func resolveProjectRoot(st *parserState) (root, remote string, id git.Identity) {
 	candidate := st.gitRoot
 	if candidate == "" {
 		candidate = st.cwd
 	}
 	if candidate == "" {
-		return "", ""
+		return "", "", git.Identity{}
 	}
 	translated := crossmount.TranslateForeignPath(candidate)
 	if translated == "" {
 		translated = candidate
 	}
-	info, err := git.Resolve(translated)
-	if err == nil && info.Root != "" {
-		return info.Root, git.NormalizeRemote(info.Remote)
+	// STAT-GATE before git.ResolveIdentity (the goose / crush / freebuff
+	// precedent): a (possibly cross-OS-translated) path that isn't locally
+	// reachable falls through to the STATED path verbatim, not the /mnt
+	// form. git.ResolveIdentity returns a non-existent path as its own
+	// "root" with no error, so without this gate a Windows-side cwd
+	// captured on a WSL host would persist as its /mnt/c translation.
+	if _, err := os.Stat(translated); err != nil {
+		return candidate, "", git.Identity{}
 	}
-	return translated, ""
+	info, err := git.ResolveIdentity(translated, git.IdentityOptions{})
+	if err == nil && info.Root != "" {
+		// info.Remote/info.UpstreamRemote are already NormalizeRemote'd
+		// by ResolveIdentity.
+		return info.Root, info.Remote, info
+	}
+	return candidate, "", git.Identity{}
 }
 
 // classifyToolName picks an action_type using the bare toolName first,

@@ -62,6 +62,14 @@ type fakeLaunchManager struct {
 	lastFreshSpec  FreshLaunchSpec
 	lastResumeSpec ResumeLaunchSpec
 	lastSetupSpec  SetupSpec
+	// GUI launch (T2). guiErr forces a CreateGUI failure; guiResult is what a
+	// successful call returns; lastGUISpec captures what the handler built; and
+	// guiRuns is the list GUIRuns() reports. All nil/zero by default, so every
+	// pre-existing test sees a daemon with no GUI activity.
+	guiErr      error
+	guiResult   GUILaunchResult
+	lastGUISpec GUILaunchSpec
+	guiRunList  []GUIRunInfo
 	// setupHandles marks which handles IsSetupSession reports true for. Nil ⇒
 	// none (unchanged default), so existing tests see no setup sessions.
 	setupHandles map[string]bool
@@ -104,6 +112,20 @@ func (m *fakeLaunchManager) CreateSetup(spec SetupSpec) (string, error) {
 	m.lastSetupSpec = spec
 	return "SETUP-abc", nil
 }
+
+func (m *fakeLaunchManager) CreateGUI(spec GUILaunchSpec) (GUILaunchResult, error) {
+	m.lastGUISpec = spec
+	if m.guiErr != nil {
+		return GUILaunchResult{}, m.guiErr
+	}
+	res := m.guiResult
+	if res.RunID == "" {
+		res = GUILaunchResult{RunID: "RUN-gui", PID: 4242, ID: spec.ID, Label: "Fake IDE"}
+	}
+	return res, nil
+}
+
+func (m *fakeLaunchManager) GUIRuns() []GUIRunInfo { return m.guiRunList }
 
 func (m *fakeLaunchManager) Subscribe(handle string) (LaunchSubscription, error) {
 	if m.subscribeErr != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -43,14 +44,20 @@ func metaLen(s *Service) int {
 
 // fakeRecorder captures run/correlation writes for assertions.
 type fakeRecorder struct {
-	mu          sync.Mutex
-	runs        []termrun.Run
-	ended       map[string]int
-	endReasons  map[string]string
-	corr        []termrun.Correlation
+	mu         sync.Mutex
+	runs       []termrun.Run
+	ended      map[string]int
+	endReasons map[string]string
+	corr       []termrun.Correlation
+	// guiSpawns captures the post-spawn GUI stamps (pid + wrap verdict), the
+	// second write LaunchGUI makes on the same row.
+	guiSpawns   []termrun.Run
+	guiSpawnErr error
 	recordErr   error
+	corrErr     error
 	endCalls    int
 	recordCalls int
+	corrCalls   int
 }
 
 func newFakeRecorder() *fakeRecorder {
@@ -80,7 +87,21 @@ func (f *fakeRecorder) EndRun(_ context.Context, runID string, _ time.Time, code
 func (f *fakeRecorder) RecordCorrelation(_ context.Context, c termrun.Correlation) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.corrCalls++
+	if f.corrErr != nil {
+		return f.corrErr
+	}
 	f.corr = append(f.corr, c)
+	return nil
+}
+
+func (f *fakeRecorder) RecordGUISpawn(_ context.Context, run termrun.Run) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.guiSpawnErr != nil {
+		return f.guiSpawnErr
+	}
+	f.guiSpawns = append(f.guiSpawns, run)
 	return nil
 }
 
@@ -1321,9 +1342,14 @@ func TestLaunchResumePolicyEnforced(t *testing.T) {
 			wantErr: ErrToolNotAllowed,
 		},
 		{
-			name:    "allowed tool, default cwd",
-			policy:  Policy{AllowFresh: true, AllowedTools: []string{"claude-code"}},
-			req:     ResumeRequest{Tool: "claude-code", Subcommand: "claude"},
+			name:   "allowed tool, default cwd",
+			policy: Policy{AllowFresh: true, AllowedTools: []string{"claude-code"}},
+			req: ResumeRequest{
+				Tool:            "claude-code",
+				Subcommand:      "claude",
+				SourceSessionID: "sess-ok",
+				ExtraArgs:       []string{"--resume", "sess-ok"},
+			},
 			wantErr: nil,
 		},
 	}
@@ -1351,8 +1377,9 @@ func TestLaunchResumePolicyEnforced(t *testing.T) {
 }
 
 // TestLaunchResumeMintsKindAndArgs pins that a successful resume mints a
-// KindResume run carrying the resumed session as SourceSessionID, and that the
-// composed ExtraArgs + source session id reach the launcher request verbatim.
+// KindResume run carrying the resumed session as SourceSessionID, that the
+// composed ExtraArgs + source session id reach the launcher request verbatim,
+// and that the known native target links without relying on platform OOB.
 func TestLaunchResumeMintsKindAndArgs(t *testing.T) {
 	rec := newFakeRecorder()
 	l := &fakeLauncher{handle: "H-resume"}
@@ -1390,5 +1417,278 @@ func TestLaunchResumeMintsKindAndArgs(t *testing.T) {
 	}
 	if len(lr.ExtraArgs) != 2 || lr.ExtraArgs[0] != "--resume" || lr.ExtraArgs[1] != "sess-9" {
 		t.Errorf("launch req ExtraArgs = %v, want [--resume sess-9]", lr.ExtraArgs)
+	}
+	if len(rec.corr) != 1 {
+		t.Fatalf("correlations = %d, want 1", len(rec.corr))
+	}
+	if corr := rec.corr[0]; corr.RunID != res.RunID || corr.SessionID != "sess-9" || corr.Source != termrun.SourceDiscovered || !corr.Linkable() {
+		t.Fatalf("known resume correlation = %+v", corr)
+	}
+	if sid, confidence, ok := svc.SessionLinkForRun(res.RunID); !ok || sid != "sess-9" || confidence != 0.75 {
+		t.Fatalf("SessionLinkForRun = (%q,%v,%v), want (sess-9,0.75,true)", sid, confidence, ok)
+	}
+}
+
+func TestLaunchResumeRejectsUnboundIdentityBeforeSpawn(t *testing.T) {
+	tests := []struct {
+		name string
+		req  ResumeRequest
+		err  error
+	}{
+		{
+			name: "empty source id",
+			req: ResumeRequest{
+				Tool: "claude-code", Subcommand: "claude",
+				ExtraArgs: []string{"--resume", "sess-9"},
+			},
+			err: ErrResumeSessionRequired,
+		},
+		{
+			name: "missing args",
+			req: ResumeRequest{
+				Tool: "claude-code", Subcommand: "claude", SourceSessionID: "sess-9",
+			},
+			err: ErrResumeArgsMismatch,
+		},
+		{
+			name: "different id",
+			req: ResumeRequest{
+				Tool: "claude-code", Subcommand: "claude", SourceSessionID: "sess-9",
+				ExtraArgs: []string{"--resume", "sess-other"},
+			},
+			err: ErrResumeArgsMismatch,
+		},
+		{
+			name: "additional args",
+			req: ResumeRequest{
+				Tool: "claude-code", Subcommand: "claude", SourceSessionID: "sess-9",
+				ExtraArgs: []string{"--resume", "sess-9", "--other"},
+			},
+			err: ErrResumeArgsMismatch,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := newFakeRecorder()
+			launcher := &fakeLauncher{handle: "must-not-spawn"}
+			svc := newService(t, Policy{AllowFresh: true, AllowedTools: []string{"claude-code"}}, rec, launcher, nil)
+			if _, err := svc.LaunchResume(context.Background(), tc.req); !errors.Is(err, tc.err) {
+				t.Fatalf("LaunchResume error = %v, want %v", err, tc.err)
+			}
+			if launcher.calls != 0 || rec.recordCalls != 0 || rec.corrCalls != 0 {
+				t.Fatalf("invalid resume touched side effects: launcher=%d record=%d correlate=%d", launcher.calls, rec.recordCalls, rec.corrCalls)
+			}
+		})
+	}
+}
+
+func TestLaunchResumeDoesNotCorrelateFailedOrExitedSpawn(t *testing.T) {
+	valid := ResumeRequest{
+		Tool:            "claude-code",
+		Subcommand:      "claude",
+		SourceSessionID: "sess-9",
+		ExtraArgs:       []string{"--resume", "sess-9"},
+	}
+	t.Run("spawn failure", func(t *testing.T) {
+		rec := newFakeRecorder()
+		spawnErr := errors.New("spawn failed")
+		svc := newService(t, Policy{AllowFresh: true, AllowedTools: []string{"claude-code"}}, rec, &fakeLauncher{err: spawnErr}, nil)
+		if _, err := svc.LaunchResume(context.Background(), valid); !errors.Is(err, spawnErr) {
+			t.Fatalf("LaunchResume error = %v, want %v", err, spawnErr)
+		}
+		if rec.corrCalls != 0 {
+			t.Fatalf("correlation calls = %d, want 0", rec.corrCalls)
+		}
+	})
+	t.Run("exit reconciled before return", func(t *testing.T) {
+		rec := newFakeRecorder()
+		svc := New(Options{
+			Policy:   Policy{AllowFresh: true, AllowedTools: []string{"claude-code"}},
+			Recorder: rec,
+			Launcher: &fakeLauncher{handle: "already-exited"},
+			Now:      func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+			ExitStatus: func(handle string) (bool, int, bool) {
+				return handle == "already-exited", 0, true
+			},
+		})
+		res, err := svc.LaunchResume(context.Background(), valid)
+		if err != nil {
+			t.Fatalf("LaunchResume: %v", err)
+		}
+		if res.Handle != "already-exited" || res.RunID == "" {
+			t.Fatalf("result = %+v", res)
+		}
+		if rec.corrCalls != 0 {
+			t.Fatalf("correlation calls = %d, want 0", rec.corrCalls)
+		}
+		if _, _, ok := svc.SessionLinkForRun(res.RunID); ok {
+			t.Fatal("exited resume must not have a live session link")
+		}
+	})
+}
+
+func TestLaunchResumePreservesStrongerSpawnCorrelation(t *testing.T) {
+	rec := newFakeRecorder()
+	var svc *Service
+	launcher := &correlatingLauncher{handle: "resume-oob"}
+	launcher.onSpawn = func(req LaunchRequest) {
+		if err := svc.Correlate(context.Background(), req.RunID, "sess-9", termrun.SourceOOB, time.Unix(1_700_000_000, 0).UTC()); err != nil {
+			t.Errorf("OOB Correlate: %v", err)
+		}
+	}
+	svc = newService(t, Policy{AllowFresh: true, AllowedTools: []string{"claude-code"}}, rec, launcher, nil)
+	res, err := svc.LaunchResume(context.Background(), ResumeRequest{
+		Tool:            "claude-code",
+		Subcommand:      "claude",
+		SourceSessionID: "sess-9",
+		ExtraArgs:       []string{"--resume", "sess-9"},
+	})
+	if err != nil {
+		t.Fatalf("LaunchResume: %v", err)
+	}
+	if sid, confidence, ok := svc.SessionLinkForRun(res.RunID); !ok || sid != "sess-9" || confidence != 0.95 {
+		t.Fatalf("SessionLinkForRun = (%q,%v,%v), want stronger OOB link", sid, confidence, ok)
+	}
+	if rec.corrCalls != 2 {
+		t.Fatalf("correlation calls = %d, want OOB plus discovered", rec.corrCalls)
+	}
+}
+
+func TestLaunchResumeCorrelationFailureKeepsSpawnResult(t *testing.T) {
+	rec := newFakeRecorder()
+	rec.corrErr = errors.New("correlation store unavailable")
+	launcher := &fakeLauncher{handle: "resume-live"}
+	svc := newService(t, Policy{AllowFresh: true, AllowedTools: []string{"claude-code"}}, rec, launcher, nil)
+	res, err := svc.LaunchResume(context.Background(), ResumeRequest{
+		Tool:            "claude-code",
+		Subcommand:      "claude",
+		SourceSessionID: "sess-9",
+		ExtraArgs:       []string{"--resume", "sess-9"},
+	})
+	if err != nil {
+		t.Fatalf("LaunchResume returned correlation error after spawn: %v", err)
+	}
+	if res.Handle != "resume-live" || res.RunID == "" || launcher.calls != 1 {
+		t.Fatalf("spawn result = %+v, calls=%d", res, launcher.calls)
+	}
+	if rec.corrCalls != 1 {
+		t.Fatalf("correlation calls = %d, want 1", rec.corrCalls)
+	}
+	if _, _, ok := svc.SessionLinkForRun(res.RunID); ok {
+		t.Fatal("failed correlation must not fabricate an in-memory link")
+	}
+}
+
+// TestLaunchRecordsSpawnDirSeparatelyFromProjectRoot pins the two-answer
+// contract that run→session correlation depends on: ProjectRoot is the
+// AUTHORIZED root (empty for a launch with no requested project root — the
+// shape every dashboard "New Terminal" takes on a node with no
+// [terminal.launch].allowed_project_roots) while SpawnDir is the FACTUAL cwd
+// the child inherits from the daemon.
+//
+// The regression it guards is a real one, reproduced on a remote node: with the
+// two answers conflated, the discovery sweep asked ProjectRoot for the run's
+// directory, got "no authorized root", and skipped the run forever — an
+// opencode terminal sat at "linking…" while its session (started in that very
+// directory, /home/azureuser) was ingested normally.
+func TestLaunchRecordsSpawnDirSeparatelyFromProjectRoot(t *testing.T) {
+	root := t.TempDir()
+	canonRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(root): %v", err)
+	}
+	daemonCwd := t.TempDir() // stands in for the devbox daemon's cwd (/home/azureuser)
+	canonCwd, err := filepath.EvalSymlinks(daemonCwd)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(daemonCwd): %v", err)
+	}
+
+	tests := []struct {
+		name string
+		// projectRoot is the client-requested root ("" = the devbox shape).
+		projectRoot string
+		// allowedRoots is the operator's [terminal.launch].allowed_project_roots.
+		allowedRoots []string
+		getwd        func() (string, error)
+		wantRoot     string // "" => ProjectRoot reports ok=false
+		wantSpawnDir string // "" => SpawnDir reports ok=false
+	}{
+		{
+			name:         "default-cwd launch: no authorized root, but the daemon cwd is the factual spawn dir",
+			projectRoot:  "",
+			allowedRoots: nil, // the devbox: allowed_project_roots is unset entirely
+			getwd:        func() (string, error) { return daemonCwd, nil },
+			wantRoot:     "",
+			wantSpawnDir: canonCwd,
+		},
+		{
+			name:         "explicit authorized root: both answers are that root",
+			projectRoot:  root,
+			allowedRoots: []string{root},
+			getwd:        func() (string, error) { return daemonCwd, nil },
+			wantRoot:     canonRoot,
+			wantSpawnDir: canonRoot,
+		},
+		{
+			name:         "default-cwd launch with an unreadable daemon cwd: both are honestly unknown",
+			projectRoot:  "",
+			allowedRoots: nil,
+			getwd:        func() (string, error) { return "", errors.New("getwd: no such directory") },
+			wantRoot:     "",
+			wantSpawnDir: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &fakeLauncher{handle: "H-SPAWNDIR"}
+			svc := New(Options{
+				Policy: Policy{
+					AllowFresh:          true,
+					AllowedTools:        []string{"opencode"},
+					AllowedProjectRoots: tc.allowedRoots,
+				},
+				Recorder: newFakeRecorder(),
+				Launcher: l,
+				Now:      func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+				Getwd:    tc.getwd,
+			})
+			res, err := svc.LaunchFresh(context.Background(), FreshRequest{
+				Tool: "opencode", Subcommand: "opencode", ProjectRoot: tc.projectRoot,
+			})
+			if err != nil {
+				t.Fatalf("LaunchFresh: %v", err)
+			}
+
+			gotRoot, rootOK := svc.ProjectRoot(res.Handle)
+			if tc.wantRoot == "" {
+				if rootOK {
+					t.Fatalf("ProjectRoot = %q, ok=true; want the honest no-authorized-root miss", gotRoot)
+				}
+			} else if !rootOK || gotRoot != tc.wantRoot {
+				t.Fatalf("ProjectRoot = (%q, %v), want (%q, true)", gotRoot, rootOK, tc.wantRoot)
+			}
+
+			gotSpawn, spawnOK := svc.SpawnDir(res.Handle)
+			if tc.wantSpawnDir == "" {
+				if spawnOK {
+					t.Fatalf("SpawnDir = %q, ok=true; want a miss", gotSpawn)
+				}
+			} else if !spawnOK || gotSpawn != tc.wantSpawnDir {
+				t.Fatalf("SpawnDir = (%q, %v), want (%q, true)", gotSpawn, spawnOK, tc.wantSpawnDir)
+			}
+		})
+	}
+}
+
+// TestSpawnDirUnknownHandle pins the miss for a handle the service never saw.
+func TestSpawnDirUnknownHandle(t *testing.T) {
+	svc := New(Options{
+		Policy:   Policy{AllowFresh: true},
+		Recorder: newFakeRecorder(),
+		Launcher: &fakeLauncher{handle: "H"},
+		Getwd:    func() (string, error) { return t.TempDir(), nil },
+	})
+	if dir, ok := svc.SpawnDir("nope"); ok || dir != "" {
+		t.Fatalf("SpawnDir(unknown) = (%q, %v), want (\"\", false)", dir, ok)
 	}
 }

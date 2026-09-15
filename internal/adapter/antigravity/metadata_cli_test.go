@@ -126,7 +126,7 @@ I0627 03:38:24.957272 790310 server.go:800] Created conversation 7204d1d1-882b-4
 	if entry.workspaceURI != "file:///home/marmutapp/superbased-observer" {
 		t.Errorf("workspaceURI = %q, want file:///home/marmutapp/superbased-observer", entry.workspaceURI)
 	}
-	if got, _ := decodeFileURIToRoot(entry.workspaceURI); got != "/home/marmutapp/superbased-observer" {
+	if got, _, _ := decodeFileURIToRoot(entry.workspaceURI); got != "/home/marmutapp/superbased-observer" {
 		t.Errorf("decoded root = %q, want /home/marmutapp/superbased-observer", got)
 	}
 }

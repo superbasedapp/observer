@@ -5,6 +5,8 @@ import (
 	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/archive"
 )
 
 // engine is the NATIVE [Provider] implementation: it answers from
@@ -195,4 +197,16 @@ func (e *engine) LoadGraph(ctx context.Context, project string) (Graph, error) {
 
 // Close is a no-op: the native engine borrows the store's DB handle and
 // does not own it.
+// ArchivedProject passes the marker lookup through to the store. Nil-store
+// (the [Unavailable] provider) reports "not archived": a provider with no
+// index cannot honestly claim a project was archived, and guessing would put
+// a false "archived, last indexed <date>" in front of an operator whose
+// project was simply never indexed.
+func (e *engine) ArchivedProject(ctx context.Context, project string) (archive.Marker, bool, error) {
+	if e == nil || e.store == nil || project == "" {
+		return archive.Marker{}, false, nil
+	}
+	return e.store.CodeIntelArchivedProject(ctx, project)
+}
+
 func (e *engine) Close() error { return nil }

@@ -21,11 +21,30 @@ type cliProjectFile struct {
 	Name             string `json:"name"`
 	ProjectResources struct {
 		Resources []struct {
+			// FolderURI at the resource level is the shape the VS Code
+			// extension's agy backend wrote 2026-09-03
+			// (`{"folderUri": "file:///c%3A/…"}`); the CLI's own
+			// projects nest it under gitFolder. Either may be set.
+			FolderURI string `json:"folderUri"`
 			GitFolder struct {
 				FolderURI string `json:"folderUri"`
 			} `json:"gitFolder"`
 		} `json:"resources"`
 	} `json:"projectResources"`
+}
+
+// workspaceURI returns the first resource's folder URI, whichever of
+// the two shapes carries it.
+func (p cliProjectFile) workspaceURI() string {
+	for _, r := range p.ProjectResources.Resources {
+		if r.GitFolder.FolderURI != "" {
+			return r.GitFolder.FolderURI
+		}
+		if r.FolderURI != "" {
+			return r.FolderURI
+		}
+	}
+	return ""
 }
 
 // cliLogBinding captures the per-conversation lifecycle facts the CLI
@@ -230,7 +249,9 @@ func transcriptPathFor(sessionPath, conversationID string) string {
 			return ""
 		}
 		return cliTranscriptPath(cliRoot, conversationID)
-	case LayoutDesktop:
+	case LayoutDesktop, LayoutDesktopDB:
+		// The encrypted .pb and the agy-backed plaintext .db (VS Code
+		// extension, 2026-09-03) share the desktop brain/ transcript.
 		desktopRoot, _ := desktopRootFor(sessionPath)
 		if desktopRoot == "" {
 			return ""
@@ -238,6 +259,19 @@ func transcriptPathFor(sessionPath, conversationID string) string {
 		return desktopTranscriptPath(desktopRoot, conversationID)
 	}
 	return ""
+}
+
+// geminiRootFor returns the ~/.gemini parent for a session path in
+// EITHER tree (antigravity-cli/ or antigravity/), or "" when the path
+// sits in neither. The per-project config files the .db's
+// trajectory_metadata_blob points at live under <geminiRoot>/config/
+// projects/ regardless of which tree wrote the conversation.
+func geminiRootFor(sessionPath string) string {
+	if _, g := cliRootsFor(sessionPath); g != "" {
+		return g
+	}
+	_, g := desktopRootFor(sessionPath)
+	return g
 }
 
 // dirMtimeUnix returns the directory's mtime as unix seconds, or 0

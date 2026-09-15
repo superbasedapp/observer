@@ -27,22 +27,24 @@ type messageSortField struct {
 	// Seq is the 1..N chronological ordinal. It is the default sort key AND
 	// the final tie-break for every other key, so equal values never jitter
 	// between auto-refresh polls.
-	Seq          int
-	Timestamp    string
-	MessageID    string
-	Role         string
-	Model        string
-	EffortLevel  string
-	Input        int64
-	CacheRead    int64
-	CacheWrite   int64
-	Output       int64
-	ElapsedMs    *int64
-	TokensPerSec *float64
-	ToolCalls    int
-	AICostUSD    float64
-	ToolCostUSD  float64
-	CostUSD      float64
+	Seq            int
+	Timestamp      string
+	MessageID      string
+	Role           string
+	Model          string
+	Account        string
+	AccountUnknown bool
+	EffortLevel    string
+	Input          int64
+	CacheRead      int64
+	CacheWrite     int64
+	Output         int64
+	ElapsedMs      *int64
+	TokensPerSec   *float64
+	ToolCalls      int
+	AICostUSD      float64
+	ToolCostUSD    float64
+	CostUSD        float64
 	// Content mirrors the string the table's Content cell renders (see
 	// messageContentSortKey) so sorting matches what the operator reads.
 	Content string
@@ -68,6 +70,10 @@ type messageSortComparator struct {
 // Table-driven by design (CLAUDE.md rule 5): adding a column is one row here
 // plus one row in the test table, never a new branch in a conditional ladder.
 var messageSortKeys = map[string]messageSortComparator{
+	"account": {
+		less:    func(a, b messageSortField) bool { return strings.ToLower(a.Account) < strings.ToLower(b.Account) },
+		missing: func(f messageSortField) bool { return f.AccountUnknown },
+	},
 	"seq":       {less: func(a, b messageSortField) bool { return a.Seq < b.Seq }},
 	"timestamp": {less: func(a, b messageSortField) bool { return a.Timestamp < b.Timestamp }},
 	"message_id": {

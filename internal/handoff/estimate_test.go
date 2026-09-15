@@ -122,3 +122,52 @@ func TestTokenEstimate(t *testing.T) {
 		t.Errorf("5 chars = %d tokens, want 2 (round up)", got)
 	}
 }
+
+// TestEstimate_FullCacheNoteReflectsSourceCapability pins that the full_cache
+// price-table row is HONEST about the source adapter's capability: without an
+// un-excerpted (FullTranscriptReader) reader it degrades to full and the note
+// says so, instead of advertising a distinct "prompt cache" option that the
+// source cannot actually produce (the "Full" == "Full + cache" confusion).
+func TestEstimate_FullCacheNoteReflectsSourceCapability(t *testing.T) {
+	fullCacheRow := func(hasReader bool) CarryEstimate {
+		res := Estimate(EstimateInput{
+			TargetModel:         "m",
+			ContextTokens:       100_000,
+			ForkShare:           1,
+			SourceHasFullReader: hasReader,
+			Price:               pinnedPrice,
+		})
+		for _, r := range res.Rows {
+			if r.Mode == CarryFullCache {
+				return r
+			}
+		}
+		t.Fatal("no full_cache row")
+		return CarryEstimate{}
+	}
+	noReader := fullCacheRow(false)
+	if !strings.Contains(noReader.Note, "= full") || !strings.Contains(noReader.Note, "no un-excerpted") {
+		t.Errorf("full_cache note (no reader) must say it degrades to full: %q", noReader.Note)
+	}
+	withReader := fullCacheRow(true)
+	if !strings.Contains(withReader.Note, "prompt cache") {
+		t.Errorf("full_cache note (with reader) must describe cache replication: %q", withReader.Note)
+	}
+	if noReader.Note == withReader.Note {
+		t.Error("full_cache note must differ by source capability")
+	}
+}
+
+// TestEstimate_SourceHasFullReaderMirrorsInput pins that EstimateResult
+// exposes SourceHasFullReader as a structured field (not just baked into the
+// full_cache row's Note text) — the dashboard handoff API reads this field
+// directly to grey out the full_cache option, so it must be the same fact
+// the input carried, never re-derived.
+func TestEstimate_SourceHasFullReaderMirrorsInput(t *testing.T) {
+	for _, hasReader := range []bool{false, true} {
+		res := Estimate(EstimateInput{TargetModel: "m", ContextTokens: 100, ForkShare: 1, SourceHasFullReader: hasReader, Price: pinnedPrice})
+		if res.SourceHasFullReader != hasReader {
+			t.Errorf("SourceHasFullReader = %v, want %v", res.SourceHasFullReader, hasReader)
+		}
+	}
+}

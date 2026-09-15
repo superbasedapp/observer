@@ -29,10 +29,25 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
+      "@shared": path.resolve(__dirname, "../shared"),
     },
+    // shared/ imports these; dedupe pins ONE instance so a hooks-bearing
+    // shared component never gets a second React (the "invalid hook call"
+    // trap) when its dep resolves from the root workspace node_modules.
+    dedupe: [
+      "react",
+      "react-dom",
+      "react-router-dom",
+      "recharts",
+      "clsx",
+      "@floating-ui/react",
+      "framer-motion",
+    ],
   },
   server: {
     port: 5174,
+    // shared/ lives outside the Vite root; allow the dev server to read it.
+    fs: { allow: [".", "../shared"] },
     proxy: {
       // Dev API target. Defaults to the standard daemon on :8820;
       // override (e.g. for the mobile-view demo instance on :8092)

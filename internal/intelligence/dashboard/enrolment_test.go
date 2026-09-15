@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
@@ -272,5 +273,47 @@ func TestEnrolmentInvite_BadRequests(t *testing.T) {
 	}
 	if fake.inviteCalls != 0 {
 		t.Errorf("invalid requests reached the org seam %d times, want 0", fake.inviteCalls)
+	}
+}
+
+// TestEnrolmentStatus_PushPausedSurfacesBreaker pins the H2 dashboard surface:
+// an OPEN oversized-batch circuit must appear on /api/enrolment/status so the
+// Settings page can say "nothing is shipping" instead of showing a healthy
+// push loop. Absent is the normal case — a merely-idle loop must NOT render the
+// pause banner.
+func TestEnrolmentStatus_PushPausedSurfacesBreaker(t *testing.T) {
+	until := time.Date(2026, 8, 26, 18, 0, 0, 0, time.UTC)
+	fake := &fakeEnrolment{
+		state: orgclient.EnrolmentState{
+			Enrolled: true, OrgID: "org-1", OrgName: "Acme",
+			PushPaused: &store.PushBreakerState{
+				Reason: "orgclient: push batch too large: serialized_bytes=250000000 limit_bytes=1048576",
+				Until:  until,
+			},
+		},
+	}
+	srv := newEnrolmentServer(t, fake)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/enrolment/status", nil))
+	var resp enrolmentStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PushPaused == nil {
+		t.Fatal("push_paused missing while the circuit is open — the UI would show a healthy push loop")
+	}
+	if resp.PushPaused.Until != until.Format(time.RFC3339) {
+		t.Errorf("until = %q, want %q", resp.PushPaused.Until, until.Format(time.RFC3339))
+	}
+	if !strings.Contains(resp.PushPaused.Reason, "limit_bytes=1048576") {
+		t.Errorf("reason = %q, want the actionable diagnostic", resp.PushPaused.Reason)
+	}
+
+	// Not paused → the key is omitted entirely (no scary empty banner).
+	fake.state.PushPaused = nil
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/enrolment/status", nil))
+	if strings.Contains(rec.Body.String(), "push_paused") {
+		t.Errorf("push_paused present on a healthy node: %s", rec.Body.String())
 	}
 }

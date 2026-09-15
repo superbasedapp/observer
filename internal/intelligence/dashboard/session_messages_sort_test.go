@@ -192,7 +192,7 @@ func TestMessageSortOrder_PerKey(t *testing.T) {
 // here AND a case in TestMessageSortOrder_PerKey, never as a new conditional.
 func TestMessageSortKeys_AllColumnsCovered(t *testing.T) {
 	want := []string{
-		"seq", "timestamp", "message_id", "role", "model", "effort_level",
+		"seq", "timestamp", "message_id", "role", "account", "model", "effort_level",
 		"input", "cache_read", "cache_creation", "output", "elapsed_ms",
 		"tokens_per_sec", "tool_call_count", "ai_cost_usd", "tool_cost_usd",
 		"cost_usd", "content",

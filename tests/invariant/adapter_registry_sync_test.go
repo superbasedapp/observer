@@ -3,7 +3,7 @@
 // silently lose coverage: the watcher's defaults.Adapters(), the
 // internal/integration capability registry, and config.Default()'s
 // EnabledAdapters allow-list must all agree (modulo the sanctioned
-// package-less roo-code entry).
+// package-less roo-code and zoo-code entries).
 package invariant
 
 import (
@@ -19,10 +19,16 @@ import (
 // default EnabledAdapters allow-list WITHOUT a corresponding adapter
 // package (and therefore no defaults.Adapters() entry and no
 // integration registry row). roo-code is enabled for forward-compat
-// but has no parser package yet. This is the ONE sanctioned asymmetry;
-// everything else must agree across all three sources of truth.
+// but has no parser package yet. zoo-code (added 2026-09-03, ticket
+// U1) is the same shape: ZooCode, the community continuation of Roo
+// Code, is parsed by internal/adapter/cline's clineExtensions table
+// and retagged per-file — no adapter package or registry row of its
+// own, exactly like roo-code. These are the ONLY sanctioned
+// asymmetries; everything else must agree across all three sources of
+// truth.
 var packagelessAdapters = map[string]struct{}{
 	"roo-code": {},
+	"zoo-code": {},
 }
 
 // TestAdapterRegistrySourcesAgree pins the three sources of truth for

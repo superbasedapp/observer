@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -81,7 +82,7 @@ func newVerbosityCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load verbosity for %q: %w", sessionID, err)
 			}
-			vc := loadVerbosityCost(cmd.Context(), st, cost.NewEngine(cfg.Intelligence), sessionID, b)
+			vc := loadVerbosityCost(cmd.Context(), st, acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default()), sessionID, b)
 			if jsonOut {
 				return printVerbosityJSON(cmd, b, vc)
 			}

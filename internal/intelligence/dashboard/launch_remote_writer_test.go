@@ -84,6 +84,10 @@ func (m *recordingLaunchManager) CreateResume(ResumeLaunchSpec) (string, string,
 	return "H", "R", nil
 }
 func (m *recordingLaunchManager) CreateSetup(SetupSpec) (string, error) { return "H", nil }
+func (m *recordingLaunchManager) CreateGUI(GUILaunchSpec) (GUILaunchResult, error) {
+	return GUILaunchResult{}, ErrLaunchGUIUnsupported
+}
+func (m *recordingLaunchManager) GUIRuns() []GUIRunInfo { return nil }
 func (m *recordingLaunchManager) Subscribe(string) (LaunchSubscription, error) {
 	m.subscribeLocalCalls.Add(1)
 	return m.sub, nil

@@ -98,6 +98,10 @@ func (a *svcManagerAdapter) CreateResume(ResumeLaunchSpec) (string, string, erro
 	return "", "", nil
 }
 func (a *svcManagerAdapter) CreateSetup(SetupSpec) (string, error) { return "", nil }
+func (a *svcManagerAdapter) CreateGUI(GUILaunchSpec) (GUILaunchResult, error) {
+	return GUILaunchResult{}, ErrLaunchGUIUnsupported
+}
+func (a *svcManagerAdapter) GUIRuns() []GUIRunInfo { return nil }
 func (a *svcManagerAdapter) Subscribe(handle string) (LaunchSubscription, error) {
 	return a.mgr.Subscribe(handle)
 }
@@ -317,3 +321,4 @@ type nopSvcRecorder struct{}
 func (nopSvcRecorder) RecordRun(context.Context, termrun.Run) error                 { return nil }
 func (nopSvcRecorder) EndRun(context.Context, string, time.Time, int, string) error { return nil }
 func (nopSvcRecorder) RecordCorrelation(context.Context, termrun.Correlation) error { return nil }
+func (nopSvcRecorder) RecordGUISpawn(context.Context, termrun.Run) error            { return nil }

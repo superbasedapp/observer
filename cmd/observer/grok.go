@@ -138,7 +138,7 @@ func newGrokCmd() *cobra.Command {
 				if cfg, cErr := config.Load(config.LoadOptions{GlobalPath: configPath}); cErr == nil {
 					dbPath = cfg.Observer.DBPath
 				}
-				return runSeedOnlyLaunchSeeded(dbPath, "grok", "grok", bin, args, continueDir)
+				return runSeedOnlyLaunchSeeded(configPath, dbPath, "grok", "grok", bin, args, continueDir)
 			}
 			cfg, cErr := config.Load(config.LoadOptions{GlobalPath: configPath})
 			if cErr != nil {
@@ -146,14 +146,15 @@ func newGrokCmd() *cobra.Command {
 			}
 			resolved := resolveProxyURL(cfg.Proxy.Port, "")
 			return runEnvLauncher(envLauncherSpec{
-				tool:     "grok",
-				bin:      bin,
-				args:     args,
-				dir:      continueDir,
-				proxyURL: resolved,
-				env:      map[string]string{"GROK_CLI_CHAT_PROXY_BASE_URL": resolved + "/up/grok/v1"},
-				dbPath:   cfg.Observer.DBPath,
-				stderr:   cmd.ErrOrStderr(),
+				tool:       "grok",
+				bin:        bin,
+				args:       args,
+				configPath: configPath,
+				dir:        continueDir,
+				proxyURL:   resolved,
+				env:        map[string]string{"GROK_CLI_CHAT_PROXY_BASE_URL": resolved + "/up/grok/v1"},
+				dbPath:     cfg.Observer.DBPath,
+				stderr:     cmd.ErrOrStderr(),
 			})
 		},
 	}

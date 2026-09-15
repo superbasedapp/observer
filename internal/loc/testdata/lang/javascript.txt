@@ -1,0 +1,11 @@
+const a = 1; // trailing
+
+// full line
+/* block start
+ * middle
+ */
+const url = "https://example.com";
+const t = `template // not comment`;
+function f() {
+  return a + url.length + t.length;
+}

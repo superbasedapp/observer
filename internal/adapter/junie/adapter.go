@@ -77,42 +77,102 @@ func (a *Adapter) WatchPaths() []string { return a.roots }
 // observed on (settings.json and sessions/ both live there, with no XDG
 // split the way Muse uses on Linux/macOS) — so one join per cross-mount-
 // resolved $HOME covers a WSL2 observer reading a foreign home as well.
+//
+// $JUNIE_HOME wins when set (the decompiled-jar finding behind the
+// 2026-09-02 IDE audit's IDE-17 row: the plugin resolves its session
+// store from `${JUNIE_HOME:-~/.junie}/sessions`, not a hardcoded
+// `~/.junie`). It is only meaningful for THIS process's own environment
+// — like clinecli's CLINE_DIR and qwencode's QWEN_HOME — so it is not
+// re-resolved per cross-mount home; the per-home defaults below still
+// contribute their own `.junie/sessions` paths alongside it. The value
+// is absolutized before use (adapter.AbsEnvRoot) so a relative JUNIE_HOME can
+// never become a relative watch root, and it is deduped against the
+// per-home defaults (a relocated home that happens to equal one of the
+// cross-mount defaults contributes only one root).
 func defaultRoots() []string {
 	seen := map[string]bool{}
 	var roots []string
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		roots = append(roots, p)
+	}
+	if home := adapter.AbsEnvRoot("JUNIE_HOME"); home != "" {
+		add(filepath.Join(home, "sessions"))
+	}
 	for _, h := range crossmount.AllHomes() {
 		if h.Path == "" {
 			continue
 		}
-		p := filepath.Join(h.Path, ".junie", "sessions")
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		roots = append(roots, p)
+		add(filepath.Join(h.Path, ".junie", "sessions"))
 	}
 	return roots
 }
 
 // IsSessionFile implements adapter.Adapter.
 func (a *Adapter) IsSessionFile(path string) bool {
-	if !matchesShape(path) {
+	if !matchesShape(path, a.WatchPaths()) {
 		return false
 	}
 	return adapter.UnderAnyWatchRoot(path, a.WatchPaths())
 }
 
 // matchesShape reports whether path has the Junie session-log shape,
-// independent of watch roots. Comparison is on a slash-normalized,
-// lower-cased copy so Windows separators and case-insensitive mounts match
-// too. The basename alone is enough to exclude every off-limits sibling
-// (index.jsonl, state.json, transcript.md, task-*/.matterhorn/...).
-func matchesShape(path string) bool {
+// independent of watch-root MEMBERSHIP (that's UnderAnyWatchRoot's job,
+// ANDed in by IsSessionFile above) but not independent of watch-root
+// SHAPE: a JUNIE_HOME-relocated store carries no `.junie` path segment
+// at all, so the default substring match can't see it. Comparison is on
+// a slash-normalized, lower-cased copy so Windows separators and
+// case-insensitive mounts match too.
+//
+// A path matches when its basename is events.jsonl AND either:
+//   - it sits under a literal `.junie/sessions/` tree (the unrelocated
+//     default), or
+//   - it sits EXACTLY two path segments below one of roots, i.e.
+//     `<root>/<session-id>/events.jsonl` — the shape every root in
+//     WatchPaths() actually has, relocated or not.
+//
+// The exact-two-levels requirement (not just "somewhere under a root")
+// is what keeps every off-limits sibling excluded even under a
+// relocated root: index.jsonl and state.json fail the basename check
+// first, and a hypothetical events.jsonl nested inside
+// `task-*/.matterhorn/` would sit three-plus levels down and fail the
+// depth check.
+func matchesShape(path string, roots []string) bool {
 	lower := strings.ReplaceAll(strings.ToLower(path), `\`, "/")
 	if filepath.Base(lower) != sessionLogName {
 		return false
 	}
-	return strings.Contains(lower, "/.junie/sessions/")
+	if strings.Contains(lower, "/.junie/sessions/") {
+		return true
+	}
+	return sitsTwoLevelsBelowRoot(lower, roots)
+}
+
+// sitsTwoLevelsBelowRoot reports whether lowerPath (already
+// slash-normalized and lower-cased by the caller) is exactly
+// `<root>/<session-id>/events.jsonl` for one of roots. roots are
+// expected to already be absolute (defaultRoots/adapter.AbsEnvRoot guarantee
+// that), so this is a plain string-prefix check in the same
+// slash-normalized, lower-cased space matchesShape already works in.
+func sitsTwoLevelsBelowRoot(lowerPath string, roots []string) bool {
+	for _, r := range roots {
+		if r == "" {
+			continue
+		}
+		lowerRoot := strings.TrimRight(strings.ReplaceAll(strings.ToLower(r), `\`, "/"), "/")
+		rest := strings.TrimPrefix(lowerPath, lowerRoot+"/")
+		if rest == lowerPath {
+			continue // lowerPath does not sit under this root at all
+		}
+		parts := strings.Split(rest, "/")
+		if len(parts) == 2 && parts[0] != "" && parts[1] == sessionLogName {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseSessionFile implements adapter.Adapter. It streams the JSONL from
@@ -154,6 +214,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	}
 
 	res := adapter.ParseResult{NewOffset: fromOffset}
+	st.emitIDESurface(&res)
 
 	// bufio.Reader.ReadString (not Scanner) so the byte cursor advances by
 	// the exact terminator length including CRLF, and long tool-output
@@ -229,6 +290,17 @@ type parseState struct {
 	// sessionStarted guards against emitting more than one session-start
 	// marker per parse call.
 	sessionStarted bool
+	// ideAttachmentSeen is set by readHeader when the session's first
+	// UserPromptEvent carries the IDE-injected MCP-server wiring
+	// attachment (see surface.go). Like cwd, this is resolved from a
+	// from-offset-0 header scan on EVERY parse call, since the
+	// attachment lives on line 1 and a resumed parse (fromOffset > 0)
+	// would otherwise never see it.
+	ideAttachmentSeen bool
+	// surfaceStamped guards against emitting more than one
+	// models.SessionSurface row per parse call (see emitIDESurface /
+	// emitCLISurface).
+	surfaceStamped bool
 	// sessionID is the canonical session id, always derived from the
 	// enclosing directory name.
 	sessionID string
@@ -244,6 +316,9 @@ type parseState struct {
 	// remote is the normalized git remote, resolved alongside the project
 	// root (see projectRoot).
 	remote string
+	// identity is the Project Identity Resolver v2 bundle (2026-09-06,
+	// §3.1 / W1) resolved alongside branch/remote.
+	identity git.Identity
 	// model is the most recent model id seen (from
 	// LlmResponseMetadataEvent), stamped onto the surrounding
 	// Terminal/FileChanges/Result actions, which carry no model of their
@@ -277,43 +352,60 @@ func sessionIDFromPath(path string) string {
 
 // readHeader scans the top of the log (position 0, independent of the
 // parse cursor) for the first non-empty CurrentDirectoryUpdatedEvent, so a
-// resumed parse still resolves a project root. When the log never states
-// one within headerScanLines (an interrupted session with no
-// terminal/file-change block, for instance), the sibling index.jsonl's
-// projectDir is used instead.
+// resumed parse still resolves a project root, AND for the IDE-injected
+// MCP-server wiring attachment (see surface.go) — both signals sit near
+// the top of the file, so one bounded pass covers both. When the log
+// never states a CurrentDirectoryUpdatedEvent within headerScanLines (an
+// interrupted session with no terminal/file-change block, for instance),
+// the sibling index.jsonl's projectDir is used instead.
 func (st *parseState) readHeader(f *os.File) error {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("junie.readHeader: seek: %w", err)
 	}
-	st.cwd = scanCurrentDirectory(f)
+	cwd, ideAttachment := scanHeader(f)
+	st.cwd = cwd
 	if st.cwd == "" {
 		st.cwd = indexProjectDir(st.path, st.sessionID)
 	}
+	st.ideAttachmentSeen = ideAttachment
 	return nil
 }
 
-// scanCurrentDirectory reads at most headerScanLines lines from r's
-// current position and returns the first stated
-// CurrentDirectoryUpdatedEvent.currentDirectory.
-func scanCurrentDirectory(r io.Reader) string {
+// scanHeader reads at most headerScanLines lines from r's current
+// position and returns the first stated
+// CurrentDirectoryUpdatedEvent.currentDirectory (empty if none), plus
+// whether any UserPromptEvent in the same window carries the
+// IDE-injected MCP-server wiring attachment (see surface.go). Both
+// signals sit near the top of a real capture — the CWD statement
+// roughly a quarter in per the Phase-0 fixture, the attachment on line
+// 1 when present — so the scan continues until BOTH are resolved (or
+// the bound is exhausted), rather than stopping at the first hit.
+func scanHeader(r io.Reader) (cwd string, ideAttachment bool) {
 	br := bufio.NewReaderSize(r, 64*1024)
 	for i := 0; i < headerScanLines; i++ {
 		line, err := br.ReadString('\n')
 		raw := strings.TrimRight(line, "\r\n")
 		if raw != "" {
 			var rec rawRecord
-			if jsonErr := json.Unmarshal([]byte(raw), &rec); jsonErr == nil &&
-				rec.Event != nil && rec.Event.AgentEvent != nil &&
-				rec.Event.AgentEvent.Kind == agentKindCurrentDirectory &&
-				rec.Event.AgentEvent.CurrentDirectory != "" {
-				return rec.Event.AgentEvent.CurrentDirectory
+			if jsonErr := json.Unmarshal([]byte(raw), &rec); jsonErr == nil {
+				if cwd == "" && rec.Event != nil && rec.Event.AgentEvent != nil &&
+					rec.Event.AgentEvent.Kind == agentKindCurrentDirectory &&
+					rec.Event.AgentEvent.CurrentDirectory != "" {
+					cwd = rec.Event.AgentEvent.CurrentDirectory
+				}
+				if !ideAttachment && rec.Kind == kindUserPrompt && hasIDEMCPAttachment(rec.ExtraAttachments) {
+					ideAttachment = true
+				}
 			}
 		}
+		if cwd != "" && ideAttachment {
+			return cwd, ideAttachment
+		}
 		if err != nil {
-			return ""
+			return cwd, ideAttachment
 		}
 	}
-	return ""
+	return cwd, ideAttachment
 }
 
 // indexProjectDir reads the sibling ~/.junie/sessions/index.jsonl for
@@ -367,17 +459,19 @@ func (st *parseState) projectRoot() string {
 	if root, ok := st.rootCache[cwd]; ok {
 		return root
 	}
-	info, err := git.Resolve(cwd)
+	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
 		st.rootCache[cwd] = cwd
 		return cwd
 	}
-	st.rootCache[cwd] = info.Root
+	st.rootCache[cwd] = id.Root
 	if st.branch == "" {
-		st.branch = info.Branch
+		st.branch = id.Branch
 	}
-	st.remote = git.NormalizeRemote(info.Remote)
-	return info.Root
+	// id.Remote is already NormalizeRemote'd by ResolveIdentity.
+	st.remote = id.Remote
+	st.identity = id
+	return id.Root
 }
 
 // eventKey returns id when non-empty, otherwise the record's byte offset —
@@ -392,14 +486,21 @@ func eventKey(id string, lineStart int64) string {
 // base builds the fields every emitted ToolEvent shares.
 func (st *parseState) base(rec *rawRecord) models.ToolEvent {
 	return models.ToolEvent{
-		SourceFile:  st.path,
-		SessionID:   st.sessionID,
-		ProjectRoot: st.projectRoot(),
-		Timestamp:   parseTimestamp(rec.TimestampMs),
-		GitBranch:   st.branch,
-		GitRemote:   st.remote,
-		Tool:        models.ToolJunie,
-		Success:     true,
+		SourceFile:         st.path,
+		SessionID:          st.sessionID,
+		ProjectRoot:        st.projectRoot(),
+		Timestamp:          parseTimestamp(rec.TimestampMs),
+		GitBranch:          st.branch,
+		GitRemote:          st.remote,
+		GitUpstreamRemote:  st.identity.UpstreamRemote,
+		GitRemoteOwner:     st.identity.RemoteOwner,
+		GitUpstreamOwner:   st.identity.UpstreamOwner,
+		RootCommitSHA:      st.identity.RootCommitSHA,
+		ContentFingerprint: st.identity.ContentFingerprint,
+		Workspace:          st.identity.Workspace,
+		IsWorktree:         st.identity.IsWorktree,
+		Tool:               models.ToolJunie,
+		Success:            true,
 	}
 }
 
@@ -414,12 +515,50 @@ func (st *parseState) handle(rec *rawRecord, lineStart int64, res *adapter.Parse
 		st.emitSessionStart(rec, res)
 	case kindSessionA2ux:
 		st.handleSessionA2ux(rec, lineStart, res)
+	case kindCostTrajectorySnapshot:
+		st.emitCLISurface(res)
 	}
 	// kindMessagesCommitted correlates prompt ids already captured by
 	// UserPromptEvent, and kindTaskState duplicates the completion the
 	// matching ResultBlockUpdatedEvent already turns into an
 	// ActionTaskComplete row (see the package doc) — both, and any
 	// unrecognised kind, are skipped silently.
+}
+
+// emitIDESurface appends a self-reported IDE capture-surface stamp when
+// readHeader found the IDE-injected MCP-server wiring attachment (see
+// surface.go). Runs once per ParseSessionFile call, independent of
+// fromOffset — the header scan that feeds ideAttachmentSeen already
+// re-reads from byte 0 on every call.
+//
+// Because readHeader re-scans from byte 0 on EVERY call, a session
+// already stamped by an earlier parse gets the identical
+// models.SessionSurface row re-emitted on every later poll tick too —
+// this is intentional and costs nothing: store.SetSessionSurface's
+// WHERE guard only writes when the stored value actually differs
+// (surface.go's "why the IDE self-stamp cannot fight the enricher"),
+// so a repeat of the same self-report is a silent no-op UPDATE, not a
+// flap or a duplicate row.
+func (st *parseState) emitIDESurface(res *adapter.ParseResult) {
+	if st.surfaceStamped || !st.ideAttachmentSeen || st.sessionID == "" {
+		return
+	}
+	st.surfaceStamped = true
+	res.SessionSurfaces = append(res.SessionSurfaces, junieIDESurface(st.sessionID))
+}
+
+// emitCLISurface appends a self-reported CLI capture-surface stamp the
+// first time this parse call encounters the CLI's own
+// SessionCostTrajectorySnapshotEvent (see surface.go). Guarded so at
+// most one models.SessionSurface row is appended per parse call, and so
+// it never fires alongside emitIDESurface (the two markers are mutually
+// exclusive on every capture examined).
+func (st *parseState) emitCLISurface(res *adapter.ParseResult) {
+	if st.surfaceStamped || st.sessionID == "" {
+		return
+	}
+	st.surfaceStamped = true
+	res.SessionSurfaces = append(res.SessionSurfaces, junieCLISurface(st.sessionID))
 }
 
 // handleSessionA2ux dispatches SessionA2uxEvent.event.agentEvent — the
@@ -441,14 +580,36 @@ func (st *parseState) handleSessionA2ux(rec *rawRecord, lineStart int64, res *ad
 		st.emitFileChangesBlock(rec, ae, res)
 	case agentKindResultBlock:
 		st.emitResultBlock(rec, ae, res)
+	case agentKindMcpBlock:
+		st.emitMCPBlock(rec, ae, res)
+	case agentKindViewFilesBlock:
+		st.emitViewFilesBlock(rec, ae, res)
+	case agentKindToolBlock:
+		// Deliberately no row — a generic "a tool is running" label
+		// that always shares its stepId with a specialised block. The
+		// case exists so the skip is explicit rather than a silent
+		// fall-through (mcpblocks.go documents the grounding).
 	}
 	// agentKindCurrentDirectory is consumed entirely by the header scan
-	// (readHeader), never live. The remaining 6 observed kinds
+	// (readHeader), never live. agentKindToolBlock is deliberately NOT
+	// mapped — it is a generic "a tool is running" label that always
+	// shares its stepId with a specialised block (see mcpblocks.go).
+	// The remaining 6 observed kinds
 	// (AgentCurrentStatusUpdatedEvent, EnvironmentVariablesUpdatedEvent,
 	// TipSuggestionCreatedEvent, AgentTaskNameUpdatedEvent,
 	// ContextWindowReportEvent, AgentPatchCreatedEvent,
 	// NextPromptSuggestionEvent) have no normalized-action counterpart and
 	// are skipped silently.
+	//
+	// EnvironmentVariablesUpdatedEvent in particular carries the
+	// operator's entire process environment: its `env` field is not even
+	// declared on agentEventRaw, so no code path can persist or emit it.
+	//
+	// AgentPatchCreatedEvent restates the task's cumulative patch and was
+	// observed EMPTY (`"patch": ""`) on the 2026-09-03 capture; the
+	// per-call apply_patch MCP block already carries the real diff, so
+	// mapping it would at best duplicate a row and at worst emit a blank
+	// one.
 }
 
 // emitUserPrompt records the operator's verbatim prompt text.
@@ -604,6 +765,165 @@ func (st *parseState) applyFileChangesFields(ev *models.ToolEvent, ae *agentEven
 	}
 }
 
+// emitMCPBlock creates or updates the row for an MCP tool call, keyed
+// by its stepId — the same collapse the Terminal / FileChanges blocks
+// use, so a block's IN_PROGRESS → COMPLETED → completion-rebroadcast
+// occurrences all land on ONE action. The normalized action type and
+// target come from the mcpToolRules table (mcpblocks.go), never from a
+// switch on the vendor name.
+//
+// A block carrying an approvalRequest ALSO emits a separate
+// ActionPermissionRequest row with its own deterministic
+// SourceEventID — the prompt and the call it gated are two distinct
+// facts, and the prompt fires only once per session while the call
+// recurs.
+func (st *parseState) emitMCPBlock(rec *rawRecord, ae *agentEventRaw, res *adapter.ParseResult) {
+	if ae.StepID == "" {
+		return
+	}
+	st.emitMCPApproval(rec, ae, res)
+	key := "step:" + ae.StepID
+	if idx, ok := st.stepIdx[key]; ok && idx < len(res.ToolEvents) {
+		st.applyMCPFields(&res.ToolEvents[idx], ae)
+		accumulateMCPCache(st.cacheAcc, st.cacheDone, key, ae)
+		return
+	}
+	ev := st.base(rec)
+	ev.SourceEventID = key
+	ev.RawToolName = strings.TrimSpace(ae.ToolName)
+	ev.Model = st.model
+	ev.PrecedingReasoning = st.takeReasoning()
+	st.applyMCPFields(&ev, ae)
+	accumulateMCPCache(st.cacheAcc, st.cacheDone, key, ae)
+	idx := len(res.ToolEvents)
+	res.ToolEvents = append(res.ToolEvents, ev)
+	st.stepIdx[key] = idx
+}
+
+// applyMCPFields stamps an MCP block's normalized action/target, its raw
+// arguments and its terminal-status outcome onto ev. Called both for the
+// block's first occurrence and every later re-occurrence of the same
+// stepId within this parse window, so a row created at IN_PROGRESS is
+// upgraded in place once the call completes.
+func (st *parseState) applyMCPFields(ev *models.ToolEvent, ae *agentEventRaw) {
+	norm := normalizeMCPCall(ae.ToolName, ae.Input)
+	ev.ActionType = norm.ActionType
+	ev.Target = truncate(st.adapter.scrubber.String(norm.Target), 200)
+	if ae.Input != "" {
+		ev.RawToolInput = st.adapter.scrubber.String(contentcap.Cap(ae.Input, contentcap.DefaultMaxBytes))
+	}
+	switch ae.Status {
+	case blockStatusFailed:
+		ev.Success = false
+		ev.ErrorMessage = truncate(st.adapter.scrubber.String(ae.Details), 500)
+	case blockStatusCompleted:
+		ev.Success = true
+		ev.ErrorMessage = ""
+		// `details` mirrors `input` while the call is running and only
+		// becomes the outcome summary at the terminal transition — so
+		// it is adopted as output ONLY here, never at IN_PROGRESS,
+		// where it would just duplicate RawToolInput.
+		if ae.Details != "" {
+			ev.ToolOutput = st.adapter.scrubber.String(contentcap.Cap(ae.Details, contentcap.DefaultMaxBytes))
+		}
+	}
+}
+
+// emitMCPApproval records the host's permission prompt for an MCP call
+// as its own ActionPermissionRequest row, per the action type's
+// contract: Target is the tool_name being asked about, RawToolInput the
+// call's arguments, PrecedingReasoning the offered allow-list patterns.
+// Keyed on the prompt's own id so a rebroadcast of the same block
+// collapses onto one row.
+func (st *parseState) emitMCPApproval(rec *rawRecord, ae *agentEventRaw, res *adapter.ParseResult) {
+	ar := ae.ApprovalRequest
+	if ar == nil || ar.ID == "" {
+		return
+	}
+	key := "approval:" + ar.ID
+	if _, seen := st.stepIdx[key]; seen {
+		return
+	}
+	ev := st.base(rec)
+	ev.SourceEventID = key
+	ev.ActionType = models.ActionPermissionRequest
+	ev.RawToolName = strings.TrimSpace(ae.ToolName)
+	ev.Target = truncate(st.adapter.scrubber.String(ev.RawToolName), 200)
+	ev.Model = st.model
+	if ae.Input != "" {
+		ev.RawToolInput = st.adapter.scrubber.String(contentcap.Cap(ae.Input, contentcap.DefaultMaxBytes))
+	}
+	if patterns := allowListPatterns(ar); patterns != "" {
+		ev.PrecedingReasoning = patterns
+	}
+	st.stepIdx[key] = len(res.ToolEvents)
+	res.ToolEvents = append(res.ToolEvents, ev)
+}
+
+// allowListPatterns renders an approval prompt's offered "always allow"
+// patterns as a compact, deterministic comma-separated list. Returns ""
+// when the prompt offered none.
+func allowListPatterns(ar *approvalRequestRaw) string {
+	var out []string
+	for _, o := range ar.AllowListOptions {
+		out = append(out, o.PatternsToAdd...)
+	}
+	return strings.Join(out, ", ")
+}
+
+// emitViewFilesBlock creates or updates the ActionReadFile row for a
+// ViewFiles block — the agent opening/inspecting files through the
+// host's own affordances rather than through MCP. Keyed by stepId like
+// every other block. Multi-file blocks land on the FIRST path, matching
+// applyFileChangesFields' existing "first entry" convention; the full
+// set rides in RawToolInput so nothing is lost.
+func (st *parseState) emitViewFilesBlock(rec *rawRecord, ae *agentEventRaw, res *adapter.ParseResult) {
+	if ae.StepID == "" {
+		return
+	}
+	key := "step:" + ae.StepID
+	if idx, ok := st.stepIdx[key]; ok && idx < len(res.ToolEvents) {
+		st.applyViewFilesFields(&res.ToolEvents[idx], ae)
+		return
+	}
+	ev := st.base(rec)
+	ev.SourceEventID = key
+	ev.ActionType = models.ActionReadFile
+	ev.RawToolName = models.ToolJunie + ".view_files"
+	ev.Model = st.model
+	ev.PrecedingReasoning = st.takeReasoning()
+	st.applyViewFilesFields(&ev, ae)
+	idx := len(res.ToolEvents)
+	res.ToolEvents = append(res.ToolEvents, ev)
+	st.stepIdx[key] = idx
+}
+
+// applyViewFilesFields stamps a ViewFiles block's paths and terminal
+// status onto ev.
+func (st *parseState) applyViewFilesFields(ev *models.ToolEvent, ae *agentEventRaw) {
+	var paths []string
+	for _, f := range ae.Files {
+		if p := strings.TrimSpace(f.RelativePath); p != "" {
+			paths = append(paths, p)
+		}
+	}
+	if len(paths) > 0 {
+		ev.Target = truncate(st.adapter.scrubber.String(paths[0]), 200)
+		ev.RawToolInput = st.adapter.scrubber.String(strings.Join(paths, "\n"))
+	}
+	switch ae.Status {
+	case blockStatusFailed:
+		ev.Success = false
+		ev.ErrorMessage = truncate(st.adapter.scrubber.String(ae.Details), 500)
+	case blockStatusCompleted:
+		ev.Success = true
+		ev.ErrorMessage = ""
+		if ae.Details != "" {
+			ev.ToolOutput = st.adapter.scrubber.String(contentcap.Cap(ae.Details, contentcap.DefaultMaxBytes))
+		}
+	}
+}
+
 // emitResultBlock creates or updates the ActionTaskComplete row for a
 // Result block, keyed by its stepId. Success/failure is derived from
 // Cancelled alone — ErrorCode is deliberately not consulted (see the
@@ -667,6 +987,13 @@ func (st *parseState) emitTokens(rec *rawRecord, ae *agentEventRaw, lineStart in
 			ProjectRoot:         st.projectRoot(),
 			GitBranch:           st.branch,
 			GitRemote:           st.remote,
+			GitUpstreamRemote:   st.identity.UpstreamRemote,
+			GitRemoteOwner:      st.identity.RemoteOwner,
+			GitUpstreamOwner:    st.identity.UpstreamOwner,
+			RootCommitSHA:       st.identity.RootCommitSHA,
+			ContentFingerprint:  st.identity.ContentFingerprint,
+			Workspace:           st.identity.Workspace,
+			IsWorktree:          st.identity.IsWorktree,
 			Timestamp:           parseTimestamp(rec.TimestampMs),
 			Tool:                models.ToolJunie,
 			Model:               m.Model,

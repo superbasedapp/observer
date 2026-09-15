@@ -3,9 +3,18 @@ import { test, expect } from "@playwright/test";
 // Per-terminal Session Cockpit (the "⊙ Session" floating panel). Frontend:
 // components/cockpit/SessionCockpitPanel.tsx (FloatingPanel wrapper + Phase-1
 // terminal→session link resolve) + cockpit/CockpitContent.tsx (Phase-2 vitals)
-// + lib/cockpit.ts (wire types + helpers). Wired through LaunchDock's
-// openSessionPanel and the LaunchTerminal header "⊙ Session" button
-// (sessionPanelEnabled = the dock session's tool !== "terminal").
+// + lib/cockpit.ts (wire types + helpers).
+//
+// TRIGGER CHANGED (Task 9, 2026-08-27). The LaunchTerminal header "⊙ Session"
+// button now opens the FULL session-detail slide-over
+// (cockpit/TerminalSessionModal.tsx → SessionDetailPanel with `liveHero`), not
+// this floating cockpit. The cockpit is still reachable — one click, from the
+// modal's "⊙ Pin vitals panel" affordance, which closes the modal and opens the
+// cockpit beside the terminal — because a 1680px slide-over covers the terminal
+// it was opened from. Every cockpit assertion below is unchanged; only the way
+// the panel is opened is (see openVitals()). The uncorrelated case never
+// reaches a detail panel at all (there is no session id) and is covered by the
+// first test.
 //
 // Backend the panel drives:
 //   GET /api/terminal/session/<token> — {run_id,kind,tool,correlated,session_id,confidence}
@@ -73,6 +82,19 @@ const SESSION_DETAIL = {
   ai_cost_usd: 4.02,
   tool_cost_usd: 0.25,
   tool_breakdown: [],
+  // REQUIRED wire field, not decoration. handleSessionDetail declares
+  // `Resume sessionResumeInfo \`json:"resume"\`` — a non-pointer struct with no
+  // omitempty, documented "Always present" and derived from the integration
+  // registry by capability shape — and lib/types.ts types it non-optional on
+  // SessionDetail. The live hero band this modal opens with renders
+  // SessionActionHeader → ResumeButton, which dispatches on `resume.kind`.
+  // Omitting it made that read throw on undefined; the app mounts no error
+  // boundary above the panel, so React unwound the WHOLE root — the terminal,
+  // the dock and the page all vanished about a second after the modal opened.
+  // That was a fixture gap faithfully reproducing an impossible server reply,
+  // not an app defect: hence a fixture fix, and "native" is what claude-code
+  // (grounded native resume, launcher verb `claude`) actually answers.
+  resume: { kind: "native", subcommand: "claude" },
 };
 
 // Two turns; the assistant turn generated 900 output tokens over 3000ms of
@@ -127,6 +149,7 @@ const PREDICT = {
     model: "claude-opus-4-8",
     prefix_tokens: 120000,
     has_estimate: true,
+    has_shape: true,
     turns_tier: "observed",
     low: { turns: 3, fresh_input: 1500, output: 600, per_turn_usd: 0.03, message_usd: 0.08 },
     mid: { turns: 5, fresh_input: 2200, output: 900, per_turn_usd: 0.05, message_usd: 0.22 },
@@ -288,31 +311,54 @@ function cockpitPanel(page: import("@playwright/test").Page) {
   return page.getByRole("complementary", { name: /Session cockpit/ });
 }
 
-test("uncorrelated shows the waiting state, then vitals render once correlated", async ({ page }) => {
+// openVitals drives the CURRENT path to the floating cockpit: the header
+// "⊙ Session" button opens the full session-detail slide-over, whose live hero
+// band carries "⊙ Pin vitals panel"; that closes the modal and opens the
+// cockpit. Correlated sessions only — an uncorrelated run has no detail panel.
+async function openVitals(page: import("@playwright/test").Page) {
+  await sessionButton(page).click();
+  const pin = page.getByRole("button", { name: /Pin vitals panel/ });
+  await expect(pin).toBeVisible({ timeout: 15000 });
+  await pin.click();
+}
+
+test("uncorrelated shows the honest no-session copy, then the full detail panel once correlated", async ({ page }) => {
   const { state } = await mockCockpit(page, { correlated: false });
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await restoreTerminal(page);
 
   await sessionButton(page).click();
 
-  // Uncorrelated: the waiting-state copy is on screen and no cost figure yet.
-  await expect(cockpitPanel(page)).toBeVisible({ timeout: 10000 });
-  await expect(page.getByText("Waiting for session…")).toBeVisible({ timeout: 10000 });
+  // Uncorrelated: there is NO session id, so there is no detail panel to open.
+  // The modal says so in as many words and offers the vitals panel, which works
+  // without a correlation. No cost figure can be on screen.
+  await expect(page.getByText("No session linked to this terminal yet")).toBeVisible({
+    timeout: 10000,
+  });
+  await expect(
+    page.getByRole("button", { name: "Open the live vitals panel" }),
+  ).toBeVisible();
   await expect(page.getByText(COST_TEXT)).toHaveCount(0);
 
-  // Flip the link to correlated; the 4s link poll picks it up and the vitals
-  // sections mount.
+  // Flip the link to correlated; the 4s link poll picks it up and the same
+  // modal becomes the full session detail.
   state.correlated = true;
 
-  // Cost figure.
+  // KPI band cost figure.
   await expect(page.getByText(COST_TEXT)).toBeVisible({ timeout: 15000 });
-  // Context fill percentage (120K / 200K ⇒ 60%).
-  await expect(page.getByText(/120K \/ 200K/)).toBeVisible({ timeout: 15000 });
-  await expect(page.getByText(/60%/).first()).toBeVisible();
-  // A tok/s value (900 output / 3s ⇒ 300/s).
-  await expect(page.getByText("300/s").first()).toBeVisible();
-  // The waiting copy is gone.
-  await expect(page.getByText("Waiting for session…")).toHaveCount(0);
+  // The live hero band: 120K prefix against the 200K budget ⇒ 60% context used.
+  await expect(page.getByText("Context window used")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText(/120K of ~200K/)).toBeVisible();
+  // The predictor's mid band ($0.22/message) with its observed fan-out.
+  await expect(page.getByText("Next-turn avg cost")).toBeVisible();
+  await expect(page.getByText("$0.22")).toBeVisible();
+  await expect(page.getByText(/observed fan-out/)).toBeVisible();
+  // Limit gauge unavailable with needs_proxy ⇒ the honest proxy sentence, not a 0%.
+  await expect(page.getByText("% of limit spent")).toBeVisible();
+  await expect(page.getByText(/route this tool through the Observer proxy/)).toBeVisible();
+
+  // The uncorrelated copy is gone.
+  await expect(page.getByText("No session linked to this terminal yet")).toHaveCount(0);
 });
 
 test("correlated from the start renders header identity, cost, and recent turns", async ({ page }) => {
@@ -320,7 +366,7 @@ test("correlated from the start renders header identity, cost, and recent turns"
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await restoreTerminal(page);
 
-  await sessionButton(page).click();
+  await openVitals(page);
   await expect(cockpitPanel(page)).toBeVisible({ timeout: 10000 });
 
   // Header: the tool label + the short session id.
@@ -346,7 +392,7 @@ test("processobs off shows the System enable-capture CTA copy", async ({ page })
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await restoreTerminal(page);
 
-  await sessionButton(page).click();
+  await openVitals(page);
   await expect(cockpitPanel(page)).toBeVisible({ timeout: 10000 });
 
   // The exact CTA paragraph rendered when process telemetry is off.
@@ -367,7 +413,7 @@ test("Files panel and cockpit coexist on one terminal; clicking raises each", as
   // terminal header, so shrink it to near-min and park it bottom-left — the
   // resize-then-move parking panel-window.spec.ts uses — leaving the header's
   // Files button fully uncovered.
-  await sessionButton(page).click();
+  await openVitals(page);
   const cockpit = cockpitPanel(page);
   await expect(cockpit).toBeVisible({ timeout: 10000 });
   await expect(page.getByText(COST_TEXT)).toBeVisible({ timeout: 15000 });
@@ -439,7 +485,7 @@ test("network capture off shows an honest off line, not 0 calls", async ({ page 
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await restoreTerminal(page);
 
-  await sessionButton(page).click();
+  await openVitals(page);
   await expect(cockpitPanel(page)).toBeVisible({ timeout: 10000 });
   await expect(page.getByText(COST_TEXT)).toBeVisible({ timeout: 15000 });
 
@@ -458,7 +504,7 @@ test("proxied calls with zero measured bytes suppress the byte figures", async (
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await restoreTerminal(page);
 
-  await sessionButton(page).click();
+  await openVitals(page);
   const cockpit = cockpitPanel(page);
   await expect(cockpit).toBeVisible({ timeout: 10000 });
   await expect(page.getByText(/API traffic \(proxied\): 5 calls/)).toBeVisible({ timeout: 15000 });
@@ -469,22 +515,30 @@ test("proxied calls with zero measured bytes suppress the byte figures", async (
 
 test("a later network refresh failure marks the traffic line stale", async ({ page }) => {
   await mockCockpit(page, { correlated: true });
-  // First poll succeeds, every later poll fails — useApi keeps the last-good
-  // data and sets error, so the line must gain a "· stale" marker.
-  let calls = 0;
-  await page.route("**/api/session/*/network**", (route) => {
-    calls += 1;
-    if (calls === 1) return route.fulfill({ json: NETWORK_SUMMARY });
-    return route.fulfill({ status: 500, body: "boom" });
-  });
+  // The cockpit must serve a good first answer and only THEN start failing, so
+  // the assertion is "retained last-good counts + a stale marker", not "no
+  // data". Gate on a flag the test flips once the good line is on screen —
+  // NOT on a request counter. Since Task 9 the cockpit is reached THROUGH the
+  // detail modal, whose LiveHeroBand polls this very endpoint, so request #1
+  // belongs to the hero band and a `calls === 1` gate served the cockpit's own
+  // first poll a 500 — it then had no last-good data to retain and the line
+  // never rendered at all. Flag-gating states the intent directly and is
+  // immune to how many other panels share the endpoint.
+  let failNetwork = false;
+  await page.route("**/api/session/*/network**", (route) =>
+    failNetwork
+      ? route.fulfill({ status: 500, body: "boom" })
+      : route.fulfill({ json: NETWORK_SUMMARY }),
+  );
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await restoreTerminal(page);
 
-  await sessionButton(page).click();
+  await openVitals(page);
   await expect(cockpitPanel(page)).toBeVisible({ timeout: 10000 });
   await expect(page.getByText(/API traffic \(proxied\): 7 calls/)).toBeVisible({ timeout: 15000 });
-  // The network poll cadence is 10s; the second (failing) poll flips the line
-  // stale without blanking the retained counts.
+  // Every later poll fails — useApi keeps the last-good data and sets error, so
+  // the line must gain a "· stale" marker. The network poll cadence is 10s.
+  failNetwork = true;
   await expect(page.getByText(/·\s*stale/).first()).toBeVisible({ timeout: 20000 });
   await expect(page.getByText(/API traffic \(proxied\): 7 calls/)).toBeVisible();
 });
@@ -506,7 +560,7 @@ test("Enable POSTs the enable-capture verb (no body) when a real backend is conf
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await restoreTerminal(page);
 
-  await sessionButton(page).click();
+  await openVitals(page);
   await expect(cockpitPanel(page)).toBeVisible({ timeout: 10000 });
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByText("Process capture enabled")).toBeVisible({ timeout: 10000 });
@@ -542,7 +596,7 @@ test("Enable shows the switched-to-automatic notice when the server switched the
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await restoreTerminal(page);
 
-  await sessionButton(page).click();
+  await openVitals(page);
   await expect(cockpitPanel(page)).toBeVisible({ timeout: 10000 });
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByText("Process capture enabled")).toBeVisible({ timeout: 10000 });
@@ -572,7 +626,7 @@ test("Enable names the previous backend when the server switched a non-runnable 
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await restoreTerminal(page);
 
-  await sessionButton(page).click();
+  await openVitals(page);
   await expect(cockpitPanel(page)).toBeVisible({ timeout: 10000 });
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByText("Process capture enabled")).toBeVisible({ timeout: 10000 });
@@ -602,7 +656,7 @@ test("Enable shows the honest unsupported-platform message when no backend can c
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await restoreTerminal(page);
 
-  await sessionButton(page).click();
+  await openVitals(page);
   await expect(cockpitPanel(page)).toBeVisible({ timeout: 10000 });
   await page.getByRole("button", { name: "Enable" }).click();
   await expect(page.getByText("Process capture unavailable on this machine")).toBeVisible({

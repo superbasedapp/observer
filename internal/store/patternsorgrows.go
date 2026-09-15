@@ -118,3 +118,29 @@ func projectPatternValue(kind, dataJSON string) string {
 	}
 	return dataJSON
 }
+
+// probeProjectPatterns is the Track R2 change-detection probe for the
+// project_patterns wire. It lives here — with the wire's own SQL — so
+// orgsnapgate.go and orgpush.go stay free of the table names.
+//
+// PROBE: (MAX(id), COUNT(*)) over project_patterns plus MAX(projects.id).
+//
+// WHY THE COUNT IS AFFORDABLE HERE — AND NECESSARY: `observer patterns derive`
+// DELETEs and reinserts a project's rows wholesale, so a derive run that
+// produces FEWER patterns than the last one can leave MAX(id) looking
+// plausible only if the reinsert happens to be smaller; the row count is what
+// makes a shrinking derive visible. project_patterns is a derived, capped table
+// (projectPatternCapPerGroup rows per project × kind), not an event log, so the
+// count is an index-only scan over thousands of rows at most — unlike the
+// event-log families, where the same COUNT would be the cost the gate exists to
+// avoid. `projects` is in the probe because the wire JOINs it for
+// root_path_hash, and it is smaller still.
+//
+// RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: an in-place confidence /
+// observation_count UPDATE that neither inserts nor deletes a row would not
+// move either component; snapGate's maxSkipAge recomputes within the hour.
+func (s *Store) probeProjectPatterns(ctx context.Context) (string, error) {
+	return s.snapProbeScalar(ctx, `
+		SELECT 'pp' || (SELECT COALESCE(MAX(id), 0) || '/' || COUNT(*) FROM project_patterns) ||
+		       ':pj' || (SELECT COALESCE(MAX(id), 0) FROM projects)`)
+}

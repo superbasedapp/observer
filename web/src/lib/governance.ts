@@ -82,6 +82,51 @@ export type Governance = {
   // "no org sharing directives", which resolves every key to source "you" -
   // the honest default, and the same answer a solo node gives forever.
   share?: Record<string, GovernanceShareKey>;
+  // pricing is the node's price-table posture (enterprise-pricing plan §3.3).
+  //
+  // SEAM: absent on a build with no cost engine wired, and absent on every
+  // pre-arc daemon. Absent means "not reported" and the card renders nothing
+  // - never "seed", which would be a claim about rates nobody was asked
+  // about.
+  pricing?: GovernancePricing;
+};
+
+// GovernancePricingSource is the three-value enum the Privacy page's pricing
+// row renders.
+//
+//   "local"             - this machine's own table: the compiled defaults plus
+//                         any [intelligence.pricing] override you set.
+//   "org"               - your organisation's signed rates are applied, with
+//                         any override you set still winning above them.
+//   "org_authoritative" - a MANAGED machine holding enforce.budget: the
+//                         organisation's rates sit ABOVE your own overrides,
+//                         so a budget cannot be evaded by re-pricing.
+//   "feed"              - a STANDALONE (non-enrolled) machine applying the
+//                         public Tokenomics pricing feed (market LIST prices),
+//                         below any rate you set yourself. An enrolled machine
+//                         never consults the public feed.
+export type GovernancePricingSource =
+  | "local"
+  | "org"
+  | "org_authoritative"
+  | "feed";
+
+// GovernancePricing is the /api/governance `pricing` block: which price table
+// is in force on this machine, at which document version, and anything the
+// engine refused.
+export type GovernancePricing = {
+  source: GovernancePricingSource;
+  org_version?: number;
+  org_authoritative?: boolean;
+  has_org_pricing?: boolean;
+  // feed_version / feed_fetched_at are set only when source === "feed": the
+  // applied public-feed version and when it was pulled.
+  feed_version?: number;
+  feed_fetched_at?: string;
+  // warnings are organisation rows this machine REFUSED. An admin who typed a
+  // rate and saw nothing change finds out here, on the machine where it did
+  // not apply.
+  warnings?: string[];
 };
 
 // shareSourceOf resolves one sharing key's Source column. Absent governance,

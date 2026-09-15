@@ -1,24 +1,24 @@
 import type { SessionDetail } from "@/lib/types";
 
-// Shared helpers for the session-detail modules. Extracted VERBATIM from
-// SessionDetailPanel.tsx's trailing "helpers" block during the tab split —
-// these are the only helpers more than one module needs, so they live in one
-// place rather than being duplicated per tab.
+export function hasRecordedUsage(d: SessionDetail): boolean {
+  return d.token_usage_available ?? (d.per_model.length > 0);
+}
+
+// Shared helpers for the session-detail modules. The pure time helpers
+// (elapsedMillis / elapsedSub / truncate / fmtDate) were promoted into the
+// shared design system so the node and org session-detail surfaces share one
+// implementation; they are re-exported here so existing @/...shared importers
+// are unchanged. sessionRecentlyActive stays here because it is typed against
+// the node's SessionDetail.
+
+export {
+  elapsedMillis,
+  elapsedSub,
+  fmtDate,
+  truncate,
+} from "@shared/lib/sessionElapsed";
 
 // ----- helpers -----------------------------------------------------
-
-// elapsedMillis measures start→end. `end` is ended_at when the session was
-// cleanly closed, else last_activity_at (COALESCE'd server-side to the last
-// action's timestamp); Date.now() is only the last resort for a session with
-// no end AND no recorded activity. This stops a never-closed session from
-// reporting start→now (the 583h bug).
-export function elapsedMillis(start: string, end?: string): number | null {
-  const s = new Date(start).getTime();
-  if (!Number.isFinite(s)) return null;
-  const e = end ? new Date(end).getTime() : Date.now();
-  if (!Number.isFinite(e)) return null;
-  return Math.max(0, e - s);
-}
 
 // sessionRecentlyActive — the cheapest in-file honest signal for whether a
 // bare session is worth offering a read-only "Watch" on: NOT cleanly ended,
@@ -39,35 +39,4 @@ export function sessionRecentlyActive(d: SessionDetail): boolean {
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return false;
   return Date.now() - t <= 15 * 60 * 1000;
-}
-
-// elapsedSub is the Elapsed tile's sub-label. Cleanly closed → the end date.
-// Never closed but with recent activity (< 10 min ago) → "session in
-// progress". Never closed and stale → the last-activity date, so an old
-// unfinished session doesn't misleadingly read as still running.
-export function elapsedSub(d: SessionDetail): string {
-  if (d.ended_at) return fmtDate(d.ended_at);
-  const last = d.last_activity_at;
-  if (!last) return "session in progress";
-  const lastMs = new Date(last).getTime();
-  if (Number.isFinite(lastMs) && Date.now() - lastMs < 10 * 60 * 1000) {
-    return "session in progress";
-  }
-  return `last activity ${fmtDate(last)}`;
-}
-
-export function fmtDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-export function truncate(s: string, n: number): string {
-  if (!s) return "";
-  return s.length <= n ? s : s.slice(0, n - 1) + "…";
 }

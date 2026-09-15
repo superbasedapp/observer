@@ -232,13 +232,24 @@ func (c *Client) fetchRoutingPolicy(ctx context.Context) (bool, routingFetchSign
 		return false, routingFetchSignal{stage: rfStageCacheReadLocal}, err
 	}
 	pinned := doc.PublicKey // TOFU on first receipt
+	// repinned records that this cycle ADOPTED a changed key because it is
+	// the enrolment key (R1(c)). It has to reach the cache write, so it
+	// suppresses the already-current short-circuit below for an equal or
+	// newer version: otherwise the rail would agree the key changed and then
+	// never write the new one down.
+	repinned := false
 	if hasCached {
 		if cached.ServerPubkey != doc.PublicKey {
-			return false, routingFetchSignal{stage: rfStageKeyMismatch, version: doc.Version},
-				fmt.Errorf("orgclient.FetchRoutingPolicy: server policy key CHANGED (pinned %s…, got %s…) — refusing; re-enrol to rotate trust",
-					prefix8(cached.ServerPubkey), prefix8(doc.PublicKey))
+			if err := c.acceptOfferedKeyChange(ctx, routingPolicyRail, cached.ServerPubkey, doc.PublicKey); err != nil {
+				return false, routingFetchSignal{stage: rfStageKeyMismatch, version: doc.Version},
+					fmt.Errorf("orgclient.FetchRoutingPolicy: %w", err)
+			}
+			repinned = true
 		}
-		pinned = cached.ServerPubkey
+		pinned = doc.PublicKey
+		if !repinned {
+			pinned = cached.ServerPubkey
+		}
 		if doc.Version < cached.Version {
 			// INDEPENDENT of which signature rail the document rides:
 			// a genuine org server's version is monotonic, so a LOWER
@@ -254,7 +265,7 @@ func (c *Client) fetchRoutingPolicy(ctx context.Context) (bool, routingFetchSign
 			c.logger.Warn("org routing policy version REGRESSION — server served an OLDER version than the node has cached; keeping the cached policy",
 				"served_version", doc.Version, "cached_version", cached.Version)
 		}
-		if cached.Version >= doc.Version {
+		if cached.Version >= doc.Version && !(repinned && doc.Version >= cached.Version) {
 			// SF7: fire the reload on the already-current arm too — a boot that
 			// rejected the cache then gets an already-current poll must still
 			// converge the live router (the reload no-ops when already running).
@@ -300,6 +311,13 @@ func (c *Client) fetchRoutingPolicy(ctx context.Context) (bool, routingFetchSign
 		ServerPubkey: pinned, ReceivedAt: time.Now().UTC(),
 	}); err != nil {
 		return false, routingFetchSignal{stage: rfStageCacheWriteLocal}, err
+	}
+	// M3: the trust root is mutated ONLY here — after the signature verified
+	// and the rail cache write succeeded. A node whose enrolment stored only
+	// the pin hash writes the key itself down now, so the rails that cannot
+	// TOFU (budget, pricing) have a key to verify against.
+	if repinned || !hasCached {
+		c.adoptEnrolmentKeyMaterial(ctx, pinned)
 	}
 	c.logger.Info("org routing policy cached", "version", doc.Version, "hash", doc.BodyHash[:12])
 	// SF7/§4.5: fire the reload AFTER the cache upsert succeeds so the live

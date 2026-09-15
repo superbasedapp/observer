@@ -126,13 +126,14 @@ func newOpenclawCmd() *cobra.Command {
 			}
 			resolved := resolveProxyURL(cfg.Proxy.Port, proxyURL)
 			return runEnvLauncher(envLauncherSpec{
-				tool:     "openclaw",
-				bin:      bin,
-				args:     args,
-				proxyURL: resolved,
-				env:      map[string]string{"OPENAI_BASE_URL": strings.TrimRight(resolved, "/") + "/v1"},
-				dbPath:   cfg.Observer.DBPath,
-				stderr:   cmd.ErrOrStderr(),
+				tool:       "openclaw",
+				bin:        bin,
+				args:       args,
+				configPath: configPath,
+				proxyURL:   resolved,
+				env:        map[string]string{"OPENAI_BASE_URL": strings.TrimRight(resolved, "/") + "/v1"},
+				dbPath:     cfg.Observer.DBPath,
+				stderr:     cmd.ErrOrStderr(),
 			})
 		},
 	}
@@ -201,10 +202,20 @@ func runOpenclawContinue(cmd *cobra.Command, p openclawContinueParams) error {
 	fmt.Fprintf(cmd.ErrOrStderr(),
 		"observer openclaw: launching non-proxied `openclaw %s` (seed avoids the --local proxy stall; token capture via the openclaw adapter)\n",
 		openclawContinueSubcommand)
+	// The executable and argv are the process-cutoff recovery evidence: a
+	// direct launch is admissible when the daemon attests live cutoff over
+	// this exact installed surface (budgetlaunch_direct_linux.go), and without
+	// them it could never be, however well covered the node is.
+	if err := enforceBudgetControlledLaunch(cmd.Context(), p.configPath, "openclaw",
+		budgetLaunchEvidence{
+			Route: budgetLaunchRouteDirect, Executable: p.bin, Arguments: launchArgs,
+		}); err != nil {
+		return err
+	}
 
 	child := exec.Command(p.bin, launchArgs...) //nolint:gosec // user-launched tool; argv is the seeded handover + forwarded args
-	child.Env = os.Environ()
-	child.Dir = cwd // "" inherits the caller's cwd; set by --continue-from to the source project root
+	child.Env = scrubOOBEnv(os.Environ())       // strip the trusted OOB channel env
+	child.Dir = cwd                             // "" inherits the caller's cwd; set by --continue-from to the source project root
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr

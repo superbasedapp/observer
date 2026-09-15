@@ -120,7 +120,7 @@ func TestInferProjectContext_PrefersEnvDetailsOverLegacyUIKey(t *testing.T) {
 	if err := os.WriteFile(uiPath, []byte(uiBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	root, _, _ := New().inferProjectContext(apiPath)
+	root, _, _, _ := New().inferProjectContext(apiPath)
 	// git.Resolve is unlikely to find a repo at d:/winner under tests
 	// — root falls through to the normalised cwd.
 	if !strings.Contains(strings.ReplaceAll(root, "\\", "/"), "d:/winner") {
@@ -144,7 +144,7 @@ func TestInferProjectContext_FallsBackToUIMessagesCwd(t *testing.T) {
 	if err := os.WriteFile(uiPath, []byte(`[{"ts":1,"type":"say","cwd":"/legacy/cwd"}]`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	root, _, _ := New().inferProjectContext(apiPath)
+	root, _, _, _ := New().inferProjectContext(apiPath)
 	if !strings.Contains(strings.ReplaceAll(root, "\\", "/"), "/legacy/cwd") {
 		t.Errorf("project root: got %q want substring /legacy/cwd", root)
 	}
@@ -496,7 +496,9 @@ func TestToolInferredFromPath(t *testing.T) {
 		want string
 	}{
 		{"/x/saoudrizwan.claude-dev/tasks/abc/api_conversation_history.json", models.ToolCline},
+		{"/x/saoudrizwan.cline-nightly/tasks/abc/api_conversation_history.json", models.ToolCline},
 		{"/x/rooveterinaryinc.roo-cline/tasks/abc/api_conversation_history.json", models.ToolRooCode},
+		{"/x/zoocodeorganization.zoo-code/tasks/abc/api_conversation_history.json", models.ToolZooCode},
 		{"/x/other/tasks/abc/api_conversation_history.json", models.ToolCline},
 	}
 	for _, tc := range cases {

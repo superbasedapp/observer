@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchJSON } from "../../lib/api";
+import type { ProjectsResponse } from "../../lib/types";
 
 // Agent Arena tab (plan: agent-arena-terminal-multi-harness-2026-08-22.md):
 // run one prompt against several harnesses in isolated worktrees, compare
@@ -108,9 +109,9 @@ function NewRunForm({ onCreated }: { onCreated: (id: string) => void }) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetchJSON<{ projects?: { root_path: string }[] }>("/api/projects")
+    fetchJSON<ProjectsResponse>("/api/projects")
       .then((d) => {
-        const roots = (d.projects ?? []).map((p) => p.root_path);
+        const roots = (d.rows ?? []).map((p) => p.root_path);
         setProjects(roots);
         if (roots.length > 0 && !projectRoot) setProjectRoot(roots[0]);
       })
@@ -263,7 +264,7 @@ function CandidateCard({ runId, runStatus, cand, onChanged }: { runId: string; r
     }
     try {
       const d = await fetchJSON<{ patch: string }>(`/api/arena/runs/${runId}/diff/${cand.id}`);
-      setPatch(d.patch || "(empty diff — inert candidate)");
+      setPatch(d.patch || "(empty diff - inert candidate)");
     } catch (e) {
       setPatch("failed to load: " + String(e));
     }

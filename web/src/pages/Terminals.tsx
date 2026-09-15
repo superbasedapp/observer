@@ -3,12 +3,14 @@ import { useLocation } from "react-router-dom";
 import { ChartShell, Pill } from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
+import { fmtClock, fmtRelative, fmtShortId } from "@/lib/format";
 import type {
   ProjectRow,
   ProjectsResponse,
   SandboxAvailability,
 } from "@/lib/types";
 import { markRestartPending } from "@/lib/restartPending";
+import { unwatchedAllowedToolsMsg } from "@/lib/toolInstall";
 import {
   useTerminalStatuses,
   AgentStatusBadge,
@@ -61,6 +63,17 @@ type TerminalPolicy = {
   // read-only on this GET.
   max_concurrent: number;
   idle_timeout: string;
+  // [observer.watch].enabled_adapters AS LOADED (audit DI-07) — the SECOND,
+  // independent allow-list, which decides whether a launched tool is ever
+  // CAPTURED. null/absent = the key is unset (every adapter watched); [] = the
+  // explicit "watch nothing" intent. READ-ONLY here: it belongs to a different
+  // config section and is NOT part of the PUT payload.
+  enabled_adapters?: string[] | null;
+  // The server-derived cross-check: allow-listed launchable tools an EXPLICIT
+  // enabled_adapters list omits. They launch happily and record nothing.
+  // Derived by diag.AllowedToolsNotWatched so the SPA never reimplements the
+  // list's nil-vs-empty rule.
+  unwatched_allowed_tools?: string[];
 };
 
 type RunRow = {
@@ -80,7 +93,7 @@ type RunRow = {
 // (the full path rides along as a title tooltip). Mirrors the NewTerminalDialog
 // project-picker convention so the two surfaces read the same.
 function shortenPath(p: string): string {
-  if (!p) return "—";
+  if (!p) return "-";
   const parts = p.split("/").filter(Boolean);
   if (parts.length <= 2) return p;
   return ".../" + parts.slice(-2).join("/");
@@ -91,9 +104,7 @@ function shortenPath(p: string): string {
 function rootSeenHint(p: ProjectRow): string {
   const sess = `${p.session_count} session${p.session_count === 1 ? "" : "s"}`;
   if (!p.last_seen) return sess;
-  const d = new Date(p.last_seen);
-  if (Number.isNaN(d.getTime())) return sess;
-  return `${sess} · last seen ${d.toLocaleDateString()}`;
+  return `${sess} · last seen ${fmtRelative(p.last_seen)}`;
 }
 
 async function putPolicy(
@@ -119,6 +130,13 @@ export function TerminalsPage() {
 
   const p = policy.data;
   const confirmToken = p?.confirm_token ?? "";
+  // DI-07 cross-check, derived SERVER-side (unwatched_allowed_tools) and only
+  // rendered here — null when there is no gap, or when the daemon predates the
+  // key (absence is UNKNOWN, never "all watched").
+  const unwatchedMsg = useMemo(
+    () => unwatchedAllowedToolsMsg(p?.unwatched_allowed_tools),
+    [p?.unwatched_allowed_tools],
+  );
 
   // Workspace vs Settings tab (dock-grid design D1): the grid IS the page;
   // the policy/remote/standing/status/history content moves behind Settings.
@@ -131,6 +149,20 @@ export function TerminalsPage() {
     const want = new URLSearchParams(location.search).get("tab");
     if (want === "workspace" || want === "settings" || want === "arena") setTab(want);
   }, [location.search]);
+  // Hash deep-link: /terminals#launch-policy. The launch-policy card lives
+  // behind the Settings tab, so a bare hash would land on the grid and scroll
+  // to nothing — select the tab FIRST, then scroll once the card has mounted.
+  // The New-Terminal dialog's picker legend (DI-06) links here.
+  useEffect(() => {
+    if (location.hash !== "#launch-policy") return;
+    setTab("settings");
+    const id = window.setTimeout(() => {
+      document
+        .getElementById("launch-policy")
+        ?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [location.hash]);
 
   // Local editable copy of the policy, seeded from the server.
   const [allowFresh, setAllowFresh] = useState(false);
@@ -217,7 +249,7 @@ export function TerminalsPage() {
 
   async function save() {
     if (!confirmToken) {
-      setErr("No confirm token — reload the page.");
+      setErr("No confirm token - reload the page.");
       return;
     }
     setBusy(true);
@@ -242,7 +274,7 @@ export function TerminalsPage() {
 
   async function saveLimits() {
     if (!confirmToken) {
-      setLimitsErr("No confirm token — reload the page.");
+      setLimitsErr("No confirm token - reload the page.");
       return;
     }
     // Client-side sanity only: a non-negative integer. The server owns
@@ -274,7 +306,7 @@ export function TerminalsPage() {
         body,
       );
       setLimitsMsg(
-        res.restart_required ? "Saved — restart required." : "Applied live.",
+        res.restart_required ? "Saved - restart required." : "Applied live.",
       );
       policy.reload();
     } catch (e) {
@@ -291,10 +323,10 @@ export function TerminalsPage() {
           <h1 className="text-[15px] font-semibold text-fg-1">Terminals</h1>
           <p className="mt-0.5 text-[12px] text-fg-3">
             {tab === "workspace"
-              ? "Your terminal workspace — run and arrange multiple live terminals on one grid."
+              ? "Your terminal workspace - run and arrange multiple live terminals on one grid."
               : tab === "arena"
                 ? "Run one prompt against several agent harnesses in isolated worktrees, compare judged scorecards, keep the winner."
-                : "Launch policy, live agent status, and run history for the embedded terminal. Launch policy is an owner-local setting — it only saves from this machine."}
+                : "Launch policy, live agent status, and run history for the embedded terminal. Launch policy is an owner-local setting - it only saves from this machine."}
           </p>
         </div>
         <div className="flex gap-1 rounded-2 border border-line-2 bg-bg-1 p-0.5 text-[12px]">
@@ -338,7 +370,7 @@ export function TerminalsPage() {
         <WorkspaceGrid
           policyHint={
             p && (!p.terminal_enabled || !p.allow_fresh_agent)
-              ? "Fresh launch is off — enable it in Settings → Fresh-agent launch policy."
+              ? "Fresh launch is off - enable it in Settings → Fresh-agent launch policy."
               : ""
           }
           onOpenSettings={() => setTab("settings")}
@@ -350,17 +382,37 @@ export function TerminalsPage() {
       {tab === "settings" && (
         <>
 
-      {/* Launch policy editor (§E). */}
+      {/* Launch policy editor (§E). The id is the deep-link target the
+          New-Terminal dialog's picker legend points at (/terminals#launch-policy,
+          audit DI-06); scroll-mt keeps the card clear of the sticky header. */}
+      <div id="launch-policy" className="scroll-mt-6">
       <ChartShell
         title="Fresh-agent launch policy"
-        sub="Controls whether the dashboard may start a NEW agent (not just continue an existing session) in the embedded terminal. This expands execution authority — everything defaults off."
+        sub="Controls whether the dashboard may start a NEW agent (not just continue an existing session) in the embedded terminal. This expands execution authority - everything defaults off."
         right={
-          <Pill variant={p?.allow_fresh_agent ? "warn" : "neutral"}>
-            {p?.allow_fresh_agent ? "fresh launch on" : "fresh launch off"}
-          </Pill>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Pill variant={p?.allow_fresh_agent ? "warn" : "neutral"}>
+              {p?.allow_fresh_agent ? "fresh launch on" : "fresh launch off"}
+            </Pill>
+            {/* DI-07: the SECOND allow-list. A tool can be allow-listed for
+                launch and still be omitted from [observer.watch].enabled_adapters
+                — it launches fine and records nothing, which is exactly the kind
+                of silent failure that looks like a capture bug. Read-only: the
+                key lives in a different config section and is NOT in the PUT. */}
+            {unwatchedMsg && (
+              <Pill variant="warn" title={unwatchedMsg}>
+                {(p?.unwatched_allowed_tools ?? []).length} not watched
+              </Pill>
+            )}
+          </div>
         }
       >
         <div className="space-y-4 p-1 text-[12px]">
+          {unwatchedMsg && (
+            <div className="rounded-2 border border-warn/40 bg-warn/10 px-3 py-2 text-warn">
+              {unwatchedMsg}
+            </div>
+          )}
           {!p?.config_writable && (
             <div className="rounded-2 border border-line-2 bg-bg-2 px-3 py-2 text-fg-3">
               This dashboard was started without a writable config path, so launch policy can't be edited
@@ -409,7 +461,7 @@ export function TerminalsPage() {
             <span>
               <span className="font-medium text-fg-1">Allow plain shell terminals</span>
               <span className="block text-[11px] text-fg-3">
-                A SEPARATE opt-in from fresh-agent launches above — it starts your own shell ($SHELL, or
+                A SEPARATE opt-in from fresh-agent launches above - it starts your own shell ($SHELL, or
                 bash/sh as a fallback) instead of an AI tool, so it is a strictly larger execution-authority
                 expansion (any command, not one of the launchable tools). Turning on fresh-agent launches
                 does not also grant this. Config key: <code className="text-fg-2">[terminal.launch].allow_shell</code>.
@@ -419,7 +471,7 @@ export function TerminalsPage() {
 
           <div>
             <div className="mb-1 text-[11px] text-fg-3">
-              allowed tools (from the launchable set — a tool must be launchable in the capability registry)
+              allowed tools (from the launchable set - a tool must be launchable in the capability registry)
             </div>
             <div className="flex flex-wrap gap-1.5">
               {(p?.launchable_tools ?? []).map((tool) => {
@@ -443,12 +495,12 @@ export function TerminalsPage() {
             </div>
             {tools.length === 0 && (
               <div className="mt-1 text-[11px] text-fg-3">
-                None selected — no tool may fresh-launch (deny-all).
+                None selected - no tool may fresh-launch (deny-all).
               </div>
             )}
           </div>
 
-          {/* Save error surfaced inline — the server rejects the WHOLE write on
+          {/* Save error surfaced inline - the server rejects the WHOLE write on
               any bad entry (incl. a rejected project root) with a message
               naming which field/entry, so the operator can fix it here or in
               the Folder Selection card below (same shared state + save()). */}
@@ -476,13 +528,14 @@ export function TerminalsPage() {
           </div>
         </div>
       </ChartShell>
+      </div>
 
       {/* Folder Selection (bug 4b): the allow-list management surface for
           [terminal.launch].allowed_project_roots, split out of the launch-
           policy card above into its own section since it's a distinct
           concern (WHERE an agent may run vs. WHETHER/WHICH one may). It is
           wired to the exact same `roots`/`newRoot`/`rootSuggestions` state
-          and `addRoot`/`addRootValue`/`save` handlers as the card above —
+          and `addRoot`/`addRootValue`/`save` handlers as the card above -
           Save here submits the FULL policy (allow_fresh_agent + allowed_tools
           + allowed_project_roots + allow_shell), never a roots-only payload,
           because the PUT handler (handleTerminalPolicyPut) overwrites all
@@ -490,7 +543,7 @@ export function TerminalsPage() {
           from here would silently reset fresh-launch/tools/shell back off. */}
       <ChartShell
         title="Folder Selection"
-        sub="The allow-list of project folders a fresh agent (or plain shell) may be launched into — from here, or from the folder picker in New Terminal. A folder's descendants are permitted too (adding /home/you/work also allow-lists /home/you/work/anything-under-it); the server re-canonicalizes and symlink-checks every entry on save."
+        sub="The allow-list of project folders a fresh agent (or plain shell) may be launched into - from here, or from the folder picker in New Terminal. A folder's descendants are permitted too (adding /home/you/work also allow-lists /home/you/work/anything-under-it); the server re-canonicalizes and symlink-checks every entry on save."
         right={
           <Pill variant={roots.length === 0 ? "neutral" : "success"}>
             {roots.length === 0 ? "no folders allowed" : `${roots.length} folder${roots.length === 1 ? "" : "s"} allowed`}
@@ -532,7 +585,7 @@ export function TerminalsPage() {
               ))}
               {roots.length === 0 && (
                 <div className="text-[11px] text-fg-3">
-                  None — no project_root may be set. A fresh launch with no project root runs in the SuperBased
+                  None - no project_root may be set. A fresh launch with no project root runs in the SuperBased
                   daemon's own working directory (the directory <code className="text-fg-2">observer start</code> /{" "}
                   <code className="text-fg-2">observer dashboard</code> was launched from).
                 </div>
@@ -567,7 +620,7 @@ export function TerminalsPage() {
             {rootSuggestions.length > 0 && (
               <div className="mt-3 rounded-2 border border-line-1 bg-bg-1 p-2">
                 <div className="mb-1.5 text-[11px] text-fg-3">
-                  Suggested from observed projects — add one to allow-list it. Roots are validated on save; a
+                  Suggested from observed projects - add one to allow-list it. Roots are validated on save; a
                   foreign (Windows/UNC), stale, or symlink-mismatched root is rejected there, not here.
                 </div>
                 <div className="max-h-[220px] space-y-1 overflow-auto">
@@ -592,7 +645,7 @@ export function TerminalsPage() {
                           disabled={!p?.config_writable || added}
                           title={
                             foreign
-                              ? `${proj.root_path} — looks like a foreign path; it will likely be rejected on save`
+                              ? `${proj.root_path} - looks like a foreign path; it will likely be rejected on save`
                               : proj.root_path
                           }
                           onClick={() => addRootValue(proj.root_path)}
@@ -644,7 +697,7 @@ export function TerminalsPage() {
           these bind immediately (no restart). Owner-local write. */}
       <ChartShell
         title="Terminal limits"
-        sub="How many terminals can run at once, and when to reap idle ones. Applied live — no restart."
+        sub="How many terminals can run at once, and when to reap idle ones. Applied live - no restart."
       >
         <div className="space-y-3">
           <div className="flex flex-col gap-1">
@@ -708,7 +761,7 @@ export function TerminalsPage() {
       {/* Live F4 agent status. */}
       <ChartShell
         title="Live agent status"
-        sub="Fused from PTY activity, OSC hints, and launcher lifecycle (F4). Low-confidence hints are shown muted — a hint is never presented as certainty."
+        sub="Fused from PTY activity, OSC hints, and launcher lifecycle (F4). Low-confidence hints are shown muted - a hint is never presented as certainty."
       >
         <div className="p-1 text-[12px]">
           {liveStatuses.length === 0 ? (
@@ -726,7 +779,7 @@ export function TerminalsPage() {
               <tbody className="font-mono text-fg-2">
                 {liveStatuses.map((st) => (
                   <tr key={st.handle} className="border-t border-line-1">
-                    <td className="py-1">{st.handle.slice(0, 12)}…</td>
+                    <td className="py-1" title={st.handle}>{fmtShortId(st.handle, 12)}</td>
                     <td className="py-1">
                       <AgentStatusBadge info={st} />
                     </td>
@@ -743,7 +796,7 @@ export function TerminalsPage() {
       {/* Run history. */}
       <ChartShell
         title="Run history"
-        sub="Every dashboard terminal launch (metadata only — project roots and correlation tokens are stored hashed, never in the clear). Correlated session appears once the launch produces one."
+        sub="Every dashboard terminal launch (metadata only - project roots and correlation tokens are stored hashed, never in the clear). Correlated session appears once the launch produces one."
       >
         <div className="max-h-[320px] overflow-auto p-1 text-[11px]">
           {(runs.data?.runs.length ?? 0) === 0 ? (
@@ -763,7 +816,7 @@ export function TerminalsPage() {
               <tbody className="text-fg-2">
                 {runs.data?.runs.map((r) => (
                   <tr key={r.run_id} className="border-t border-line-1">
-                    <td className="py-1 pr-2">{new Date(r.launched_at).toLocaleString()}</td>
+                    <td className="py-1 pr-2">{fmtClock(r.launched_at)}</td>
                     <td className="py-1 pr-2">{r.tool}</td>
                     <td className="py-1 pr-2">{r.kind}</td>
                     <td className="py-1 pr-2">
@@ -777,11 +830,11 @@ export function TerminalsPage() {
                     </td>
                     <td className="py-1 pr-2">
                       {r.best_session_id ? (
-                        <span title={`confidence ${(r.best_confidence ?? 0).toFixed(2)}`}>
-                          {r.best_session_id.slice(0, 10)}…
+                        <span title={`${r.best_session_id} · confidence ${(r.best_confidence ?? 0).toFixed(2)}`}>
+                          {fmtShortId(r.best_session_id, 10)}
                         </span>
                       ) : (
-                        <span className="text-fg-3">—</span>
+                        <span className="text-fg-3">-</span>
                       )}
                     </td>
                     <td className="py-1">{r.command_count}</td>
@@ -858,7 +911,7 @@ function SandboxSettingsCard() {
 
   async function saveSandbox() {
     if (!draft || !settings.data?.confirm_token) {
-      setErr("Sandbox settings are not ready — reload the page.");
+      setErr("Sandbox settings are not ready - reload the page.");
       return;
     }
     if (
@@ -980,8 +1033,8 @@ function SandboxSettingsCard() {
                   onChange={(e) => update("home_mode", e.target.value as "tmpfs" | "readonly")}
                   className="w-full rounded-2 border border-line-2 bg-bg-1 px-2 py-1 text-fg-1 disabled:opacity-50"
                 >
-                  <option value="tmpfs">tmpfs — hide the real home (recommended)</option>
-                  <option value="readonly">readonly — expose the real home read-only</option>
+                  <option value="tmpfs">tmpfs - hide the real home (recommended)</option>
+                  <option value="readonly">readonly - expose the real home read-only</option>
                 </select>
               </label>
               <label className="space-y-1">

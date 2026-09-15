@@ -64,6 +64,19 @@ type TerminalRun struct {
 	// "" (running/crashed), EndReasonChildExit, EndReasonDaemonShutdown, or
 	// EndReasonResumed.
 	EndReason string
+	// PID is the DETACHED child's process id (migration 108), recorded only for
+	// a GUI run and only once its spawn returned. nil is the honest "no pid
+	// recorded" — a PTY run never carries one (its identity is the PTY handle),
+	// and a GUI row carries nil between the insert and the post-spawn stamp.
+	PID *int
+	// WrapApplied reports whether a GUI launch's routing wrap actually reached
+	// the child (migration 108). false for every non-GUI kind, which has no
+	// wrap concept at all.
+	WrapApplied bool
+	// WrapNote is the grounded reason for that verdict, or the caveat that
+	// qualifies an applied wrap (migration 108). Server-composed metadata: no
+	// argv, no environment values, no path.
+	WrapNote string
 }
 
 // TerminalCorrelation is one scored link from a run to an observed agent
@@ -94,13 +107,45 @@ func (s *Store) InsertTerminalRun(ctx context.Context, run TerminalRun) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO terminal_run
 		   (run_id, tool, kind, source_session_id, project_root_hash,
-		    correlation_token_hash, launched_at, ended_at, exit_code)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    correlation_token_hash, launched_at, ended_at, exit_code,
+		    pid, wrap_applied, wrap_note)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.RunID, run.Tool, run.Kind, run.SourceSessionID, run.ProjectRootHash,
 		run.CorrelationTokenHash, launched.UTC().Format(time.RFC3339Nano),
-		endedArg, nullIntPtr(run.ExitCode))
+		endedArg, nullIntPtr(run.ExitCode),
+		nullIntPtr(run.PID), boolToInt(run.WrapApplied), run.WrapNote)
 	if err != nil {
 		return fmt.Errorf("store.InsertTerminalRun: %w", err)
+	}
+	return nil
+}
+
+// StampTerminalRunSpawn records a GUI run's POST-SPAWN facts: the detached
+// child's pid and the honest wrap verdict (migration 108). It is the sibling of
+// EndTerminalRun — a guarded stamp on an existing row, not a second INSERT
+// path, so InsertTerminalRun remains the sole creator of terminal_run rows and
+// this file remains the table's one store seam.
+//
+// It exists because those three facts are only KNOWN after the spawn returns,
+// while the row itself must be written BEFORE the spawn (the same record-then-
+// spawn discipline every other launch kind follows, so a failed spawn closes
+// out a real row instead of vanishing). A pid <= 0 is refused rather than
+// stored: it would be an un-actionable fake, and the honest state is the NULL
+// the insert already wrote.
+func (s *Store) StampTerminalRunSpawn(ctx context.Context, runID string, pid int, wrapApplied bool, wrapNote string) error {
+	if runID == "" {
+		return nil
+	}
+	if pid <= 0 {
+		return fmt.Errorf("store.StampTerminalRunSpawn: refusing a non-positive pid %d for run %s", pid, runID)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE terminal_run
+		    SET pid = ?, wrap_applied = ?, wrap_note = ?
+		  WHERE run_id = ?`,
+		pid, boolToInt(wrapApplied), wrapNote, runID)
+	if err != nil {
+		return fmt.Errorf("store.StampTerminalRunSpawn: %w", err)
 	}
 	return nil
 }
@@ -275,13 +320,16 @@ func (s *Store) LoadTerminalRun(ctx context.Context, runID string) (TerminalRun,
 	var run TerminalRun
 	var launched string
 	var ended sql.NullString
-	var exit sql.NullInt64
+	var exit, pid sql.NullInt64
+	var wrapApplied int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT run_id, tool, kind, source_session_id, project_root_hash,
-		        correlation_token_hash, launched_at, ended_at, exit_code, end_reason
+		        correlation_token_hash, launched_at, ended_at, exit_code, end_reason,
+		        pid, wrap_applied, wrap_note
 		   FROM terminal_run WHERE run_id = ?`, runID).
 		Scan(&run.RunID, &run.Tool, &run.Kind, &run.SourceSessionID, &run.ProjectRootHash,
-			&run.CorrelationTokenHash, &launched, &ended, &exit, &run.EndReason)
+			&run.CorrelationTokenHash, &launched, &ended, &exit, &run.EndReason,
+			&pid, &wrapApplied, &run.WrapNote)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return TerminalRun{}, false, nil
@@ -298,6 +346,11 @@ func (s *Store) LoadTerminalRun(ctx context.Context, runID string) (TerminalRun,
 		v := int(exit.Int64)
 		run.ExitCode = &v
 	}
+	if pid.Valid {
+		v := int(pid.Int64)
+		run.PID = &v
+	}
+	run.WrapApplied = wrapApplied != 0
 	return run, true, nil
 }
 

@@ -226,3 +226,68 @@ to replay.
 		t.Errorf("golden mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, golden)
 	}
 }
+
+// TestDistill_CarryModesDistinct pins that the five carry modes render
+// MATERIALLY DISTINCT docs when the transcript is readable — the property the
+// dashboard "Continue in another tool" table depends on. The pre-existing
+// omission check (TestDistill_SectionTable) emptied the transcript first, which
+// masked the real defect: buildMission fired for CarryMetadata too, so the
+// metadata and distilled docs were byte-identical for any real session.
+func TestDistill_CarryModesDistinct(t *testing.T) {
+	ex := fixtureExtract()
+	res, err := ResolveFork(ex.Transcript, ForkPoint{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := func(c CarryMode) Doc {
+		return Distill(ex, res, Options{Carry: c, TailMessages: 1, Now: t0(30), ShortID: "x"})
+	}
+	has := func(d Doc, sub string) bool {
+		for _, s := range d.Sections {
+			if strings.Contains(s.Title, sub) {
+				return true
+			}
+		}
+		return false
+	}
+	md, di, dt, fu := doc(CarryMetadata), doc(CarryDistilled), doc(CarryDistilledTail), doc(CarryFull)
+
+	// The reported defect: metadata (action-derived facts only) must OMIT the
+	// mission, making it distinct from distilled (facts + mission).
+	if has(md, "Mission") {
+		t.Error("metadata carry must omit the Mission section (facts only)")
+	}
+	if has(md, "Conversation") {
+		t.Error("metadata carry must omit any conversation/tail section")
+	}
+	if !has(di, "Mission") {
+		t.Error("distilled carry must include the Mission section")
+	}
+	if RenderMarkdown(md) == RenderMarkdown(di) {
+		t.Error("metadata and distilled docs must differ (mission gate) — this is the bug")
+	}
+
+	// distilled has no tail; distilled_tail adds the verbatim (trimmed) tail.
+	if has(di, "Conversation") {
+		t.Error("distilled carry must omit the conversation tail")
+	}
+	if !has(dt, "Conversation tail") {
+		t.Error("distilled_tail carry must include the verbatim tail")
+	}
+	if RenderMarkdown(di) == RenderMarkdown(dt) {
+		t.Error("distilled and distilled_tail docs must differ (tail)")
+	}
+
+	// full carries the whole conversation ("Conversation (verbatim…", not the
+	// "Conversation tail" trimmed section), so it is distinct from
+	// distilled_tail.
+	if !has(fu, "Conversation (verbatim") {
+		t.Error("full carry must include the whole-conversation section")
+	}
+	if has(fu, "Conversation tail") {
+		t.Error("full carry must not render the trimmed tail section")
+	}
+	if RenderMarkdown(dt) == RenderMarkdown(fu) {
+		t.Error("distilled_tail and full docs must differ")
+	}
+}

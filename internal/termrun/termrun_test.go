@@ -14,6 +14,8 @@ func TestKindValid(t *testing.T) {
 		{KindHandoff, true},
 		{KindFresh, true},
 		{KindAttach, true},
+		{KindResume, true},
+		{KindSSH, true},
 		{Kind(""), false},
 		{Kind("shell"), false},
 	}
@@ -201,5 +203,30 @@ func TestHashDomainSeparation(t *testing.T) {
 	const same = "collision-probe"
 	if HashProjectRoot(same) == HashCorrelationToken(same) {
 		t.Fatal("project-root and correlation-nonce hashes must be domain-separated")
+	}
+}
+
+// TestRemoteSensitiveKinds pins WHICH run kinds a remote-exposed dashboard
+// hides when [remote].allow_terminal_view is off. KindSSH is in the gated set
+// (docs/plans/ssh-remote-profiles-plan-2026-08-27.md §5): a live shell on
+// another machine is at least as likely to echo secrets as an attach/resume
+// TUI. A fresh/handoff launch is the honest non-sensitive floor.
+func TestRemoteSensitiveKinds(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		k    Kind
+		want bool
+	}{
+		{KindAttach, true},
+		{KindResume, true},
+		{KindSSH, true},
+		{KindFresh, false},
+		{KindHandoff, false},
+		{Kind("unknown"), false},
+	}
+	for _, tc := range cases {
+		if got := IsRemoteSensitiveKind(tc.k); got != tc.want {
+			t.Errorf("IsRemoteSensitiveKind(%q) = %v, want %v", tc.k, got, tc.want)
+		}
 	}
 }

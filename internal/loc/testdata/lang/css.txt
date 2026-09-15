@@ -1,0 +1,6 @@
+/* Header styles */
+body {
+  color: red; /* inline */
+
+  content: "/* not a comment */";
+}

@@ -238,6 +238,98 @@ func TestWireAIClients_SkipProxyEmitsCodexHint(t *testing.T) {
 	}
 }
 
+// TestWireAIClients_PromptLaneOnlyGate pins B3 (final-fix review) at the
+// `observer init --all` / zero-flag batch entry point: mirrors
+// TestAutoRegisterHooks_PromptLaneOnlyGate (start_test.go) for
+// wireAIClients — the seam `observer init`/`observer enroll` delegate to.
+// A disabled prompt-submit hook lane must skip a PromptLaneOnly tool's hook
+// registration (gemini-cli, native here — the "-windows" bridge variant is
+// covered by TestAutoRegisterHooks_PromptLaneOnlyGateAppliesToWindowsBridgeTargets,
+// which pins the advertisedCapability resolution itself) without touching
+// claude-code's own hook write, since claude-code carries session/tool-call
+// value beyond the one prompt-submit event.
+func TestWireAIClients_PromptLaneOnlyGate(t *testing.T) {
+	writeGuardPromptConfig := func(t *testing.T, hookLane bool) string {
+		t.Helper()
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.toml")
+		body := fmt.Sprintf("[guard.prompt]\nenabled = true\nhook_lane = %v\n", hookLane)
+		if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return cfgPath
+	}
+	setupHome := func(t *testing.T) string {
+		t.Helper()
+		home := t.TempDir()
+		for _, dir := range []string{".claude", ".gemini"} {
+			if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return home
+	}
+
+	// NOTE: subtest names deliberately avoid embedding a tool id like
+	// "gemini-cli" — t.TempDir() folds the subtest name into the
+	// sandbox home path, and that path is itself echoed back inside
+	// printHookResult's "registered N hook(s) in <path>" line, which
+	// would make a substring check on the FULL output ambiguous
+	// (matching the subtest's own name rather than a genuine gemini-cli
+	// registration line). The os.Stat checks below are the real,
+	// unambiguous assertion; the disabled case skips the substring
+	// check entirely for this reason.
+	t.Run("hook_lane_false", func(t *testing.T) {
+		home := setupHome(t)
+		cfgPath := writeGuardPromptConfig(t, false)
+		lines, _, _, _, err := wireAIClients(WireAIClientsOptions{
+			HomeDir:    home,
+			ConfigPath: cfgPath,
+			All:        true,
+			SkipMCP:    true,
+			SkipProxy:  true,
+		})
+		if err != nil {
+			t.Fatalf("wireAIClients: %v", err)
+		}
+		text := strings.Join(lines, "\n")
+		if !strings.Contains(text, "claude-code") {
+			t.Errorf("lines missing claude-code (PromptLaneOnly=false, must always register):\n%s", text)
+		}
+		if _, err := os.Stat(filepath.Join(home, ".gemini", "settings.json")); err == nil {
+			t.Errorf("~/.gemini/settings.json was written even though hook_lane=false")
+		}
+		if _, err := os.Stat(filepath.Join(home, ".claude", "settings.json")); err != nil {
+			t.Errorf("~/.claude/settings.json was NOT written: %v", err)
+		}
+	})
+
+	t.Run("hook_lane_true", func(t *testing.T) {
+		home := setupHome(t)
+		cfgPath := writeGuardPromptConfig(t, true)
+		lines, _, _, _, err := wireAIClients(WireAIClientsOptions{
+			HomeDir:    home,
+			ConfigPath: cfgPath,
+			All:        true,
+			SkipMCP:    true,
+			SkipProxy:  true,
+		})
+		if err != nil {
+			t.Fatalf("wireAIClients: %v", err)
+		}
+		text := strings.Join(lines, "\n")
+		if !strings.Contains(text, "claude-code") {
+			t.Errorf("lines missing claude-code:\n%s", text)
+		}
+		if _, err := os.Stat(filepath.Join(home, ".gemini", "settings.json")); err != nil {
+			t.Errorf("~/.gemini/settings.json was NOT written even though hook_lane=true: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(home, ".claude", "settings.json")); err != nil {
+			t.Errorf("~/.claude/settings.json was NOT written: %v", err)
+		}
+	})
+}
+
 // TestMCPSupportedIsRegistryDriven pins that the MCP write-eligibility
 // predicate dispatches on the integration registry's MCP capability shape,
 // not a hardcoded tool switch. The mcp.Registrar writes the JSON + Codex
@@ -263,12 +355,41 @@ func TestMCPSupportedIsRegistryDriven(t *testing.T) {
 // TestHookSupportedIsRegistryDriven pins that hook write-eligibility
 // dispatches on the integration registry's HookMechanism + CrossOSBridge,
 // not a hardcoded tool switch. The hook.Registry handles claude-code /
-// cursor / codex (and the -windows bridge for claude-code/cursor); Hermes'
+// cursor / codex (and the -windows bridge for claude-code/cursor/codex —
+// codex-windows grounded 2026-09-02, IDE-surface remediation T2); Hermes'
 // embedded plugin (runHermesInit) and cline-cli's manual hooks.jsonl tailer
 // are excluded. Behaviour-identical to the pre-Phase-2 switch.
 func TestHookSupportedIsRegistryDriven(t *testing.T) {
-	in := []string{"claude-code", "claude-code-windows", "cursor", "cursor-windows", "codex"}
-	out := []string{"codex-windows", "hermes", "cline-cli", "opencode", "cline", "copilot", "antigravity", "pi", "definitely-not-a-tool", ""}
+	in := []string{
+		"claude-code", "claude-code-windows", "cursor", "cursor-windows", "codex", "codex-windows",
+		// Part B item 1: the new registerGenericSettingsHooks /
+		// registerFactoryDroid writers (BLOCK-1's real-world close-out).
+		"gemini-cli", "qwen-code", "droid",
+		// Part B item 2 (phase-3a): the documented long-tail vendors —
+		// Qoder/Poolside/Devin-Cascade/commandcode, the 4 remaining
+		// AutoWired:true mechanisms this NIT was missing (B2, phase-3a
+		// review). zcode deliberately stays in `out` below:
+		// AutoWired:false, no register* writer exists at all.
+		"qoder", "poolside", "devin", "command-code",
+		// The six long-tail vendors' own cross-OS bridge targets
+		// (registerGeminiCLIWindows et al.) — CrossOSBridge:true now set
+		// on their registry rows, so hookSupported's isWindows branch
+		// answers true exactly like claude-code-windows/cursor-windows/
+		// codex-windows above. devin/Cascade correctly has NO -windows
+		// counterpart (see internal/integration's devin row) and is not
+		// listed here or in `out`.
+		"gemini-cli-windows", "qwen-code-windows", "droid-windows",
+		"qoder-windows", "poolside-windows", "command-code-windows",
+	}
+	out := []string{
+		"hermes", "cline-cli", "opencode", "cline", "copilot", "antigravity", "pi", "zcode",
+		// devin/Windsurf Desktop Cascade's only grounded install channel
+		// is the macOS Homebrew cask — no Windows-native client exists
+		// to bridge to, so its registry row has no CrossOSBridge and no
+		// register*Windows writer exists at all (unlike the six above).
+		"devin-windows",
+		"definitely-not-a-tool", "",
+	}
 	for _, tool := range in {
 		if !hookSupported(tool) {
 			t.Errorf("hookSupported(%q) = false, want true", tool)

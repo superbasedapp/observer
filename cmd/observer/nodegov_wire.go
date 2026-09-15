@@ -803,7 +803,12 @@ func loadNodeGovernanceLKG(ctx context.Context, cfg config.Config, st *store.Sto
 	if err != nil || !ok || genRow.Tombstoned {
 		return
 	}
-	opts := policyResourceOptionsFor(cfg)
+	// node.governance bodies never declare a RequiredCapabilities entry (the
+	// judge capability is an admission.input/egress concern), so this loader
+	// carries no live-capability set — nil keeps the subset check trivially
+	// satisfied for this family and never depends on the admission runtime,
+	// which this node-governance path does not have a handle to.
+	opts := policyResourceOptionsFor(cfg, nil)
 	if !containsString(policyfam.FamilyNodeGovernance, opts.AcceptFamilies) {
 		return
 	}

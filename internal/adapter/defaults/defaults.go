@@ -34,20 +34,24 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/adapter/gemini"
 	"github.com/marmutapp/superbased-observer/internal/adapter/goose"
 	"github.com/marmutapp/superbased-observer/internal/adapter/grok"
+	"github.com/marmutapp/superbased-observer/internal/adapter/grokbot"
 	"github.com/marmutapp/superbased-observer/internal/adapter/hermes"
 	"github.com/marmutapp/superbased-observer/internal/adapter/junie"
 	"github.com/marmutapp/superbased-observer/internal/adapter/kilocode"
 	"github.com/marmutapp/superbased-observer/internal/adapter/kimicode"
 	"github.com/marmutapp/superbased-observer/internal/adapter/kirocli"
+	"github.com/marmutapp/superbased-observer/internal/adapter/kirocrew"
 	"github.com/marmutapp/superbased-observer/internal/adapter/mistralcode"
 	"github.com/marmutapp/superbased-observer/internal/adapter/muse"
 	"github.com/marmutapp/superbased-observer/internal/adapter/openclaw"
 	"github.com/marmutapp/superbased-observer/internal/adapter/opencode"
 	"github.com/marmutapp/superbased-observer/internal/adapter/pi"
+	"github.com/marmutapp/superbased-observer/internal/adapter/poolside"
 	"github.com/marmutapp/superbased-observer/internal/adapter/primeagent"
 	"github.com/marmutapp/superbased-observer/internal/adapter/qoder"
 	"github.com/marmutapp/superbased-observer/internal/adapter/qwencode"
 	"github.com/marmutapp/superbased-observer/internal/adapter/zcode"
+	"github.com/marmutapp/superbased-observer/internal/adapter/zed"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
@@ -132,6 +136,34 @@ func Adapters() []adapter.Adapter {
 		zcode.New(),
 		mistralcode.New(),
 		freebuff.New(),
+		// 2026-08-28. Grok Bot DESKTOP app (xAI; Electron on Anysphere's
+		// agent stack) — NOT the grok CLI above. Plaintext-JSON blobs
+		// under a base32-encoded persistence-slice filename; whole-file
+		// rewrite, so the cursor is an entry count. The agent runs in a
+		// remote sandbox, so this is a sessions+actions-only adapter: no
+		// tokens, no model, no cwd exist on disk to capture.
+		grokbot.New(),
+		// 2026-09-03. AWS Kiro Crew desktop app — the multi-agent layer that
+		// DRIVES kiro-cli. Its chat transcripts live at
+		// ~/.kiro/crew/sessions/*.jsonl (a SIBLING of kirocli's
+		// ~/.kiro/sessions root, no prefix overlap). kiro-cli owns the
+		// conversation rows for a Crew-driven chat; this adapter's
+		// ownership table keeps it from emitting them twice. See
+		// internal/adapter/kirocrew/doc.go "Ownership".
+		kirocrew.New(),
+		// 2026-09-05. Poolside's agentic coding model, reached today ONLY
+		// as a JetBrains AI Assistant ACP agent — event-sourced NDJSON
+		// trajectory under <data-home>/poolside/trajectories/, one flat
+		// envelope per line. No standalone CLI/TUI launch surface exists,
+		// so this adapter is watcher-capture only (no hook, no proxy, no
+		// Handoff.Launch).
+		poolside.New(),
+		// 2026-09-06. Zed's own native coding agent (zed.dev) — a
+		// per-OS threads.db SQLite store, one thread = one session, the
+		// whole thread rewritten as a zstd-compressed JSON blob every
+		// turn. Watcher-capture only: no hook, no proxy, no MCP, no
+		// Handoff.Launch (Zed is itself the editor).
+		zed.New(),
 		// Browser-chatbot rail. Hook-only: no WatchPaths (capture arrives
 		// via the browser extension's native-messaging bridge / loopback
 		// listener, not the file watcher). One adapter per *-web site; the

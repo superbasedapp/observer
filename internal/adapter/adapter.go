@@ -122,6 +122,27 @@ func (k CursorKind) LagMeaningful() bool {
 	return k != CursorWatermark
 }
 
+// SizeGateMeaningful reports whether the watcher's oversize-file DoS
+// guard (Options.MaxFileBytes) applies to this kind of file. The guard
+// exists to stop a WHOLE-FILE READ of a hostile multi-GB session log
+// from ballooning the daemon's heap — a rationale that only holds for
+// files the adapter actually slurps. A watermark store is a SQLite
+// database the adapter opens through the sql driver and queries
+// INCREMENTALLY against its persisted high-water mark; its on-disk
+// size is unrelated to per-parse allocation, and every healthy store
+// GROWS past any fixed cap eventually — at which point the gate turns
+// into permanent, silent capture loss for that tool (observed
+// 2026-08-27: a 53 MB Windows opencode.db crossed the 50 MB cap and
+// every session inside stopped ingesting, exit-0, WARN-only).
+//
+// Encrypted and no-actions files stay gated: the Antigravity `.pb`
+// path decrypts a whole-file read, and no-actions files are tailed
+// text. An unrecognised kind degrades to "gated" — the conservative
+// direction for a DoS guard.
+func (k CursorKind) SizeGateMeaningful() bool {
+	return k != CursorWatermark
+}
+
 // ActionsExpected reports whether a non-trivial file of this kind
 // SHOULD have produced at least one action row. False for undecodable
 // stores and for files that carry tokens or state only. Also false for
@@ -229,6 +250,17 @@ type ParseResult struct {
 	// org-push wire. Additive: adapters that don't populate it leave it
 	// nil and every stop on the path silently no-ops.
 	SessionLineages []models.SessionLineage
+	// SessionSurfaces carries the capture-surface attribution an
+	// adapter resolved from a grounded on-disk discriminator (Claude
+	// Code `entrypoint`, Codex `originator`/`source`, Cline `source`,
+	// a store's path shape, ...) into the normalized models.Surface*
+	// vocabulary. The watcher plumbs them into store.IngestOptions; the
+	// store persists them node-local via Store.SetSessionSurface
+	// (migration 094) — never on the org-push wire. Additive: adapters
+	// with no discriminator leave it nil and every stop on the path
+	// silently no-ops. One entry per session per parse is plenty; the
+	// store write is first-wins-unless-empty so re-stamps are idempotent.
+	SessionSurfaces []models.SessionSurface
 	// OutcomeUpdates carries outcomes for actions persisted by an
 	// EARLIER parse window. A tool_use and its tool_result are two
 	// separate records; a poll tick that ends between them persists

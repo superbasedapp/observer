@@ -111,6 +111,65 @@ var datedPricing = map[string][]DatedPricing{
 			FastMultiplier: 2,
 		}},
 	},
+
+	// DeepSeek V4 peak/off-peak overhaul, effective 2026-08-16T16:00Z UTC
+	// (api-docs.deepseek.com/quick_start/pricing, confirmed live
+	// 2026-09-07 — see the "PEAK/OFF-PEAK OVERHAUL" comment above the
+	// deepseek-v4-flash row in pricing.go for the full rationale,
+	// including why off-peak is the flat-table representative and peak is
+	// left unmodeled). The old flat rate applied identically to
+	// deepseek-v4-flash, deepseek-chat, deepseek-reasoner, deepseek-v4 and
+	// the bare "deepseek" family row — all five keys get their own
+	// timeline since dated entries are per exact table key, not inherited
+	// across aliases.
+	"deepseek-v4-flash": {
+		{EffectiveFrom: time.Time{}, Pricing: Pricing{
+			Input: 0.14, Output: 0.28, CacheRead: 0.0028,
+		}},
+		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
+			Input: 0.22, Output: 0.66, CacheRead: 0.007,
+		}},
+	},
+	"deepseek-chat": {
+		{EffectiveFrom: time.Time{}, Pricing: Pricing{
+			Input: 0.14, Output: 0.28, CacheRead: 0.0028,
+		}},
+		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
+			Input: 0.22, Output: 0.66, CacheRead: 0.007,
+		}},
+	},
+	"deepseek-reasoner": {
+		{EffectiveFrom: time.Time{}, Pricing: Pricing{
+			Input: 0.14, Output: 0.28, CacheRead: 0.0028,
+		}},
+		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
+			Input: 0.22, Output: 0.66, CacheRead: 0.007,
+		}},
+	},
+	"deepseek-v4": {
+		{EffectiveFrom: time.Time{}, Pricing: Pricing{
+			Input: 0.14, Output: 0.28, CacheRead: 0.0028,
+		}},
+		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
+			Input: 0.22, Output: 0.66, CacheRead: 0.007,
+		}},
+	},
+	"deepseek": {
+		{EffectiveFrom: time.Time{}, Pricing: Pricing{
+			Input: 0.14, Output: 0.28, CacheRead: 0.0028,
+		}},
+		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
+			Input: 0.22, Output: 0.66, CacheRead: 0.007,
+		}},
+	},
+	"deepseek-v4-pro": {
+		{EffectiveFrom: time.Time{}, Pricing: Pricing{
+			Input: 0.435, Output: 0.87, CacheRead: 0.003625,
+		}},
+		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
+			Input: 0.66, Output: 1.98, CacheRead: 0.022,
+		}},
+	},
 }
 
 // BakedInDatedDefaults returns a copy of the baked-in dated rate table.
@@ -272,14 +331,20 @@ func (t *Table) datedRate(key string, at time.Time) (Pricing, bool) {
 }
 
 // rate turns a resolved table key into the Pricing to bill with. This is
-// the ONLY place the date dimension is applied.
+// the ONLY place the date dimension is applied, and — because it is the
+// one funnel every Lookup rung passes through with the resolved key in
+// hand — the one place the per-provider cache-write fallback
+// (applyCacheWriteRule) is applied. Doing it here covers baked rows,
+// config.toml overrides, dated timeline entries and family-prefix
+// fallbacks in a single owner, instead of restating the same fact on
+// every Gemini row in the table.
 func (t *Table) rate(key string, at time.Time) Pricing {
 	if len(t.dated) > 0 {
 		if p, ok := t.datedRate(key, at); ok {
-			return fillDefaults(p)
+			return applyCacheWriteRule(key, fillDefaults(p))
 		}
 	}
-	return fillDefaults(t.exact[key])
+	return applyCacheWriteRule(key, fillDefaults(t.exact[key]))
 }
 
 // LookupAt is the date-aware Lookup: it returns the rate in force for

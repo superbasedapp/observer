@@ -42,7 +42,7 @@ const STEPS: StepSpec[] = [
     id: "hooks",
     title: "Hooks",
     blurb:
-      "Lightweight turn-boundary hooks in the tool's own config — the capture path that needs no proxy.",
+      "Lightweight turn-boundary hooks in the tool's own config - the capture path that needs no proxy.",
     action: "Register hooks",
     endpoint: () => "/api/setup/hooks",
     body: (tool, force, dry_run) => ({ tool, force, dry_run }),
@@ -64,7 +64,7 @@ const STEPS: StepSpec[] = [
     title: "MCP server",
     blurb:
       "On-demand project-knowledge queries inside the tool (13 observer tools).",
-    note: "Honest trade-off: the registered tool schemas add roughly 1,800 tokens to every turn. Worth it if you use the queries; skip this step if unsure — everything else works without it.",
+    note: "Honest trade-off: the registered tool schemas add roughly 1,800 tokens to every turn. Worth it if you use the queries; skip this step if unsure - everything else works without it.",
     action: "Register MCP server",
     endpoint: () => "/api/setup/mcp",
     body: (tool, force, dry_run) => ({ tool, force, dry_run }),
@@ -82,7 +82,7 @@ const STEPS: StepSpec[] = [
     id: "route",
     title: "Proxy route",
     blurb:
-      "Durable routing through the observer proxy — exact token accounting, conversation compression, and cache tracking.",
+      "Durable routing through the observer proxy - exact token accounting, conversation compression, and cache tracking.",
     action: "Route through proxy",
     endpoint: (tool) =>
       tool === "claude-code"
@@ -122,7 +122,7 @@ export function SetupWizard({
     <div className="my-2 space-y-2 rounded-2 border border-line-2 bg-bg-1 p-3">
       <p className="text-[11px] leading-snug text-fg-3">
         Each step below previews its exact write and runs only when you click
-        it — there is no &quot;apply all&quot;. Files written are the same
+        it - there is no &quot;apply all&quot;. Files written are the same
         bytes <code className="font-mono text-fg-2">observer init</code> would
         write.
       </p>
@@ -186,7 +186,7 @@ function CodexTrustCard() {
           Hook trust (inside codex)
         </span>
         <span className="flex-1 text-[11px] text-fg-3">
-          codex asks you to trust each registered hook event before it runs —
+          codex asks you to trust each registered hook event before it runs -
           observer can read that state but never set it.
         </span>
       </div>
@@ -198,7 +198,7 @@ function CodexTrustCard() {
             <span className={t.status === "needs_trust" ? "text-warn" : ""}>
               {t.status.replace(/_/g, " ")}
               {t.untrusted_events && t.untrusted_events.length > 0 &&
-                ` — ${t.untrusted_events.length} events untrusted`}
+                ` - ${t.untrusted_events.length} events untrusted`}
             </span>
             {t.instruction && (
               <p className="mt-1 whitespace-pre-wrap text-fg-2">
@@ -295,7 +295,7 @@ function WizardStep({
           done: false,
           line: "",
           loading: false,
-          error: r.error ?? "conflict — this entry points somewhere you configured deliberately",
+          error: r.error ?? "conflict - this entry points somewhere you configured deliberately",
           conflict: true,
         });
         return;

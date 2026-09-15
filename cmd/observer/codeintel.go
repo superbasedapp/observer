@@ -206,9 +206,23 @@ func newIndexStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(projects) == 0 {
+			// Corpus archival P2.3: an archived project has ZERO rows in
+			// codeintel_files, so it vanishes from the list above entirely —
+			// and if every project is archived, the message below would tell
+			// an operator to index repositories that are already indexed and
+			// sitting in cold storage. The marker table is the only thing that
+			// can say otherwise, and it costs one indexed read.
+			archived, aerr := st.CodeIntelArchivedProjects(cmd.Context(), 0)
+			if aerr != nil {
+				return aerr
+			}
+			if len(projects) == 0 && len(archived) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "no indexed projects — run `observer index <path>`")
 				return nil
+			}
+			if len(projects) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(),
+					"no HOT indexed projects — every indexed project is in cold storage")
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
 			fmt.Fprintln(tw, "PROJECT\tINDEXED\tSTALE\tPENDING\tNEEDS_CONSENT\tFAILED")
@@ -220,6 +234,17 @@ func newIndexStatusCmd() *cobra.Command {
 				fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\n", p,
 					counts["indexed"], counts["stale"], counts["pending"],
 					counts["needs_consent"], counts["failed"])
+			}
+			for _, m := range archived {
+				when := "unknown"
+				if m.LastIndexedAt > 0 {
+					when = time.Unix(m.LastIndexedAt, 0).UTC().Format("2006-01-02")
+				}
+				fmt.Fprintf(tw, "%s\tarchived\t-\t-\t-\t-\t(last indexed %s, %d rows in cold storage)\n",
+					m.Project, when, m.RowsArchived)
+			}
+			if len(archived) > 0 {
+				fmt.Fprintln(tw, "\nrestore an archived project with `observer archive rehydrate <path>`")
 			}
 			return tw.Flush()
 		},
@@ -506,8 +531,12 @@ func printIndexReport(cmd *cobra.Command, rep index.Report) {
 			rep.Project, rep.Scanned, rep.Project)
 		return
 	}
-	fmt.Fprintf(w, "%s\n  scanned %d · indexed %d · unchanged %d · skipped %d · failed %d\n",
-		rep.Project, rep.Scanned, rep.Indexed, rep.Unchanged, rep.Skipped, rep.Failed)
+	derived := "rebuilt"
+	if rep.DerivedSkipped {
+		derived = "unchanged (skipped)"
+	}
+	fmt.Fprintf(w, "%s\n  scanned %d · indexed %d · unchanged %d · skipped %d · failed %d\n  search index: %s\n",
+		rep.Project, rep.Scanned, rep.Indexed, rep.Unchanged, rep.Skipped, rep.Failed, derived)
 }
 
 // absPath resolves p to an absolute path (cwd-relative when p is

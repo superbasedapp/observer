@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -11,12 +12,12 @@ import (
 // approach): cursor.go, kilo.go, and opencode.go each bypass the shared
 // runSeedOnlyLaunchSeeded / runEnvLauncher helpers with their own inline
 // exec.Command/child.Start/child.Wait sequence, so
-// maybeStartGenericDiscovery (WS-DISCOVERY) has to be wired into each file
+// prepareGenericDiscovery (WS-DISCOVERY) has to be wired into each file
 // by hand rather than inherited from one shared call site. There is no
 // black-box way to observe that wiring from a test process: discovery is a
 // goroutine side effect gated on oobChannelActive(), which is unconditionally
 // false outside a daemon-spawned launcher (see
-// TestMaybeStartGenericDiscoveryNoOOBChannel in
+// TestPrepareGenericDiscoveryNoOOBChannel in
 // terminal_discover_generic_test.go), so calling into these launchers'
 // exec-shaped functions from a test can never distinguish "wired" from
 // "not wired" by behavior alone — both look like a no-op. This test instead
@@ -43,8 +44,8 @@ func TestInlineLaunchersWireGenericDiscovery(t *testing.T) {
 			}
 			body := string(src)
 
-			wantCall := "maybeStartGenericDiscovery(context.Background(), " + tc.toolKey
-			if !strings.Contains(body, wantCall) {
+			wantCall := `prepareGenericDiscovery\([^,\n]+, ` + regexp.QuoteMeta(tc.toolKey)
+			if !regexp.MustCompile(wantCall).MatchString(body) {
 				t.Errorf("%s no longer calls %s(...) — generic post-launch session discovery is unwired for this launcher's inline exec lane", tc.file, wantCall)
 			}
 

@@ -28,17 +28,80 @@ type PredictShape struct {
 	ObservedMessages int
 }
 
-// LoadSessionShape assembles the predictor's per-session input from
-// token_usage (+ user_prompt action boundaries for the turns-per-message
-// fan-out). Returns sql.ErrNoRows when the session doesn't exist.
+// predictTurnRowsCTE is the predictor's turn substrate: the per-turn
+// union of the proxy's api_turns and the adapters' token_usage, deduped
+// so a turn captured by BOTH is counted once.
 //
-//   - Model: sessions.model, falling back to the dominant token_usage.model
+// WHY A UNION AND NOT token_usage ALONE. The original seam read
+// token_usage exclusively, on the §0 finding that it is the broader
+// substrate. That silently zeroed every session the proxy captured but
+// no adapter ever transcribed — e.g. a claude-code session launched from
+// the dashboard terminal in a directory that has no
+// ~/.claude/projects/<slug>/ transcript. Such a session has real,
+// proxy-accurate api_turns rows (model, cache_read, input, output) while
+// token_usage is permanently empty, so the predictor reported
+// "no model observed" on a session the SAME panel was simultaneously
+// rendering as 7 turns / 416K tokens / $0.25 from api_turns. That
+// contradiction is the bug this CTE fixes.
+//
+// The dedup gates mirror handleSessionDetail's dedupedRowsCTE (the
+// established precedent for this exact overlap) — proxy wins for turns
+// it intercepted, JSONL fills the gaps, and neither source is dropped
+// wholesale:
+//
+//  1. source_event_id NOT IN api_turns.request_id — exact per-turn match
+//     for adapters that mirror the upstream message id (claude-code).
+//  2. NOT EXISTS (api_turn with the same model + token shape) — the
+//     fallback for adapters whose id format differs from the proxy's
+//     (codex writes "tk:<file>:L<line>" against the proxy's "resp_…").
+//
+// Takes the session id as three positional parameters, in order.
+const predictTurnRowsCTE = `WITH proxy_turn_ids AS (
+	SELECT request_id FROM api_turns
+	 WHERE session_id = ? AND request_id IS NOT NULL AND request_id != ''
+),
+combined AS (
+	SELECT at.timestamp                              AS timestamp,
+	       COALESCE(at.model, '')                    AS model,
+	       COALESCE(at.input_tokens, 0)              AS input_tokens,
+	       COALESCE(at.output_tokens, 0)             AS output_tokens,
+	       COALESCE(at.cache_read_tokens, 0)         AS cache_read_tokens
+	  FROM api_turns at
+	 WHERE at.session_id = ?
+	UNION ALL
+	SELECT tu.timestamp,
+	       COALESCE(tu.model, ''),
+	       COALESCE(tu.input_tokens, 0),
+	       COALESCE(tu.output_tokens, 0),
+	       COALESCE(tu.cache_read_tokens, 0)
+	  FROM token_usage tu
+	 WHERE tu.session_id = ?
+	   AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
+	        OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
+	   AND NOT EXISTS (
+	       SELECT 1 FROM api_turns ap
+	        WHERE ap.session_id = tu.session_id
+	          AND COALESCE(ap.model, '')                 = COALESCE(tu.model, '')
+	          AND COALESCE(ap.input_tokens, 0)           = COALESCE(tu.input_tokens, 0)
+	          AND COALESCE(ap.output_tokens, 0)          = COALESCE(tu.output_tokens, 0)
+	          AND COALESCE(ap.cache_read_tokens, 0)      = COALESCE(tu.cache_read_tokens, 0)
+	          AND COALESCE(ap.cache_creation_tokens, 0)  = COALESCE(tu.cache_creation_tokens, 0)
+	   )
+)
+`
+
+// LoadSessionShape assembles the predictor's per-session input from the
+// deduped api_turns ∪ token_usage turn substrate (+ user_prompt action
+// boundaries for the turns-per-message fan-out). Returns sql.ErrNoRows
+// when the session doesn't exist.
+//
+//   - Model: sessions.model, falling back to the dominant turn-row model
 //     (the same fallback handleSessionDetail uses, since sessions.model is
 //     empty for ~89% of claude-code sessions).
 //   - PrefixTokens (P "now"): the most-recent turn's cache_read_tokens —
 //     the running cache prefix re-read every turn. 0 for an uncached
 //     provider.
-//   - TurnSamples: per-turn (fresh-input, output) over the session's token
+//   - TurnSamples: per-turn (fresh-input, output) over the session's turn
 //     rows. Fresh = max(input − cache_read, 0).
 //   - TurnsPerMessage / ObservedMessages: agent turns bucketed between
 //     consecutive user_prompt timestamps (only messages with ≥1 captured
@@ -55,27 +118,31 @@ func (s *Store) LoadSessionShape(ctx context.Context, sessionID string) (Predict
 	}
 	shape.Model = model.String
 
-	// Model fallback: dominant token_usage.model by token volume.
+	// Model fallback: dominant turn-row model by token volume.
 	if shape.Model == "" {
 		var fallback sql.NullString
-		ferr := s.db.QueryRowContext(ctx, `
-			SELECT model FROM token_usage
-			 WHERE session_id = ? AND model IS NOT NULL AND model <> ''
+		ferr := s.db.QueryRowContext(ctx, predictTurnRowsCTE+`
+			SELECT model FROM combined
+			 WHERE model <> ''
 			 GROUP BY model
-			 ORDER BY SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)) DESC
-			 LIMIT 1`, sessionID).Scan(&fallback)
+			 ORDER BY SUM(input_tokens + output_tokens) DESC, model ASC
+			 LIMIT 1`, sessionID, sessionID, sessionID).Scan(&fallback)
 		if ferr != nil && !errors.Is(ferr, sql.ErrNoRows) {
 			return shape, fmt.Errorf("model fallback: %w", ferr)
 		}
 		shape.Model = fallback.String
 	}
 
-	// P "now" — latest non-zero cache_read prefix.
+	// P "now" — latest non-zero cache_read prefix. The union has no
+	// stable per-row id to break a timestamp tie, so the larger prefix
+	// wins: the cache prefix grows monotonically across a session, so on
+	// two same-instant rows the larger one is the later state.
 	var prefix sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT cache_read_tokens FROM token_usage
-		 WHERE session_id = ? AND COALESCE(cache_read_tokens,0) > 0
-		 ORDER BY timestamp DESC, id DESC LIMIT 1`, sessionID).Scan(&prefix); err != nil {
+	if err := s.db.QueryRowContext(ctx, predictTurnRowsCTE+`
+		SELECT cache_read_tokens FROM combined
+		 WHERE cache_read_tokens > 0
+		 ORDER BY timestamp DESC, cache_read_tokens DESC LIMIT 1`,
+		sessionID, sessionID, sessionID).Scan(&prefix); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return shape, fmt.Errorf("prefix tokens: %w", err)
 		}
@@ -101,18 +168,15 @@ func (s *Store) LoadSessionShape(ctx context.Context, sessionID string) (Predict
 	return shape, nil
 }
 
-// loadTurnSamples reads the session's token rows in time order, returning
-// the parsed turn timestamps (for bucketing) and the (fresh-input,
-// output) samples. Rows with no input and no output are skipped.
+// loadTurnSamples reads the session's turn rows (deduped api_turns ∪
+// token_usage) in time order, returning the parsed turn timestamps (for
+// bucketing) and the (fresh-input, output) samples. Rows with no input
+// and no output are skipped.
 func loadTurnSamples(ctx context.Context, db *sql.DB, sessionID string) ([]time.Time, []predict.TurnSample, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT timestamp,
-		       COALESCE(input_tokens,0),
-		       COALESCE(output_tokens,0),
-		       COALESCE(cache_read_tokens,0)
-		  FROM token_usage
-		 WHERE session_id = ?
-		 ORDER BY timestamp ASC, id ASC`, sessionID)
+	rows, err := db.QueryContext(ctx, predictTurnRowsCTE+`
+		SELECT timestamp, input_tokens, output_tokens, cache_read_tokens
+		  FROM combined
+		 ORDER BY timestamp ASC`, sessionID, sessionID, sessionID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("turn samples: %w", err)
 	}
@@ -253,15 +317,33 @@ const minPriorSessions = 3
 
 func (s *Store) loadPriorScoped(ctx context.Context, tool string, projectID int64, windowDays int) ([]int, error) {
 	args := []any{tool}
+	// Turn count per comparable session uses MAX(token_usage, api_turns)
+	// rather than token_usage alone, for the same reason
+	// predictTurnRowsCTE exists: a proxy-captured session with no
+	// transcript has turns only in api_turns and was silently excluded
+	// from the prior (and from the EXISTS gate below), shrinking the
+	// sample toward the <3 floor on proxy-heavy nodes.
+	//
+	// MAX, not a full per-session deduped union: the two sources
+	// near-perfectly overlap when both are present (each row is the same
+	// turn), so MAX equals the deduped count in the both-present case and
+	// is exact when only one source exists. The prior only feeds the
+	// fan-out tier — a cheap approximation is the right trade against
+	// running the dedup CTE once per candidate session over a 100-session
+	// scan.
 	q := `
 		SELECT CAST(ROUND(
-		         (SELECT COUNT(*) FROM token_usage k WHERE k.session_id = s.id) * 1.0 /
+		         MAX(
+		           (SELECT COUNT(*) FROM token_usage k WHERE k.session_id = s.id),
+		           (SELECT COUNT(*) FROM api_turns t WHERE t.session_id = s.id)
+		         ) * 1.0 /
 		         (SELECT COUNT(*) FROM actions a WHERE a.session_id = s.id AND a.action_type = 'user_prompt')
 		       ) AS INTEGER) AS avg_t
 		  FROM sessions s
 		 WHERE s.tool = ?
 		   AND EXISTS (SELECT 1 FROM actions a WHERE a.session_id = s.id AND a.action_type = 'user_prompt')
-		   AND EXISTS (SELECT 1 FROM token_usage k WHERE k.session_id = s.id)`
+		   AND (EXISTS (SELECT 1 FROM token_usage k WHERE k.session_id = s.id)
+		        OR EXISTS (SELECT 1 FROM api_turns t WHERE t.session_id = s.id))`
 	if projectID > 0 {
 		q += ` AND s.project_id = ?`
 		args = append(args, projectID)

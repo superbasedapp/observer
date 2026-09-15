@@ -165,7 +165,7 @@ func TestClassifyLayout(t *testing.T) {
 // the layout classifier in place.
 func TestDefaultRootsIncludesCLI(t *testing.T) {
 	roots := defaultRoots()
-	var sawDesktop, sawCLI bool
+	var sawDesktop, sawCLI, sawACP bool
 	for _, r := range roots {
 		norm := strings.ReplaceAll(r, `\`, "/")
 		if strings.HasSuffix(norm, "/.gemini/antigravity/conversations") {
@@ -174,6 +174,12 @@ func TestDefaultRootsIncludesCLI(t *testing.T) {
 		if strings.HasSuffix(norm, "/.gemini/antigravity-cli/conversations") {
 			sawCLI = true
 		}
+		if strings.HasSuffix(norm, "/.gemini/antigravity-acp/conversations") {
+			sawACP = true
+		}
+	}
+	if !sawACP {
+		t.Errorf("defaultRoots missing antigravity-acp conversations dir; got %v", roots)
 	}
 	if !sawDesktop {
 		t.Errorf("defaultRoots missing desktop conversations dir; got %v", roots)

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -55,19 +56,22 @@ func (s *Store) CodeIntelListProjects(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
-// CodeIntelFileState returns the stored content_hash and status for
-// (project, path). found is false when no row exists yet.
-func (s *Store) CodeIntelFileState(ctx context.Context, project, path string) (contentHash, status string, found bool, err error) {
+// CodeIntelFileState returns the stored index bookkeeping for
+// (project, path): content hash, status, and the mtime/indexed_at pair
+// the indexer's stat-only fast path needs. found is false when no row
+// exists yet.
+func (s *Store) CodeIntelFileState(ctx context.Context, project, path string) (codeintel.FileState, bool, error) {
+	var st codeintel.FileState
 	row := s.db.QueryRowContext(ctx,
-		`SELECT content_hash, status FROM codeintel_files WHERE project = ? AND path = ?`,
+		`SELECT content_hash, status, mtime, indexed_at FROM codeintel_files WHERE project = ? AND path = ?`,
 		project, path)
-	switch err := row.Scan(&contentHash, &status); err {
-	case nil:
-		return contentHash, status, true, nil
-	case sql.ErrNoRows:
-		return "", "", false, nil
+	switch err := row.Scan(&st.ContentHash, &st.Status, &st.MTime, &st.IndexedAt); {
+	case err == nil:
+		return st, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return codeintel.FileState{}, false, nil
 	default:
-		return "", "", false, fmt.Errorf("store.CodeIntelFileState: %w", err)
+		return codeintel.FileState{}, false, fmt.Errorf("store.CodeIntelFileState: %w", err)
 	}
 }
 
@@ -370,22 +374,42 @@ func (s *Store) CodeIntelDeleteProject(ctx context.Context, project string) erro
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Child-to-parent order keeps the intent obvious even though FK is off.
-	for _, del := range []string{
-		`DELETE FROM codeintel_fts WHERE project = ?`,
-		`DELETE FROM codeintel_embeddings WHERE project = ?`,
-		`DELETE FROM codeintel_minhash WHERE project = ?`,
-		`DELETE FROM codeintel_sites WHERE project = ?`,
-		`DELETE FROM codeintel_edges WHERE project = ?`,
-		`DELETE FROM codeintel_nodes WHERE project = ?`,
-		`DELETE FROM codeintel_files WHERE project = ?`,
-	} {
-		if _, err := tx.ExecContext(ctx, del, project); err != nil {
-			return fmt.Errorf("store.CodeIntelDeleteProject: %w", err)
-		}
+	if err := codeIntelDeleteProjectTx(ctx, tx, project); err != nil {
+		return fmt.Errorf("store.CodeIntelDeleteProject: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store.CodeIntelDeleteProject: commit: %w", err)
+	}
+	return nil
+}
+
+// codeIntelProjectDeletes is the per-project delete fan-out, child-to-parent.
+// It is a package-level list with exactly TWO callers — CodeIntelDeleteProject
+// and the archive-completion path in archive.go — so "one owner per table"
+// survives the arrival of cold storage: the archival move must not grow a
+// second, quietly divergent copy of this statement list. In particular
+// codeintel_fts is a virtual table with no foreign key, and a copy that
+// forgets it leaks the whole FTS index (the bug this list's explicitness was
+// introduced to fix).
+var codeIntelProjectDeletes = []string{
+	`DELETE FROM codeintel_fts WHERE project = ?`,
+	`DELETE FROM codeintel_embeddings WHERE project = ?`,
+	`DELETE FROM codeintel_minhash WHERE project = ?`,
+	`DELETE FROM codeintel_sites WHERE project = ?`,
+	`DELETE FROM codeintel_edges WHERE project = ?`,
+	`DELETE FROM codeintel_nodes WHERE project = ?`,
+	`DELETE FROM codeintel_files WHERE project = ?`,
+}
+
+// codeIntelDeleteProjectTx runs the fan-out inside a caller-owned transaction.
+// The caller is responsible for the foreign_keys=OFF pinning documented on
+// CodeIntelDeleteProject — without it, the cascade re-scan makes this O(files
+// × rows).
+func codeIntelDeleteProjectTx(ctx context.Context, tx *sql.Tx, project string) error {
+	for _, del := range codeIntelProjectDeletes {
+		if _, err := tx.ExecContext(ctx, del, project); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -438,37 +462,21 @@ func (s *Store) CodeIntelDeleteProjectsUnder(ctx context.Context, root string) (
 // Idempotent: a second run within the same horizon finds no stale
 // projects and is a no-op.
 func (s *Store) CodeIntelPruneStaleProjects(ctx context.Context, retentionDays int) ([]string, error) {
-	if retentionDays <= 0 {
-		return nil, nil
-	}
-	cutoff := time.Now().AddDate(0, 0, -retentionDays).Unix()
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT project FROM codeintel_files
-		 GROUP BY project
-		 HAVING MAX(indexed_at) > 0 AND MAX(indexed_at) < ?
-		 ORDER BY project`, cutoff)
+	candidates, err := s.CodeIntelStaleProjects(ctx, retentionDays)
 	if err != nil {
 		return nil, fmt.Errorf("store.CodeIntelPruneStaleProjects: %w", err)
 	}
-	var stale []string
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			_ = rows.Close()
-			return nil, fmt.Errorf("store.CodeIntelPruneStaleProjects: scan: %w", err)
-		}
-		stale = append(stale, p)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("store.CodeIntelPruneStaleProjects: rows.Close: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store.CodeIntelPruneStaleProjects: %w", err)
+	stale := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		stale = append(stale, c.Project)
 	}
 	for _, p := range stale {
 		if err := s.CodeIntelDeleteProject(ctx, p); err != nil {
 			return nil, fmt.Errorf("store.CodeIntelPruneStaleProjects: %w", err)
 		}
+	}
+	if len(stale) == 0 {
+		return nil, nil
 	}
 	return stale, nil
 }
@@ -1304,11 +1312,14 @@ func (s *Store) CodeIntelReachable(ctx context.Context, anchorID int64, dir code
 // --- Tier C: search / semantic / similarity (Phase 6) ----------------
 //
 // codeintel_fts / codeintel_embeddings / codeintel_minhash are DERIVED
-// from codeintel_nodes. CodeIntelBuildDerived rebuilds all three for a
+// from codeintel_nodes. CodeIntelBuildDerived rebuilds them for a
 // project in one transaction (DELETE-by-project then re-insert), so they
-// self-heal on every index pass — no incremental bookkeeping. The pure
-// token/vector/LSH math lives in internal/codeintel/semantic; this seam
-// only persists and queries.
+// self-heal whenever it runs — there is no per-file incremental
+// bookkeeping. Because the rebuild is whole-project it is NOT free to
+// re-run: the caller (index.IndexProject) runs it only when the pass
+// changed a file, or when CodeIntelHasDerived reports the rows missing.
+// The pure token/vector/LSH math lives in internal/codeintel/semantic;
+// this seam only persists and queries.
 
 // codeIntelDerivedText is the searchable/embeddable text for a node:
 // name + fqn + signature. Bounded (signature is a declaration-line
@@ -1324,9 +1335,52 @@ func codeIntelDerivedText(name, fqn, signature string) string {
 // unaffected. See docs/codeintel/decisions.md ADR-0008.
 const minEmbedTokens = 3
 
+// CodeIntelHasDerived reports whether the project's nodes already carry
+// their derived FTS rows. It is deliberately a SAMPLE, not a count: the
+// rebuild below is one transaction (clear + reinsert commit together), so
+// a project's derived rows are all-present or all-absent, and probing a
+// single node id is enough to tell the two apart. Cost matters — this
+// runs once per project on every `observer start`, so it must never scan.
+//
+// The probe is by ROWID (codeintel_fts.rowid IS the node id), the only
+// cheap lookup an fts5 table offers: a `WHERE project = ?` predicate on
+// an fts5 column is a full table scan, which is exactly the cost this
+// guard exists to avoid.
+//
+// A project with no nodes has nothing to derive and reports true.
+// Every node gets an FTS row (only embeddings are gated by
+// minEmbedTokens), so FTS presence is the right signal.
+func (s *Store) CodeIntelHasDerived(ctx context.Context, project string) (bool, error) {
+	var nodeID int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id FROM codeintel_nodes WHERE project = ? LIMIT 1`, project).Scan(&nodeID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return true, nil // nothing indexed => nothing to derive
+	case err != nil:
+		return false, fmt.Errorf("store.CodeIntelHasDerived: probe node: %w", err)
+	}
+	var one int
+	err = s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM codeintel_fts WHERE rowid = ?`, nodeID).Scan(&one)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("store.CodeIntelHasDerived: probe fts: %w", err)
+	}
+	return true, nil
+}
+
 // CodeIntelBuildDerived rebuilds the FTS / embedding / MinHash rows for a
 // project from its current nodes. Idempotent: clears the project's prior
 // derived rows first, so re-running after any index pass is correct.
+//
+// It is also EXPENSIVE and whole-project: the DELETE-by-project on the
+// fts5 table scans and rewrites the project's whole inverted index. Call
+// it only when an index pass actually changed something (or when
+// CodeIntelHasDerived says the rows are missing) — see
+// index.IndexProject, which owns that decision.
 func (s *Store) CodeIntelBuildDerived(ctx context.Context, project string) error {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT n.id, n.name, n.fqn, n.kind, n.lang, n.signature, n.start_line, n.end_line, f.path

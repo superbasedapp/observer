@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -16,16 +17,15 @@ import (
 // prompt, the contract muse's own `--help` states verbatim: `Usage: muse
 // [OPTIONS] [PROMPT]` — "pass a prompt to start a session".
 //
-// NON-PROXIED on purpose. `muse --help` DOES show a `--base-url <URL>`
-// override, but model traffic authenticates via a login-minted Model API
-// key (the registry's `RouteStatusProbeRequired` note) whose transport
-// shape past that override has never been driven live, so pointing it at
-// the proxy would be a guess this session was explicitly told not to make
-// (no paid turn). The launcher execs `muse` with the caller's own
-// environment; token capture happens via observer's local muse adapter
-// (session.jsonl under ~/.local/state or ~/.cache muse dirs — see
-// internal/adapter/muse). It never touches muse's stored provider
-// credentials.
+// NON-PROXIED on purpose. A fresh local refusal probe proved that Muse honors
+// `--base-url <URL>` and sends an OpenAI Responses-shaped POST to
+// `<URL>/v1/responses`. No successful upstream turn or Observer capture has
+// been verified, so the registry still has no verified Proxy capability and
+// this launcher does not inject the flag. A managed hard-budget node therefore
+// refuses this launch pending a verified request route. Outside that posture,
+// token capture remains the local muse adapter (session.jsonl under
+// ~/.local/state or ~/.cache muse dirs - see internal/adapter/muse). It never
+// touches Muse's stored provider credentials.
 func newMuseCmd() *cobra.Command {
 	var (
 		configPath   string
@@ -41,12 +41,12 @@ func newMuseCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "muse [-- muse-args...]",
 		Short: "Launch Meta's Muse Code CLI; with --continue-from, seed a handover as muse's positional prompt",
-		Long: "Wraps Meta's Muse Code CLI (`muse`). This launcher is NON-PROXIED\n" +
-			"— muse's model traffic authenticates via a login-minted Model API\n" +
-			"key and the `--base-url` override's transport shape past that has\n" +
-			"never been driven live, so routing it through the proxy would be a\n" +
-			"guess. Token capture happens via observer's local muse adapter\n" +
-			"(the session.jsonl transcript).\n\n" +
+		Long: "Wraps Meta's Muse Code CLI (`muse`). This launcher is non-proxied.\n" +
+			"A local refusal probe confirmed that `--base-url` sends OpenAI Responses\n" +
+			"requests to `<URL>/v1/responses`, but a successful upstream and Observer\n" +
+			"capture turn have not been verified. Managed hard-budget nodes refuse\n" +
+			"this launch pending that verified route. Otherwise token capture uses\n" +
+			"Observer's local Muse session.jsonl adapter.\n\n" +
 			"muse supports a top-level `--model` flag to select which model\n" +
 			"the session uses (pass it after `--` with your other muse args).\n\n" +
 			"With --continue-from <session-id> the launcher distills a handover\n" +
@@ -155,7 +155,8 @@ func newMuseCmd() *cobra.Command {
 			if cfg, cErr := config.Load(config.LoadOptions{GlobalPath: configPath}); cErr == nil {
 				dbPath = cfg.Observer.DBPath
 			}
-			return runSeedOnlyLaunchSeeded(dbPath, "muse", "muse", bin, args, continueDir)
+			return runSeedOnlyLaunchSeededWithEvidence(configPath, dbPath, "muse", "muse", bin, args, continueDir,
+				museBudgetLaunchEvidence(args))
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml); used to resolve the source session for --continue-from")
@@ -194,6 +195,61 @@ var museSubcommands = map[string]bool{
 	"resume": true, "exec": true, "export": true, "trace": true,
 	"skills": true, "sandbox": true, "session-message": true,
 	"auth": true, "login": true, "logout": true, "init": true,
+}
+
+// museBudgetMaintenanceSubcommands and museBudgetMaintenanceFlags are the
+// grounded Muse verbs and flags that perform local/account management without
+// submitting a model request. They are DERIVED from the muse intervention
+// registry row (integration.NonBillableLeadingArguments) so this launch gate
+// and the node process controller classify one invocation identically — the
+// registry row is the single owner of that vocabulary, and a verb added there
+// reaches both. The model-bearing exec/resume/session-message verbs stay
+// subject to admission; sandbox is also excluded because its child-command
+// behavior is broader than a maintenance operation.
+var museBudgetMaintenanceSubcommands, museBudgetMaintenanceFlags = registryMaintenanceVocabulary("muse")
+
+// museBudgetLaunchEvidence recognizes only exact vendor info flags and a
+// grounded maintenance subcommand reached through Muse's known top-level flag
+// grammar. Unknown or optional-value flags keep the invocation direct because
+// their effect on command selection cannot be proved.
+func museBudgetLaunchEvidence(args []string) budgetLaunchEvidence {
+	direct := budgetLaunchEvidence{Route: budgetLaunchRouteDirect}
+	if len(args) == 1 && museBudgetMaintenanceFlags[args[0]] {
+		return budgetLaunchEvidence{Route: budgetLaunchRouteMaintenance}
+	}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return direct
+		}
+		if !strings.HasPrefix(arg, "-") {
+			if museBudgetMaintenanceSubcommands[arg] {
+				return budgetLaunchEvidence{Route: budgetLaunchRouteMaintenance}
+			}
+			return direct
+		}
+
+		name := arg
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			name = name[:eq]
+			if !museValueFlags[name] && !museBoolFlags[name] {
+				return direct
+			}
+			continue
+		}
+		switch {
+		case museValueFlags[name]:
+			if i+1 >= len(args) {
+				return direct
+			}
+			i++
+		case museBoolFlags[name]:
+			continue
+		default:
+			return direct
+		}
+	}
+	return direct
 }
 
 // museValueFlags are muse's SPLIT-value top-level options — the

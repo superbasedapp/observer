@@ -77,6 +77,9 @@ type fakeResolver struct {
 	links   map[string]string // runID -> established session id
 	tools   map[string]string // handle -> canonical tool
 	roots   map[string]string // handle -> project root
+	// spawnDirs is the factual child cwd for a run with NO authorized project
+	// root (the default-cwd launch shape); roots wins when both are present.
+	spawnDirs map[string]string
 }
 
 func (f fakeResolver) HandleForRun(runID string) (string, bool) {
@@ -103,6 +106,16 @@ func (f fakeResolver) KindForHandle(handle string) (termrun.Kind, string, bool) 
 func (f fakeResolver) ProjectRoot(handle string) (string, bool) {
 	r, ok := f.roots[handle]
 	return r, ok
+}
+
+// SpawnDir mirrors the service: the launch root when the run carried one,
+// otherwise the daemon cwd the child inherits (spawnDirs).
+func (f fakeResolver) SpawnDir(handle string) (string, bool) {
+	if r, ok := f.roots[handle]; ok && r != "" {
+		return r, true
+	}
+	d, ok := f.spawnDirs[handle]
+	return d, ok && d != ""
 }
 
 func spawnEvent(handle string, pid int) termsession.ProcessEvent {
@@ -521,3 +534,44 @@ func (p *stubPTY) Kill() error  { p.release(); return nil }
 func (p *stubPTY) Close() error { p.release(); return nil }
 
 var errClosedStub = errors.New("stub pty closed")
+
+// TestTerminalPidSeederUsesSpawnDirForDefaultCwdLaunch pins the pid-bridge half
+// of the default-cwd fix with the devbox's real values: a dashboard "New
+// Terminal" launched with no authorized project root (the node has no
+// [terminal.launch].allowed_project_roots) spawns with an empty Spec.Dir and has
+// no ProjectRoot, yet its child demonstrably runs in the daemon's cwd
+// (/home/azureuser — the value the launcher's own os.Getwd wrote into the
+// launch_seeds row for pid 44993). Reading the factual SpawnDir seam instead of
+// the authorization-bearing ProjectRoot keeps the bridge row's CWD real.
+func TestTerminalPidSeederUsesSpawnDirForDefaultCwdLaunch(t *testing.T) {
+	const daemonCwd = "/home/azureuser"
+	var wrote []pidbridge.Entry
+	seeder := newTerminalPidSeederWith(
+		func(_ context.Context, e pidbridge.Entry) error { wrote = append(wrote, e); return nil },
+		func(context.Context, int, string) (bool, error) { return true, nil },
+		nil,
+	)
+	// Spawned with NO Dir — the default-cwd shape.
+	seeder.Observe(termsession.ProcessEvent{
+		Kind: termsession.ProcessSpawned, Handle: "h-devbox", PID: 44993,
+		Subcommand: "opencode", Dir: "", At: time.Now(),
+	})
+	res := fakeResolver{
+		handles:   map[string]string{"run-devbox": "h-devbox"},
+		links:     map[string]string{"run-devbox": "ses_fb73193f7ffexyKthX20fRk905"},
+		tools:     map[string]string{"h-devbox": "opencode"},
+		roots:     map[string]string{},                      // no authorized project root
+		spawnDirs: map[string]string{"h-devbox": daemonCwd}, // but a real child cwd
+	}
+	seeder.OnRunCorrelated(context.Background(), "run-devbox", res)
+
+	if len(wrote) != 1 {
+		t.Fatalf("writes = %d, want 1", len(wrote))
+	}
+	want := pidbridge.Entry{
+		PID: 44993, SessionID: "ses_fb73193f7ffexyKthX20fRk905", Tool: "opencode", CWD: daemonCwd,
+	}
+	if wrote[0] != want {
+		t.Fatalf("seeded row = %+v, want %+v", wrote[0], want)
+	}
+}

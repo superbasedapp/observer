@@ -73,6 +73,11 @@ func (h *obsAdmissionHandle) PublishOrgEgress(_ string, _, _ int64, _, _ string,
 
 func (h *obsAdmissionHandle) ClearOrgEgress() {}
 
+// LiveCapabilities advertises nothing in the no_obs build: there is no
+// admission runtime here, so every judge-requiring org policy correctly stays
+// capability_mismatch (fail-closed).
+func (h *obsAdmissionHandle) LiveCapabilities() []string { return nil }
+
 // wireAdmission is a no-op in the no_obs build — admission lives inside the
 // observability subsystem, which is compiled out here. It returns a nil handle
 // to match the !no_obs signature. The relay parameter (C1 judge relay,

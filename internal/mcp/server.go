@@ -54,6 +54,16 @@ type Options struct {
 	// reports the operator's real thresholds + keep-warm mode. Zero value
 	// (Enabled=false) makes cache_status report the disabled state.
 	CacheWarm config.CacheWarmConfig
+	// Tasks carries the [tasks] tunables for the get_session_tasks tool:
+	// Enabled is checked inside Invoke, not at registration (the
+	// cache_status rule), so the tool is always LISTED but reports
+	// disabled=true/false honestly per current config; MatchMode/
+	// ConcurrentAttribution/IncludeSidechains are threaded into an
+	// explicit taskflow.Options on every call — NOT read off a fresh
+	// store.New(db)'s Store.TasksOptions(), which would silently return
+	// the zero value here (this server's db never had SetTasksOptions
+	// called on it; see taskreport.LoadSessionTaskReport's doc comment).
+	Tasks config.TasksConfig
 	// CodeIntel is the code-intelligence provider for structural
 	// enrichment (the strangler-fig seam — codeintel.Provider). When
 	// non-nil and Available(), check_file_freshness and get_file_history
@@ -188,7 +198,7 @@ func New(opts Options) (*Server, error) {
 	for _, t := range builtinTools(opts.DB, cg, opts.SignalRecorder) {
 		s.Register(t)
 	}
-	for _, t := range extraBuiltinTools(opts.DB, engine, opts.CacheWarm) {
+	for _, t := range extraBuiltinTools(opts.DB, engine, opts.CacheWarm, opts.Tasks) {
 		s.Register(t)
 	}
 	// continue_session (session handoff, P2): always registered so the

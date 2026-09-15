@@ -51,3 +51,26 @@ func (s *Store) SelectCacheSummaries(ctx context.Context) ([]orgcontract.CacheSu
 	}
 	return out, nil
 }
+
+// probeCacheEvents is the Track R2 change-detection probe SHARED by all three
+// wires fed from the cache event log: cache_summary (this file, the
+// content-free fleet day aggregate), session_cache (cachesessionorgrows.go,
+// the session bucket) and session_cache_events (cacheeventorgrows.go, the
+// per-event timeline). It lives here — with the other cache_events SQL —
+// so orgsnapgate.go and orgpush.go stay free of the cache_* table names the
+// privacy sentinel forbids there.
+//
+// PROBE: COALESCE(MAX(id),0) — one index-endpoint seek on the AUTOINCREMENT
+// primary key, O(1).
+//
+// WHY THAT REFLECTS MUTATION: cache_events is an append-only log. Every writer
+// is an INSERT (InsertCacheEvents and the engine's ObserveTurn path); the only
+// other write is the retention DELETE. No column of a written row is ever
+// updated, so any new observation advances MAX(id).
+//
+// RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: a retention DELETE inside the
+// 7-day window is invisible to MAX(id); snapGate's maxSkipAge recomputes
+// within the hour.
+func (s *Store) probeCacheEvents(ctx context.Context) (string, error) {
+	return s.snapProbeScalar(ctx, `SELECT 'ce' || COALESCE(MAX(id), 0) FROM cache_events`)
+}

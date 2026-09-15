@@ -36,6 +36,7 @@ import {
 import { useApi } from "@/lib/useApi";
 import {
   fmtCompact,
+  fmtDateTime,
   fmtDuration,
   fmtInt,
   fmtUSD,
@@ -117,7 +118,7 @@ export function OverviewPage() {
     <div className="space-y-6 p-6">
       <PageHeader
         title="Overview"
-        sub="High-level snapshot — KPI tiles, daily cost and activity, plus top-N models and tools across the selected window."
+        sub="High-level snapshot - KPI tiles, daily cost and activity, plus top-N models and tools across the selected window."
         helpId="tab.overview"
       />
       {/* First-run onboarding (P5.1/F1+D-1): renders only while the
@@ -165,7 +166,7 @@ export function OverviewPage() {
                 ? `last activity ${relativeTime(status.data.last_action_at)}`
                 : status.data
                   ? "no activity yet"
-                  : "—"
+                  : "-"
           }
           spark={kpis.actionsSpark}
           sparkColor="var(--accent)"
@@ -202,7 +203,7 @@ export function OverviewPage() {
           linkTo="/discovery"
           loading={discover.loading}
           value={
-            discover.data ? fmtInt(discover.data.summary.stale_read_count) : "—"
+            discover.data ? fmtInt(discover.data.summary.stale_read_count) : "-"
           }
           warn={
             (discover.data?.summary.stale_read_count ?? 0) > 0
@@ -307,7 +308,7 @@ export function OverviewPage() {
       {/* Recent sessions mini-list */}
       <ChartShell
         title="Recent sessions"
-        sub="Most recent 6 — click through for the full list"
+        sub="Most recent 6 - click through for the full list"
         right={
           <Link
             to="/sessions"
@@ -321,7 +322,7 @@ export function OverviewPage() {
           loading={sessions.loading}
           error={sessions.error}
           empty={!sessions.data?.rows?.length}
-          emptyHint="No sessions yet. With the daemon running, a session appears here the moment you use an AI tool — route Claude Code / Codex through the proxy from the Compression page's Proxy banner, or wire hooks + MCP with `observer init`."
+          emptyHint="No sessions yet. With the daemon running, a session appears here the moment you use an AI tool - route Claude Code / Codex through the proxy from the Compression page's Proxy banner, or wire hooks + MCP with `observer init`."
         >
           {sessions.data && <RecentSessions rows={sessions.data.rows} />}
         </ChartState>
@@ -380,7 +381,7 @@ function CacheEfficiencyTile({
   const value =
     eventCount > 0 && efficiency && efficiency.written_tokens > 0
       ? `${ratio.toFixed(1)}×`
-      : "—";
+      : "-";
   const subLine =
     eventCount > 0
       ? `${fmtInt(eventCount)} events · ${fmtInt(sessionCount)} sessions · read ${fmtCompact(efficiency?.read_tokens ?? 0)}`
@@ -462,7 +463,7 @@ function deriveKpis(
 
 function relativeTime(iso: string): string {
   const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "—";
+  if (!Number.isFinite(t)) return "-";
   const diffMs = Date.now() - t;
   if (diffMs < 0) return "in the future";
   return `${fmtDuration(diffMs)} ago`;
@@ -553,7 +554,7 @@ function RecentSessions({ rows }: { rows: SessionsResponse["rows"] }) {
                 <Pill>no project</Pill>
               )}
             </td>
-            <Tooltip content={s.started_at}>
+            <Tooltip content={fmtDateTime(s.started_at)}>
               <td tabIndex={0} className="cursor-help py-1.5 text-[11px] text-fg-3 focus:outline-none">
                 {relativeTime(s.started_at)}
               </td>

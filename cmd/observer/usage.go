@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -321,7 +322,7 @@ func runUsage(cmd *cobra.Command, o usageOptions, deps usageDeps) error {
 		return fmt.Errorf("usage: interrupted: %w", cerr)
 	}
 
-	sum, err := cost.NewEngine(cfg.Intelligence).Summary(ctx, database, cost.Options{
+	sum, err := acquireProcessCostEngine(ctx, cfg, database, slog.Default()).Summary(ctx, database, cost.Options{
 		Since:   since,
 		GroupBy: groupBy,
 		Source:  cost.SourceAuto,
@@ -892,6 +893,7 @@ func countOneShotSessionFiles(ctx context.Context, adapters []adapter.Adapter, s
 // one counted stderr line instead of a stream of per-file warnings.
 type oneShotLogger struct{}
 
+func (oneShotLogger) Debug(string, ...any) {}
 func (oneShotLogger) Info(string, ...any)  {}
 func (oneShotLogger) Warn(string, ...any)  {}
 func (oneShotLogger) Error(string, ...any) {}
@@ -1153,7 +1155,7 @@ const oneShotDistinctLimit = 1 << 20
 // governs only how ROWS are displayed; the TOTAL line's distinct counts
 // are a property of the whole corpus and must not change shape with it.
 func oneShotDistinctCounts(ctx context.Context, cfg config.Config, database *sql.DB, since time.Time, tool string, now func() time.Time) (toolCount, modelCount int, err error) {
-	sum, err := cost.NewEngine(cfg.Intelligence).Summary(ctx, database, cost.Options{
+	sum, err := acquireProcessCostEngine(ctx, cfg, database, slog.Default()).Summary(ctx, database, cost.Options{
 		Since:   since,
 		GroupBy: cost.GroupByModelTool,
 		Source:  cost.SourceAuto,

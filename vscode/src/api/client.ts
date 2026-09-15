@@ -15,6 +15,67 @@ import type {
   WatcherHealthResponse,
 } from './types';
 
+/**
+ * EditorChangeRequest is the body of POST /api/loc/editor-change.
+ *
+ * COUNTS ONLY. There is deliberately no field on this type that can
+ * carry file text, a line, or an excerpt: the daemon receives how many
+ * lines changed and in which buckets, never what they said.
+ */
+export interface EditorChangeRequest {
+  /** Workspace-relative path, forward slashes. The daemon hashes it. */
+  path: string;
+  /** Absolute path of the workspace folder, so the daemon can resolve the project. */
+  workspace_root: string;
+  /** Normalized language id from the shared classifier tables. */
+  language: string;
+  /** Coarse category (code / docs / config). */
+  category: string;
+  /** Lines the human changed between the last clean snapshot and the save. */
+  human: LocStats;
+  /** Lines a will-save participant (formatter) changed during the save. */
+  system: LocStats;
+  human_confidence: string;
+  system_confidence: string;
+  /** RFC3339 with milliseconds, the EDITOR's clock. */
+  saved_at: string;
+  /** loc.Version the counts were produced with. */
+  classifier_version: number;
+  /**
+   * possible_agent says the buffer changed in a shape typing does not
+   * produce while the document was dirty — an in-editor agent
+   * (Copilot Chat agent mode, Cline/Kilo, Cursor) applying a
+   * WorkspaceEdit. The daemon books such a save as `unknown` rather than
+   * as the developer's own lines. Still counts only: it is a boolean.
+   */
+  possible_agent: boolean;
+}
+
+/** LocStats is the line-count bucket set (mirrors internal/loc.Stats). */
+export interface LocStats {
+  added_code: number;
+  modified_code: number;
+  deleted_code: number;
+  added_comment: number;
+  deleted_comment: number;
+  whitespace: number;
+  blank: number;
+  unknown: number;
+}
+
+/**
+ * LocEndpointMissingError is thrown when the daemon answers 404 —
+ * an older daemon that predates /api/loc/editor-change. The caller
+ * stops posting for the rest of the session rather than retrying on
+ * every save.
+ */
+export class LocEndpointMissingError extends Error {
+  constructor() {
+    super('daemon has no /api/loc/editor-change endpoint');
+    this.name = 'LocEndpointMissingError';
+  }
+}
+
 export interface ClientOptions {
   dashboardPort: number;
   host?: string; // defaults to 127.0.0.1
@@ -81,6 +142,76 @@ export class Client {
       method: 'GET',
     });
     return { ok: res.ok, status: res.status };
+  }
+
+  /**
+   * postEditorChange reports one save's line counts to the local
+   * daemon. It is the ONLY non-GET call this client makes.
+   *
+   * Wire notes, all load-bearing:
+   *
+   *  - No `Origin` header. The daemon's browserGuard admits Origin-less
+   *    loopback POSTs precisely so a non-browser client can reach this
+   *    endpoint; a browser page cannot suppress its own Origin. Node's
+   *    fetch sends none unless asked, so this is a "do not add one"
+   *    rule rather than a header to set.
+   *  - `X-Observer-Token` only when a token is configured. A daemon on
+   *    a loopback bind accepts an Origin-less POST without one.
+   *  - 2xx (including 204) is success.
+   *  - 404 throws LocEndpointMissingError so the caller can stop
+   *    posting for the session instead of failing on every save.
+   *  - Every other failure throws a plain Error. Callers log it to the
+   *    output channel and move on: a daemon that is not running must
+   *    never produce a toast on every Ctrl+S. There is no retry — a
+   *    save is a discrete event and a stale re-post would double-count.
+   */
+  async postEditorChange(body: EditorChangeRequest, token?: string): Promise<void> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers['X-Observer-Token'] = token;
+    }
+    const res = await this.fetchWithTimeout(this.url('/api/loc/editor-change'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (res.status === 404) {
+      throw new LocEndpointMissingError();
+    }
+    if (!res.ok) {
+      throw new Error(
+        `SuperBased API /api/loc/editor-change → HTTP ${res.status} ${res.statusText}`,
+      );
+    }
+  }
+
+  /**
+   * postExtensionVersion tells the daemon which version of THIS extension is
+   * running, so the org's fleet board can show editor/daemon skew (enterprise
+   * update management, ruling R6).
+   *
+   * The daemon cannot discover this on its own - the extension is a separate
+   * process on its own release channel - so a node reports an extension
+   * version only when one is running and has said so. A node with no extension
+   * reports nothing, never "0".
+   *
+   * Deliberately BEST-EFFORT and silent on failure. This is telemetry about
+   * the editor, not a feature the user asked for: an older daemon answers 404
+   * or 501, an unenrolled node has nowhere to send it, and neither is worth a
+   * toast or a retry loop. It returns whether the report landed so the caller
+   * can log one line and stop.
+   */
+  async postExtensionVersion(version: string): Promise<boolean> {
+    try {
+      const res = await this.fetchWithTimeout(this.url('/api/update/extension-version'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
   private async get<T>(pathAndQuery: string): Promise<T> {

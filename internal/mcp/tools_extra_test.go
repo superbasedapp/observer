@@ -272,11 +272,14 @@ func TestTool_GetRedundancyReport(t *testing.T) {
 // + continue_session, the session-handoff MCP lane, and
 // get_session_message, the message-addressable handoff pull —
 // docs/session-handoff.md).
-func TestServer_ToolsListReturnsTwentyOne(t *testing.T) {
+func TestServer_ToolsListReturnsTwentyTwo(t *testing.T) {
+	// 22 always-on tools as of get_session_tasks (docs/task-tracking.md
+	// "Phase 2") — was 21; conditional tools (get_file/get_symbols/
+	// get_relations/retrieve_stashed) are separate and untouched.
 	s, _, _ := testServer(t)
 	resp := rpcCall(t, s, "tools/list", 1, nil)
 	tools := resp["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 21 {
-		t.Errorf("tools count: %d (want 21)", len(tools))
+	if len(tools) != 22 {
+		t.Errorf("tools count: %d (want 22)", len(tools))
 	}
 }

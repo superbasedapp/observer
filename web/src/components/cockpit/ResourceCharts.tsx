@@ -94,7 +94,7 @@ const EMPTY_REASONS: Record<string, string> = {
   no_processes: "No processes have been attributed to this session yet.",
   no_samples: "Processes captured, but no resource samples have landed yet.",
   awaiting_second_sample:
-    "Waiting for a second sample — CPU and disk are cumulative counters, so a rate needs two readings.",
+    "Waiting for a second sample - CPU and disk are cumulative counters, so a rate needs two readings.",
   no_points: "No plottable samples in the retained window.",
 };
 
@@ -289,14 +289,14 @@ function WindowLabel({ metrics }: { metrics: SessionMetricsResponse | null }) {
           live
         </span>
       ) : (
-        <span className="text-warn" title="No sample has landed recently — the series below is not current.">
+        <span className="text-warn" title="No sample has landed recently - the series below is not current.">
           stale · {fmtDur(ageMs)} old
         </span>
       )}
       <span>·</span>
       <span title="Each point aggregates this much wall time.">{bucket} buckets</span>
       <span>·</span>
-      <span title="Every process attributed to this session that carries resource samples. All of them are summed — not just one.">
+      <span title="Every process attributed to this session that carries resource samples. All of them are summed - not just one.">
         {procs} {procs === 1 ? "process" : "processes"}
       </span>
       {metrics.window_truncated && (
@@ -446,7 +446,7 @@ function cpuUnit(m: SessionMetricsResponse): string {
 }
 
 function trim(v: number): string {
-  if (!Number.isFinite(v)) return "—";
+  if (!Number.isFinite(v)) return "-";
   if (v >= 100) return v.toFixed(0);
   if (v >= 10) return v.toFixed(1);
   return v.toFixed(v < 1 ? 2 : 1);
@@ -469,7 +469,7 @@ function clockFull(ms: number): string {
 }
 
 function fmtDur(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  if (!Number.isFinite(ms) || ms <= 0) return "-";
   const s = Math.round(ms / 1000);
   if (s < 90) return `${s}s`;
   const m = Math.round(s / 60);

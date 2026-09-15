@@ -133,8 +133,17 @@ func TestEnsureManagedPolicyBlock_Idempotent(t *testing.T) {
 }
 
 // TestEnsureManagedPolicyBlock_IgnoresCommentMentions mirrors
-// TestEnsureOrgClientBlockIgnoresCommentMentions: only a real TOML table
-// header gates idempotence, not a comment mentioning the table name.
+// TestEnsureOrgClientBlockIgnoresCommentMentions for the "is there a real
+// table" half of the check: only a real TOML table header counts, not a
+// comment mentioning the table name.
+//
+// The other two cases exercise decision-table row 3 (see
+// ensureManagedPolicyBlock's doc comment): a real header whose section is
+// missing one or both keys is no longer treated as "already handled" the
+// way it was before the 2026-09-13 live finding - the missing key(s) are
+// inserted, so both now expect added=true. TestEnsureManagedPolicyBlock_
+// Idempotent (below) is what still proves a header with BOTH keys already
+// present is left alone.
 func TestEnsureManagedPolicyBlock_IgnoresCommentMentions(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -142,19 +151,19 @@ func TestEnsureManagedPolicyBlock_IgnoresCommentMentions(t *testing.T) {
 		wantAdded bool
 	}{
 		{
-			name:      "comment mention only",
+			name:      "comment mention only: no real table, whole block appended",
 			body:      "# enrol appends its [org_client.policy] block here\n[proxy]\nport = 8820\n",
 			wantAdded: true,
 		},
 		{
-			name:      "real header, empty (hand-emptied)",
+			name:      "real header, both keys missing: both inserted",
 			body:      "[org_client.policy]\n",
-			wantAdded: false,
+			wantAdded: true,
 		},
 		{
-			name:      "indented real header",
+			name:      "indented real header, preauthorize_enforce missing: only it is inserted",
 			body:      "  [org_client.policy]\naccept_families = []\n",
-			wantAdded: false,
+			wantAdded: true,
 		},
 	}
 	for _, tc := range cases {
@@ -169,6 +178,132 @@ func TestEnsureManagedPolicyBlock_IgnoresCommentMentions(t *testing.T) {
 			}
 			if added != tc.wantAdded {
 				t.Fatalf("added = %v, want %v", added, tc.wantAdded)
+			}
+		})
+	}
+}
+
+// TestEnsureManagedPolicyBlock_FourShapes is the table-driven pin for the
+// full decision table ensureManagedPolicyBlock now implements: no table at
+// all, a table with both keys, a table with neither key, and a table with
+// only preauthorize_enforce missing. Each case asserts the returned
+// (added, err), that the untouched parts of a pre-existing file survive
+// byte for byte, and - for the two "table exists" shapes - that the
+// resulting file still round-trips through config.Load with
+// AcceptFamilies/PreauthorizeEnforce coming back as expected.
+func TestEnsureManagedPolicyBlock_FourShapes(t *testing.T) {
+	families := []string{"admission.input", "node.governance"}
+
+	cases := []struct {
+		name string
+		// seed is the config.toml body BEFORE the call, or "" for no file
+		// at all.
+		seed string
+		// wantAdded and wantAccept/wantEnforce are what the call and the
+		// reloaded config should report afterward.
+		wantAdded   bool
+		wantAccept  []string
+		wantEnforce []string
+		// wantContains lists substrings that must survive in the file
+		// after the call, e.g. an unrelated key or a later table header -
+		// proof that only the missing key line(s) were inserted, nothing
+		// else was rewritten.
+		wantContains []string
+	}{
+		{
+			name:        "no [org_client.policy] table at all: whole block appended",
+			seed:        "[observer]\nenabled = true\n",
+			wantAdded:   true,
+			wantAccept:  families,
+			wantEnforce: families,
+			wantContains: []string{
+				"[observer]\nenabled = true\n",
+				`accept_families = ["admission.input", "node.governance"]`,
+			},
+		},
+		{
+			name: "table exists, both keys already present: no-op, existing values kept",
+			seed: "[org_client.policy]\n" +
+				"accept_families = [\"admission.input\"]\n" +
+				"preauthorize_enforce = [\"admission.input\"]\n",
+			wantAdded:   false,
+			wantAccept:  []string{"admission.input"},
+			wantEnforce: []string{"admission.input"},
+			wantContains: []string{
+				`accept_families = ["admission.input"]`,
+				`preauthorize_enforce = ["admission.input"]`,
+			},
+		},
+		{
+			name: "table exists, neither key present: both inserted before the next table",
+			seed: "[org_client.policy]\n" +
+				"node_workspace = \"acme-web\"\n" +
+				"node_environment = \"prod\"\n" +
+				"\n" +
+				"[guard]\n" +
+				"enabled = true\n",
+			wantAdded:   true,
+			wantAccept:  families,
+			wantEnforce: families,
+			wantContains: []string{
+				"node_workspace = \"acme-web\"",
+				"node_environment = \"prod\"",
+				"[guard]\nenabled = true\n",
+			},
+		},
+		{
+			name: "table exists, only preauthorize_enforce missing: only it is inserted",
+			seed: "[org_client.policy]\n" +
+				"accept_families = [\"admission.input\", \"node.governance\"]\n" +
+				"\n" +
+				"[guard]\n" +
+				"enabled = true\n",
+			wantAdded:   true,
+			wantAccept:  []string{"admission.input", "node.governance"},
+			wantEnforce: families,
+			wantContains: []string{
+				`accept_families = ["admission.input", "node.governance"]`,
+				"[guard]\nenabled = true\n",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if tc.seed != "" {
+				if err := os.WriteFile(path, []byte(tc.seed), 0o600); err != nil {
+					t.Fatalf("seed config: %v", err)
+				}
+			}
+
+			added, err := ensureManagedPolicyBlock(path, families)
+			if err != nil {
+				t.Fatalf("ensureManagedPolicyBlock: %v", err)
+			}
+			if added != tc.wantAdded {
+				t.Fatalf("added = %v, want %v", added, tc.wantAdded)
+			}
+
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read back: %v", err)
+			}
+			for _, want := range tc.wantContains {
+				if !strings.Contains(string(body), want) {
+					t.Fatalf("result missing %q, got:\n%s", want, body)
+				}
+			}
+
+			cfg, err := config.Load(config.LoadOptions{GlobalPath: path})
+			if err != nil {
+				t.Fatalf("config.Load on result: %v\nbody:\n%s", err, body)
+			}
+			if got := cfg.OrgClient.Policy.AcceptFamilies; !equalStrSlices(got, tc.wantAccept) {
+				t.Fatalf("loaded AcceptFamilies = %v, want %v", got, tc.wantAccept)
+			}
+			if got := cfg.OrgClient.Policy.PreauthorizeEnforce; !equalStrSlices(got, tc.wantEnforce) {
+				t.Fatalf("loaded PreauthorizeEnforce = %v, want %v", got, tc.wantEnforce)
 			}
 		})
 	}

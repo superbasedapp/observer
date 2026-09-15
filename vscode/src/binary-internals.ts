@@ -349,7 +349,69 @@ export async function resolveLocalBinary(
   const order = preferPathBinary ? [probePath, probeBundled] : [probeBundled, probePath];
   for (const step of order) {
     const hit = await step();
-    if (hit) return { hit, settingError };
+    if (!hit) continue;
+    // O7 GUARD (enterprise update management, plan §6 O7). The installed
+    // binary always wins over the bundled one.
+    //
+    // A `binary`-method daemon can now UPDATE ITSELF: the org publishes a
+    // signed manifest, the node swaps its own executable and reports the new
+    // version. Without this guard an extension pinned to release N would keep
+    // relaunching its OWN bundled copy over a node that just moved to N+1, and
+    // the two would thrash - the daemon updating itself, the extension putting
+    // the old one back on every activation.
+    //
+    // So when the BUNDLED copy won, probe PATH once more and hand back the
+    // installed binary if it is strictly newer. Only STRICTLY newer: an equal
+    // or unorderable version leaves the fast, always-present bundled copy in
+    // place, which is what the bundled-first ordering was for.
+    if (hit.source === 'bundled') {
+      const installed = await probePath();
+      if (installed && isStrictlyNewer(installed.version, hit.version)) {
+        return { hit: installed, settingError };
+      }
+    }
+    return { hit, settingError };
   }
   return { settingError };
+}
+
+// isStrictlyNewer reports whether `candidate` is a higher semver than
+// `current`. It is the extension's ONLY version comparison and it is
+// deliberately conservative: ANY uncertainty answers false.
+//
+// probeVersion returns the literal string 'unknown' when `--version` printed
+// something it could not parse, and that value must never read as "newer" or
+// as "older" - it is an absence of information, and the safe reading of an
+// absence here is "do not switch away from the copy we shipped".
+//
+// It mirrors internal/update/semver.go and web/src/lib/version.ts: strip a
+// leading "v", cut at the first pre-release/build separator, require three
+// non-negative numeric parts.
+export function isStrictlyNewer(candidate: string, current: string): boolean {
+  const a = parseVersionCore(candidate);
+  const b = parseVersionCore(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] > b[i]) return true;
+    if (a[i] < b[i]) return false;
+  }
+  return false;
+}
+
+// parseVersionCore returns [major, minor, patch] or undefined.
+function parseVersionCore(v: string): [number, number, number] | undefined {
+  if (!v) return undefined;
+  let core = v.trim();
+  if (core.startsWith('v')) core = core.slice(1);
+  const cut = core.search(/[-+]/);
+  if (cut >= 0) core = core.slice(0, cut);
+  const parts = core.split('.');
+  if (parts.length < 3) return undefined;
+  const out: number[] = [];
+  for (let i = 0; i < 3; i++) {
+    const n = Number(parts[i]);
+    if (!Number.isInteger(n) || n < 0) return undefined;
+    out.push(n);
+  }
+  return [out[0], out[1], out[2]];
 }

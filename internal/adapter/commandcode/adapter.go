@@ -168,10 +168,12 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	lineNum := 0
 	for {
 		if ctx.Err() != nil {
+			adapter.ApplyProjectIdentity(&res, st.identity)
 			return res, ctx.Err()
 		}
 		lineStr, readErr := reader.ReadString('\n')
 		if readErr != nil && readErr != io.EOF {
+			adapter.ApplyProjectIdentity(&res, st.identity)
 			return res, fmt.Errorf("commandcode.ParseSessionFile: read: %w", readErr)
 		}
 		hasNewline := strings.HasSuffix(lineStr, "\n")
@@ -212,6 +214,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		}
 	}
 	st.deferUnpairedTail(&res)
+	adapter.ApplyProjectIdentity(&res, st.identity)
 	return res, nil
 }
 
@@ -254,6 +257,11 @@ type parseState struct {
 	// remote is the normalized git remote resolved alongside the project
 	// root (see projectRoot).
 	remote string
+	// identity is the Project Identity Resolver v2 bundle (2026-09-06,
+	// §3.1 / W1) resolved alongside branch/remote by projectRoot,
+	// applied to every event in the ParseResult via
+	// adapter.ApplyProjectIdentity before ParseSessionFile returns.
+	identity git.Identity
 	// fallbackModel comes from the `<uuid>.meta.json` sidecar and is used
 	// only when a usage-bearing record carries no inline model. Loaded
 	// LAZILY (metaRead latches the one attempt per parse) so a resumed
@@ -384,15 +392,17 @@ func (st *parseState) projectRoot() string {
 	if root, ok := st.rootCache[cwd]; ok {
 		return root
 	}
-	info, err := git.Resolve(cwd)
+	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
 		st.rootCache[cwd] = cwd
 		return cwd
 	}
-	st.rootCache[cwd] = info.Root
-	st.branch = info.Branch
-	st.remote = git.NormalizeRemote(info.Remote)
-	return info.Root
+	st.rootCache[cwd] = id.Root
+	st.branch = id.Branch
+	// id.Remote is already NormalizeRemote'd by ResolveIdentity.
+	st.remote = id.Remote
+	st.identity = id
+	return id.Root
 }
 
 // emitSessionStart records the transcript's session header as a

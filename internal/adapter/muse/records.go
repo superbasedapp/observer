@@ -183,8 +183,44 @@ type branchRef struct {
 // effectOutcome is tool_batch.effect.terminal.record.outcome — the per-call
 // verdict, and the ONLY explicit success signal in the log (the result text
 // is free-form per tool).
+//
+// Two shapes exist on record.outcome across builds. The documented one is
+// an object, `{"kind":"completed"}`. A 2026-08-07 live capture also emits a
+// BARE STRING, e.g. `"outcome":"error"`, on a `voice.capture.observed`
+// record — a payload_type this adapter never dispatches (§ handle), but
+// every line is still fully json.Unmarshal'd into rawRecord regardless of
+// payload_type, so a strict struct here breaks the WHOLE line and is
+// reported as malformed JSON even though nothing downstream would have read
+// it. UnmarshalJSON tolerates both shapes so an unrelated record can never
+// stall the parse; the string form's value becomes Kind directly, which
+// keeps failedOutcomes classifying it correctly if this shape is ever
+// reached through tool_batch.effect.terminal too.
 type effectOutcome struct {
 	Kind string `json:"kind"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (o *effectOutcome) UnmarshalJSON(b []byte) error {
+	trimmed := strings.TrimSpace(string(b))
+	if trimmed == "" || trimmed == "null" {
+		*o = effectOutcome{}
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		o.Kind = s
+		return nil
+	}
+	type alias effectOutcome
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*o = effectOutcome(a)
+	return nil
 }
 
 // failedOutcomes are the outcome kinds treated as a FAILED tool call. Only

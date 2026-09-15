@@ -152,3 +152,61 @@ func TestSelectCodeintelDevRows_Empty(t *testing.T) {
 		t.Fatalf("expected no rows for an empty index, got %+v", got)
 	}
 }
+
+// TestSelectCodeintelDevRows_ProjectRootHashMatchesSessionWire is the
+// LOAD-BEARING equality for the W6 codeintel->project link: the
+// project_root_hash a codeintel dev row ships must be byte-for-byte the value
+// the SESSION row ships for the same git root, because the org server resolves
+// /projects/{id} from a 16-char prefix of the session-side hash
+// (rollup.ProjectIDFromHash). One byte of normalization drift here (a
+// trailing "/.git" left on, a different domain prefix) and every link 404s
+// while every test that only checked "the field is non-empty" stays green.
+//
+// It compares the two hashes AS THEY LEAVE THE PUSH SEAM, in one batch, rather
+// than re-deriving either side in the test — a test that recomputed the
+// expected hash itself would pass even if BOTH sides drifted together.
+func TestSelectCodeintelDevRows_ProjectRootHashMatchesSessionWire(t *testing.T) {
+	t.Parallel()
+	s, database := newTestStore(t)
+	ctx := context.Background()
+
+	// seedPushData creates project "/tmp/proj" + session s1 inside it.
+	seedPushData(t, s, database)
+	const project = "/tmp/proj"
+
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO codeintel_files (id, project, path, lang, indexed_at, status)
+		 VALUES (1, ?, ?, 'go', 1000, 'indexed')`,
+		project, project+"/a.go"); err != nil {
+		t.Fatalf("seed codeintel_files: %v", err)
+	}
+
+	// FullContent: the per-dev codeintel wire rides shipsRawContent().
+	batch, err := s.SelectUnpushedSince(ctx, PushCursor{}, 1<<20, "org-1", "dev@acme.example",
+		ShareOptions{FullContent: true}, ScopeOptions{})
+	if err != nil {
+		t.Fatalf("SelectUnpushedSince: %v", err)
+	}
+	if len(batch.Sessions) != 1 {
+		t.Fatalf("expected 1 session row, got %d", len(batch.Sessions))
+	}
+	if len(batch.CodeintelDevRows) != 1 {
+		t.Fatalf("expected 1 codeintel dev row, got %d", len(batch.CodeintelDevRows))
+	}
+	sessionHash := batch.Sessions[0].ProjectRootHash
+	codeintelHash := batch.CodeintelDevRows[0].ProjectRootHash
+
+	if sessionHash == "" {
+		t.Fatal("session row shipped no project_root_hash — the fixture is broken, not the code")
+	}
+	if codeintelHash != sessionHash {
+		t.Errorf("codeintel project_root_hash = %q, session project_root_hash = %q — "+
+			"these MUST be identical or /projects/<id> 404s on every codeintel row",
+			codeintelHash, sessionHash)
+	}
+	// And the two codeintel hashes stay distinct hash spaces: the
+	// domain-separated grouping key must NOT collapse into the identity hash.
+	if got := batch.CodeintelDevRows[0].ProjectHash; got == codeintelHash {
+		t.Errorf("ProjectHash == ProjectRootHash (%q) — the codeintel grouping key lost its domain separation", got)
+	}
+}

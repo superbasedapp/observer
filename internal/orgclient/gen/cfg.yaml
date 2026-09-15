@@ -1,7 +1,10 @@
 # oapi-codegen config for the agent-side client stubs.
 # Regenerate via `make gen-openapi`; verified drift-free by
-# `make verify-openapi`. M0 generates compiling stubs only; the agent's
-# real enrolment/push logic (internal/orgclient) is implemented in M2.
+# `make verify-openapi` (builds into a temp dir and diffs — never
+# mutates the tree; CI-enforced by the track-build-drift job in
+# .github/workflows/ci-private.yml). M0 generates compiling stubs
+# only; the agent's real enrolment/push logic (internal/orgclient) is
+# implemented in M2.
 package: gen
 output: internal/orgclient/gen/client.gen.go
 generate:

@@ -1,6 +1,10 @@
 package codeintel
 
-import "context"
+import (
+	"context"
+
+	"github.com/marmutapp/superbased-observer/internal/archive"
+)
 
 // FileResult is what the indexer hands the store to persist for one
 // fully-parsed file: the file's identity + index metadata plus the
@@ -28,6 +32,25 @@ type FileResult struct {
 	// node has no usable body span). Only these hashes are persisted (into
 	// codeintel_minhash); the body bytes never reach the store (privacy).
 	BodyBuckets [][]uint64
+}
+
+// FileState is the index bookkeeping stored for one already-seen file.
+// The indexer uses it to decide whether a file needs re-parsing without
+// reading its bytes: MTime + IndexedAt drive the stat-only fast path,
+// ContentHash the authoritative comparison when the stat check is
+// inconclusive.
+type FileState struct {
+	ContentHash string
+	Status      string
+	// MTime is the file mtime (unix seconds) recorded at the last
+	// successful index of this file.
+	MTime int64
+	// IndexedAt is when that index pass ran (unix seconds). It exists so
+	// the mtime fast path can reject a "racily clean" row — one indexed in
+	// the same wall-clock second it was written, where a later write in
+	// that same second would be invisible to a seconds-granularity mtime
+	// comparison (git's racily-clean rule).
+	IndexedAt int64
 }
 
 // EngineStore is the narrow READ surface the native engine depends on —
@@ -58,19 +81,31 @@ type EngineStore interface {
 	// node/edge dumps the pure analysis + Cypher engines run over.
 	CodeIntelListProjects(ctx context.Context) ([]string, error)
 	CodeIntelLoadGraph(ctx context.Context, project string) (Graph, error)
+	// Corpus-archival marker read (P2). Adding it here rather than behind a
+	// second interface keeps the Provider one seam wide: a consumer asking
+	// "is this project archived?" is asking the code-intelligence layer a
+	// question about its own index, not reaching into a storage subsystem.
+	CodeIntelArchivedProject(ctx context.Context, project string) (archive.Marker, bool, error)
 }
 
 // IndexStore is the narrow WRITE/status surface the index orchestrator
 // depends on. *store.Store satisfies it.
 type IndexStore interface {
 	CodeIntelListProjects(ctx context.Context) ([]string, error)
-	CodeIntelFileState(ctx context.Context, project, path string) (contentHash, status string, found bool, err error)
+	CodeIntelFileState(ctx context.Context, project, path string) (state FileState, found bool, err error)
 	CodeIntelRegisterFile(ctx context.Context, project, path, lang string) error
 	CodeIntelSetFileStatus(ctx context.Context, project, path, status string) error
 	CodeIntelSaveFile(ctx context.Context, res FileResult) error
 	// CodeIntelBuildDerived rebuilds the FTS / embedding / MinHash rows
 	// for a project from its current nodes (Phase 6). Idempotent.
 	CodeIntelBuildDerived(ctx context.Context, project string) error
+	// CodeIntelHasDerived reports whether the project's nodes already have
+	// their derived (FTS) rows. It is the cheap guard that lets an index
+	// pass which changed nothing skip the full DELETE-then-reinsert
+	// rebuild, while still self-healing a project whose derived rows were
+	// never built. A project with no nodes has nothing to derive and
+	// reports true.
+	CodeIntelHasDerived(ctx context.Context, project string) (bool, error)
 	CodeIntelDeleteProject(ctx context.Context, project string) error
 	CodeIntelProjectStatus(ctx context.Context, project string) (map[string]int, error)
 	// CodeIntelResolveCalls is the project-level name-matched CALLS

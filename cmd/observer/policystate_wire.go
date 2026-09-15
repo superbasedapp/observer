@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -516,10 +517,12 @@ type policyStateReporter struct {
 	logger       *slog.Logger
 	notifier     *policyStateNotifier
 
-	// ngov is the node.governance handle, consulted (W-9) so an org
-	// "policy_state" share directive can LOWER this channel off even though
-	// [org_client.share].policy_state is configured true locally. nil in the
-	// raw newPolicyStateReporter test constructor (report() falls back to
+	// ngov is the node.governance handle, consulted (W-9, raise added §5.3) so
+	// an org "policy_state" share directive can LOWER this channel off even
+	// though [org_client.share].policy_state is configured true locally, or —
+	// on a managed node granted extract.policy_state — RAISE it on even
+	// though the local config left it false. nil in the raw
+	// newPolicyStateReporter test constructor (report() falls back to
 	// r.enabled unchanged in that case) — only buildPolicyStateReporter,
 	// which owns a live handle, populates it.
 	ngov *nodeGovernanceHandle
@@ -564,6 +567,20 @@ type policyStateReporter struct {
 	// the ladder loop only ever walks gen1-projected rows (see report()). It
 	// is meaningless while !latched and is never read there.
 	latchGen1 atomic.Bool
+
+	// liveCaps resolves the node's advertised capability-token list at report
+	// time (PolicyStateReport.LiveCapabilities, Plane B §3, Sol S3; P6b) — the
+	// SAME nodeLiveCapabilities(admission) function
+	// PolicyResourceOptions.LiveCapabilities is built from (policyresource_wire.go),
+	// so the mode-capability token a gateway.providers body is gated on and
+	// the one the server records via planebmode.RecordCapabilityAck never
+	// drift apart. Resolved as a closure (not a snapshot) so a judge that is
+	// wired/unwired after this reporter is constructed is reflected on the
+	// very next report. nil in the raw newPolicyStateReporter test
+	// constructor — only buildPolicyStateReporter, which owns a live
+	// admission handle, sets it; a nil liveCaps yields an empty
+	// LiveCapabilities list, matching a pre-P6 agent (omitempty).
+	liveCaps func() []string
 }
 
 // newPolicyStateReporter constructs a reporter over injected dependencies (so
@@ -772,30 +789,43 @@ func mergeRoutingOutcome(prev, o orgclient.RoutingFetchOutcome) orgclient.Routin
 // every later rung in the ladder (including the depth walk) is gen1-projected
 // for the rest of the daemon's lifetime; only depth is still open to probe.
 // effectiveEnabled resolves whether this report() call should run at all
-// (W-9): the configured [org_client.share].policy_state value (r.enabled),
-// LOWERED by a live "policy_state" node.governance share directive when one
-// is present. It reuses govern.Effective.LowerBool — the SAME merge
-// primitive the push seam and the Privacy card both use — rather than
-// hand-rolling the algebra here.
+// (W-9, extended by the Plane B dual-mode gateway / RBAC-IA design,
+// 2026-08-29 §5.3 scope item 3): the configured [org_client.share].policy_state
+// value (r.enabled), LOWERED by a live "policy_state" node.governance share
+// directive, then — for a MANAGED node that was granted the dedicated
+// extract.policy_state authority — RAISED by the same directive. It reuses
+// govern.Effective.LowerBool/RaiseBool — the SAME merge primitives the push
+// seam and the Privacy card both use — rather than hand-rolling the algebra
+// here, mirroring cmd/observer/governance_wire.go's lowerShareOptions'
+// lower-then-conditionally-raise shape exactly.
 //
-// Only LowerBool is exercised, never MergeBool/RaiseBool: "policy_state" is
-// one of W-8's two conscious extraction-tier exemptions (no
-// GrantsXxxExtraction token maps to it — see sharetiers.go), so an org
-// directive can turn this channel OFF but can structurally never turn it ON.
-// A node with r.enabled==false therefore stays off regardless of the org
-// body; only the true→false direction is live here. r.ngov==nil (the raw
-// newPolicyStateReporter test constructor, or a daemon build that never
-// wired node.governance) falls back to r.enabled unchanged — the same
-// fail-open posture every other org-directive consumer in this codebase
-// uses when its handle is absent.
+// "policy_state" USED TO be one of W-8's two conscious extraction-tier
+// exemptions (no GrantsXxxExtraction token mapped to it), meaning an org
+// directive could only ever turn this channel OFF, never ON. That exemption
+// is now closed: internal/govern's AuthorityExtractPolicyState /
+// Effective.GrantsPolicyStateExtraction (a STRICT token — the extract.managed
+// umbrella alone does not satisfy it) let an org explicitly authorize a node
+// to report richer effective-policy-state detail even when the node's own
+// local config left it off. The raise is gated on
+// govern.ExtractionAuthorized(eff, "policy_state") — the single per-tier gate
+// internal/govern/sharetiers.go owns — exactly like every other tier
+// lowerShareOptions raises, so this reporting channel and the push seam can
+// never disagree about which raises are actually live.
+//
+// r.ngov==nil (the raw newPolicyStateReporter test constructor, or a daemon
+// build that never wired node.governance) falls back to r.enabled unchanged
+// — the same fail-open posture every other org-directive consumer in this
+// codebase uses when its handle is absent.
 func (r *policyStateReporter) effectiveEnabled(ctx context.Context) bool {
-	if !r.enabled {
-		return false
-	}
 	if r.ngov == nil {
-		return true
+		return r.enabled
 	}
-	return r.ngov.Effective(ctx).LowerBool("policy_state", true)
+	eff := r.ngov.Effective(ctx)
+	out := eff.LowerBool("policy_state", r.enabled)
+	if govern.ExtractionAuthorized(eff, "policy_state") {
+		out = eff.RaiseBool("policy_state", out)
+	}
+	return out
 }
 
 func (r *policyStateReporter) report(ctx context.Context) {
@@ -968,11 +998,16 @@ func (r *policyStateReporter) post(ctx context.Context, rows []orgcontract.Polic
 		r.logger.Warn("policystate: report_seq persist failed; skipping POST", "err", err)
 		return postFailed
 	}
+	var liveCaps []string
+	if r.liveCaps != nil {
+		liveCaps = r.liveCaps()
+	}
 	rep := orgcontract.PolicyStateReport{
-		AgentVersion:    r.agentVersion,
-		ReportSeq:       seq,
-		Rows:            rows,
-		MachineIdentity: machineIdentity,
+		AgentVersion:     r.agentVersion,
+		ReportSeq:        seq,
+		Rows:             rows,
+		MachineIdentity:  machineIdentity,
+		LiveCapabilities: liveCaps,
 	}
 	perr := r.poster.PostPolicyState(ctx, rep)
 	switch {
@@ -1079,6 +1114,12 @@ func buildPolicyStateReporter(
 	if rep.logger == nil {
 		rep.logger = slog.Default()
 	}
+	// liveCaps mirrors PolicyResourceOptions.LiveCapabilities (§ nodeLiveCapabilities
+	// in policyresource_wire.go): the admission-derived judge capability plus
+	// the node's static mode-capability token. Resolved as a closure over
+	// `admission` so a runtime judge wiring change reaches the very next
+	// report.
+	rep.liveCaps = func() []string { return nodeLiveCapabilities(admission) }
 	rep.readers = map[string]policystate.PointReader{
 		policystate.PointGuard: newGuardPointReader(
 			guardCachedVersionFromFile(orgBundleCachePath(cfg)),

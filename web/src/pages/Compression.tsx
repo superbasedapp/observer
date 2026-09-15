@@ -31,8 +31,10 @@ import { useApi } from "@/lib/useApi";
 import {
   fmtBytes,
   fmtCompact,
+  fmtDateTime,
   fmtInt,
   fmtPct,
+  fmtShortId,
   fmtUSD,
 } from "@/lib/format";
 import type {
@@ -53,9 +55,9 @@ const EVENTS_LIMIT = 25;
 // are rendered as "evicted" and never as savings or dollars saved —
 // see internal/intelligence/dashboard/compression_mechanism.go.
 const EVICTED_TOOLTIP =
-  "Evicted (dropped) content — low-importance messages removed from the payload, not compressed. There is no compressed form, so this is not a byte saving. The removed content is recoverable via the search_past_outputs / stash markers.";
+  "Evicted (dropped) content - low-importance messages removed from the payload, not compressed. There is no compressed form, so this is not a byte saving. The removed content is recoverable via the search_past_outputs / stash markers.";
 const EVICTED_USD_TOOLTIP =
-  "Not a dollar saving. Evicted content has no compressed form to price — showing a $ figure here would present lossy eviction as compression savings.";
+  "Not a dollar saving. Evicted content has no compressed form to price - showing a $ figure here would present lossy eviction as compression savings.";
 
 export function CompressionPage() {
   const { win, customRange, tool, project } = useFilters();
@@ -231,7 +233,7 @@ export function CompressionPage() {
             loading={timeseries.loading && !timeseries.data}
             error={timeseries.error}
             empty={!timeseries.data?.series.length}
-            emptyHint="No compression events in window. The proxy compresses request bodies on the way out — make sure Claude Code is routed through the proxy (see Setup banner above)."
+            emptyHint="No compression events in window. The proxy compresses request bodies on the way out - make sure Claude Code is routed through the proxy (see Setup banner above)."
             height={260}
           >
             {timeseries.data && (
@@ -309,11 +311,11 @@ export function CompressionPage() {
       <ChartShell
         title={
           <span className="flex items-center gap-2">
-            Reversibility — SROD (Stash &amp; Retrieve on Demand)
+            Reversibility - SROD (Stash &amp; Retrieve on Demand)
             <BetaTag>gpb</BetaTag>
           </span>
         }
-        sub="Is stash-and-retrieve paying off? Large tool outputs are offloaded to a local stash and replaced inline with a marker; the model pulls them back on demand. A low retrieve rate is healthy — it means the offloaded bodies were rarely needed."
+        sub="Is stash-and-retrieve paying off? Large tool outputs are offloaded to a local stash and replaced inline with a marker; the model pulls them back on demand. A low retrieve rate is healthy - it means the offloaded bodies were rarely needed."
       >
         <ChartState
           loading={retrieval.loading && !retrieval.data}
@@ -334,7 +336,7 @@ export function CompressionPage() {
             <BetaTag>d23</BetaTag>
           </span>
         }
-        sub="Post-compact recovery — when Claude Code's /compact fires, the proxy injects ghost-file snapshots so the next turn knows what was already loaded."
+        sub="Post-compact recovery - when Claude Code's /compact fires, the proxy injects ghost-file snapshots so the next turn knows what was already loaded."
       >
         <ChartState
           loading={compaction.loading && !compaction.data}
@@ -516,9 +518,9 @@ function SetupBanner({
           <ExpandedDetail
             rows={[
               ["Status", claude.status],
-              ["Proxy port", claude.proxy_port ? String(claude.proxy_port) : "—"],
-              ["Proxy URL", claude.proxy_url || "—"],
-              ["Credentials path", claude.credentials_path || "—"],
+              ["Proxy port", claude.proxy_port ? String(claude.proxy_port) : "-"],
+              ["Proxy URL", claude.proxy_url || "-"],
+              ["Credentials path", claude.credentials_path || "-"],
               ["OAuth credentials", claude.has_oauth_credentials ? "yes" : "no"],
               [
                 "Claude binary",
@@ -526,7 +528,7 @@ function SetupBanner({
                   ? claude.claude_binary_path || "found"
                   : "not installed",
               ],
-              ["Launcher command", claude.launcher_command || "—"],
+              ["Launcher command", claude.launcher_command || "-"],
               [
                 "Durable route",
                 claude.routed_to_observer
@@ -535,7 +537,7 @@ function SetupBanner({
                     ? `set to ${claude.routed_base_url}`
                     : "(not set)",
               ],
-              ["Settings file", claude.settings_path || "—"],
+              ["Settings file", claude.settings_path || "-"],
             ]}
           />
           <RouteAction
@@ -544,7 +546,7 @@ function SetupBanner({
             wouldRegister={claude.would_register}
             conflictError={claude.would_register_error}
             configPath={claude.settings_path || "~/.claude/settings.json"}
-            writeSummary={`Writes "env": { "ANTHROPIC_BASE_URL": "${claude.proxy_url}" } into the file below. Claude Code picks it up on its next session — every session then routes through the proxy (exact tokens, compression, cache tracking) with no wrapper command.`}
+            writeSummary={`Writes "env": { "ANTHROPIC_BASE_URL": "${claude.proxy_url}" } into the file below. Claude Code picks it up on its next session - every session then routes through the proxy (exact tokens, compression, cache tracking) with no wrapper command.`}
             routedNote="New Claude Code sessions route through this observer. Undo: remove the env entry from settings.json, or run `observer uninstall --claude-code`."
             onChanged={onChanged}
           />
@@ -555,17 +557,17 @@ function SetupBanner({
           <ExpandedDetail
             rows={[
               ["Status", codex.status],
-              ["Config path", codex.config_path || "—"],
+              ["Config path", codex.config_path || "-"],
               ["Config exists", codex.config_exists ? "yes" : "no"],
-              ["Proxy port", codex.proxy_port ? String(codex.proxy_port) : "—"],
-              ["Desired base URL", codex.desired_base_url || "—"],
+              ["Proxy port", codex.proxy_port ? String(codex.proxy_port) : "-"],
+              ["Desired base URL", codex.desired_base_url || "-"],
               [
                 "Current base URL",
                 codex.current_base_url || "(unset)",
               ],
               [
                 "Desired model provider",
-                codex.desired_model_provider || "—",
+                codex.desired_model_provider || "-",
               ],
               [
                 "Reserved openai block",
@@ -585,7 +587,7 @@ function SetupBanner({
             wouldRegister={codex.would_register}
             conflictError={codex.would_register_error}
             configPath={codex.config_path || "~/.codex/config.toml"}
-            writeSummary={`Adds an "${codex.desired_model_provider}" model provider with base_url ${codex.desired_base_url} to the file below and points codex at it. Codex picks it up on its next run — sessions route through the proxy with no wrapper command.`}
+            writeSummary={`Adds an "${codex.desired_model_provider}" model provider with base_url ${codex.desired_base_url} to the file below and points codex at it. Codex picks it up on its next run - sessions route through the proxy with no wrapper command.`}
             routedNote="Codex routes through this observer. Undo: remove the provider from config.toml, or run `observer uninstall --codex`."
             onChanged={onChanged}
           />
@@ -639,7 +641,7 @@ function RouteAction({
         | { error?: string; already_set?: boolean }
         | null;
       if (res.status === 409) {
-        setErr(out?.error ?? "conflict — an existing value blocks the write");
+        setErr(out?.error ?? "conflict - an existing value blocks the write");
         setPhase("forceConfirm");
         return;
       }
@@ -648,7 +650,7 @@ function RouteAction({
       }
       setDone(
         out?.already_set
-          ? "Already routed — nothing to change."
+          ? "Already routed - nothing to change."
           : "Routed. New sessions go through the proxy.",
       );
       setPhase("idle");
@@ -690,7 +692,7 @@ function RouteAction({
               <p className="m-0 mt-1 font-mono text-fg-3">{configPath}</p>
               {phase === "forceConfirm" && err && (
                 <p className="m-0 mt-2 text-warn">
-                  {err} — overwriting replaces a value you (or another
+                  {err} - overwriting replaces a value you (or another
                   tool) set deliberately.
                 </p>
               )}
@@ -817,7 +819,7 @@ function CompressionEventsTable({
                 key={r.id}
                 className="border-b border-line-1 last:border-b-0 hover:bg-bg-3/40"
               >
-                <Tooltip content={r.timestamp}>
+                <Tooltip content={fmtDateTime(r.timestamp)}>
                   <td tabIndex={0} className="cursor-help py-1.5 pl-2 text-fg-2 focus:outline-none">
                     {relativeTime(r.timestamp)}
                   </td>
@@ -830,14 +832,14 @@ function CompressionEventsTable({
                   {r.mechanism}
                 </td>
                 <td className="py-1.5 font-mono text-fg-2">
-                  {r.model || "—"}
+                  {r.model || "-"}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-fg-2">
                   {fmtBytes(r.original_bytes)}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-fg-2">
                   {r.lossy ? (
-                    <span className="text-fg-4">—</span>
+                    <span className="text-fg-4">-</span>
                   ) : (
                     fmtBytes(r.compressed_bytes)
                   )}
@@ -910,17 +912,17 @@ function CompressionEventsTable({
                         tabIndex={0}
                         className="cursor-help text-fg-4 focus:outline-none"
                       >
-                        —
+                        -
                       </span>
                     </Tooltip>
                   ) : r.saved_usd_est > 0 ? (
                     fmtUSD(r.saved_usd_est)
                   ) : (
-                    "—"
+                    "-"
                   )}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-fg-3">
-                  {r.msg_index >= 0 ? r.msg_index : "—"}
+                  {r.msg_index >= 0 ? r.msg_index : "-"}
                 </td>
                 <td className="py-1.5 text-right tabular-nums">
                   {r.importance_score > 0 ? (
@@ -939,7 +941,7 @@ function CompressionEventsTable({
                       </span>
                     </Tooltip>
                   ) : (
-                    <span className="text-fg-4">—</span>
+                    <span className="text-fg-4">-</span>
                   )}
                 </td>
                 <td className="py-1.5">
@@ -948,10 +950,10 @@ function CompressionEventsTable({
                       value={r.session_id}
                       className="font-mono text-[11px] text-fg-2"
                     >
-                      {r.session_id.slice(0, 8)}…
+                      {fmtShortId(r.session_id, 8)}
                     </CopyOnClick>
                   ) : (
-                    <span className="text-fg-4">—</span>
+                    <span className="text-fg-4">-</span>
                   )}
                 </td>
                 <td className="py-1.5 pl-3">
@@ -1113,14 +1115,14 @@ function CompactionPanel({ data }: { data: CompactionEventsResponse }) {
                   key={e.id}
                   className="border-b border-line-1 last:border-b-0 hover:bg-bg-3/40"
                 >
-                  <Tooltip content={e.timestamp}>
+                  <Tooltip content={fmtDateTime(e.timestamp)}>
                     <td tabIndex={0} className="cursor-help py-1.5 pl-2 text-fg-2 focus:outline-none">
                       {relativeTime(e.timestamp)}
                     </td>
                   </Tooltip>
                   <td className="py-1.5 font-mono text-fg-2">{e.tool}</td>
-                  <td className="py-1.5 font-mono text-fg-2">
-                    {e.session_id.slice(0, 8)}…
+                  <td className="py-1.5 font-mono text-fg-2" title={e.session_id}>
+                    {fmtShortId(e.session_id, 8)}
                   </td>
                   <td className="py-1.5 text-right tabular-nums text-fg-1">
                     {fmtInt(e.pre_action_count)}
@@ -1237,7 +1239,7 @@ function CompressionByModelTable({
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-fg-2">
                   {r.lossy ? (
-                    <span className="text-fg-4">—</span>
+                    <span className="text-fg-4">-</span>
                   ) : (
                     fmtBytes(r.compressed_bytes)
                   )}
@@ -1270,7 +1272,7 @@ function CompressionByModelTable({
                         tabIndex={0}
                         className="cursor-help text-fg-4 focus:outline-none"
                       >
-                        —
+                        -
                       </span>
                     </Tooltip>
                   ) : r.saved_usd_est > 0 ? (
@@ -1278,7 +1280,7 @@ function CompressionByModelTable({
                       {fmtUSD(r.saved_usd_est)}
                     </span>
                   ) : (
-                    <span className="text-fg-4">—</span>
+                    <span className="text-fg-4">-</span>
                   )}
                 </td>
               </tr>
@@ -1300,7 +1302,7 @@ function BetaTag({ children }: { children: React.ReactNode }) {
 
 function relativeTime(iso: string): string {
   const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "—";
+  if (!Number.isFinite(t)) return "-";
   const ms = Date.now() - t;
   if (ms < 0) return "future";
   const s = ms / 1000;

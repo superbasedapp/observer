@@ -42,7 +42,7 @@ export function ConnectedToolsSection() {
         loading={status.loading}
         error={status.error}
         empty={!status.loading && rows.length === 0}
-        emptyHint="No tool catalog — daemon restart may be required after upgrading."
+        emptyHint="No tool catalog - daemon restart may be required after upgrading."
       >
         <ToolsTable rows={detected} onChanged={status.reload} />
         {others.length > 0 && (
@@ -232,7 +232,7 @@ function BoolDot({ on }: { on: boolean }) {
   return on ? (
     <Pill variant="success">yes</Pill>
   ) : (
-    <span className="text-fg-4">—</span>
+    <span className="text-fg-4">-</span>
   );
 }
 
@@ -322,7 +322,7 @@ function LaunchResult({
           <>
             <Pill variant="success">terminal opened</Pill>
             <span className="text-fg-3">
-              A window should be up running the command below — if you
+              A window should be up running the command below - if you
               don't see one, run it yourself:
             </span>
           </>
@@ -361,7 +361,7 @@ function LaunchResult({
   );
 }
 
-// ProbePill — one integration state. Absent probe = the integration
+// ProbePill - one integration state. Absent probe = the integration
 // doesn't exist for the tool (honest n/a). The probe detail (counts,
 // conflicts, status words) lives in the tooltip.
 function ProbePill({ probe }: { probe?: ToolProbe }) {

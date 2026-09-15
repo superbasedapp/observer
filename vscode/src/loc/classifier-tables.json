@@ -1,0 +1,1904 @@
+{
+  "tables_version": 1,
+  "classifier_version": 2,
+  "extensions": {
+    "adoc": {
+      "lang": "text",
+      "category": "docs"
+    },
+    "bas": {
+      "lang": "vb",
+      "category": "code"
+    },
+    "bash": {
+      "lang": "shell",
+      "category": "code"
+    },
+    "c": {
+      "lang": "c",
+      "category": "code"
+    },
+    "c++": {
+      "lang": "cpp",
+      "category": "code"
+    },
+    "cc": {
+      "lang": "cpp",
+      "category": "code"
+    },
+    "cfg": {
+      "lang": "ini",
+      "category": "config"
+    },
+    "cjs": {
+      "lang": "javascript",
+      "category": "code"
+    },
+    "clj": {
+      "lang": "clojure",
+      "category": "code"
+    },
+    "cljc": {
+      "lang": "clojure",
+      "category": "code"
+    },
+    "cljs": {
+      "lang": "clojure",
+      "category": "code"
+    },
+    "conf": {
+      "lang": "ini",
+      "category": "config"
+    },
+    "cpp": {
+      "lang": "cpp",
+      "category": "code"
+    },
+    "cs": {
+      "lang": "csharp",
+      "category": "code"
+    },
+    "css": {
+      "lang": "css",
+      "category": "code"
+    },
+    "cts": {
+      "lang": "typescript",
+      "category": "code"
+    },
+    "cxx": {
+      "lang": "cpp",
+      "category": "code"
+    },
+    "dart": {
+      "lang": "dart",
+      "category": "code"
+    },
+    "edn": {
+      "lang": "clojure",
+      "category": "code"
+    },
+    "el": {
+      "lang": "lisp",
+      "category": "code"
+    },
+    "env": {
+      "lang": "text",
+      "category": "config"
+    },
+    "erl": {
+      "lang": "erlang",
+      "category": "code"
+    },
+    "ex": {
+      "lang": "elixir",
+      "category": "code"
+    },
+    "exs": {
+      "lang": "elixir",
+      "category": "code"
+    },
+    "fs": {
+      "lang": "fsharp",
+      "category": "code"
+    },
+    "fsi": {
+      "lang": "fsharp",
+      "category": "code"
+    },
+    "fsx": {
+      "lang": "fsharp",
+      "category": "code"
+    },
+    "gemspec": {
+      "lang": "ruby",
+      "category": "code"
+    },
+    "go": {
+      "lang": "go",
+      "category": "code"
+    },
+    "gql": {
+      "lang": "graphql",
+      "category": "code"
+    },
+    "gradle": {
+      "lang": "groovy",
+      "category": "code"
+    },
+    "graphql": {
+      "lang": "graphql",
+      "category": "code"
+    },
+    "groovy": {
+      "lang": "groovy",
+      "category": "code"
+    },
+    "h": {
+      "lang": "c",
+      "category": "code"
+    },
+    "hcl": {
+      "lang": "terraform",
+      "category": "code"
+    },
+    "hh": {
+      "lang": "cpp",
+      "category": "code"
+    },
+    "hpp": {
+      "lang": "cpp",
+      "category": "code"
+    },
+    "hrl": {
+      "lang": "erlang",
+      "category": "code"
+    },
+    "hs": {
+      "lang": "haskell",
+      "category": "code"
+    },
+    "htm": {
+      "lang": "html",
+      "category": "code"
+    },
+    "html": {
+      "lang": "html",
+      "category": "code"
+    },
+    "hxx": {
+      "lang": "cpp",
+      "category": "code"
+    },
+    "ini": {
+      "lang": "ini",
+      "category": "config"
+    },
+    "ipp": {
+      "lang": "cpp",
+      "category": "code"
+    },
+    "ipynb": {
+      "lang": "notebook",
+      "category": "code"
+    },
+    "java": {
+      "lang": "java",
+      "category": "code"
+    },
+    "jl": {
+      "lang": "julia",
+      "category": "code"
+    },
+    "js": {
+      "lang": "javascript",
+      "category": "code"
+    },
+    "json": {
+      "lang": "json",
+      "category": "config"
+    },
+    "json5": {
+      "lang": "json",
+      "category": "config"
+    },
+    "jsonc": {
+      "lang": "json",
+      "category": "config"
+    },
+    "jsx": {
+      "lang": "jsx",
+      "category": "code"
+    },
+    "ksh": {
+      "lang": "shell",
+      "category": "code"
+    },
+    "kt": {
+      "lang": "kotlin",
+      "category": "code"
+    },
+    "kts": {
+      "lang": "kotlin",
+      "category": "code"
+    },
+    "less": {
+      "lang": "scss",
+      "category": "code"
+    },
+    "lhs": {
+      "lang": "haskell",
+      "category": "code"
+    },
+    "lisp": {
+      "lang": "lisp",
+      "category": "code"
+    },
+    "lsp": {
+      "lang": "lisp",
+      "category": "code"
+    },
+    "lua": {
+      "lang": "lua",
+      "category": "code"
+    },
+    "m": {
+      "lang": "",
+      "category": "code"
+    },
+    "markdown": {
+      "lang": "markdown",
+      "category": "docs"
+    },
+    "md": {
+      "lang": "markdown",
+      "category": "docs"
+    },
+    "mdx": {
+      "lang": "markdown",
+      "category": "docs"
+    },
+    "mjs": {
+      "lang": "javascript",
+      "category": "code"
+    },
+    "mk": {
+      "lang": "makefile",
+      "category": "code"
+    },
+    "ml": {
+      "lang": "ocaml",
+      "category": "code"
+    },
+    "mli": {
+      "lang": "ocaml",
+      "category": "code"
+    },
+    "mm": {
+      "lang": "cpp",
+      "category": "code"
+    },
+    "mts": {
+      "lang": "typescript",
+      "category": "code"
+    },
+    "nim": {
+      "lang": "nim",
+      "category": "code"
+    },
+    "nims": {
+      "lang": "nim",
+      "category": "code"
+    },
+    "php": {
+      "lang": "php",
+      "category": "code"
+    },
+    "phtml": {
+      "lang": "php",
+      "category": "code"
+    },
+    "pl": {
+      "lang": "perl",
+      "category": "code"
+    },
+    "pm": {
+      "lang": "perl",
+      "category": "code"
+    },
+    "properties": {
+      "lang": "ini",
+      "category": "config"
+    },
+    "proto": {
+      "lang": "proto",
+      "category": "code"
+    },
+    "ps1": {
+      "lang": "powershell",
+      "category": "code"
+    },
+    "psd1": {
+      "lang": "powershell",
+      "category": "code"
+    },
+    "psm1": {
+      "lang": "powershell",
+      "category": "code"
+    },
+    "py": {
+      "lang": "python",
+      "category": "code"
+    },
+    "pyi": {
+      "lang": "python",
+      "category": "code"
+    },
+    "pyw": {
+      "lang": "python",
+      "category": "code"
+    },
+    "r": {
+      "lang": "r",
+      "category": "code"
+    },
+    "rake": {
+      "lang": "ruby",
+      "category": "code"
+    },
+    "rb": {
+      "lang": "ruby",
+      "category": "code"
+    },
+    "rkt": {
+      "lang": "lisp",
+      "category": "code"
+    },
+    "rs": {
+      "lang": "rust",
+      "category": "code"
+    },
+    "rst": {
+      "lang": "text",
+      "category": "docs"
+    },
+    "sass": {
+      "lang": "scss",
+      "category": "code"
+    },
+    "sbt": {
+      "lang": "scala",
+      "category": "code"
+    },
+    "scala": {
+      "lang": "scala",
+      "category": "code"
+    },
+    "scm": {
+      "lang": "lisp",
+      "category": "code"
+    },
+    "scss": {
+      "lang": "scss",
+      "category": "code"
+    },
+    "sh": {
+      "lang": "shell",
+      "category": "code"
+    },
+    "sql": {
+      "lang": "sql",
+      "category": "code"
+    },
+    "ss": {
+      "lang": "lisp",
+      "category": "code"
+    },
+    "svelte": {
+      "lang": "svelte",
+      "category": "code"
+    },
+    "swift": {
+      "lang": "swift",
+      "category": "code"
+    },
+    "tf": {
+      "lang": "terraform",
+      "category": "code"
+    },
+    "tfvars": {
+      "lang": "terraform",
+      "category": "code"
+    },
+    "toml": {
+      "lang": "toml",
+      "category": "config"
+    },
+    "ts": {
+      "lang": "typescript",
+      "category": "code"
+    },
+    "tsx": {
+      "lang": "tsx",
+      "category": "code"
+    },
+    "txt": {
+      "lang": "text",
+      "category": "docs"
+    },
+    "vb": {
+      "lang": "vb",
+      "category": "code"
+    },
+    "vbs": {
+      "lang": "vb",
+      "category": "code"
+    },
+    "vue": {
+      "lang": "vue",
+      "category": "code"
+    },
+    "xml": {
+      "lang": "xml",
+      "category": "code"
+    },
+    "xsd": {
+      "lang": "xml",
+      "category": "code"
+    },
+    "xsl": {
+      "lang": "xml",
+      "category": "code"
+    },
+    "xslt": {
+      "lang": "xml",
+      "category": "code"
+    },
+    "yaml": {
+      "lang": "yaml",
+      "category": "config"
+    },
+    "yml": {
+      "lang": "yaml",
+      "category": "config"
+    },
+    "zig": {
+      "lang": "zig",
+      "category": "code"
+    },
+    "zsh": {
+      "lang": "shell",
+      "category": "code"
+    }
+  },
+  "basenames": {
+    ".babelrc": {
+      "lang": "json",
+      "category": "config"
+    },
+    ".bash_profile": {
+      "lang": "shell",
+      "category": "code"
+    },
+    ".bashrc": {
+      "lang": "shell",
+      "category": "code"
+    },
+    ".dockerignore": {
+      "lang": "text",
+      "category": "config"
+    },
+    ".editorconfig": {
+      "lang": "ini",
+      "category": "config"
+    },
+    ".env": {
+      "lang": "text",
+      "category": "config"
+    },
+    ".eslintrc": {
+      "lang": "json",
+      "category": "config"
+    },
+    ".gitattributes": {
+      "lang": "text",
+      "category": "config"
+    },
+    ".gitignore": {
+      "lang": "text",
+      "category": "config"
+    },
+    ".npmignore": {
+      "lang": "text",
+      "category": "config"
+    },
+    ".npmrc": {
+      "lang": "ini",
+      "category": "config"
+    },
+    ".prettierrc": {
+      "lang": "json",
+      "category": "config"
+    },
+    ".profile": {
+      "lang": "shell",
+      "category": "code"
+    },
+    ".yarnrc": {
+      "lang": "ini",
+      "category": "config"
+    },
+    ".zprofile": {
+      "lang": "shell",
+      "category": "code"
+    },
+    ".zshenv": {
+      "lang": "shell",
+      "category": "code"
+    },
+    ".zshrc": {
+      "lang": "shell",
+      "category": "code"
+    },
+    "authors": {
+      "lang": "text",
+      "category": "docs"
+    },
+    "brewfile": {
+      "lang": "ruby",
+      "category": "code"
+    },
+    "changelog": {
+      "lang": "text",
+      "category": "docs"
+    },
+    "cmakelists.txt": {
+      "lang": "",
+      "category": "code"
+    },
+    "containerfile": {
+      "lang": "dockerfile",
+      "category": "code"
+    },
+    "dockerfile": {
+      "lang": "dockerfile",
+      "category": "code"
+    },
+    "gemfile": {
+      "lang": "ruby",
+      "category": "code"
+    },
+    "gnumakefile": {
+      "lang": "makefile",
+      "category": "code"
+    },
+    "go.mod": {
+      "lang": "text",
+      "category": "config"
+    },
+    "licence": {
+      "lang": "text",
+      "category": "docs"
+    },
+    "license": {
+      "lang": "text",
+      "category": "docs"
+    },
+    "makefile": {
+      "lang": "makefile",
+      "category": "code"
+    },
+    "notice": {
+      "lang": "text",
+      "category": "docs"
+    },
+    "rakefile": {
+      "lang": "ruby",
+      "category": "code"
+    },
+    "readme": {
+      "lang": "text",
+      "category": "docs"
+    },
+    "vagrantfile": {
+      "lang": "ruby",
+      "category": "code"
+    }
+  },
+  "vendored_segments": [
+    ".git",
+    ".pnpm-store",
+    ".venv",
+    ".yarn",
+    "bower_components",
+    "node_modules",
+    "site-packages",
+    "third_party",
+    "thirdparty",
+    "vendor",
+    "venv"
+  ],
+  "vendored_segments_exact": [
+    "Pods"
+  ],
+  "generated_segments": [
+    ".gradle",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".terraform",
+    "__pycache__",
+    "coverage",
+    "dist",
+    "out"
+  ],
+  "generated_suffixes": [
+    ".gen.go",
+    "_gen.go",
+    ".pb.go",
+    ".pb.cc",
+    ".pb.h",
+    "_pb2.py",
+    ".g.dart",
+    ".freezed.dart",
+    ".min.js",
+    ".min.css",
+    ".map"
+  ],
+  "lockfile_basenames": [
+    "bun.lockb",
+    "cargo.lock",
+    "composer.lock",
+    "flake.lock",
+    "gemfile.lock",
+    "go.sum",
+    "mix.lock",
+    "package-lock.json",
+    "packages.lock.json",
+    "pipfile.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "yarn.lock"
+  ],
+  "binary_extensions": [
+    "a",
+    "bin",
+    "bmp",
+    "bz2",
+    "class",
+    "dll",
+    "dylib",
+    "eot",
+    "exe",
+    "gif",
+    "gz",
+    "ico",
+    "jar",
+    "jpeg",
+    "jpg",
+    "o",
+    "otf",
+    "pdf",
+    "png",
+    "pyc",
+    "pyo",
+    "so",
+    "svg",
+    "tar",
+    "tgz",
+    "ttf",
+    "wasm",
+    "webp",
+    "woff",
+    "woff2",
+    "xz",
+    "zip"
+  ],
+  "lex": {
+    "c": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "clojure": {
+      "line_comments": [
+        ";"
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "cpp": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "csharp": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "css": {
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "dart": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "'''",
+          "close": "'''",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "dockerfile": {
+      "line_comments": [
+        "#"
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "elixir": {
+      "line_comments": [
+        "#"
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "erlang": {
+      "line_comments": [
+        "%"
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "fsharp": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "(*",
+          "close": "*)",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "go": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        },
+        {
+          "open": "`",
+          "close": "`",
+          "multiline": true
+        }
+      ]
+    },
+    "graphql": {
+      "line_comments": [
+        "#"
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "groovy": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "'''",
+          "close": "'''",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "haskell": {
+      "line_comments": [
+        "--"
+      ],
+      "blocks": [
+        {
+          "open": "{-",
+          "close": "-}",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "html": {
+      "blocks": [
+        {
+          "open": "\u003c!--",
+          "close": "--\u003e",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\""
+        },
+        {
+          "open": "'",
+          "close": "'"
+        }
+      ]
+    },
+    "ini": {
+      "line_comments": [
+        ";",
+        "#"
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "java": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "javascript": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        },
+        {
+          "open": "`",
+          "close": "`",
+          "multiline": true
+        }
+      ]
+    },
+    "json": {
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "jsx": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "{/*",
+          "close": "*/}",
+          "detect_stray": true
+        },
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        },
+        {
+          "open": "`",
+          "close": "`",
+          "multiline": true
+        }
+      ]
+    },
+    "julia": {
+      "line_comments": [
+        "#"
+      ],
+      "blocks": [
+        {
+          "open": "#=",
+          "close": "=#",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "kotlin": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "lisp": {
+      "line_comments": [
+        ";"
+      ],
+      "blocks": [
+        {
+          "open": "#|",
+          "close": "|#",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "lua": {
+      "line_comments": [
+        "--"
+      ],
+      "blocks": [
+        {
+          "open": "--[[",
+          "close": "]]"
+        }
+      ],
+      "strings": [
+        {
+          "open": "[[",
+          "close": "]]",
+          "multiline": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "makefile": {
+      "line_comments": [
+        "#"
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "markdown": {
+      "blocks": [
+        {
+          "open": "\u003c!--",
+          "close": "--\u003e",
+          "detect_stray": true
+        }
+      ]
+    },
+    "matlab": {
+      "line_comments": [
+        "%"
+      ],
+      "blocks": [
+        {
+          "open": "%{",
+          "close": "%}",
+          "anchored": true,
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "'",
+          "close": "'"
+        },
+        {
+          "open": "\"",
+          "close": "\""
+        }
+      ]
+    },
+    "nim": {
+      "line_comments": [
+        "#"
+      ],
+      "blocks": [
+        {
+          "open": "#[",
+          "close": "]#",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "notebook": {
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "ocaml": {
+      "blocks": [
+        {
+          "open": "(*",
+          "close": "*)",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "perl": {
+      "line_comments": [
+        "#"
+      ],
+      "blocks": [
+        {
+          "open": "=pod",
+          "close": "=cut",
+          "anchored": true,
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ],
+      "heredoc": "shell"
+    },
+    "php": {
+      "line_comments": [
+        "//",
+        "#"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ],
+      "heredoc": "php"
+    },
+    "powershell": {
+      "line_comments": [
+        "#"
+      ],
+      "blocks": [
+        {
+          "open": "\u003c#",
+          "close": "#\u003e",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "proto": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "python": {
+      "line_comments": [
+        "#"
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true,
+          "docstring": true
+        },
+        {
+          "open": "'''",
+          "close": "'''",
+          "multiline": true,
+          "escape": true,
+          "docstring": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "r": {
+      "line_comments": [
+        "#"
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "ruby": {
+      "line_comments": [
+        "#"
+      ],
+      "blocks": [
+        {
+          "open": "=begin",
+          "close": "=end",
+          "anchored": true,
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ],
+      "heredoc": "shell"
+    },
+    "rust": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "scala": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "scss": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "shell": {
+      "line_comments": [
+        "#"
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ],
+      "heredoc": "shell"
+    },
+    "sql": {
+      "line_comments": [
+        "--"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "'",
+          "close": "'"
+        },
+        {
+          "open": "\"",
+          "close": "\""
+        }
+      ]
+    },
+    "svelte": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "\u003c!--",
+          "close": "--\u003e",
+          "detect_stray": true
+        },
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        },
+        {
+          "open": "`",
+          "close": "`",
+          "multiline": true
+        }
+      ]
+    },
+    "swift": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    },
+    "terraform": {
+      "line_comments": [
+        "//",
+        "#"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ],
+      "heredoc": "shell"
+    },
+    "text": {},
+    "toml": {
+      "line_comments": [
+        "#"
+      ],
+      "strings": [
+        {
+          "open": "\"\"\"",
+          "close": "\"\"\"",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "'''",
+          "close": "'''",
+          "multiline": true,
+          "escape": true
+        },
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "tsx": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "{/*",
+          "close": "*/}",
+          "detect_stray": true
+        },
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        },
+        {
+          "open": "`",
+          "close": "`",
+          "multiline": true
+        }
+      ]
+    },
+    "typescript": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        },
+        {
+          "open": "`",
+          "close": "`",
+          "multiline": true
+        }
+      ]
+    },
+    "vb": {
+      "line_comments": [
+        "'"
+      ],
+      "anchored_line": [
+        "REM "
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\""
+        }
+      ]
+    },
+    "vue": {
+      "line_comments": [
+        "//"
+      ],
+      "blocks": [
+        {
+          "open": "\u003c!--",
+          "close": "--\u003e",
+          "detect_stray": true
+        },
+        {
+          "open": "/*",
+          "close": "*/",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        },
+        {
+          "open": "`",
+          "close": "`",
+          "multiline": true
+        }
+      ]
+    },
+    "xml": {
+      "blocks": [
+        {
+          "open": "\u003c!--",
+          "close": "--\u003e",
+          "detect_stray": true
+        }
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\""
+        },
+        {
+          "open": "'",
+          "close": "'"
+        }
+      ]
+    },
+    "yaml": {
+      "line_comments": [
+        "#"
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        },
+        {
+          "open": "'",
+          "close": "'",
+          "escape": true
+        }
+      ]
+    },
+    "zig": {
+      "line_comments": [
+        "//"
+      ],
+      "strings": [
+        {
+          "open": "\"",
+          "close": "\"",
+          "escape": true
+        }
+      ]
+    }
+  }
+}

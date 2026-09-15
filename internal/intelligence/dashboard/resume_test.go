@@ -46,6 +46,15 @@ func TestResumeInfoDerivation(t *testing.T) {
 	}
 }
 
+func TestResumeTranscriptPartitionUsesHandoff(t *testing.T) {
+	if got := resumeInfoForSession("claude-code", "parent:agent:a123"); got.Kind != "handoff" || got.Subcommand != "" {
+		t.Fatalf("subagent display ID must not reach native resume: %+v", got)
+	}
+	if got := resumeInfoForSession("claude-code", "parent"); got.Kind != "native" {
+		t.Fatalf("parent lost resume: %+v", got)
+	}
+}
+
 // newResumeTestServer builds a launch-wired dashboard over a fresh DB and
 // returns both so a test can seed sessions.
 func newResumeTestServer(t *testing.T, lm LaunchManager) *Server {

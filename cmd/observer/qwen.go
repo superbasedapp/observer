@@ -138,7 +138,7 @@ func newQwenCmd() *cobra.Command {
 			if cfg, cErr := config.Load(config.LoadOptions{GlobalPath: configPath}); cErr == nil {
 				dbPath = cfg.Observer.DBPath
 			}
-			return runSeedOnlyLaunchSeeded(dbPath, "qwen-code", "qwen", bin, args, continueDir)
+			return runSeedOnlyLaunchSeeded(configPath, dbPath, "qwen-code", "qwen", bin, args, continueDir)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml); used to resolve the source session for --continue-from")
@@ -161,20 +161,34 @@ func qwenAttachPassthrough(qwenPath string) []string {
 	return nil
 }
 
-// runSeedOnlyLaunch execs a tool NON-PROXIED (child inherits os.Environ()
-// runSeedOnlyLaunchSeeded is runSeedOnlyLaunch plus best-effort direct process
-// attribution (migration 086): when dbPath and tool are set it records a
+// runSeedOnlyLaunchSeeded execs a tool non-proxied and adds best-effort direct
+// process attribution (migration 086): when dbPath and tool are set it records a
 // launch_seeds row for the successfully started child so the daemon's
 // correlation sweep can bind it to the ingested session, retracting the seed
 // when the child is reaped. A seeding failure never affects the launch (see
 // cmd/observer/launchseed.go); empty dbPath/tool disable seeding entirely.
-func runSeedOnlyLaunchSeeded(dbPath, tool, label, bin string, args []string, dir string) error {
-	child := exec.Command(bin, args...) //nolint:gosec // user-launched tool; argv is the seeded handover + forwarded args
-	child.Env = os.Environ()
+func runSeedOnlyLaunchSeeded(configPath, dbPath, tool, label, bin string, args []string, dir string) error {
+	return runSeedOnlyLaunchSeededWithEvidence(configPath, dbPath, tool, label, bin, args, dir,
+		budgetLaunchEvidence{Route: budgetLaunchRouteDirect})
+}
+
+// runSeedOnlyLaunchSeededWithEvidence is the admission-aware implementation
+// behind runSeedOnlyLaunchSeeded. The separate entry point lets a launcher
+// with grounded non-model subcommands identify them without weakening the
+// direct default shared by every other seed-only launcher.
+func runSeedOnlyLaunchSeededWithEvidence(configPath, dbPath, tool, label, bin string, args []string, dir string, evidence budgetLaunchEvidence) error {
+	evidence.Executable = bin
+	evidence.Arguments = args
+	if err := enforceBudgetControlledLaunch(context.Background(), configPath, tool, evidence); err != nil {
+		return err
+	}
+	child := exec.Command(bin, args...)   //nolint:gosec // user-launched tool; argv is the seeded handover + forwarded args
+	child.Env = scrubOOBEnv(os.Environ()) // strip the trusted OOB channel env
 	child.Dir = dir
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
+	discovery := prepareGenericDiscovery(context.Background(), tool, dir)
 	if err := child.Start(); err != nil {
 		return fmt.Errorf("exec %s: %w", label, err)
 	}
@@ -184,7 +198,7 @@ func runSeedOnlyLaunchSeeded(dbPath, tool, label, bin string, args []string, dir
 	// adapter that declares session-file watch roots. Cancel the instant the
 	// child exits so a window cut short by exit never announces a candidate
 	// that only looked unique because the scan stopped early.
-	discoverCancel := maybeStartGenericDiscovery(context.Background(), tool, dir)
+	discoverCancel := discovery.start()
 	if discoverCancel != nil {
 		defer discoverCancel()
 	}

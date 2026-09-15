@@ -177,7 +177,12 @@ func (m *idpMemBearerStore) SaveAgentKey(k ed25519.PrivateKey) error {
 }
 func (m *idpMemBearerStore) LoadAgentKey() (ed25519.PrivateKey, error) { return m.key, nil }
 func (m *idpMemBearerStore) Clear() error                              { m.bearer, m.key = "", nil; return nil }
-func (m *idpMemBearerStore) Backend() string                           { return "memory" }
+
+// Virtual-key slot stubs (BearerStore's third slot, abeda3d31): IdP enrolment
+// tests never exercise the AI Gateway virtual key.
+func (m *idpMemBearerStore) SaveVirtualKey(string, uint64) error     { return nil }
+func (m *idpMemBearerStore) LoadVirtualKey() (string, uint64, error) { return "", 0, nil }
+func (m *idpMemBearerStore) Backend() string                         { return "memory" }
 
 func idpTestStore(t *testing.T) *store.Store {
 	t.Helper()

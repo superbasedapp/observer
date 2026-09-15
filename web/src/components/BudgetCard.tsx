@@ -29,7 +29,7 @@ export function BudgetCard() {
   return (
     <ChartShell
       title={<TitleWithHelp text="Budget" helpId="card.budget" />}
-      sub="Advisory monthly budgets — banners at 80% and 100%, never a gate"
+      sub="Advisory monthly budgets - banners at 80% and 100%, never a gate"
       right={
         <button
           type="button"
@@ -49,7 +49,7 @@ export function BudgetCard() {
         />
       ) : !budget.data?.configured ? (
         <p className="py-4 text-center text-[12px] text-fg-3">
-          No budgets set. “Edit budgets” to add a monthly cap — you get a
+          No budgets set. “Edit budgets” to add a monthly cap - you get a
           quiet banner at 80% and 100%, and spend is never blocked.
         </p>
       ) : (
@@ -116,7 +116,7 @@ function ScopeBar({
         />
       </div>
       {sc.threshold === "over100" && (
-        <Pill variant="danger">over budget — advisory only</Pill>
+        <Pill variant="danger">over budget - advisory only</Pill>
       )}
     </div>
   );
@@ -265,7 +265,7 @@ function BudgetEditor({ onSaved }: { onSaved: () => void }) {
       <div className="flex items-center justify-between gap-2">
         <span className="text-[10.5px] text-fg-3">
           Saves to config.toml (prior version kept at .bak). Applies on the
-          next refresh — no restart.
+          next refresh - no restart.
         </span>
         <button
           type="button"

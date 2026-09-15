@@ -2725,9 +2725,17 @@ func TestAPISessionMessages_CodexTurnVsInferenceGrouping(t *testing.T) {
 	}
 
 	// detail=inference mode: msg_key = COALESCE(message_id, source_event_id).
-	// Each token row is its own msg_key, the assistant action stays
-	// at "turn-2". Three rows total — two per-inference token rows
-	// (no tool calls), one action-only row (no tokens).
+	// Each token row is its own msg_key. The assistant action's own key
+	// ("turn-2") has no matching token row at this grain, so
+	// inferenceBucketIndex (see its doc comment) assigns it to whichever
+	// per-inference bucket actually emitted it by timestamp — here the
+	// action is stamped at the SAME instant as the L7 bucket, so it
+	// attaches to L7 rather than stranding as its own action-only row or
+	// as a synthetic "API call (no recovered text)" placeholder on L7.
+	// Two rows total: L7 carries the real "ls" tool call; L11 has no
+	// tool call and, since the orphan ratio (1 of 2 assistant rows) sits
+	// at exactly 0.5 — not > 0.5 — stays orphaned rather than picking up
+	// an orphan-stub-injection placeholder.
 	rr = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, httptest.NewRequest(
 		http.MethodGet, "/api/session/sCx/messages?detail=inference", nil,
@@ -2739,29 +2747,21 @@ func TestAPISessionMessages_CodexTurnVsInferenceGrouping(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&inferMode); err != nil {
 		t.Fatal(err)
 	}
-	if len(inferMode.Messages) != 3 {
-		t.Fatalf("inference rows: got %d want 3; rows=%+v", len(inferMode.Messages), inferMode.Messages)
+	if len(inferMode.Messages) != 2 {
+		t.Fatalf("inference rows: got %d want 2; rows=%+v", len(inferMode.Messages), inferMode.Messages)
 	}
 	byKey := map[string]rowShape{}
 	for _, m := range inferMode.Messages {
 		byKey[m.MessageID] = m
 	}
-	// The dashboard's orphan-token stub-injection (lines 1933+ of
-	// dashboard.go) adds a synthetic `llm_call` tool_call to any
-	// assistant row that has tokens but no real tool call, when the
-	// session's orphan ratio crosses 0.5. In inference mode the codex
-	// per-event token rows ARE orphans (the real tool calls stay on
-	// the turn-keyed row), so each per-inference row picks up one
-	// synthetic llm_call — that's the right UX, surfacing the
-	// per-inference billing as a clickable timeline row.
+	if _, ok := byKey["turn-2"]; ok {
+		t.Errorf("inference mode: unexpected standalone turn-2 action row; rows=%+v", inferMode.Messages)
+	}
 	if r := byKey["tk:rollout.jsonl:L7"]; r.Input != 100 || r.Output != 50 || r.ToolCallCount != 1 {
-		t.Errorf("inference L7 row: %+v want in=100 out=50 tc=1 (synthetic llm_call stub)", r)
+		t.Errorf("inference L7 row: %+v want in=100 out=50 tc=1 (the real ls tool call, routed here by inferenceBucketIndex)", r)
 	}
-	if r := byKey["tk:rollout.jsonl:L11"]; r.Input != 200 || r.Output != 75 || r.ToolCallCount != 1 {
-		t.Errorf("inference L11 row: %+v want in=200 out=75 tc=1 (synthetic llm_call stub)", r)
-	}
-	if r := byKey["turn-2"]; r.ToolCallCount != 1 || r.Input != 0 {
-		t.Errorf("inference turn-2 action row: %+v want tc=1 in=0", r)
+	if r := byKey["tk:rollout.jsonl:L11"]; r.Input != 200 || r.Output != 75 || r.ToolCallCount != 0 {
+		t.Errorf("inference L11 row: %+v want in=200 out=75 tc=0 (orphan ratio 0.5 does not cross the >0.5 stub-injection threshold)", r)
 	}
 }
 

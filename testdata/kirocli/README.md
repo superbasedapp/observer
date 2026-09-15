@@ -59,3 +59,108 @@ crossmount translation.
    shell-history — never chat; `auth_kv` (`kirocli:social:token`) +
    `state` (`telemetry-cognito-credentials`, …) are credential/telemetry
    rows the adapter must never read.
+
+---
+
+## Kiro IDE fixtures (Layout 3 — `~/.kiro/sessions/<bucket>/<sid>/`)
+
+There are **two** IDE fixtures, and the difference matters.
+
+### 1. `ide/9f3c1d0b7a4e2856/sess_0a1b2c3d-…/` — REAL, anonymized (primary)
+
+An **anonymized derivation of a real Kiro IDE 1.0.411 session** the
+operator ran **2026-09-03** (signed in with **Google** — no AWS Builder
+ID needed, correcting the earlier note): a five-step prompt kit
+(summarise the project; create + run `hello.py`; edit it to "Hello
+Universe" + run; delete it; list the directory to verify). 67 records.
+
+**Derivation rules** — structure-preserving, values-only rewrite. Every
+record, payload key, `toolName`, `kind`, `actionType`, `status` and
+nesting level is carried through verbatim; only identifying values are
+replaced, deterministically:
+
+| Real | Fixture |
+|---|---|
+| session id (real value withheld — a `sess_<uuid>` id) | `sess_0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d` |
+| workspace-hash bucket (real 16-hex value withheld) | `9f3c1d0b7a4e2856` |
+| workspace path `c:\Users\<user>\<dir>\<proj>` | `c:\Users\dev\workspace\demo` (incl. its percent-double-encoded and doubled-backslash escapings inside `snapshotUri` and JSON-in-a-JSON-string bodies) |
+| every UUID (`executionId`, message ids, `requestIds`, `traceparent`, `userMessageTag`) | sequential `%08d-0000-4000-8000-%012d` placeholders, one per distinct source value |
+| every `tooluse_<rand>` / `turn_approval_<ms>_<ms>_<rand>` id | sequential placeholders keeping the same prefix shape |
+| timestamps | shifted to a `2026-09-03T12:00:00.000Z` base, **relative deltas preserved** |
+| `reasoningSignature` (encrypted blob) | `REDACTED-REASONING-SIGNATURE` |
+| the user prompt | rewritten to an equivalent generic prompt **plus an injected `sk-ant-api03-…` secret**, so the scrub assertion runs against the real-derived fixture |
+| model/README prose naming the operator's project | generic equivalents |
+| `session_start.content` (~18 KB Kiro system prompt) | a one-line elision note — the record and its `agentType` / `forcedRole` / `messageId` keys are kept |
+
+Everything else — the tool argument shapes, the `todo_list` task
+payloads, the PowerShell echo noise in `execute_pwsh` results, the
+`{}` bodies `delete_file` and `list_directory` return, the
+`contextUsage` percentages, the `usage_summary` credit float — is the
+vendor's own output, unmodified apart from the substitutions above.
+
+### 2. `ide/a1b2c3d4e5f60718/sess-ide-shapes-0001/` — BUNDLE-DERIVED (shape variants)
+
+> **⚠️ SYNTHESISED, NOT LIVE.** Built from the Kiro agent extension's
+> own source (`kiro.kiro-agent` **1.0.776**, 12.9 MB bundle read
+> verbatim **2026-09-02**): the `session.json` zod schema `hV`, the
+> `messages.jsonl` payload union, the record-id spellings and the
+> `sha256(normalize(workspaceFolders)).hex[:16]` bucket formula. Field
+> PRESENCE and SHAPES are grounded in the bundle; per-field VALUES are
+> invented.
+
+It is kept — rather than deleted when the real capture landed — because
+it carries payload shapes the five-turn live run never produced, and
+deleting it would delete real regression coverage:
+`tombstone`, `sub_agent_start`, `source:"steer"`, ARRAY-shaped
+`content`, an UNMAPPED tool name (`open_cli_terminal`), the SYNTHETIC
+interrupted `tool_result` (`<toolCallId>-result-synthetic`,
+`success:false`), `operationType` `Print` / `Summary`, and a
+`session.json` that carries `effortLevel` (the live 1.0.411 one does
+not).
+
+### What the real capture proved
+
+1. The IDE ships an **entirely different tool vocabulary from the CLI**
+   — `read_file`, `fs_write` (body in `text`, no `command` sub-arg),
+   `str_replace`, `execute_pwsh`, `delete_file`, `list_directory`,
+   `todo_list`. Before this fixture landed, ten of the session's rows
+   were `unknown` on the live daemon.
+2. `create` / `complete` are the **`todo_list` sub-command**, not tool
+   names — they surfaced as targets only because the generic arg probe
+   reads the `command` key on an unmapped tool.
+3. Three payload types the bundle read missed —
+   `pending_interaction`, `interaction_resolved`, `usage_summary` —
+   warned nine times on one five-turn session.
+4. `session_start` is written **LAST**, and its `content` is the Kiro
+   system prompt, not the user's first message.
+5. `assistant` `operationType:"Reasoning"` records carry an encrypted
+   `reasoningSignature` and a literal `"..."` body — Kiro elides the
+   reasoning text.
+6. `modelId` is `"auto"`; `effortLevel` is **absent**.
+7. `delete_file` names its operand `targetFile`, a key the probe table
+   did not know — the one live row with a blank target.
+
+The remaining IDE cases are built in-test rather than committed:
+a session dir with **no** `session.json` (missing-sibling tolerance), a
+**CRLF** copy of the stream, a **split-window** parse (tool_call in one
+window, its `tool_result` in the next → `ParseResult.OutcomeUpdates`),
+an unmapped tool with no recognisable operand, and the `classifyLayout`
+path matrix (`cli` bucket vs hash bucket vs `snapshots/**` vs
+`sub-executions/*.jsonl` vs `session.json`).
+
+**No token fixture exists for this layout, by construction:** Kiro IDE
+persists no token counts anywhere. `session_metadata`'s
+`contextUsage.usagePercentage` is a context-window fraction, and
+`usage_summary`'s `promptTurnSummaries[].usage` is a Kiro **credit**
+float (`"unit":"credit"`) — neither is a token count nor convertible
+into one, so `parseIDESession` emits ZERO `TokenEvent`s.
+
+### Sidecars observed but NOT copied here
+
+`~/.kiro/session-index/<bucket>.jsonl` (session roster),
+`~/.kiro/sessions/<bucket>/<sid>/publish.cursor` (Kiro's own
+`<byteOffset>:<recordIndex>` tail watermark),
+`~/.kiro/workspace-roots/<bucket>/permissions.yaml` (per-workspace tool
+policy) and `~/.kiro/logs/<ts>/kiro.log`. None is wired; the reasoning
+is tabulated in `docs/kiro-cli-adapter.md`, "Sidecar files under
+`~/.kiro`".

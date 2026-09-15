@@ -621,7 +621,8 @@ type recordingLogger struct {
 	warns []string
 }
 
-func (l *recordingLogger) Info(string, ...any) {}
+func (l *recordingLogger) Debug(string, ...any) {}
+func (l *recordingLogger) Info(string, ...any)  {}
 func (l *recordingLogger) Warn(msg string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

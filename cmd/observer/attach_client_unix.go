@@ -103,7 +103,16 @@ func runAttachSession(ctx context.Context, in attachLaunch) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	sockPath := attachSocketPath(cfg.Observer.DBPath)
+	// The endpoint comes from the platform transport, never a local formula, so
+	// the client dials exactly what `observer start` listened on. An
+	// unusable endpoint (on unix: a socket path past UNIX_PATH_MAX) is reported
+	// with the transport's own actionable message rather than surfacing later
+	// as a causeless connect failure (DI-09).
+	sockPath, eerr := attachEndpoint(cfg.Observer.DBPath)
+	if eerr != nil {
+		fmt.Fprintf(in.stderr, "observer %s --attach: %v\n", subcommand, eerr)
+		return exitErr(1)
+	}
 	cwd, _ := os.Getwd()
 
 	// The initial spawn. A user-initiated `--attach --resume <id>` carries its

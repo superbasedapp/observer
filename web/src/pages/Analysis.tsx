@@ -29,7 +29,7 @@ import {
 import { ChartState } from "@/components/ChartState";
 import { useFilters, windowDaysApprox, windowParams } from "@/lib/filters";
 import { useApi } from "@/lib/useApi";
-import { fmtBytes, fmtCompact, fmtInt, fmtPct, fmtUSD } from "@/lib/format";
+import { fmtBytes, fmtCompact, fmtInt, fmtPct, fmtTaskUSD, fmtUSD } from "@/lib/format";
 import type {
   AnalysisCacheSavingsTrend,
   AnalysisCostByDowHour,
@@ -43,6 +43,8 @@ import type {
   Mover,
   StatusScoped,
   StatusSnapshot,
+  TaskCostBucket,
+  TaskRollup,
   VerbosityAggregateResponse,
 } from "@/lib/types";
 
@@ -108,12 +110,23 @@ export function AnalysisPage() {
     { by: vbDim, since_days: windowDaysApprox(win, customRange) },
     [win, customRange, vbDim],
   );
+  // /api/tasks (docs/task-tracking.md) takes the same days/hours/since/until
+  // window shape as every other analysis endpoint here, plus the same
+  // `project`/`tool` string-keyed filters (project's root_path / a
+  // session's tool) analysisScopeClause already applies elsewhere on
+  // this page — NOT the numeric `project_id` the endpoint also accepts
+  // for API compatibility, which nothing in the frontend resolves to.
+  const taskRollup = useApi<TaskRollup>(
+    "/api/tasks",
+    { ...winParams, tool: toolParam, project: projectParam },
+    [win, customRange, tool, project],
+  );
 
   return (
     <div className="space-y-6 p-6">
       <PageHeader
         title="Analysis"
-        sub="Spending insights for the selected window. Headline KPIs comparing this period to the prior period, daily trend with a dimension toggle, top movers, and cost-sensitive signals — $/M output, cache savings, high-context turns, per-turn variance, burn rate, top-model concentration, and routing efficiency suggestions."
+        sub="Spending insights for the selected window. Headline KPIs comparing this period to the prior period, daily trend with a dimension toggle, top movers, and cost-sensitive signals - $/M output, cache savings, high-context turns, per-turn variance, burn rate, top-model concentration, and routing efficiency suggestions."
         helpId="tab.analysis"
       />
       <HeadlineGrid
@@ -266,7 +279,7 @@ export function AnalysisPage() {
         title={<TitleWithHelp text="Routing efficiency" helpId="chart.analysis_routing" />}
         sub={
           routing.data?.framing_note ||
-          "Informational only — model choice may be deliberate"
+          "Informational only - model choice may be deliberate"
         }
         right={
           routing.data ? (
@@ -318,6 +331,23 @@ export function AnalysisPage() {
           {verbosity.data && (
             <VerbosityAggregateTable groups={verbosity.data.groups} dim={vbDim} />
           )}
+        </ChartState>
+      </ChartShell>
+
+      {/* Task tracking — session-level todo/plan checklist rollup
+          (docs/task-tracking.md). */}
+      <ChartShell
+        title="Tasks"
+        sub={`Session-level todo/plan checklist tracking · ${win}`}
+      >
+        <ChartState
+          loading={taskRollup.loading && !taskRollup.data}
+          error={taskRollup.error}
+          empty={!taskRollup.data}
+          emptyHint="Loading task rollup…"
+          height={160}
+        >
+          {taskRollup.data && <TaskRollupSection data={taskRollup.data} />}
         </ChartState>
       </ChartShell>
     </div>
@@ -375,7 +405,7 @@ function VerbosityAggregateTable({
               </td>
               <td className="py-1.5 text-right tabular-nums text-fg-2">
                 {g.code_explain_ratio == null
-                  ? "—"
+                  ? "-"
                   : `${g.code_explain_ratio.toFixed(2)}×`}
               </td>
               <td className="max-w-[220px] py-1.5 pl-3 font-mono text-[11px] text-fg-2">
@@ -385,11 +415,11 @@ function VerbosityAggregateTable({
                         .slice(0, 4)
                         .map((l) => l.language)
                         .join(", ")
-                    : "—"}
+                    : "-"}
                 </span>
               </td>
               <td className="py-1.5 pr-2 text-right tabular-nums text-fg-1">
-                {g.cost_estimated ? fmtUSD(g.est_total_usd) : "—"}
+                {g.cost_estimated ? fmtUSD(g.est_total_usd) : "-"}
               </td>
             </tr>
           ))}
@@ -617,7 +647,7 @@ function HeadlineGrid({
         loading={loading}
         value={
           <span className="font-mono text-[18px]">
-            {data.top_model.key || "—"}
+            {data.top_model.key || "-"}
           </span>
         }
         sub={`${fmtPct(data.top_model.concentration_pct, 1, false)} concentration · ${fmtUSD(data.top_model.cost_usd)}`}
@@ -757,7 +787,7 @@ function MoversBlock({
                   className={`py-1 pl-2 text-right tabular-nums ${deltaCls}`}
                 >
                   {deltaPct == null
-                    ? "—"
+                    ? "-"
                     : `${deltaPct > 0 ? "+" : ""}${deltaPct.toFixed(1)}%`}
                 </td>
               </tr>
@@ -950,6 +980,136 @@ function RoutingList({
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ----------------------------------------------------- Task tracking
+
+function TaskRollupSection({ data }: { data: TaskRollup }) {
+  if (data.sessions_with_tasks === 0) {
+    return (
+      <p className="text-[11.5px] text-fg-3">
+        No sessions in this window used a todo/plan tool — most don't; this
+        is the normal case, not a gap.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <TaskKpi label="Sessions" value={fmtInt(data.sessions_with_tasks)} />
+        <TaskKpi label="Created" value={fmtInt(data.counts.created)} />
+        <TaskKpi label="Completed" value={fmtInt(data.counts.completed)} />
+        <TaskKpi label="Cancelled" value={fmtInt(data.counts.cancelled)} />
+        <TaskKpi
+          label="Never activated"
+          value={fmtInt(data.counts.never_activated)}
+        />
+        <TaskKpi label="Still open" value={fmtInt(data.counts.still_open)} />
+      </div>
+
+      {data.by_tool.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[480px] text-left text-[11.5px]">
+            <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
+              <tr className="border-b border-line-2">
+                <th className="py-1.5 pl-2 font-medium">Tool</th>
+                <th className="py-1.5 text-right font-medium">Sessions</th>
+                <th className="py-1.5 text-right font-medium">Tasks</th>
+                <th className="py-1.5 pr-2 text-right font-medium">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.by_tool.map((t) => (
+                <tr
+                  key={t.tool}
+                  className="border-b border-line-1 last:border-b-0 hover:bg-bg-3/40"
+                >
+                  <td className="py-1.5 pl-2">
+                    <ToolBadge tool={t.tool} />
+                  </td>
+                  <td className="py-1.5 text-right tabular-nums text-fg-2">
+                    {fmtInt(t.sessions)}
+                  </td>
+                  <td className="py-1.5 text-right tabular-nums text-fg-2">
+                    {fmtInt(t.tasks)}
+                  </td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums text-fg-1">
+                    {t.unpriced ? (
+                      <span className="text-fg-3">unpriced</span>
+                    ) : (
+                      fmtTaskUSD(t.cost_usd)
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <TaskBucketCard
+          label="Attributed to one task"
+          bucket={data.attributed_single}
+        />
+        <TaskBucketCard label="Between tasks" bucket={data.between_tasks} />
+        <TaskBucketCard label="Shared (2+ tasks)" bucket={data.shared} />
+      </div>
+
+      {data.counts.unmatched > 0 && !data.counts.all_sessions_keys_native && (
+        <p className="text-[10.5px] text-fg-3">
+          {data.counts.unmatched} item(s) across these sessions could not be
+          matched across updates (the tool has no stable id — text changed
+          between snapshots).
+        </p>
+      )}
+      {data.cost_note && (
+        <p className="text-[10.5px] text-fg-3">{data.cost_note}</p>
+      )}
+    </div>
+  );
+}
+
+function TaskKpi({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-3 border border-line-2 bg-bg-2 px-3 py-2">
+      <div className="text-[10px] font-medium uppercase tracking-[0.05em] text-fg-3">
+        {label}
+      </div>
+      <div className="mt-0.5 tabular-nums text-[15px] font-semibold text-fg-1">
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function TaskBucketCard({
+  label,
+  bucket,
+}: {
+  label: string;
+  bucket: TaskCostBucket;
+}) {
+  return (
+    <div className="rounded-3 border border-line-2 bg-bg-2 px-3 py-2">
+      <div className="text-[10px] font-medium uppercase tracking-[0.05em] text-fg-3">
+        {label}
+      </div>
+      <div className="mt-0.5 tabular-nums text-[14px] font-semibold text-fg-1">
+        {bucket.unpriced ? (
+          <span className="text-fg-3">unpriced</span>
+        ) : (
+          fmtTaskUSD(bucket.cost_usd)
+        )}
+      </div>
+      <div className="mt-0.5 text-[10.5px] text-fg-3">
+        {fmtCompact(bucket.tokens.input_tokens)} in /{" "}
+        {fmtCompact(bucket.tokens.output_tokens)} out ·{" "}
+        {fmtInt(bucket.actions_count)} actions
+      </div>
     </div>
   );
 }

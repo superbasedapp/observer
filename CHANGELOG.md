@@ -4,6 +4,486 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.33.0] — 2026-09-15
+
+### Added
+
+- **feat(update): Enterprise Update Management - fleet self-update served by
+  your own org server.** A node never contacts GitHub, npm or a CDN for an
+  update; it fetches only from the org server it is enrolled with. That
+  server's mirror is filled by `observer-org update import` (air-gapped
+  sites) or `observer-org update sync` (connected ones), which is what makes
+  air-gap the default path rather than a special case. Three channels
+  (`stable` / `lts` / `edge`) are a property of the MANIFEST, never of the
+  binary, and the node side is `observer update status|check|apply|history`.
+  Operator reference: `docs/enterprise-updates.md`.
+- **feat(update): two-signature update manifests and a compiled-in vendor
+  key.** Every manifest carries the org's Ed25519 TOFU-pinned distribution
+  signature AND a per-artifact vendor signature over the archive bytes,
+  verified against a key compiled into the agent, so a compromised org server
+  alone cannot substitute a binary we did not build. An artifact with no
+  vendor signature is refused - fail closed. The release pipeline now signs
+  every artifact and publishes a signed release manifest plus an air-gap
+  bundle; cosign-bundle and minisign were deleted from the signature
+  vocabulary because neither ever had a verifier.
+- **feat(update): drain-gated apply with a fork-exec-and-watch handshake.**
+  Applying an update is never an execve replace. The old daemon drains
+  in-flight proxied requests (`503` plus `Retry-After` through the new
+  `internal/quiesce`, never a connection refusal), swaps the binary
+  atomically, spawns the new one as a child, and - if the child fails its
+  self-check, exits non-zero, or hangs - the still-alive parent kills it and
+  restores the previous binary, along with a pre-apply `VACUUM INTO` snapshot
+  when the target advanced the schema. Supervisor templates for systemd,
+  launchd and Windows ship under `deploy/supervisor/` for the residual window
+  after the old parent exits.
+- **feat(org,update): staged rollout rings, a fleet version board and a skew
+  gate.** Manifests roll out through a pure ring engine (`rolloutcore`,
+  extracted from the policy-rollout cohort code) keyed on each node's own
+  subject. `[server].min_agent_version` and `min_agent_version_action` (warn
+  by default, a typed `426 agent_too_old` when set to refuse) plus
+  `max_skew_minors` feed `GET /api/org/fleet/versions` with a version
+  histogram, a skew banner and a stranding-by-install-method panel. The new
+  `observer-org upgrade preflight` turns the server's own pre-upgrade
+  checklist (backup, migration dry run, disk headroom, skew report, config
+  validation) into one gate-able exit code, and the VS Code extension will
+  never launch its bundled binary over a strictly newer installed one.
+- **feat(org,pricing): enterprise per-model pricing.** `org_model_prices`
+  (server migration 132, effective-dated, USD only) becomes the ONE authored
+  price table, and the two places that already priced a turn become
+  projections of it: the AI gateway's rate card, projected through one seam
+  (the old rate-card PUT answers `409 moved_to_pricing`), and a signed
+  fleet-wide `GET /api/agent/pricing` rail that each node persists locally
+  (agent migration 106) and feeds into a single process-wide cost engine, so
+  captured turns are stamped at the org's negotiated rate. Reads need
+  `read:budgets`; writes use the new 18th RBAC key `write:pricing`. Since
+  migration 135 every rate column is nullable: NULL means not quoted and
+  falls through, a set 0 means the org negotiated that rate free. Operator
+  reference: `docs/pricing.md`.
+- **feat(org,assistant): an org admin assistant that can author the
+  organization's administration under approval.** A closed table of 57 tools
+  generates the tool specs, the labels, the system contract and the gate, and
+  three enforcement points make a proposal safe: the chatting member is
+  authorized before dispatch (a miss writes no proposal row at all), the
+  parked proposal is inert with a server-computed preview, and approval
+  re-checks the APPROVER against the same table, re-previews (a changed plan
+  goes stale, an uncomputable one invalid) and executes the resolved plan
+  under the approver. Bulk operations are ordinary table rows capped at 200
+  items, with invites itemized because mail cannot be un-sent. Ships with an
+  Approvals inbox, a sidebar badge, nine status pills and an opt-in
+  `[dashboard].approval_email` notification. Operator reference:
+  `docs/assistant.md`.
+- **feat(org,budgets): team and developer spend budgets with real
+  enforcement.** One authored `budgets` table (server migration 125) carries
+  `cap_tokens` beside `monthly_usd_cap`, an `enforcement` column
+  (report / soft / hard) and calendar periods with a timezone. Two real
+  chokepoints act on it: the existing alert evaluator, and the AI gateway's
+  reservation ledger, which now PROJECTS its cap from `budgets` instead of
+  being separately authored. A third, opt-in node-side chokepoint composes
+  the org's cap onto the node's existing guard engine through a signed
+  per-caller `GET /api/agent/budget` pull - lowering-only on an individual
+  node, org-authoritative on a managed node holding the `enforce.budget`
+  authority. Dashboard team CRUD makes a "team budget" addressable without an
+  IdP. An org that would rather not show dollars can render every figure on
+  the org dashboard as tokens, or as a percentage of the relevant cap,
+  through one formatter seam - never per-surface division - and token counts
+  now ride beside cost on every payload that carried cost alone. Operator
+  reference: `docs/budgets.md`.
+- **feat(org,budgets): an honest per-developer coverage column.** A budget
+  nothing can enforce must never render as "under budget". Nodes now
+  self-report an enum-only budget posture that ingest lands in
+  `org_node_budget_posture` (server migration 130) and the rollup turns into
+  table-driven coverage reasons on the Budgets page, so an unenforceable
+  scope or a developer who does not route through the gateway is visibly
+  uncovered rather than silently green. The gateway also buckets each cap's
+  window in the cap's own timezone (migration 131), retiring the
+  gateway-buckets-in-UTC warning.
+- **feat(org): three sign-in rails behind one seam - local, SAML and OIDC.**
+  The new OIDC rail does authorization-code plus PKCE with JWKS rotation and
+  presets for Entra, Okta, Google and a generic provider; SAML now boots
+  non-fatally against an unreachable IdP instead of aborting startup; and the
+  local email-and-password rail (argon2id) is unconditionally mounted as the
+  break-glass path when an IdP is down. Identity is configured from the
+  dashboard (Settings, Identity) and the setup wizard, seeded once from TOML
+  and dashboard-owned thereafter, with `observer-org auth show` /
+  `auth reset-bootstrap` as the CLI escape.
+- **feat(org): IdP group to role mapping, gated JIT provisioning and member
+  approval.** Group-to-role mapping is an admin-editable ordered rule set
+  applied at every sign-in, with a last-admin guard and an explicit
+  dashboard-versus-IdP precedence. More importantly, an unknown email on an
+  SSO rail no longer becomes an active member by default: it auto-activates
+  only via an email-domain allow-list (empty by default) or a matching group
+  rule, and otherwise lands `pending` awaiting an explicit approval. Sessions
+  are generation- and epoch-aware for every rail, so a single member or the
+  whole org can be signed out
+  (`POST /api/org/members/{id}/revoke-sessions` and
+  `POST /api/org/auth/revoke-all-sessions`); every sign-in, failure, lockout,
+  revocation and settings change is audited BEFORE the session issues; and
+  `admin:identity` is the 16th RBAC permission key, held only by the builtin
+  admin role.
+- **feat(org,loc): lines-of-code tracking.** Per-session and per-developer
+  AI-versus-human-versus-system CODE line counts, with comments, blanks and
+  whitespace split out, produced by a pure classifier over already-scrubbed
+  tool input (agent migration 103, node-local). Human capture is VS Code-only
+  in v1 and `human_capture="none"` means unmeasured, never zero - no surface
+  renders an AI share on it. `observer backfill --loc` re-counts history; the
+  org wire ships aggregate counts by default and gates only the per-language
+  mix behind the raw-content posture. Operator reference:
+  `docs/loc-tracking.md`.
+- **feat(org): Project Identity Resolver v2.** N differently-named local
+  folders across N developers now fold onto one project with zero developer
+  action: the node resolves a set of identity hashes at capture (agent
+  migration 102), they ride on the session wire (server migration 121), and a
+  pure table-driven rule engine (server migration 122) materializes projects
+  through a single writer at ingest. Ships with `observer-org resolve-projects`,
+  admin surfaces on Projects and Project Detail, and a Settings, Identity
+  panel for the rule table.
+- **feat(telemetrylog): a shared durable log in front of both org ingest
+  paths.** Node push and OTLP gateway requests each publish one record to a
+  durable log and are acked only after the log's PubAck - a log fault answers
+  `503` plus `Retry-After`, never a lying `200`. The log contract is pure
+  (`internal/telemetrylog`) with a NATS/JetStream adapter that can run
+  embedded in-process or against an external cluster, a `[log]` config block
+  with redaction, an `observer-org doctor` probe, and a conformance suite.
+  Three durable consumers drain it, and records that cannot be applied land
+  in a quarantine table with one writer and its own alerting.
+- **feat(orgserver): typed Parquet on object storage as the durable system of
+  record, with offline replay.** Accepted telemetry is written as typed
+  Parquet to local, S3-compatible or Azure Blob storage, which is also the
+  update mirror; legacy JSONL replay remains supported. Recovery inventories
+  and validates the whole archive first, then applies one generation's
+  sequence order in bounded pages, and transactional receipts (SQLite
+  migration 137 / PostgreSQL 0003) stop a stale occurrence committing its
+  derived rows twice. Object-store credentials resolve by identity (S3
+  default chain, Azure SAS) rather than long-lived keys. Alongside this,
+  `observer-org serve --role all|collector|worker|api|aigateway` (or
+  `[server].roles`) splits the server into independently scalable tiers
+  behind a load balancer, with advisory-lock singletons for the jobs that
+  must run once and `/healthz` reporting the roles and the log probe.
+- **feat(aigateway): AI Gateway v1.** An optional org-side gateway with
+  virtual keys, atomic budget reservation and settlement, streaming support
+  and metadata-only audit, plus Bedrock and Vertex providers, a standalone
+  gateway binary, a capacity envelope and a live disallow gate.
+- **feat(node): direct-vendor budget enforcement on managed nodes.** A
+  managed node whose developer talks straight to a vendor - no gateway, no
+  proxy - is now inside the budget too: the node watches its own captured
+  spend against the org's cap and, past the cap, stops the offending agent
+  processes and refuses new launches, with a policy-bound process cutoff and
+  a three-class accounting readiness model so an unpriced model is FLAGGED,
+  never silently denied.
+- **feat(cloud): Cloud Intelligence - a signed-in personal plane (BETA).**
+  An entirely opt-in, manual-first lane in which a developer can send one
+  session's evidence to a hosted service and get an AI-written summary back.
+  **Signed-in Free** allows up to 20 session enrichments per day and 100 per
+  month on GPT-5.6 Luna (xhigh reasoning). **Plus is beta and experimental**,
+  USD 15 per month with a 7-day trial: enrichments run on the substantially
+  stronger GPT-5.6 Sol (xhigh reasoning), capped at 120 per month (25 per
+  day), and add weekly project digests. Results now read as narrative
+  sections - what was done, plans implemented, issues found, failures, and
+  what to do next - and never expose internal evidence ids. The node half is
+  zero-egress by construction: the `observer cloud` CLI is the only outbound
+  trigger, preview bytes are the upload bytes, and nothing leaves a machine
+  that a consent screen did not already name. Operator reference:
+  `docs/cloud-intelligence.md`.
+- **feat(cloud): consent, results and background enrichment where developers
+  already look.** One plain consent card in Settings replaces the purpose
+  vocabulary (which moves to an Advanced fold), a "What we sent" ledger shows
+  every upload content-free, and session cards gained Enrich now, Sync now
+  and a preview-first flow. With the policy on, a daemon-side sweep enriches
+  finished sessions in the background on a 15-minute default. AI-written
+  session titles and descriptions surface on the Sessions list, the session
+  header and the VS Code tree, with inline editing and a user-over-AI
+  precedence.
+- **feat(orgserver): org-served Cloud Intelligence.** An enrolled node can get
+  the same AI session enrichment from its OWN org server instead of the
+  hosted personal plane, over a disjoint authority plane with its own org
+  settings, job and result tables, a signed result-pull rail, per-org
+  retention and an admission bound. Surfaces land on the node dashboard, the
+  org session drawer and a Settings card.
+- **feat(adapter): four new tool adapters.** `poolside` (Poolside's agentic
+  coding model, reached as a JetBrains ACP agent; event-sourced NDJSON
+  trajectories, per-call tokens), `zed` (Zed's own native agent; per-OS
+  `threads.db` whose rows are rewritten whole per turn as zstd-compressed
+  JSON), `kiro-crew` (AWS Kiro Crew, the multi-agent desktop app that drives
+  kiro-cli - it emits rows ONLY for a Crew chat with no kiro-cli twin, so
+  nothing is double-counted) and `grokbot` (the Grok Bot desktop app, whose
+  inference runs in a remote sandbox, so tokens, model, cost and cwd are
+  honestly absent rather than guessed). Freebuff also gained its desktop
+  store, and Qoder, Open Interpreter, Factory and OpenClaw gained additional
+  grounded surfaces. Supported-tool copy is reconciled to 40 across every
+  surface.
+- **feat(surfaceenrich): a hosted-surface enricher for JetBrains AI
+  Assistant.** An orchestration host that owns no conversation but points at
+  the agent session it drove now stamps that session's capture surface: a
+  daemon-lifetime loop maps JetBrains agent-session pointers onto the owning
+  adapter's session id, and the host record wins over the agent's own
+  self-report (an empty host never clears it). Agents that do not round-trip
+  by exact id stay honestly unmapped, and no JetBrains capture adapter was
+  added, because one would double-count every agent's conversation.
+- **feat(org): node session-detail trickles up to the org dashboard.** The
+  org session drawer now carries what the node has always shown, additively:
+  the capture surface, sub-agent token and cost attribution, real message
+  columns with per-message role, effort, tools and stop reason, per-model
+  cost buckets, a per-event cache timeline, the process tree with metrics,
+  a Tasks tab and per-message tool-account attribution - the last two behind
+  two new opt-in share tiers, with the rest as default metadata.
+- **feat(design-system): one shared design system for every application
+  surface.** `shared/` is now an npm-workspace package owning the tokens, the
+  Tailwind preset, the primitives and the charts that the node dashboard, the
+  org dashboard and the cloud portal all consume, ending web2's hand-copied
+  tokens and webcloud's look-alike tiles. Components promoted into it stay
+  pure, with a one-line re-export shim left at the old path so existing
+  importers are untouched.
+- **feat(config,dashboard): config management from the dashboard.** A
+  generated config schema (with a CI drift gate) backs
+  `GET /api/config/schema` and `PUT /api/config/keys`, a surgical file patcher
+  that preserves comments and formatting, credential redaction, and a
+  schema-driven Settings renderer that is honest about which keys need a
+  restart.
+- **feat(pricing): a signed public pricing feed.** List prices can now be
+  refreshed without a package release: a signed feed published from the
+  Tokenomics database and shaped like the node rate vocabulary, an
+  in-process poller that re-prices the live cost engine, explicit precedence
+  (enrolment first), an air-gap bundle, park and auto modes, and an org-side
+  importer with a dashboard panel.
+- **feat(ssh,terminal): SSH remote-profile terminals and an instance
+  switcher.** Dashboard terminals can open on another machine through an
+  allow-listed SSH profile (the request carries a profile NAME only),
+  `observer ssh` reaches CLI parity with a "Test connection" verb and an
+  opt-in reverse proxy forward, and the dashboard can switch to a remote
+  install's dashboard over a local port forward.
+- **feat(archive): corpus archival and reclaim.** An opt-in cold store
+  (`archive.db`, its own lineage and its own owner) moves aged corpus rows
+  out of the hot database copy-verify-delete, never delete-first, verifying
+  by reading back from the cold file; `observer archive status|rehydrate|reclaim`
+  drives it, and reclaim is operator-invoked only and never deletes. Disabled
+  by default, so an untouched install is byte-identical to before.
+- **feat(orgpush): a uniform envelope budget across all 41 wire families.**
+  Every family is now bounded end to end with a loud push breaker, closing
+  the class behind the 2026-08-26 host-crash amplifier, and cursor wires
+  leave explicit slack so a push cannot pause 693 bytes over the limit.
+- **feat(govern): enterprise share algebra and node governance.** A managed
+  node's reporting tiers are composed through one share algebra with grant
+  replacement and posture-conditional invariants, enterprise authority tokens
+  reach the node through the enrolment-delivered grant, and every authority
+  string on the dashboard says honestly what it does and does not allow.
+- **docs: a private-datacenter deployment playbook and a sizing
+  calculator.** `docs/private-datacenter-deployment.md` is the full operator
+  playbook for standing `observer-org` up inside a private or air-gapped data
+  center - hardware sizing, a non-cloud object store, HA PostgreSQL and NATS,
+  a Kubernetes path, the air-gapped update mirror and the private-DC pricing
+  feed - with a companion per-component sizing calculator rebuilt for the
+  PostgreSQL, Parquet and NATS architecture.
+
+### Changed
+
+- **feat(orgserver): SQLite is no longer the org server's runtime engine.**
+  The deployed org server runs its control plane and its Plane-B hot and
+  query data on PostgreSQL (`OBSERVER_CONTROL_STORE_DSN` /
+  `OBSERVER_DATA_STORE_DSN`; `--role all` may point both at one database),
+  with typed Parquet as the durable system of record and a NATS/JetStream
+  durable log. SQLite remains the org server's test engine and is completely
+  unchanged as the node's local store. Migration is documented in
+  `docs/stateless-collectors-postgres-migration-runbook.md`; note that the
+  reference deployment's NATS sidecar uses ephemeral storage at R=1 and so
+  does not by itself support an HA or container-group-loss claim.
+- **feat(org,pricing): the gateway rate card and the gateway budget cap are
+  projections, not authored objects.** `POST /api/org/ai-gateway/budgets` and
+  `PUT /api/org/ai-gateway/rate-card` are retired to `409`; caps come from
+  `budgets` and rates from `org_model_prices`. The projection is lossy by
+  design (the card carries 4 of 13 price fields), and the one shape that
+  cannot project is surfaced as `gateway_skipped` on the Pricing page rather
+  than being dropped silently.
+- **fix(orgserver): `scrub-content` now erases the durable system of
+  record too.** Targeted erasure previously scrubbed only the hot data store,
+  leaving the Parquet/object SoR readable and able to resurrect scrubbed
+  content on a rebuild; it now runs through the same governance and retention
+  seam with verify-read-back before tombstoning, fails loud, and refuses
+  legacy JSONL. Replay defaults to a dry run with a target assertion and a
+  sequence-gap policy.
+- **feat(orgserver): retention covers the raw-detail tiers and the gateway
+  lane.** The server-side retention allow-list was widened so the
+  content-bearing tables added by recent arcs age out with everything else,
+  and the ingest quarantine follows `data_retention_days` with requeued rows
+  pruned after 7 days.
+- **feat(web2): primary content shows directly.** The click-to-disclose
+  gates on the org dashboard are gone; audited message bodies reveal on click
+  instead of collapsing to a spacer row, and a content cell says honestly
+  whether it holds a preview, an audited chip, or nothing because the node
+  did not share it. The dashboard itself was reorganised into three areas
+  with Observe and Configure split, Trajectories became a master-detail
+  drill-down, every entity mention is a link through one shared primitive,
+  and the brand mark and favicons now match the node dashboard.
+- **fix(web,web2): em-dashes replaced with hyphens in user-facing
+  copy.** A sweep across the node dashboard, the org dashboard, the shared
+  components and the cloud portal, leaving code comments untouched.
+- **fix(handoff): Full+cache is disabled where the source cannot provide
+  it.** Thirty adapters have no full-body reader, so the Full+cache carry
+  mode was inherently identical to Full for them; the option is now disabled
+  with honest copy rather than offering a distinction that does not exist.
+- **perf(orgpush): the org push tick no longer recomputes every snapshot wire
+  on every tick** (steady-state CPU remediation, Track R2). Before this, all
+  ~23 snapshot/aggregate wire families — the teams-tier aggregates plus the
+  enterprise per-session and per-developer wires — re-ran their full 7-day
+  window or whole-table read on every push regardless of whether anything had
+  changed, which was the systemic cause behind the three query-shape findings
+  fixed in 1.32.0. Each family is now guarded by an O(1) change probe over its
+  own source tables (a single index-endpoint seek in most cases), so an idle
+  node's whole snapshot family costs a handful of seeks instead of a full
+  recompute. The cursor wires (sessions, actions, api_turns, token_usage,
+  guard_events, otel_content) are untouched and still ship every tick.
+  Fail-open by construction: a probe error, an unknown family, a failed push,
+  or a budget-truncated wire all recompute, and every family is force-refreshed
+  at least hourly so its server-side freshness never ages out of a dashboard
+  window. No wire shape, server behaviour, or migration changed.
+- **feat(config): new `[org_client] snapshot_interval_seconds`** bounds how
+  often the snapshot wire families recompute even when their source data DID
+  change, for nodes busy enough that the change probe never gets to skip.
+  Unset means 4× the effective `push_interval_seconds` (8 minutes at the
+  shipped defaults, and it tracks a retuned push interval rather than freezing
+  an absolute); a negative value restores the previous every-tick cadence. The
+  staleness it buys is explicit — see `docs/teams-operations.md`.
+
+### Fixed
+
+- **fix(budget): a fallback-priced model is no longer reported as an
+  unpriced one (BUDGET-COV-3).** Org budget coverage lumped "this model was
+  priced from the built-in table because the org has no negotiated rate for
+  it" together with "this model has no price anywhere", so an estate with a
+  perfectly enforceable budget read as partially blind. The two are now
+  distinct posture classes (server migration 152) with their own coverage
+  notes.
+- **fix(node): a transient capture state never stops a running process.**
+  The managed-node budget intervention treated a momentarily unresolvable
+  per-tool capture state as an enforcement signal and could kill a healthy
+  agent process. Transient states are now inert: only a settled, measured
+  crossing acts.
+- **fix(node): managed budget accounting uses the full pricing ladder.** A
+  prior correction narrowed managed accounting to exact and org-quoted
+  prices only, so every model without an org rate read "unpriced" and got
+  blocked at effectively zero spend. Accounting now walks the whole engine
+  ladder, and an unpriced model is FLAGGED, never denied; org spend is
+  additionally sourced by capability rather than by tool name.
+- **fix(org,budgets): the Budgets page sources spend by capability.** Spend
+  attributed on the Budgets page could disagree with the enforcing
+  chokepoint; both now read through the same capability-scoped source, and
+  coverage ignores the individual-tenancy predecessor of a node that has
+  since become managed.
+- **fix(org): one org distribution identity (SIGN-1).** Several signed rails
+  minted or pinned their own key material, so a node could hold more than
+  one trusted org identity. Every signed rail now uses the single
+  enrolment-delivered key, and pre-existing TOFU pins heal on a hash match
+  instead of failing the node.
+- **fix(org,budgets): budgets fail CLOSED on a managed node (BUDGET-FC-1).**
+  A managed node that could not resolve its cap previously behaved as if no
+  cap existed. It now fails closed, an explicitly-no-budget answer is signed
+  rather than inferred from silence, and per-window hardness is shared so the
+  node and the gateway cannot disagree about whether a window is hard.
+- **fix(org): team-management routes worked only on fresh installs
+  (TEAM-KEY-1).** `write:teams` was granted by the migration that created it,
+  so an already-bootstrapped admin never received it and every team route
+  answered `403`. Server migration 129 back-grants it, and a matching
+  control-store retrofit covers `admin:identity`.
+- **fix(harness-gateway): cancellation and timeouts are plumbed end to end.**
+  Closing the org bridge now cancels the in-flight provider inference and
+  disposes uncached failed sessions instead of leaking them, the provider
+  request is bounded independently and below the org deadline, the saved
+  provider timeout is forwarded rather than defaulted, and a silent exit or
+  an empty completion produces an actionable diagnostic.
+- **fix(orgserver): the org hot window evicts correctly.** A hot-window
+  eviction defect that could leave stale rows resident was fixed and shipped
+  with the v54 estate roll.
+- **fix(org,policy): a committed mutation whose audit row fails is not a
+  client error.** Under a split PostgreSQL control plane, policy-rollout and
+  policy-resource mutations wrote their audit row inside the control
+  transaction against a table that is not mirrored there, failing the whole
+  mutation. The audit now rides inside the transaction only when the pools
+  are the same, and a post-commit audit failure maps to a typed
+  `500 audit_failed_after_commit` that says the change took effect and must
+  not be retried.
+- **fix(orgclient): the push cursor advances by compare-and-swap.** A blind
+  save could rewind or skip the cursor under concurrency; the cycle now
+  advances it with a CAS, and the task, tool-account and cache-event wires
+  are mapped into the envelope with a reflective sentinel so a new wire
+  cannot be silently forgotten.
+- **fix(orgpush): zero-cost token rows are priced at push time.** Rows that
+  reached the org with no cost are now priced with the node's own cost
+  engine before shipping, and the org prices previously-unpriced model ids,
+  falls back honestly for an unknown session model, and shows an explicit
+  Unattributed spend bucket instead of quietly dropping it.
+- **fix(terminal): dashboard terminals link to their captured sessions.**
+  Late-starting sessions are now correlated (the first scan no longer gives
+  up before first activity), simultaneous terminals of the same tool no
+  longer share one candidate set, default-cwd launches auto-link, and the
+  behaviour extends across every adapter with a launcher rather than a
+  handful.
+- **fix(launcher,predict,hook): three node-daemon defects.** Hooks under
+  `observer claude` crashed on an inherited `OBSERVER_OOB_FD=3` that was
+  adopted without first checking it was still a pipe or socket (it is now
+  verified, and `OBSERVER_OOB_*` is scrubbed from tool-child environments);
+  predictor facts were coupled to pricing availability, so proxy-only
+  sessions got no cost band; and hook events collapsed several distinct
+  events into one row.
+- **fix(scripts): `restart-daemon.sh` refuses to run inside a
+  daemon-launched session.** Restarting the daemon kills that session
+  outright, because the daemon owns the pty, and it never resumes; the script
+  now refuses by default and tells you to restart from an outside shell.
+- **fix(scrub): Anthropic API keys with hyphens now redact.** The API-key
+  body regexes did not admit hyphens, so `sk-ant-api03` keys survived
+  scrubbing.
+- **fix(codeintel,watcher,orgserver): three smaller regressions.** Project
+  roots discovered under temporary directories were re-indexed on every
+  daemon start, burning minutes per boot; a legitimate large watermark
+  SQLite store was rejected by the oversize DoS gate; and `/ai-gateway`
+  crashed on an empty estate because its list endpoints returned `null`
+  rather than `[]`.
+- **fix(cloud): two hosted-lane defects.** The results-pull cursor is now
+  keyed by cloud host, so a node that had synced against staging no longer
+  replays staging's cursor against production and never pulls a production
+  result; and a zero-total trial-start transaction no longer flips a trialing
+  subscription to active (found against a live sandbox checkout, with the
+  Paddle goldens replaced by real sandbox deliveries).
+- **fix(org,pricing): a colliding price row answers `409`, and an undated
+  price takes effect when it is approved.** A duplicate model plus
+  effective-date pair produced a raw constraint `500`, and an undated row
+  approved from the assistant landed behind an earlier dated import instead
+  of superseding it.
+
+### Security
+
+- **Nine dated reviews since 1.32.0, all recorded in `docs/security.md`.**
+  Every arc in this release went through at least one fresh-context
+  adversarial pass before shipping: the Plane-B gateway and RBAC arc
+  (2026-08-30), Cloud Intelligence across seven separate rounds
+  (2026-09-02 through 2026-09-16), the sign-in arc and its hardening wave
+  (2026-09-07), lines-of-code tracking and the identity resolver
+  (2026-09-07), enterprise pricing and the admin assistant (2026-09-08), the
+  stateless-collectors architecture (2026-09-08 and a whole-arc review on
+  2026-09-10), and org budgets (2026-09-07). The ledger in `docs/security.md`
+  remains the canonical record.
+- **SOR-2: targeted erasure reached the durable store.** `observer-org
+  scrub-content` scrubbed only the hot data store, so a rebuild from the
+  Parquet system of record could resurrect scrubbed content. Closed - see
+  the Changed entry above.
+- **XFF-1: dashboard audit rows record the real transport peer.** Audit rows
+  recorded a forwarded address even when no trusted-proxy resolver was
+  injected; the transport peer is now recorded unless one explicitly is.
+- **Sign-in hardening.** `__Host-` cookie prefix behind a dual-read rename
+  transition (so no admin is force-logged-out across the upgrade), `Secure`
+  as an enforced policy with one explicit override, a double-submit CSRF
+  token on the one server-rendered form POST, logout as a CSRF-bearing POST,
+  MFA signal passthrough, IdP-initiated logout, an SSRF-hardened identity
+  probe, and a held identity that can no longer admit itself simply by
+  signing in again.
+- **Cloud Intelligence privacy invariants are pinned, not promised.** Zero
+  egress from the daemon (the CLI is the only outbound trigger, pinned by an
+  invariant test), preview bytes equal upload bytes, an authority gate that
+  refuses org-owned or unknown-authority evidence, credential absence checked
+  before any provider call, a content-free local ledger of everything sent,
+  and a per-table deletion matrix. The provider's data-retention posture is
+  now stated as an explicit, operator-attested disclosure rather than an
+  unqualified claim, and the marketing copy was flipped from absolute to
+  conditional truth with a CI gate holding it there.
+
 ## [1.32.0] — 2026-08-26
 
 ### Fixed

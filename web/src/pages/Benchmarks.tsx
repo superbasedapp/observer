@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { HeroStat, PageHeader, Pill } from "@/components/primitives";
 import { PercentIcon } from "@/components/icons";
 import { useApi } from "@/lib/useApi";
-import { fmtDuration, fmtInt, fmtUSD } from "@/lib/format";
+import { fmtDateOnly, fmtDateTime, fmtDuration, fmtInt, fmtUSD } from "@/lib/format";
 
 // Benchmarks page (docs/plans/benchmarks-harness-plan-2026-07-11.md §4.1):
 // the read-only surface over the CLI-driven harness×model rig. Run list →
@@ -147,7 +147,7 @@ export function BenchmarksPage() {
     <div className="space-y-4 p-5">
       <PageHeader
         title="Benchmarks"
-        sub="Harness × model comparisons grounded in billed-token truth — success ± Wilson CI, expected cost per successful completion, and non-inferiority verdicts over a pinned task corpus. Runs are launched from the CLI (observer benchmark run); this page reads the results."
+        sub="Harness × model comparisons grounded in billed-token truth - success ± Wilson CI, expected cost per successful completion, and non-inferiority verdicts over a pinned task corpus. Runs are launched from the CLI (observer benchmark run); this page reads the results."
       />
       {run ? <RunDetailView runID={run} onBack={() => setRun("")} /> : <RunListView onOpen={setRun} />}
     </div>
@@ -166,19 +166,19 @@ function RunListView({ onOpen }: { onOpen: (id: string) => void }) {
           label="Benchmark runs"
           icon={<PercentIcon />}
           loading={runs.loading}
-          value={runs.data ? fmtInt(runs.data.total) : "—"}
-          sub="node-local, CLI-driven — never leaves this machine"
+          value={runs.data ? fmtInt(runs.data.total) : "-"}
+          sub="node-local, CLI-driven - never leaves this machine"
         />
         <HeroStat
           label="Latest run"
           loading={runs.loading}
-          value={latest ? latest.spec_name : "—"}
-          sub={latest ? `${latest.completed_cells}/${latest.planned_cells} cells · ${new Date(latest.started_at).toLocaleDateString()}` : "no runs yet"}
+          value={latest ? latest.spec_name : "-"}
+          sub={latest ? `${latest.completed_cells}/${latest.planned_cells} cells · ${fmtDateOnly(latest.started_at)}` : "no runs yet"}
         />
         <HeroStat
           label="Latest spend"
           loading={runs.loading}
-          value={latest ? fmtUSD(latest.spend_usd) : "—"}
+          value={latest ? fmtUSD(latest.spend_usd) : "-"}
           sub="estimated list price, not invoiced"
         />
       </div>
@@ -240,7 +240,7 @@ function RunListView({ onOpen }: { onOpen: (id: string) => void }) {
                       {fmtUSD(r.spend_usd)}
                     </td>
                     <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">
-                      {new Date(r.started_at).toLocaleString()}
+                      {fmtDateTime(r.started_at)}
                     </td>
                     <td className="py-1.5 font-mono text-[11px] text-fg-3">{r.harnesses.join(", ")}</td>
                   </tr>
@@ -287,7 +287,7 @@ function RunDetailView({ runID, onBack }: { runID: string; onBack: () => void })
       ) : detail.error ? (
         <Section title="Run detail">
           <p className="py-6 text-center text-[12px] text-danger">
-            Could not load this run — it may have been deleted (
+            Could not load this run - it may have been deleted (
             <code className="font-mono">observer benchmark delete</code>). {detail.error.message}
           </p>
         </Section>
@@ -311,7 +311,7 @@ function RunDetailView({ runID, onBack }: { runID: string; onBack: () => void })
             }
           >
             {configs.length === 0 ? (
-              <p className="py-4 text-center text-[12px] text-fg-3">No config rows — the run produced no attempts.</p>
+              <p className="py-4 text-center text-[12px] text-fg-3">No config rows - the run produced no attempts.</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-[12px]">
@@ -359,7 +359,7 @@ function RunDetailView({ runID, onBack }: { runID: string; onBack: () => void })
                           </td>
                           <td className="whitespace-nowrap py-1.5 pr-3 text-right tabular-nums text-fg-2">
                             {c.cost_per_success_usd == null ? (
-                              <span className="text-fg-3" title="No successful attempts — cost per success is undefined (censored)">
+                              <span className="text-fg-3" title="No successful attempts - cost per success is undefined (censored)">
                                 n/a
                               </span>
                             ) : (
@@ -373,7 +373,7 @@ function RunDetailView({ runID, onBack }: { runID: string; onBack: () => void })
                             {c.cache_read_pct.toFixed(0)}%
                           </td>
                           <td className="whitespace-nowrap py-1.5 tabular-nums text-fg-2">
-                            {c.mean_wall_ms > 0 ? fmtDuration(c.mean_wall_ms) : "—"}
+                            {c.mean_wall_ms > 0 ? fmtDuration(c.mean_wall_ms) : "-"}
                           </td>
                         </tr>
                       );
@@ -384,14 +384,14 @@ function RunDetailView({ runID, onBack }: { runID: string; onBack: () => void })
             )}
             <p className="mt-2 text-[11px] leading-snug text-fg-3">
               Success uses a Wilson score interval (correct at small repeats); a wide CI (highlighted) means the N is
-              too small to rank. Cost is skewed — see the raw per-attempt dots below.
+              too small to rank. Cost is skewed - see the raw per-attempt dots below.
             </p>
           </Section>
 
           {comparisons.length > 0 && (
             <Section
               title="Comparisons vs baseline"
-              sub="Non-inferiority verdicts against the pre-registered margin — never a bare 'parity'. The verdict uses the unpaired independent-proportions (Newcombe) Δ-success CI below; the Paired Δ column is a separate task-blocked diagnostic and does not drive the verdict."
+              sub="Non-inferiority verdicts against the pre-registered margin - never a bare 'parity'. The verdict uses the unpaired independent-proportions (Newcombe) Δ-success CI below; the Paired Δ column is a separate task-blocked diagnostic and does not drive the verdict."
             >
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-[12px]">
@@ -434,7 +434,7 @@ function RunDetailView({ runID, onBack }: { runID: string; onBack: () => void })
             </Section>
           )}
 
-          <Section title="Cost per attempt (raw)" sub="Every attempt's snapshot billed cost — dots, never hidden.">
+          <Section title="Cost per attempt (raw)" sub="Every attempt's snapshot billed cost - dots, never hidden.">
             <div className="space-y-2.5">
               {configs.map((c) => (
                 <div key={c.config_id} className="flex flex-wrap items-center gap-2">
@@ -448,7 +448,7 @@ function RunDetailView({ runID, onBack }: { runID: string; onBack: () => void })
           </Section>
 
           {tasks.length > 0 && (
-            <Section title="Per-task results" sub="Pass count / attempts per task × config — the block structure behind the paired analysis.">
+            <Section title="Per-task results" sub="Pass count / attempts per task × config - the block structure behind the paired analysis.">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-[12px]">
                   <thead>
@@ -470,7 +470,7 @@ function RunDetailView({ runID, onBack }: { runID: string; onBack: () => void })
                           if (!cell || cell.attempts === 0) {
                             return (
                               <td key={c.config_id} className="py-1.5 pr-3 text-right text-fg-3">
-                                —
+                                -
                               </td>
                             );
                           }
@@ -493,7 +493,7 @@ function RunDetailView({ runID, onBack }: { runID: string; onBack: () => void })
           )}
 
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            <Section title="Status census" sub="Every terminal attempt status — nothing dropped from the denominator.">
+            <Section title="Status census" sub="Every terminal attempt status - nothing dropped from the denominator.">
               {Object.keys(d.status_census ?? {}).length === 0 ? (
                 <p className="py-2 text-[12px] text-fg-3">No attempts recorded.</p>
               ) : (
@@ -512,7 +512,7 @@ function RunDetailView({ runID, onBack }: { runID: string; onBack: () => void })
 
             <Section title="Warnings" sub="Honesty guards from the analysis pass.">
               {(d.warnings ?? []).length === 0 ? (
-                <p className="py-2 text-[12px] text-fg-3">None — no sample-floor, wide-CI, or flaky-setup flags.</p>
+                <p className="py-2 text-[12px] text-fg-3">None - no sample-floor, wide-CI, or flaky-setup flags.</p>
               ) : (
                 <ul className="space-y-1.5">
                   {(d.warnings ?? []).map((wmsg, i) => (

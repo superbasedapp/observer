@@ -25,6 +25,15 @@ export type FieldDef = {
   min?: number;
   max?: number;
   step?: number;
+  // Opts a `select` field into rendering the RESOLVED effective mode
+  // beside the raw configured value — sourced from a separate
+  // GET /api/guard/prompt/detectors fetch (StructuredConfigSection
+  // gates that fetch on spec.id === "prompt-detectors"), not from the
+  // ConfigResponse `dynamicOptions` carry `optionsFrom` uses. The
+  // field's own `id` is looked up against that response's per-detector
+  // `effective_mode`. Used by the ten "prompt-detectors" section
+  // fields below.
+  showEffectiveMode?: boolean;
 };
 
 export type SectionSpec = {
@@ -77,7 +86,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "observer",
     path: ["Observer"],
     description:
-      "Top-level observer settings — database path, log verbosity. Sub-sections (watcher / freshness / retention / hooks / antigravity) live as their own section nav entries.",
+      "Top-level observer settings - database path, log verbosity. Sub-sections (watcher / freshness / retention / hooks / antigravity) live as their own section nav entries.",
     fields: [
       {
         id: "DBPath",
@@ -98,7 +107,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "watcher",
     path: ["Observer", "Watch"],
     description:
-      "Filesystem watcher — JSONL/log file watcher. Defines what observer tails for new session activity.",
+      "Filesystem watcher - JSONL/log file watcher. Defines what observer tails for new session activity.",
     fields: [
       {
         id: "PollIntervalSeconds",
@@ -119,7 +128,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         id: "EnabledAdapters",
         label: "Enabled adapters",
         kind: "list",
-        help: "Comma-separated adapter names — claude-code, codex, cursor, cline, copilot, cowork, antigravity, opencode, openclaw, pi, gemini.",
+        help: "Comma-separated adapter names - claude-code, codex, cursor, cline, copilot, cowork, antigravity, opencode, openclaw, pi, gemini.",
       },
     ],
   },
@@ -152,7 +161,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         id: "IgnorePatterns",
         label: "Ignore patterns",
         kind: "list",
-        help: "Globs to skip during freshness scans — node_modules, .git, etc.",
+        help: "Globs to skip during freshness scans - node_modules, .git, etc.",
       },
     ],
   },
@@ -174,7 +183,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Max DB size (MB)",
         kind: "int",
         min: 1,
-        help: "Soft cap on the SQLite database — pruning triggers above.",
+        help: "Soft cap on the SQLite database - pruning triggers above.",
       },
       {
         id: "PruneOnStartup",
@@ -203,7 +212,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         kind: "int",
         min: 50,
         max: 30_000,
-        help: "How long the hook is allowed to run before the client gives up on it. Keep low — the hook is on the user's latency budget.",
+        help: "How long the hook is allowed to run before the client gives up on it. Keep low - the hook is on the user's latency budget.",
       },
       {
         id: "AutoRegister",
@@ -232,25 +241,25 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "terminal",
     path: ["Terminal", "Attach"],
     description:
-      "Session attach ([terminal.attach]) — jump into a running `observer <tool> --attach` session from the dashboard, and route attach sessions through the observer proxy. The attach control channel is an owner-only AF_UNIX socket (mode 0600), never network-reachable. Restart semantics differ per field: serving the socket binds at daemon start (restart required), while route-through-proxy is read per-launch (no restart) — the save reports a restart only when it's actually needed.",
+      "Session attach ([terminal.attach]) - jump into a running `observer <tool> --attach` session from the dashboard, and route attach sessions through the observer proxy. The attach control channel is an owner-only AF_UNIX socket (mode 0600), never network-reachable. Restart semantics differ per field: serving the socket binds at daemon start (restart required), while route-through-proxy is read per-launch (no restart) - the save reports a restart only when it's actually needed.",
     fields: [
       {
         id: "Enabled",
         label: "Serve attach socket",
         kind: "bool",
-        help: "Serve the attach socket so `observer <tool> --attach` can hand its terminal to the daemon (making it joinable from the dashboard). Restart required — the socket is bound when the daemon starts.",
+        help: "Serve the attach socket so `observer <tool> --attach` can hand its terminal to the daemon (making it joinable from the dashboard). Restart required - the socket is bound when the daemon starts.",
       },
       {
         id: "RouteProxy",
         label: "Route through proxy",
         kind: "bool",
-        help: "Attach sessions route through the observer proxy by default (so they capture tokens through :8820); disable to launch attach sessions with --no-proxy-route semantics. Read per-launch by the CLI — a change takes effect on the NEXT attach launch, no daemon restart needed.",
+        help: "Attach sessions route through the observer proxy by default (so they capture tokens through :8820); disable to launch attach sessions with --no-proxy-route semantics. Read per-launch by the CLI - a change takes effect on the NEXT attach launch, no daemon restart needed.",
       },
       {
         id: "DefaultOn",
         label: "Attach by default",
         kind: "bool",
-        help: "The `observer claude` / `observer codex` launchers attach to a live session by default; opt out per-launch with --no-attach. Read per-launch by the CLI — a change takes effect on the NEXT launch, no daemon restart needed.",
+        help: "The `observer claude` / `observer codex` launchers attach to a live session by default; opt out per-launch with --no-attach. Read per-launch by the CLI - a change takes effect on the NEXT launch, no daemon restart needed.",
       },
     ],
   },
@@ -273,7 +282,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "process",
     path: ["Observer", "Process"],
     description:
-      "OS-level process observability (opt-in). Captures process trees launched by AI tools and attributes them to sessions. The poll rate is the single knob that controls how often every process source — the Linux /proc poll and the Windows cross-OS bridge — is sampled.",
+      "OS-level process observability (opt-in). Captures process trees launched by AI tools and attributes them to sessions. The poll rate is the single knob that controls how often every process source - the Linux /proc poll and the Windows cross-OS bridge - is sampled.",
     groups: [
       {
         id: "process-capture",
@@ -405,19 +414,19 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Elevated ETW capturer (Windows)",
         path: ["Observer", "Process", "ETW"],
         description:
-          "The daemon-side ACCEPT listener that the elevated Windows ETW capturer dials into. It is what makes per-process NETWORK BYTES available: ETW session control always requires elevation, so the capturer runs as a Scheduled Task and connects here. Additive — with it off, everything else captures exactly as before. Windows/WSL only. The shared token is deliberately NOT editable here: it gates a loopback port that WSL2 exposes to the whole Windows host, and leaving it empty (the default) lets the daemon generate and persist one at the token path below. The setup card underneath registers the Scheduled Task for you.",
+          "The daemon-side ACCEPT listener that the elevated Windows ETW capturer dials into. It is what makes per-process NETWORK BYTES available: ETW session control always requires elevation, so the capturer runs as a Scheduled Task and connects here. Additive - with it off, everything else captures exactly as before. Windows/WSL only. The shared token is deliberately NOT editable here: it gates a loopback port that WSL2 exposes to the whole Windows host, and leaving it empty (the default) lets the daemon generate and persist one at the token path below. The setup card underneath registers the Scheduled Task for you.",
         fields: [
           {
             id: "Enabled",
             label: "Enabled",
             kind: "bool",
-            help: "Starts the accept listener. Default off — it opens a port, and the feed behind it needs an elevated Windows Scheduled Task. Binds at daemon start, so a change needs a restart.",
+            help: "Starts the accept listener. Default off - it opens a port, and the feed behind it needs an elevated Windows Scheduled Task. Binds at daemon start, so a change needs a restart.",
           },
           {
             id: "ListenAddr",
             label: "Listen address",
             kind: "text",
-            help: "Loopback bind for the capturer's inbound connection, as host:port. Empty inherits 127.0.0.1:8823. The capturer dials IN (WSL cannot reach a Windows-bound listener, but Windows→WSL loopback works), so this address is baked into the Scheduled Task — changing it means re-registering the task.",
+            help: "Loopback bind for the capturer's inbound connection, as host:port. Empty inherits 127.0.0.1:8823. The capturer dials IN (WSL cannot reach a Windows-bound listener, but Windows→WSL loopback works), so this address is baked into the Scheduled Task - changing it means re-registering the task.",
           },
           {
             id: "TokenPath",
@@ -432,7 +441,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
             min: 0,
             max: 600000,
             step: 1000,
-            help: "Bounds the authentication exchange only — an authenticated stream is legitimately idle for long stretches and is never deadlined. Default 10000 (10s); 0 inherits it.",
+            help: "Bounds the authentication exchange only - an authenticated stream is legitimately idle for long stretches and is never deadlined. Default 10000 (10s); 0 inherits it.",
           },
           {
             id: "AllowNonLoopback",
@@ -454,7 +463,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         id: "Enabled",
         label: "Enabled",
         kind: "bool",
-        help: "Master switch for the suggestions engine. Default on — detectors run read-only over already-captured data at request time (no LLM calls, no extra capture).",
+        help: "Master switch for the suggestions engine. Default on - detectors run read-only over already-captured data at request time (no LLM calls, no extra capture).",
       },
       {
         id: "WindowDays",
@@ -479,13 +488,13 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         kind: "int",
         min: 0,
         step: 0.5,
-        help: "Cost suggestions claiming less than this are hidden — keeps the tab from nagging about pennies. Default 1.",
+        help: "Cost suggestions claiming less than this are hidden - keeps the tab from nagging about pennies. Default 1.",
       },
       {
         id: "SessionDigest",
         label: "Session-start digest",
         kind: "bool",
-        help: "Inject a small advisory digest (top suggestions, ≤400 tokens) into Claude Code at session start. The hook only reads a cached snapshot — it never computes on your session's critical path. Default off.",
+        help: "Inject a small advisory digest (top suggestions, ≤400 tokens) into Claude Code at session start. The hook only reads a cached snapshot - it never computes on your session's critical path. Default off.",
       },
       {
         id: "DigestRefreshMinutes",
@@ -501,7 +510,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "cachetrack",
     path: ["CacheTrack"],
     description:
-      "Anthropic prompt-cache observation + forecasting — the Cache tab's data source. Hash-only and node-local: cache rows never leave this machine.",
+      "Anthropic prompt-cache observation + forecasting - the Cache tab's data source. Hash-only and node-local: cache rows never leave this machine.",
     fields: [
       {
         id: "Enabled",
@@ -531,11 +540,58 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
       },
     ],
   },
+  tasks: {
+    id: "tasks",
+    path: ["Tasks"],
+    description:
+      "Session-level todo/plan checklist tracking (docs/task-tracking.md) — decodes claude-code TaskCreate/TaskUpdate/TodoWrite, codex update_plan, kiro-cli todo_list, copilot manage_todo_list, and similar tool calls already captured in actions.raw_tool_input into a per-task lifecycle + cost report (the Tasks tab, and the Analysis page's Tasks section). No new capture surface, no adapter change. A change here needs a daemon restart to take effect — [tasks] has no hot-reload path yet (SetTasksEnabled/SetTasksOptions bind once at daemon startup, the same posture every section except pricing/profiles has).",
+    fields: [
+      {
+        id: "Enabled",
+        label: "Enabled",
+        kind: "bool",
+        help: "Decode todo/plan tool calls into task_items/task_transitions as they're captured. Default on. Disabling makes the task-tracking ingest pass a pure no-op; historical rows already decoded stay in the DB. Retrofit history after enabling with `observer backfill --tasks`.",
+      },
+      {
+        id: "MatchMode",
+        label: "Match mode",
+        kind: "select",
+        options: ["exact", "normalized"],
+        help: "How whole-list-rewrite tools (no vendor item id) are matched across consecutive snapshot calls. `exact` (default) matches the trimmed content string verbatim — a fuzzy match would trade a known, countable loss for an unknown, silent mis-join. `normalized` additionally lowercases and collapses whitespace, tolerating cosmetic re-wording at the cost of possibly merging two different items whose text happens to normalize the same.",
+      },
+      {
+        id: "ConcurrentAttribution",
+        label: "Concurrent attribution",
+        kind: "select",
+        options: ["shared", "none"],
+        help: "How a token/action row is bucketed when two or more tasks are in_progress at once. `shared` (default) buckets the row into a per-session `shared` total rather than splitting it evenly or picking a dominant task — either would invent a precision the data doesn't contain. `none` drops the row from every task's total instead (still counted overall, just not attributed to a specific task) for an operator who'd rather under-report than see a shared bucket.",
+      },
+      {
+        id: "IncludeSidechains",
+        label: "Include sidechains",
+        kind: "bool",
+        help: "Fold a spawned sub-agent's own token/action rows into whichever task happened to be open in the PARENT session at the same wall-clock time. Default off — sub-agent usage is reported as its own separate `sidechain` total instead, since a TaskUpdate's owner field is free text and can't be resolved to the actual spawned session.",
+      },
+      {
+        id: "BackfillOnStart",
+        label: "Backfill on start",
+        kind: "bool",
+        help: "Re-derive task_items/task_transitions from historical actions rows once at daemon startup (the same work as `observer backfill --tasks`, run automatically). Default off — run the CLI flag by hand after enabling this section on a daemon with historical task-tool traffic. Idempotent.",
+      },
+      {
+        id: "RetentionDays",
+        label: "Retention (days)",
+        kind: "int",
+        min: 0,
+        help: "Days to keep task_items/task_transitions rows. 0 = never prune (the default — no pruning sweep ships yet; this field exists so one has a home without a future config-shape change).",
+      },
+    ],
+  },
   observability: {
     id: "observability",
     path: ["Observability"],
     description:
-      "Generalized observability subsystem (admin plane) — the OTLP /v1/traces receiver, trajectory capture, and the eval plane for an admin/org-hosted LLM app whose end-users route through SuperBased. Distinct from your own coding-agent usage; the captured data is viewed on the admin/org dashboard. Opt-in and node-local: trace data never leaves this machine unless an obs share tier is enabled. The receiver binds at daemon start, so enabling here needs a restart to take effect. Note the receiver is SHARED with the log-ingest path — it also comes alive whenever [ingest.otel] is enabled, so this toggle is not the only thing that binds :4317/:4318.",
+      "Generalized observability subsystem (admin plane) - the OTLP /v1/traces receiver, trajectory capture, and the eval plane for an admin/org-hosted LLM app whose end-users route through SuperBased. Distinct from your own coding-agent usage; the captured data is viewed on the admin/org dashboard. Opt-in and node-local: trace data never leaves this machine unless an obs share tier is enabled. The receiver binds at daemon start, so enabling here needs a restart to take effect. Note the receiver is SHARED with the log-ingest path - it also comes alive whenever [ingest.otel] is enabled, so this toggle is not the only thing that binds :4317/:4318.",
     fields: [
       {
         id: "Enabled",
@@ -555,13 +611,13 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         id: "EnableScrubbing",
         label: "Scrubbing",
         kind: "bool",
-        help: "Redact known secret shapes (API keys, bearer tokens, connection strings) from captured output before storage. Default on — turn off only if you fully control the database.",
+        help: "Redact known secret shapes (API keys, bearer tokens, connection strings) from captured output before storage. Default on - turn off only if you fully control the database.",
       },
       {
         id: "ExtraPatterns",
         label: "Extra patterns",
         kind: "list",
-        help: "Additional regex patterns to redact, comma-separated — e.g. org-internal token prefixes or hostnames. Appended to the built-in set.",
+        help: "Additional regex patterns to redact, comma-separated - e.g. org-internal token prefixes or hostnames. Appended to the built-in set.",
       },
     ],
   },
@@ -580,7 +636,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     // the wrong object (D14).
     path: ["Compression"],
     description:
-      "Three live compression layers — shell output filters, FTS5 tool-output indexing, and conversation-level compression (with stash / rolling-summarisation / compaction sub-toggles). Each layer toggles independently; defaults err on the side of safety. (Code-graph integration is configured under Settings → Intelligence per the v1.4.20 audit — the compression.code_graph fields had no Go consumers and were removed.)",
+      "Three live compression layers - shell output filters, FTS5 tool-output indexing, and conversation-level compression (with stash / rolling-summarisation / compaction sub-toggles). Each layer toggles independently; defaults err on the side of safety. (Code-graph integration is configured under Settings → Intelligence per the v1.4.20 audit - the compression.code_graph fields had no Go consumers and were removed.)",
     groups: [
       {
         id: "shell",
@@ -625,7 +681,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
           },
           {
             id: "Embeddings",
-            label: "Embeddings (experimental — not yet wired)",
+            label: "Embeddings (experimental - not yet wired)",
             kind: "bool",
             help: "Reserved for semantic embeddings on indexed excerpts. No Go consumer reads this flag today; toggling has no effect. Kept for forward-compat with the indexing pipeline.",
           },
@@ -677,7 +733,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Stash (SROD)",
         path: ["Compression", "Conversation", "Stash"],
         description:
-          "Stash & Retrieve on Demand — write large tool_result bodies to a content-addressed on-disk stash and replace inline with a SHA marker. The model retrieves originals via the `retrieve_stashed` MCP tool.",
+          "Stash & Retrieve on Demand - write large tool_result bodies to a content-addressed on-disk stash and replace inline with a SHA marker. The model retrieves originals via the `retrieve_stashed` MCP tool.",
         fields: [
           {
             id: "Enabled",
@@ -703,7 +759,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
             label: "Max total (MB)",
             kind: "int",
             min: 1,
-            help: "Soft cap on total stash dir size — older entries evict above this.",
+            help: "Soft cap on total stash dir size - older entries evict above this.",
           },
         ],
       },
@@ -762,7 +818,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "proxy",
     path: ["Proxy"],
     description:
-      "API proxy listener. The proxy intercepts Anthropic / OpenAI / Google API calls from your AI client, captures the exact request/response bodies, then forwards upstream — giving the dashboard ground-truth token + cost accounting.",
+      "API proxy listener. The proxy intercepts Anthropic / OpenAI / Google API calls from your AI client, captures the exact request/response bodies, then forwards upstream - giving the dashboard ground-truth token + cost accounting.",
     fields: [
       {
         id: "Enabled",
@@ -808,7 +864,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "dashboard",
     path: ["Dashboard"],
     description:
-      "Durable listen address for the local analytics dashboard. Set this to survive daemon/service restarts without the per-run --dashboard-addr flag (wanted for launchd/systemd units and port-8081 conflicts). Precedence: the --dashboard-addr flag > the OBSERVER_DASHBOARD_ADDR env var > this config value > the built-in 127.0.0.1:8081 default. The dashboard listener binds at daemon start, so a save here needs a restart to take effect. A non-loopback address does NOT bypass the remote-exposure guard — it still fails closed unless the [remote] security substrate is armed.",
+      "Durable listen address for the local analytics dashboard. Set this to survive daemon/service restarts without the per-run --dashboard-addr flag (wanted for launchd/systemd units and port-8081 conflicts). Precedence: the --dashboard-addr flag > the OBSERVER_DASHBOARD_ADDR env var > this config value > the built-in 127.0.0.1:8081 default. The dashboard listener binds at daemon start, so a save here needs a restart to take effect. A non-loopback address does NOT bypass the remote-exposure guard - it still fails closed unless the [remote] security substrate is armed.",
     fields: [
       {
         id: "Addr",
@@ -822,7 +878,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "profiles",
     path: ["Profiles"],
     description:
-      "Which compression profile each traffic class runs. Profiles are named parameter sets (the embedded recipes plus `default` = your master compression settings) resolved per request at the proxy — so Claude Code and codex each get their tuned parameters from one daemon. The master Compression → Conversation `enabled` switch stays the only on/off gate; profiles never turn compression on.",
+      "Which compression profile each traffic class runs. Profiles are named parameter sets (the embedded recipes plus `default` = your master compression settings) resolved per request at the proxy - so Claude Code and codex each get their tuned parameters from one daemon. The master Compression → Conversation `enabled` switch stays the only on/off gate; profiles never turn compression on.",
     fields: [
       {
         id: "Default",
@@ -839,7 +895,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Per-provider assignments",
         path: ["Profiles", "ByProvider"],
         description:
-          "Resolved from the request path: Anthropic Messages API traffic vs OpenAI-path traffic. Saves apply to NEW sessions immediately — in-flight sessions keep the parameters they started with (no restart needed).",
+          "Resolved from the request path: Anthropic Messages API traffic vs OpenAI-path traffic. Saves apply to NEW sessions immediately - in-flight sessions keep the parameters they started with (no restart needed).",
         fields: [
           {
             id: "anthropic",
@@ -847,7 +903,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
             kind: "select",
             options: BUILTIN_PROFILE_NAMES,
             optionsFrom: "profile_names",
-            help: "Claude Code and any client on the Anthropic Messages API path. Tuned default: claude-code (cache-aware — won't break Anthropic prompt caching).",
+            help: "Claude Code and any client on the Anthropic Messages API path. Tuned default: claude-code (cache-aware - won't break Anthropic prompt caching).",
           },
           {
             id: "openai",
@@ -870,7 +926,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     // touch it (test-pinned).
     path: ["OrgClient"],
     description:
-      "What this node shares with your organisation's SuperBased server — and only when enrolled ([org_client] enabled via `observer enroll`; see the Enrolment section). The privacy default is metadata-only: sha256 hashes and counts, never raw commands, prose, or paths. Everything here is node-side opt-in — the org admin has no remote switch for any of it.",
+      "What this node shares with your organisation's SuperBased server - and only when enrolled ([org_client] enabled via `observer enroll`; see the Enrolment section). The privacy default is metadata-only: sha256 hashes and counts, never raw commands, prose, or paths. Raw-content sharing (full_content) is node opt-in only - the org admin has no remote switch for it. The reporting-tier shares below (routing_summary, obs_summary, etc.) are node opt-in, or can be raised by the org on a managed node via node governance policy.",
     fields: [
       {
         id: "PushIntervalSeconds",
@@ -893,7 +949,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Share mode",
         path: ["OrgClient", "Share"],
         description:
-          "The v1.8.0 content posture. OFF (default): only sha256 hashes and counts cross the wire — raw command bodies, assistant prose, and filesystem paths are stripped at the SQL seam. These switches live in THIS node's config file only; no server can flip them.",
+          "The v1.8.0 content posture. OFF (default): only sha256 hashes and counts cross the wire - raw command bodies, assistant prose, and filesystem paths are stripped at the SQL seam. These switches live in THIS node's config file only; no server can flip them.",
         fields: [
           {
             id: "FullContent",
@@ -936,7 +992,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "otel",
     path: ["Exporter", "OTel"],
     description:
-      "Agent-side OpenTelemetry exporter: one gen_ai.client span per proxied API turn to any OTLP/HTTP collector. Off by default — when disabled the daemon makes zero exporter network calls. OTEL_* environment variables override these file values.",
+      "Agent-side OpenTelemetry exporter: one gen_ai.client span per proxied API turn to any OTLP/HTTP collector. Off by default - when disabled the daemon makes zero exporter network calls. OTEL_* environment variables override these file values.",
     fields: [
       {
         id: "Enabled",
@@ -967,7 +1023,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         id: "EmitPromptContent",
         label: "Emit prompt content",
         kind: "bool",
-        help: "Attach prompt/completion bodies to spans. Default off — real privacy and data-volume implications; read the exporter docs before enabling.",
+        help: "Attach prompt/completion bodies to spans. Default off - real privacy and data-volume implications; read the exporter docs before enabling.",
       },
       {
         id: "EmitUserEmail",
@@ -988,7 +1044,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     // untouched server-side.
     path: ["Guard"],
     description:
-      "Security guard layer — posture, rule tuning, taint tracking, proxy scans, MCP pinning, budgets, and alerts. Everything here binds at daemon start (restart banner after save). Moving to enforce? Use the Security page's mode control — it shows what would have blocked first.",
+      "Security guard layer - posture, rule tuning, taint tracking, proxy scans, MCP pinning, budgets, and alerts. Everything here binds at daemon start (restart banner after save). Moving to enforce? Use the Security page's mode control - it shows what would have blocked first.",
     fields: [
       {
         id: "Enabled",
@@ -1029,7 +1085,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
             id: "Disable",
             label: "Disabled rule IDs",
             kind: "list",
-            help: "Rule IDs turned off entirely (e.g. R-151). Prefer a scoped approval or a policy override first — disables are global and unconditional.",
+            help: "Rule IDs turned off entirely (e.g. R-151). Prefer a scoped approval or a policy override first - disables are global and unconditional.",
           },
           {
             id: "UserPolicy",
@@ -1050,13 +1106,13 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Boundary",
         path: ["Guard", "Boundary"],
         description:
-          "Write/read boundary allowlists. EMPTY here means 'keep the engine defaults' — an explicit 'no allowlist at all' is a config-file edit (the form can't express the difference).",
+          "Write/read boundary allowlists. EMPTY here means 'keep the engine defaults' - an explicit 'no allowlist at all' is a config-file edit (the form can't express the difference).",
         fields: [
           {
             id: "AllowPaths",
             label: "Allowed paths",
             kind: "list",
-            help: "Glob patterns the boundary rules (R-15x) treat as in-bounds — e.g. ../sibling-project/**. Empty = engine defaults.",
+            help: "Glob patterns the boundary rules (R-15x) treat as in-bounds - e.g. ../sibling-project/**. Empty = engine defaults.",
           },
           {
             id: "ProtectedBranches",
@@ -1112,7 +1168,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
             id: "EgressAllow",
             label: "Egress allow patterns",
             kind: "list",
-            help: "Regexes over the MATCHED VALUE — findings matching these are ignored (test fixtures, known-fake keys).",
+            help: "Regexes over the MATCHED VALUE - findings matching these are ignored (test fixtures, known-fake keys).",
           },
           {
             id: "ResponseScan",
@@ -1154,7 +1210,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Budgets",
         path: ["Guard", "Budget"],
         description:
-          "Cost circuit-breakers (B-601/B-602). 0 = off. These are guard-rule limits — the advisory monthly budgets live under Settings → Intelligence.",
+          "Cost circuit-breakers (B-601/B-602). 0 = off. These are guard-rule limits - the advisory monthly budgets live under Settings → Intelligence.",
         fields: [
           {
             id: "SessionUSD",
@@ -1197,7 +1253,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
             label: "Min severity",
             kind: "select",
             options: ["info", "warn", "high", "critical"],
-            help: "Alert threshold. Default high — warn gets noisy fast.",
+            help: "Alert threshold. Default high - warn gets noisy fast.",
           },
         ],
       },
@@ -1236,6 +1292,151 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
           },
         ],
       },
+      {
+        id: "prompt",
+        label: "Prompt-submit intervention",
+        path: ["Guard", "Prompt"],
+        description:
+          "Warn/ask-once/block/redact when the developer's OWN prompt contains an API token or deterministic PII, before it reaches the model (R-172/R-190). Evaluated on the hook lane (native prompt-submit hooks, where wired) and/or the proxy lane (the latest user turn on an outbound request). Default on, ask-once. See the Security page's Prompt guard card for live status, events, and grants.",
+        fields: [
+          {
+            id: "Enabled",
+            label: "Enabled",
+            kind: "bool",
+            help: "Master gate for the whole feature. Off = no detectors run over prompt text on either lane.",
+          },
+          {
+            id: "Mode",
+            label: "Global mode",
+            kind: "select",
+            options: ["off", "warn", "ask-once", "block", "redact"],
+            help: "Default verdict for any detector with no override below. ask-once interrupts the FIRST occurrence of a finding set; an identical resend within the reconsider window goes through. This is a FLOOR — a stricter per-detector override below still wins.",
+          },
+          {
+            id: "HookLane",
+            label: "Hook lane",
+            kind: "bool",
+            help: "Evaluate prompt-submit hook channels (native \"block before the model sees it\" protocols, where the client supports one). Default on.",
+          },
+          {
+            id: "ProxyLane",
+            label: "Proxy lane",
+            kind: "bool",
+            help: "Evaluate the latest user turn on outbound proxy requests — the fallback for clients with no hook channel, or a second net on ones that have it. Only engages for traffic routed through the proxy. Default on.",
+          },
+          {
+            id: "EnforceIndependent",
+            label: "Independent of guard.mode",
+            kind: "bool",
+            help: "On (default): this feature acts on its own mode regardless of the top-level guard mode above, so ask-once/block work out of the box on a fresh install. Off: inherits the same observe/enforce gate every other guard channel uses (observe mode caps every outcome at warn).",
+          },
+          {
+            id: "ReconsiderTTL",
+            label: "Reconsider window",
+            kind: "text",
+            help: "Lifetime of an ask-once grant, e.g. \"30m\", \"1h\". An identical resend of the same finding set within this window is let through and recorded as confirmed.",
+          },
+          {
+            id: "SuppressInCode",
+            label: "Suppress in code context",
+            kind: "bool",
+            help: "Don't report a finding that appears inside a fenced code block or a variable-assignment-to-a-placeholder shape. Default on.",
+          },
+          {
+            id: "MaxFindings",
+            label: "Max findings per scan",
+            kind: "int",
+            min: 0,
+            step: 1,
+            help: "Defensive cap on findings recorded per prompt scan (a pathological input, not a normal-case ceiling).",
+          },
+          {
+            id: "Allow",
+            label: "Allow patterns",
+            kind: "list",
+            help: "RE2 regexes matched against a finding's MATCHED VALUE (never the whole prompt) — a match is dropped entirely. Test fixtures, known-fake keys.",
+          },
+        ],
+      },
+      {
+        id: "prompt-detectors",
+        label: "Prompt-submit detector overrides",
+        path: ["Guard", "Prompt", "Detectors"],
+        description:
+          "Per-detector mode overrides for the most common secret + PII detectors — a stricter override here always wins over the global mode above; a looser one clamps up to it. The full detector vocabulary (GET /api/guard/prompt/detectors) is larger; less common ids stay config-file-only ([guard.prompt.detectors] in config.toml) to keep this list from growing unbounded.",
+        fields: [
+          {
+            id: "credit_card",
+            label: "Credit card",
+            kind: "select",
+            options: ["off", "warn", "ask-once", "block", "redact"],
+            showEffectiveMode: true,
+          },
+          {
+            id: "iban",
+            label: "IBAN",
+            kind: "select",
+            options: ["off", "warn", "ask-once", "block", "redact"],
+            showEffectiveMode: true,
+          },
+          {
+            id: "us_ssn",
+            label: "US SSN",
+            kind: "select",
+            options: ["off", "warn", "ask-once", "block", "redact"],
+            showEffectiveMode: true,
+          },
+          {
+            id: "uk_nino",
+            label: "UK NINO",
+            kind: "select",
+            options: ["off", "warn", "ask-once", "block", "redact"],
+            showEffectiveMode: true,
+          },
+          {
+            id: "in_aadhaar",
+            label: "India Aadhaar",
+            kind: "select",
+            options: ["off", "warn", "ask-once", "block", "redact"],
+            showEffectiveMode: true,
+          },
+          {
+            id: "in_pan",
+            label: "India PAN",
+            kind: "select",
+            options: ["off", "warn", "ask-once", "block", "redact"],
+            showEffectiveMode: true,
+          },
+          {
+            id: "email",
+            label: "Email address",
+            kind: "select",
+            options: ["off", "warn", "ask-once", "block", "redact"],
+            showEffectiveMode: true,
+          },
+          {
+            id: "phone_e164",
+            label: "Phone (E.164)",
+            kind: "select",
+            options: ["off", "warn", "ask-once", "block", "redact"],
+            showEffectiveMode: true,
+          },
+          {
+            id: "phone_nanp",
+            label: "Phone (NANP)",
+            kind: "select",
+            options: ["off", "warn", "ask-once", "block", "redact"],
+            showEffectiveMode: true,
+          },
+          {
+            id: "github_pat",
+            label: "GitHub token",
+            kind: "select",
+            options: ["off", "warn", "ask-once", "block", "redact"],
+            showEffectiveMode: true,
+          },
+        ],
+      },
     ],
   },
   routing: {
@@ -1252,7 +1453,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     // sends that key, so plain saves keep preserving rules wholesale.
     path: ["Routing"],
     description:
-      "Model routing — opt-in, off by default. Pick a policy template and a mode: advise only logs what it would have done; enforce rewrites models (same provider shape, never silently). Everything binds at daemon start (restart banner after save). Promoting advise → enforce? Use the Routing page's Shadow card — it shows the readiness evidence first. Custom [[routing.rules]] are editable in the lint-gated editor below; tier overrides, budgets, privacy rules, key pools, and local upstreams stay config-file-only.",
+      "Model routing - opt-in, off by default. Pick a policy template and a mode: advise only logs what it would have done; enforce rewrites models (same provider shape, never silently). Everything binds at daemon start (restart banner after save). Promoting advise → enforce? Use the Routing page's Shadow card - it shows the readiness evidence first. Custom [[routing.rules]] are editable in the lint-gated editor below; tier overrides, budgets, privacy rules, key pools, and local upstreams stay config-file-only.",
     fields: [
       {
         id: "Enabled",
@@ -1265,7 +1466,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Mode",
         kind: "select",
         options: ["off", "advise", "enforce"],
-        help: "advise (default) records what routing would have done — decision rows only, requests untouched. enforce actually rewrites the model on proxied requests (same provider shape). off keeps the layer constructed but inert.",
+        help: "advise (default) records what routing would have done - decision rows only, requests untouched. enforce actually rewrites the model on proxied requests (same provider shape). off keeps the layer constructed but inert.",
       },
       {
         id: "Policy",
@@ -1296,7 +1497,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Stickiness",
         path: ["Routing", "Stickiness"],
         description:
-          "Session coherence — how reluctant routing is to switch models mid-session.",
+          "Session coherence - how reluctant routing is to switch models mid-session.",
         fields: [
           {
             id: "RespectCache",
@@ -1309,7 +1510,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
             label: "Min turns between switches",
             kind: "int",
             min: 0,
-            help: "Coherence floor — at least this many turns between model switches in one session. Default 5.",
+            help: "Coherence floor - at least this many turns between model switches in one session. Default 5.",
           },
         ],
       },
@@ -1324,7 +1525,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
             id: "Enabled",
             label: "Enabled",
             kind: "bool",
-            help: "Run the calibration job over routed-turn outcomes. Default on (compute only — acting needs min samples).",
+            help: "Run the calibration job over routed-turn outcomes. Default on (compute only - acting needs min samples).",
           },
           {
             id: "MinSamples",
@@ -1352,7 +1553,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
             id: "Enabled",
             label: "Enabled",
             kind: "bool",
-            help: "Off by default — only acts for operators on subscription-window plans.",
+            help: "Off by default - only acts for operators on subscription-window plans.",
           },
           {
             id: "HeadroomPct",
@@ -1373,7 +1574,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     // include that prefix (the strip convention — see compression).
     path: ["Intelligence", "MCP"],
     description:
-      "The on-demand MCP retrieval tools (get_file, get_symbols, get_relations, retrieve_stashed) and their audit log. Settings here bind when an AI client spawns its next observer MCP server — each session runs a fresh one, so saves apply to new sessions without a daemon restart. The 13 observability tools (get_cost_summary, search_past_outputs, …) are always on when MCP is registered and are not filtered here.",
+      "The on-demand MCP retrieval tools (get_file, get_symbols, get_relations, retrieve_stashed) and their audit log. Settings here bind when an AI client spawns its next observer MCP server - each session runs a fresh one, so saves apply to new sessions without a daemon restart. The 13 observability tools (get_cost_summary, search_past_outputs, …) are always on when MCP is registered and are not filtered here.",
     fields: [
       {
         id: "Features",
@@ -1388,7 +1589,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "get_file",
         path: ["Intelligence", "MCP", "GetFile"],
         description:
-          "On-demand file retrieval. The extension allow-list and path deny-list here are SHARED by get_symbols and get_relations — one place to keep in sync.",
+          "On-demand file retrieval. The extension allow-list and path deny-list here are SHARED by get_symbols and get_relations - one place to keep in sync.",
         fields: [
           {
             id: "Enabled",
@@ -1478,7 +1679,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "retrieve_stashed",
         path: ["Intelligence", "MCP", "RetrieveStashed"],
         description:
-          "Retrieval surface for the proxy-side stash. Registered only when the stash itself is enabled AND this toggle is on — turning it off keeps stash compression active while denying the agent the read-back path.",
+          "Retrieval surface for the proxy-side stash. Registered only when the stash itself is enabled AND this toggle is on - turning it off keeps stash compression active while denying the agent the read-back path.",
         fields: [
           {
             id: "Enabled",
@@ -1506,7 +1707,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
             id: "Enabled",
             label: "Enabled",
             kind: "bool",
-            help: "Write mcp_audit rows. Default on — local-only, small volume, high forensic value.",
+            help: "Write mcp_audit rows. Default on - local-only, small volume, high forensic value.",
           },
         ],
       },

@@ -1,6 +1,7 @@
 package govern
 
 import (
+	"sort"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
@@ -71,6 +72,30 @@ const (
 	AuthorityEnforceEgress    = "enforce.egress"
 	AuthorityExtractManaged   = "extract.managed"
 
+	// AuthorityEnforceBudget is the fourth enforce.* sibling
+	// (docs/plans/org-budget-enforcement-and-token-display-plan-2026-09-07.md
+	// §3.3c, wave W3a). It makes the ORG's spend cap authoritative on a
+	// managed node: without it, an org budget delivered by
+	// GET /api/agent/budget may only LOWER the node's own [guard.budget]
+	// thresholds (govern.LowerFloat / LowerInt — the numeric analogue of
+	// LowerBool, so an individual node's own tighter cap always survives);
+	// with it, on a MANAGED node, the org's numbers and the org's enforcement
+	// mode REPLACE the local ones, per the Arc-4 managed-tenancy ruling
+	// (org-authoritative, enforce ON).
+	//
+	// It is managed-only exactly like its three siblings: HonoredAuthority
+	// strips it on an individual / BYO node, so an individual node keeps
+	// deciding its own numbers even if a mis-configured server puts this
+	// token in an individual token's authority list.
+	//
+	// This is the §R23 enforcement-MODE axis, ORTHOGONAL to the
+	// data-extraction posture split (teams posture vs ENTERPRISE posture /
+	// EnterpriseGranted, design §5.3): the budget numbers are not content — a
+	// cap is a number and a period — so distributing them names no
+	// content-bearing column and does not touch the privacy sentinel. This
+	// token governs only whose number wins, never what the node discloses.
+	AuthorityEnforceBudget = "enforce.budget"
+
 	// The HIGH-SENSITIVITY per-tier extraction authorities (Arc 4 P5f-h).
 	// Unlike the umbrella extract.managed (which raises the headline tiers —
 	// tool bodies, full traces, project folders, cache, routing, predictions),
@@ -107,6 +132,46 @@ const (
 	// SEPARATE explicit tier is the deliberate, reviewed reversal.
 	AuthorityExtractTerminal = "extract.terminal"
 
+	// AuthorityExtractTasks raises the task_detail tier (node session-detail
+	// trickle-up W2): the node's session task/todo checklist (task_items /
+	// task_transitions) shipped as per-item STATUS rows + status transitions.
+	// The item PROSE (content / active_form / owner — the agent-authored work
+	// plan) is a SECOND gate on top of this one (shipsRawContent()), so this
+	// token alone discloses what a session's plan looked like STRUCTURALLY
+	// (how many items, which finished, which vanished), never what it said.
+	// STRICT like its codeintel/process/terminal siblings: the umbrella
+	// extract.managed does NOT satisfy it — a work plan is a
+	// highest-sensitivity surface and gets its own explicit consent (operator
+	// decision D4).
+	AuthorityExtractTasks = "extract.tasks"
+
+	// AuthorityExtractToolAccounts raises the tool_account_detail tier (W3):
+	// the node's vendor login observations (tool_account_observations) shipped
+	// as binding enums + the opaque account_key + the observation time, so the
+	// org can render "account changed / conflict / unknown" and count distinct
+	// accounts. The raw identity (email / name / account_id) is a SECOND gate
+	// on top of this one (shipsRawContent(), decision D2) — this token alone
+	// never discloses a developer's vendor email. STRICT for the same reason
+	// as extract.tasks: the umbrella never unlocks it (decision D4).
+	AuthorityExtractToolAccounts = "extract.tool_accounts"
+
+	// AuthorityExtractIntel raises the org-served Cloud Intelligence RESULT
+	// rail (org-served-cloud-intelligence plan §2.1/W5): the node's node-authored
+	// [intelligence].org_enrichment gate (config default false) is RAISED on a
+	// managed node that holds this token, so the node PULLS the org server's own
+	// derived per-session enrichment results beside the pricing/budget rails. It
+	// authorizes nothing that SHIPS — the rail is a request/response PULL of the
+	// org's product coming back to the node, never evidence egress. STRICT like
+	// its codeintel/process/terminal/tasks/tool_accounts siblings: the umbrella
+	// extract.managed does NOT satisfy it (GrantsIntelExtraction uses the strict
+	// grantsExtraction gate), because org enrichment is a high-sensitivity
+	// decision that gets its own explicit per-tier consent. It IS a member of
+	// the extract.* family, so EnterpriseAuthoritySet() sweeps it up on every
+	// enterprise-posture enrolment — the deliberate fleet-wide auto-grant the
+	// operator ACCEPTED (decision D11); the node config key still defaults false
+	// so nothing is pulled until the org turns the feature on.
+	AuthorityExtractIntel = "extract.intel"
+
 	// The HEADLINE per-tier extraction authorities (Arc 4 P4a). Where P5f-h
 	// gave the three highest-sensitivity tiers their own token, these split the
 	// SIX headline tiers the umbrella extract.managed used to raise as one bloc
@@ -135,6 +200,38 @@ const (
 	AuthorityExtractCache       = "extract.cache"
 	AuthorityExtractRouting     = "extract.routing"
 	AuthorityExtractPredictions = "extract.predictions"
+
+	// The Plane B dual-mode gateway / RBAC-IA per-tier extraction authorities
+	// (docs/plans/plane-b-dual-mode-gateway-rbac-ia-design-2026-08-29.md §5).
+	// Each closes a shareTierTable gap that used to sit in shareTierExempt: the
+	// key mapped to no real authority row at all, so no grant of any shape —
+	// not even the umbrella — could ever raise it. That is now fixed by giving
+	// each its own dedicated token, following the P5f-h high-sensitivity
+	// pattern (grantsExtraction, STRICT — the umbrella extract.managed does
+	// NOT satisfy any of these) rather than the P4a headline pattern:
+	//
+	//   - AuthorityExtractTargetActions and AuthorityExtractScope govern
+	//     access-control-adjacent surfaces (which action types may ship a raw
+	//     target; the node's own [org_client.scope] restriction lists), so
+	//     they get the same "own explicit consent, umbrella never unlocks it"
+	//     treatment as codeintel/process/terminal.
+	//   - AuthorityExtractPolicyState governs a distinct governance-reporting
+	//     channel (policy acknowledgement state), kept strict for the same
+	//     reason: it is a narrow, sensitive surface, not a bulk content tier.
+	//
+	// AuthorityExtractObsEgress is the one exception: it is a HEADLINE token
+	// (grantsExtractionOrManaged — own token OR the umbrella), because it is
+	// simply the T8 member of the SAME obs.* family whose other seven members
+	// (obs.summary/traces/content/eval_summary/admission/eval_items) already
+	// raise under the umbrella-eligible extract.traces. Giving the T8 sibling
+	// a strict-only token would mean an admin who already granted "raise every
+	// obs.* tier" for the other seven has to separately re-grant the eighth —
+	// an inconsistency the design brief's "own extract token" ask does not
+	// require; it asks for a DEDICATED token, not necessarily a strict one.
+	AuthorityExtractTargetActions = "extract.target_actions"
+	AuthorityExtractScope         = "extract.scope"
+	AuthorityExtractPolicyState   = "extract.policy_state"
+	AuthorityExtractObsEgress     = "extract.obs_egress"
 )
 
 // KnownAuthority reports whether tok is in the closed vocabulary.
@@ -148,11 +245,16 @@ func KnownAuthority(tok string) bool {
 	case AuthorityDashboardVisibility, AuthoritySettingsPin,
 		AuthorityCaptureRaise, AuthorityCapturePin, AuthorityFeatureLock,
 		AuthorityEnforceRouting, AuthorityEnforceAdmission, AuthorityEnforceEgress,
+		AuthorityEnforceBudget,
 		AuthorityExtractManaged, AuthorityExtractCodeintel,
 		AuthorityExtractProcess, AuthorityExtractTerminal,
+		AuthorityExtractTasks, AuthorityExtractToolAccounts,
+		AuthorityExtractIntel,
 		AuthorityExtractToolBodies, AuthorityExtractFolders,
 		AuthorityExtractTraces, AuthorityExtractCache,
-		AuthorityExtractRouting, AuthorityExtractPredictions:
+		AuthorityExtractRouting, AuthorityExtractPredictions,
+		AuthorityExtractTargetActions, AuthorityExtractScope,
+		AuthorityExtractPolicyState, AuthorityExtractObsEgress:
 		return true
 	}
 	return false
@@ -166,12 +268,16 @@ func KnownAuthority(tok string) bool {
 func ManagedAuthority(tok string) bool {
 	switch tok {
 	case AuthorityEnforceRouting, AuthorityEnforceAdmission,
-		AuthorityEnforceEgress, AuthorityExtractManaged,
+		AuthorityEnforceEgress, AuthorityEnforceBudget, AuthorityExtractManaged,
 		AuthorityExtractCodeintel, AuthorityExtractProcess,
-		AuthorityExtractTerminal, AuthorityExtractToolBodies,
+		AuthorityExtractTerminal, AuthorityExtractTasks,
+		AuthorityExtractToolAccounts, AuthorityExtractIntel,
+		AuthorityExtractToolBodies,
 		AuthorityExtractFolders, AuthorityExtractTraces,
 		AuthorityExtractCache, AuthorityExtractRouting,
-		AuthorityExtractPredictions:
+		AuthorityExtractPredictions, AuthorityExtractTargetActions,
+		AuthorityExtractScope, AuthorityExtractPolicyState,
+		AuthorityExtractObsEgress:
 		return true
 	}
 	return false
@@ -191,9 +297,13 @@ func ExtractionAuthority(tok string) bool {
 	switch tok {
 	case AuthorityExtractManaged, AuthorityExtractCodeintel,
 		AuthorityExtractProcess, AuthorityExtractTerminal,
+		AuthorityExtractTasks, AuthorityExtractToolAccounts,
+		AuthorityExtractIntel,
 		AuthorityExtractToolBodies, AuthorityExtractFolders,
 		AuthorityExtractTraces, AuthorityExtractCache,
-		AuthorityExtractRouting, AuthorityExtractPredictions:
+		AuthorityExtractRouting, AuthorityExtractPredictions,
+		AuthorityExtractTargetActions, AuthorityExtractScope,
+		AuthorityExtractPolicyState, AuthorityExtractObsEgress:
 		return true
 	}
 	return false
@@ -203,6 +313,75 @@ func ExtractionAuthority(tok string) bool {
 // in this build. It is surfaced by the CLI and the Enrolment page so a
 // developer holding an older grant can see WHY a directive did not take.
 func RetiredAuthority(tok string) bool { return tok == AuthorityCaptureRaise }
+
+// EnterpriseAuthoritySet is the authority set an enterprise-posture enrolment
+// (or grant-replacement) mints (design §5.2, P2b): every extraction authority
+// token, so effective sharing is ALL by default, PLUS the two GOVERNING tokens
+// without which the posture governs nothing. It is the single owner of "what
+// the enterprise grant contains" — the org server's enterprise auto-grant, its
+// grant-replacement issuance, and the posture-derived enrolment default
+// (orgserver/posture.DefaultInviteAuthority) all source the list here rather
+// than re-enumerating the vocabulary, so they can never drift. Returned sorted
+// so the signing message is stable.
+//
+// WHY THE TWO GOVERNING TOKENS BELONG HERE (org-observer fundamentals plan
+// 2026-09-13, W7). A fleet that signed up for managed governance and is then
+// offered no governing authority is the shape the 2026-09-13 diagnosis found
+// in production: the org signed budgets nothing could apply.
+//
+//   - AuthorityEnforceBudget is what makes the org's own cap authoritative on
+//     a managed node. Without it the signed per-caller body from
+//     GET /api/agent/budget may only LOWER the developer's own thresholds, so
+//     the fail-closed budget stop (guard rule B-625) never engages and the
+//     coverage table tells an admin their cap is enforced by nobody.
+//   - AuthoritySettingsPin is what makes any of it land: govern/resolve.go
+//     gates the whole `pinned` directive class on this token, so without it
+//     EVERY pin in the default node.governance body — guard.mode, guard.strict,
+//     guard.budget.from_org, guard.budget.hard — is dropped node-side and a
+//     developer can set guard.mode = "observe" to turn the fail-closed budget
+//     row back into a flag.
+//
+// The individual plane is unaffected. AuthorityEnforceBudget is managed-only
+// (ManagedAuthority), so HonoredAuthority strips it on a BYO node and the mint
+// gate refuses it on an individual-tenancy token; the posture-derived INVITE
+// default is additionally narrowed to its non-managed tokens for an individual
+// mint (api.nonManagedAuthority). AuthoritySettingsPin is deliberately NOT
+// managed-only — pinning config keys is a thing an individual node may consent
+// to, exactly like dashboard.visibility and capture.pin — so it is offered on
+// both planes, as it already was.
+//
+// The set is otherwise exactly the tokens ExtractionAuthority recognises (the
+// extract.* family, umbrella included). It still omits the other three
+// enforce.* tokens (routing/admission/egress), which switch an enforcement
+// subsystem's MODE for subsystems an enterprise fleet may not run at all;
+// those stay an authored per-org act.
+//
+// AuthorityExtractIntel is included DELIBERATELY (org-served-cloud-intelligence
+// plan decision D11, operator ruling 2026-09-11): because it is an extract.*
+// token, adding it here auto-grants it on every enterprise-posture node at its
+// next enrolment with no per-node admin act. The operator ACCEPTED that
+// fleet-wide raise as the enterprise-first posture working as designed; the
+// node's own [intelligence].org_enrichment key still defaults false, so the
+// rail pulls nothing until the org turns the feature on.
+func EnterpriseAuthoritySet() []string {
+	set := []string{
+		// The two governing tokens (see above): the org's numbers win, and
+		// the pins that carry them are honoured rather than dropped.
+		AuthoritySettingsPin, AuthorityEnforceBudget,
+
+		AuthorityExtractManaged, AuthorityExtractCodeintel,
+		AuthorityExtractProcess, AuthorityExtractTerminal,
+		AuthorityExtractTasks, AuthorityExtractToolAccounts,
+		AuthorityExtractIntel,
+		AuthorityExtractToolBodies, AuthorityExtractFolders,
+		AuthorityExtractTraces, AuthorityExtractCache,
+		AuthorityExtractRouting, AuthorityExtractPredictions,
+		AuthorityExtractTargetActions, AuthorityExtractScope,
+		AuthorityExtractPolicyState, AuthorityExtractObsEgress,
+	}
+	sort.Strings(set)
+	return set
+}
 
 // ConsentMode records HOW the node came to hold this grant (spec §2).
 // ConsentInteractive is a TTY-confirmed individual enrolment (the developer
@@ -480,6 +659,40 @@ func (e Effective) GrantsTerminalExtraction() bool {
 	return e.grantsExtraction(AuthorityExtractTerminal)
 }
 
+// GrantsTasksExtraction reports whether this resolved posture authorizes the
+// org to RAISE the task_detail tier — the session task/todo checklist's status
+// rows + transitions (node session-detail trickle-up W2). DISTINCT from every
+// other GrantsXxxExtraction: only the extract.tasks authority (on a managed
+// node) satisfies it; the umbrella extract.managed never does (operator
+// decision D4). It gates the deliberate, reviewed reversal of migration 109's
+// node-local pin — and even under it the item PROSE still needs the node's
+// separate raw-content posture.
+func (e Effective) GrantsTasksExtraction() bool {
+	return e.grantsExtraction(AuthorityExtractTasks)
+}
+
+// GrantsToolAccountsExtraction reports whether this resolved posture authorizes
+// the org to RAISE the tool_account_detail tier — the vendor login
+// observations' binding enums + opaque account_key (W3). DISTINCT from every
+// other GrantsXxxExtraction: only extract.tool_accounts (on a managed node)
+// satisfies it. The raw identity (email/name/account_id) still needs the node's
+// separate raw-content posture on top (decision D2).
+func (e Effective) GrantsToolAccountsExtraction() bool {
+	return e.grantsExtraction(AuthorityExtractToolAccounts)
+}
+
+// GrantsIntelExtraction reports whether this resolved posture authorizes
+// RAISING the org-served Cloud Intelligence result rail — the node-authored
+// [intelligence].org_enrichment gate (org-served-cloud-intelligence plan
+// §2.1/W5). DISTINCT from every other GrantsXxxExtraction: only the
+// extract.intel authority (on a managed node) satisfies it; the umbrella
+// extract.managed never does (STRICT grantsExtraction, like its codeintel/
+// process/terminal/tasks/tool_accounts siblings). It gates only the node's
+// PULL of the org's derived enrichment results — nothing additional SHIPS.
+func (e Effective) GrantsIntelExtraction() bool {
+	return e.grantsExtraction(AuthorityExtractIntel)
+}
+
 // The HEADLINE per-tier extraction predicates (Arc 4 P4a). Each authorizes the
 // RAISE of exactly ONE headline tier, and each is satisfied by EITHER its own
 // token OR the umbrella extract.managed (grantsExtractionOrManaged) — so an
@@ -524,6 +737,68 @@ func (e Effective) GrantsPredictionsExtraction() bool {
 	return e.grantsExtractionOrManaged(AuthorityExtractPredictions)
 }
 
+// The Plane B dual-mode gateway / RBAC-IA extraction predicates (design
+// §5.3). GrantsTargetActionsExtraction, GrantsScopeExtraction, and
+// GrantsPolicyStateExtraction are STRICT (grantsExtraction, no umbrella
+// clause) — see AuthorityExtractTargetActions's doc comment for why.
+// GrantsObsEgressExtraction is the one HEADLINE exception in this group,
+// matching the rest of the obs.* family.
+
+// GrantsTargetActionsExtraction authorizes the RAISE of
+// target_action_allowlist (which action TYPES may ship a raw target). Only
+// extract.target_actions satisfies it; the umbrella does not.
+func (e Effective) GrantsTargetActionsExtraction() bool {
+	return e.grantsExtraction(AuthorityExtractTargetActions)
+}
+
+// GrantsScopeExtraction authorizes the RAISE of the node's
+// [org_client.scope] restriction lists (union / unrestricted-override /
+// denylist-removal — see share.go's RaiseList / RaiseScopeUnrestricted /
+// RaiseScopeDenylistRemoval). Only extract.scope satisfies it; the umbrella
+// does not.
+func (e Effective) GrantsScopeExtraction() bool {
+	return e.grantsExtraction(AuthorityExtractScope)
+}
+
+// GrantsPolicyStateExtraction authorizes the RAISE of the policy_state share
+// tier (effective-policy-state reports). Only extract.policy_state satisfies
+// it; the umbrella does not.
+func (e Effective) GrantsPolicyStateExtraction() bool {
+	return e.grantsExtraction(AuthorityExtractPolicyState)
+}
+
+// GrantsObsEgressExtraction authorizes the RAISE of the obs.egress share tier
+// (the T8 egress-routing-decision obs tier — internal/orgcontract/obsegress.go).
+// Satisfied by extract.obs_egress OR the umbrella, consistent with its seven
+// obs.* siblings which all raise under extract.traces-or-umbrella.
+func (e Effective) GrantsObsEgressExtraction() bool {
+	return e.grantsExtractionOrManaged(AuthorityExtractObsEgress)
+}
+
+// GrantsEnterpriseContent reports whether this resolved posture's grant is
+// broad enough to count as the Enterprise-Managed-Tenancy equivalent of a
+// node operator's own full_content / admin_managed opt-in (design §5.4's
+// enterpriseGranted disjunct). It composes four EXISTING strict predicates
+// rather than introducing a new token: a grant must authorize the umbrella
+// AND all three highest-sensitivity tiers (codeintel, process, terminal)
+// before shipsRawContent() honors it. This is deliberately a HIGH bar —
+// narrower than any single extraction tier — because shipsRawContent()
+// governs raw content columns tree-wide, not one tier.
+//
+// Invariant (mirrors the CLAUDE.md posture): raw content ships ONLY under a
+// node operator's own local opt-in (FullContent / AdminManaged) OR this
+// enterprise grant. There is still no remote toggle that forces it — the org
+// can only ever RAISE what a managed node's own resolver already agreed sits
+// under Enterprise-Managed Tenancy (e.Managed, ManagedConsent), exactly like
+// every other Raise* lift in this package.
+func (e Effective) GrantsEnterpriseContent() bool {
+	return e.Managed &&
+		e.GrantsManagedExtraction() &&
+		e.GrantsCodeintelExtraction() &&
+		e.GrantsProcessExtraction() &&
+		e.GrantsTerminalExtraction()
+}
+
 // The MANAGED-ENFORCE predicates (Arc 4 P3, the §R23 lift). Each authorizes
 // the org body's enforcement MODE to be HONORED for one Plane-B family on a
 // managed node — the deliberate, reviewed reversal of "enforcement is
@@ -554,6 +829,18 @@ func (e Effective) GrantsAdmissionEnforcement() bool {
 // §R23 lift for the egress guardrail). Requires managed + enforce.egress.
 func (e Effective) GrantsEgressEnforcement() bool {
 	return e.grantsExtraction(AuthorityEnforceEgress)
+}
+
+// GrantsBudgetEnforcement authorizes treating the org's budget body as
+// AUTHORITATIVE rather than merely lowering (the org-budget plan §3.3c).
+// Requires managed + enforce.budget.
+//
+// Without it the node still applies an org budget, but only through
+// [LowerFloat] / [LowerInt] — the org can tighten a developer's cap and never
+// loosen it. With it, on a managed node, the org's numbers and enforcement
+// mode replace the local ones.
+func (e Effective) GrantsBudgetEnforcement() bool {
+	return e.grantsExtraction(AuthorityEnforceBudget)
 }
 
 // grantsExtractionOrManaged is the shared gate behind every HEADLINE

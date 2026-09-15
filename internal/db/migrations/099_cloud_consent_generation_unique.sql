@@ -1,0 +1,50 @@
+-- 099: one consent generation per standing purpose — uniqueness for the
+-- terms-changed counter (Sol group review F4, on top of 098).
+--
+-- BACKGROUND. cloud_consent_receipts.consent_generation (migration 098) is the
+-- monotonic "these terms changed" counter. A queued structural snapshot records
+-- the generation it was built under, and a mismatch at send time is what makes
+-- the send refuse instead of shipping bytes under terms that have since moved.
+-- The whole mechanism therefore rests on a generation naming EXACTLY ONE set of
+-- terms for a purpose.
+--
+-- It did not. Allocation was "read MAX(consent_generation), then insert" as two
+-- separate statements with an interactive confirmation prompt in between, and
+-- nothing in the schema stopped two receipts for the same purpose from carrying
+-- the same generation. Two grants recorded across that window would both write
+-- generation N, and a later drift check comparing "N" against "N" would pass
+-- while the terms behind the two Ns differed.
+--
+-- THE FIX HAS TWO HALVES. Allocation moved INSIDE the insert transaction
+-- (internal/store/cloudlocal.go::ReplaceStandingConsentGrant — the DSN's
+-- `_txlock=immediate` takes SQLite's write lock at BEGIN, so two concurrent
+-- grants serialize and cannot read the same max, the same discipline migration
+-- 098 uses for structural revision allocation). This index is the BACKSTOP: it
+-- turns any future path that bypasses that transaction into a loud constraint
+-- failure rather than a silent duplicate.
+--
+-- WHY PARTIAL, on both predicates:
+--
+--   grant_mode = 'standing'   — the counter is part of the STANDING-grant
+--                               binding set. Per-upload receipts (the 097
+--                               semantics, and the DEFAULT for every pre-098
+--                               row) bind one exact byte-string and never
+--                               consult it; constraining them would break
+--                               ordinary per-session consent, where any number
+--                               of receipts legitimately share generation 0.
+--
+--   consent_generation > 0    — 0 is the column DEFAULT, i.e. "no generation
+--                               was allocated". It is an absence, not a value,
+--                               so it must not collide with itself. Every
+--                               generation this code allocates is >= 1.
+--
+-- No backfill and no data change: existing rows either fall outside the
+-- predicate or are already distinct (a single-node database that has recorded
+-- at most one standing grant per purpose). NODE-LOCAL, like everything in the
+-- cloud_* family: cloud_consent_receipts is in the forbidden-table denylist
+-- walked by tests/invariant/privacy_test.go, this adds no column, and there is
+-- no paired orgserver migration — the personal cloud plane is a separate
+-- destination from the org push wire by construction.
+CREATE UNIQUE INDEX idx_cloud_consent_receipts_standing_generation
+    ON cloud_consent_receipts(purpose, consent_generation)
+ WHERE grant_mode = 'standing' AND consent_generation > 0;

@@ -13,7 +13,7 @@ import "testing"
 // aggregate consent rail's ConsentRegistryChanged gate
 // (internal/aggregate/consent.go) silently inert — receipts always matched
 // the live version because the live version never moved.
-const registryVersionToolCount = 41
+const registryVersionToolCount = 45
 
 // TestRegistryVersionMovesWithVocabulary fails when the tool vocabulary
 // changes without a RegistryVersion bump. It cannot verify the bump itself

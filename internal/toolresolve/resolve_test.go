@@ -3,6 +3,7 @@ package toolresolve
 import (
 	"io/fs"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,18 @@ func (f fakeFS) env(base Env) Env {
 	return base
 }
 
+// p converts a POSIX-spelled fixture path into an absolute path for the test
+// host. The resolver drops PATH entries that fail filepath.IsAbs and joins
+// probe dirs with filepath.Join, so on Windows a fixture like "/usr/bin" must
+// become C:\usr\bin for the fake FS keys, the Env dirs and the expected Bin
+// to agree. On unix hosts it is the identity (DI-20, 2026-09-02).
+func p(posix string) string {
+	if runtime.GOOS != "windows" {
+		return posix
+	}
+	return filepath.Join("C:"+string(filepath.Separator), filepath.FromSlash(posix))
+}
+
 func specOpencode() integration.BinaryResolveSpec {
 	return integration.BinaryResolveSpec{
 		Names: integration.BinaryNames{
@@ -92,8 +105,8 @@ func consideredHas(cs []Candidate, path string) bool {
 func TestResolve(t *testing.T) {
 	t.Parallel()
 
-	const shim = "/mnt/c/Users/u/AppData/Roaming/npm/opencode"
-	const shimCmd = "/mnt/c/Users/u/AppData/Roaming/npm/opencode.cmd"
+	shim := p("/mnt/c/Users/u/AppData/Roaming/npm/opencode")
+	shimCmd := p("/mnt/c/Users/u/AppData/Roaming/npm/opencode.cmd")
 
 	tests := []struct {
 		name  string
@@ -101,23 +114,28 @@ func TestResolve(t *testing.T) {
 		fs    fakeFS
 		env   Env
 		check func(t *testing.T, r Resolution)
+		// posixOnly marks a case whose expectations depend on the /mnt bind
+		// semantics of a WSL host (underMnt is POSIX by design); the case is
+		// skipped on a Windows test host rather than rewritten.
+		posixOnly bool
 	}{
 		{
-			name: "a1 native on PATH after shim -> shadowed",
-			spec: specOpencode(),
+			name:      "a1 native on PATH after shim -> shadowed",
+			posixOnly: true,
+			spec:      specOpencode(),
 			fs: fakeFS{files: map[string]fs.FileMode{
-				shim:                      exeMode,
-				"/usr/local/bin/opencode": exeMode,
+				shim:                         exeMode,
+				p("/usr/local/bin/opencode"): exeMode,
 			}},
 			env: Env{
-				GOOS: "linux", WSL: true, Home: "/home/u",
-				ProcessPath: []string{"/mnt/c/Users/u/AppData/Roaming/npm", "/usr/local/bin"},
+				GOOS: "linux", WSL: true, Home: p("/home/u"),
+				ProcessPath: []string{p("/mnt/c/Users/u/AppData/Roaming/npm"), p("/usr/local/bin")},
 			},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictShadowed {
 					t.Fatalf("verdict = %q, want shadowed", r.Verdict)
 				}
-				if r.Bin != "/usr/local/bin/opencode" {
+				if r.Bin != p("/usr/local/bin/opencode") {
 					t.Errorf("bin = %q", r.Bin)
 				}
 				if len(r.Shadowing) != 1 || r.Shadowing[0].Path != shim {
@@ -129,27 +147,28 @@ func TestResolve(t *testing.T) {
 				if !containsNote(r.Notes, "interop shim") || !containsNote(r.Notes, shim) {
 					t.Errorf("shadowed notes missing shim line: %v", r.Notes)
 				}
-				if !containsNote(r.Notes, "/usr/local/bin/opencode") {
+				if !containsNote(r.Notes, p("/usr/local/bin/opencode")) {
 					t.Errorf("shadowed notes missing native-bin line: %v", r.Notes)
 				}
 			},
 		},
 		{
-			name: "a2 native only via probe -> ok_off_path with shadowing",
-			spec: specOpencode(),
+			name:      "a2 native only via probe -> ok_off_path with shadowing",
+			posixOnly: true,
+			spec:      specOpencode(),
 			fs: fakeFS{files: map[string]fs.FileMode{
-				shim:                                exeMode,
-				"/home/u/.hermes/node/bin/opencode": exeMode,
+				shim:                                   exeMode,
+				p("/home/u/.hermes/node/bin/opencode"): exeMode,
 			}},
 			env: Env{
-				GOOS: "linux", WSL: true, Home: "/home/u",
-				ProcessPath: []string{"/mnt/c/Users/u/AppData/Roaming/npm", "/usr/local/bin"},
+				GOOS: "linux", WSL: true, Home: p("/home/u"),
+				ProcessPath: []string{p("/mnt/c/Users/u/AppData/Roaming/npm"), p("/usr/local/bin")},
 			},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictOKOffPath {
 					t.Fatalf("verdict = %q, want ok_off_path", r.Verdict)
 				}
-				if r.Bin != "/home/u/.hermes/node/bin/opencode" {
+				if r.Bin != p("/home/u/.hermes/node/bin/opencode") {
 					t.Errorf("bin = %q", r.Bin)
 				}
 				if len(r.Shadowing) != 1 {
@@ -167,12 +186,13 @@ func TestResolve(t *testing.T) {
 			},
 		},
 		{
-			name: "b foreign shim on PATH only -> foreign_only",
-			spec: specOpencode(),
-			fs:   fakeFS{files: map[string]fs.FileMode{shim: exeMode}},
+			name:      "b foreign shim on PATH only -> foreign_only",
+			posixOnly: true,
+			spec:      specOpencode(),
+			fs:        fakeFS{files: map[string]fs.FileMode{shim: exeMode}},
 			env: Env{
-				GOOS: "linux", WSL: true, Home: "/home/u",
-				ProcessPath: []string{"/mnt/c/Users/u/AppData/Roaming/npm"},
+				GOOS: "linux", WSL: true, Home: p("/home/u"),
+				ProcessPath: []string{p("/mnt/c/Users/u/AppData/Roaming/npm")},
 			},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictForeignOnly {
@@ -184,12 +204,13 @@ func TestResolve(t *testing.T) {
 			},
 		},
 		{
-			name: "b2 foreign-home probe hit -> foreign_only",
-			spec: specOpencode(),
-			fs:   fakeFS{files: map[string]fs.FileMode{shimCmd: regMode}},
+			name:      "b2 foreign-home probe hit -> foreign_only",
+			posixOnly: true,
+			spec:      specOpencode(),
+			fs:        fakeFS{files: map[string]fs.FileMode{shimCmd: regMode}},
 			env: Env{
-				GOOS: "linux", WSL: true, Home: "/home/u",
-				ForeignHomes: []string{"/mnt/c/Users/u"},
+				GOOS: "linux", WSL: true, Home: p("/home/u"),
+				ForeignHomes: []string{p("/mnt/c/Users/u")},
 			},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictForeignOnly {
@@ -211,7 +232,7 @@ func TestResolve(t *testing.T) {
 				},
 			},
 			fs:  fakeFS{},
-			env: Env{GOOS: "linux", ProcessPath: []string{"/usr/local/bin"}},
+			env: Env{GOOS: "linux", ProcessPath: []string{p("/usr/local/bin")}},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictNotFound {
 					t.Fatalf("verdict = %q, want not_found", r.Verdict)
@@ -231,7 +252,7 @@ func TestResolve(t *testing.T) {
 				},
 			},
 			fs:  fakeFS{},
-			env: Env{GOOS: "darwin", ProcessPath: []string{"/usr/local/bin"}},
+			env: Env{GOOS: "darwin", ProcessPath: []string{p("/usr/local/bin")}},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictNotFound {
 					t.Fatalf("verdict = %q", r.Verdict)
@@ -244,17 +265,17 @@ func TestResolve(t *testing.T) {
 		{
 			name: "d login-only dir finds fresh install -> ok_off_path",
 			spec: specOpencode(),
-			fs:   fakeFS{files: map[string]fs.FileMode{"/home/u/.volta/bin/opencode": exeMode}},
+			fs:   fakeFS{files: map[string]fs.FileMode{p("/home/u/.volta/bin/opencode"): exeMode}},
 			env: Env{
-				GOOS: "linux", Home: "/home/u",
-				ProcessPath: []string{"/usr/bin"},
-				LoginPath:   func() ([]string, error) { return []string{"/usr/bin", "/home/u/.volta/bin"}, nil },
+				GOOS: "linux", Home: p("/home/u"),
+				ProcessPath: []string{p("/usr/bin")},
+				LoginPath:   func() ([]string, error) { return []string{p("/usr/bin"), p("/home/u/.volta/bin")}, nil },
 			},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictOKOffPath {
 					t.Fatalf("verdict = %q, want ok_off_path", r.Verdict)
 				}
-				if r.Bin != "/home/u/.volta/bin/opencode" {
+				if r.Bin != p("/home/u/.volta/bin/opencode") {
 					t.Errorf("bin = %q", r.Bin)
 				}
 				if r.Chosen == nil || r.Chosen.Origin != OriginLoginPath {
@@ -265,10 +286,10 @@ func TestResolve(t *testing.T) {
 		{
 			name: "e login capture error -> note, resolution proceeds",
 			spec: specOpencode(),
-			fs:   fakeFS{files: map[string]fs.FileMode{"/usr/local/bin/opencode": exeMode}},
+			fs:   fakeFS{files: map[string]fs.FileMode{p("/usr/local/bin/opencode"): exeMode}},
 			env: Env{
-				GOOS: "linux", Home: "/home/u",
-				ProcessPath: []string{"/usr/local/bin"},
+				GOOS: "linux", Home: p("/home/u"),
+				ProcessPath: []string{p("/usr/local/bin")},
 				LoginPath:   func() ([]string, error) { return nil, errBoom },
 			},
 			check: func(t *testing.T, r Resolution) {
@@ -281,15 +302,16 @@ func TestResolve(t *testing.T) {
 			},
 		},
 		{
-			name: "f native symlink into /mnt -> foreign_only",
-			spec: specOpencode(),
+			name:      "f native symlink into /mnt -> foreign_only",
+			posixOnly: true,
+			spec:      specOpencode(),
 			fs: fakeFS{
-				files:    map[string]fs.FileMode{"/home/u/.local/bin/opencode": exeMode},
-				symlinks: map[string]string{"/home/u/.local/bin/opencode": shim},
+				files:    map[string]fs.FileMode{p("/home/u/.local/bin/opencode"): exeMode},
+				symlinks: map[string]string{p("/home/u/.local/bin/opencode"): shim},
 			},
 			env: Env{
-				GOOS: "linux", WSL: true, Home: "/home/u",
-				ProcessPath: []string{"/home/u/.local/bin"},
+				GOOS: "linux", WSL: true, Home: p("/home/u"),
+				ProcessPath: []string{p("/home/u/.local/bin")},
 			},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictForeignOnly {
@@ -300,16 +322,16 @@ func TestResolve(t *testing.T) {
 		{
 			name: "g macOS: /mnt-looking path is NOT foreign",
 			spec: specOpencode(),
-			fs:   fakeFS{files: map[string]fs.FileMode{"/mnt/weird/bin/opencode": exeMode}},
+			fs:   fakeFS{files: map[string]fs.FileMode{p("/mnt/weird/bin/opencode"): exeMode}},
 			env: Env{
 				GOOS: "darwin", WSL: false,
-				ProcessPath: []string{"/mnt/weird/bin"},
+				ProcessPath: []string{p("/mnt/weird/bin")},
 			},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictOK {
 					t.Fatalf("verdict = %q, want ok (no WSL classification)", r.Verdict)
 				}
-				if r.Bin != "/mnt/weird/bin/opencode" {
+				if r.Bin != p("/mnt/weird/bin/opencode") {
 					t.Errorf("bin = %q", r.Bin)
 				}
 			},
@@ -317,10 +339,10 @@ func TestResolve(t *testing.T) {
 		{
 			name: "h GOOS=windows uses Names.Windows (no exec bit needed)",
 			spec: specOpencode(),
-			fs:   fakeFS{files: map[string]fs.FileMode{"/opt/tools/opencode.cmd": regMode}},
+			fs:   fakeFS{files: map[string]fs.FileMode{p("/opt/tools/opencode.cmd"): regMode}},
 			env: Env{
 				GOOS: "windows", WSL: false, Home: "",
-				ProcessPath: []string{"/opt/tools"},
+				ProcessPath: []string{p("/opt/tools")},
 			},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictOK {
@@ -349,17 +371,17 @@ func TestResolve(t *testing.T) {
 			name: "j glob probe dir match -> ok_off_path",
 			spec: specOpencode(),
 			fs: fakeFS{
-				files: map[string]fs.FileMode{"/home/u/.nvm/versions/node/v20/bin/opencode": exeMode},
+				files: map[string]fs.FileMode{p("/home/u/.nvm/versions/node/v20/bin/opencode"): exeMode},
 				globs: map[string][]string{
-					"/home/u/.nvm/versions/node/*/bin": {"/home/u/.nvm/versions/node/v20/bin"},
+					p("/home/u/.nvm/versions/node/*/bin"): {p("/home/u/.nvm/versions/node/v20/bin")},
 				},
 			},
-			env: Env{GOOS: "linux", Home: "/home/u", ProcessPath: nil},
+			env: Env{GOOS: "linux", Home: p("/home/u"), ProcessPath: nil},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictOKOffPath {
 					t.Fatalf("verdict = %q, want ok_off_path", r.Verdict)
 				}
-				if r.Bin != "/home/u/.nvm/versions/node/v20/bin/opencode" {
+				if r.Bin != p("/home/u/.nvm/versions/node/v20/bin/opencode") {
 					t.Errorf("bin = %q", r.Bin)
 				}
 			},
@@ -367,13 +389,13 @@ func TestResolve(t *testing.T) {
 		{
 			name: "k ok happy path",
 			spec: specOpencode(),
-			fs:   fakeFS{files: map[string]fs.FileMode{"/usr/local/bin/opencode": exeMode}},
-			env:  Env{GOOS: "linux", WSL: false, Home: "/home/u", ProcessPath: []string{"/usr/local/bin"}},
+			fs:   fakeFS{files: map[string]fs.FileMode{p("/usr/local/bin/opencode"): exeMode}},
+			env:  Env{GOOS: "linux", WSL: false, Home: p("/home/u"), ProcessPath: []string{p("/usr/local/bin")}},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictOK {
 					t.Fatalf("verdict = %q, want ok", r.Verdict)
 				}
-				if r.Bin != "/usr/local/bin/opencode" || r.Chosen == nil {
+				if r.Bin != p("/usr/local/bin/opencode") || r.Chosen == nil {
 					t.Errorf("bin = %q chosen = %+v", r.Bin, r.Chosen)
 				}
 				if len(r.Shadowing) != 0 {
@@ -385,21 +407,22 @@ func TestResolve(t *testing.T) {
 			// F8 direction 1: a /mnt PATH entry whose EvalSymlinks target is a
 			// NATIVE path is NOT foreign — classify by the resolved location,
 			// not the entry dir. (/mnt/c/bin/opencode → /usr/local/bin/opencode.)
-			name: "l /mnt PATH entry symlinked to a native target -> ok (not foreign)",
-			spec: specOpencode(),
+			name:      "l /mnt PATH entry symlinked to a native target -> ok (not foreign)",
+			posixOnly: true,
+			spec:      specOpencode(),
 			fs: fakeFS{
-				files:    map[string]fs.FileMode{"/mnt/c/bin/opencode": exeMode},
-				symlinks: map[string]string{"/mnt/c/bin/opencode": "/usr/local/bin/opencode"},
+				files:    map[string]fs.FileMode{p("/mnt/c/bin/opencode"): exeMode},
+				symlinks: map[string]string{p("/mnt/c/bin/opencode"): p("/usr/local/bin/opencode")},
 			},
 			env: Env{
-				GOOS: "linux", WSL: true, Home: "/home/u",
-				ProcessPath: []string{"/mnt/c/bin"},
+				GOOS: "linux", WSL: true, Home: p("/home/u"),
+				ProcessPath: []string{p("/mnt/c/bin")},
 			},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictOK {
 					t.Fatalf("verdict = %q, want ok (real target is native)", r.Verdict)
 				}
-				if r.Bin != "/mnt/c/bin/opencode" {
+				if r.Bin != p("/mnt/c/bin/opencode") {
 					t.Errorf("bin = %q, want the on-PATH entry path", r.Bin)
 				}
 			},
@@ -408,15 +431,16 @@ func TestResolve(t *testing.T) {
 			// F8 direction 2: a native-dir entry whose EvalSymlinks target
 			// lands under /mnt stays foreign (the resolved location is foreign).
 			// (~/.local/bin/opencode → /mnt/c/...) — verdict foreign_only.
-			name: "m native-dir entry symlinked into /mnt -> foreign_only",
-			spec: specOpencode(),
+			name:      "m native-dir entry symlinked into /mnt -> foreign_only",
+			posixOnly: true,
+			spec:      specOpencode(),
 			fs: fakeFS{
-				files:    map[string]fs.FileMode{"/home/u/.local/bin/opencode": exeMode},
-				symlinks: map[string]string{"/home/u/.local/bin/opencode": "/mnt/c/Users/u/AppData/Roaming/npm/opencode"},
+				files:    map[string]fs.FileMode{p("/home/u/.local/bin/opencode"): exeMode},
+				symlinks: map[string]string{p("/home/u/.local/bin/opencode"): p("/mnt/c/Users/u/AppData/Roaming/npm/opencode")},
 			},
 			env: Env{
-				GOOS: "linux", WSL: true, Home: "/home/u",
-				ProcessPath: []string{"/home/u/.local/bin"},
+				GOOS: "linux", WSL: true, Home: p("/home/u"),
+				ProcessPath: []string{p("/home/u/.local/bin")},
 			},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictForeignOnly {
@@ -432,22 +456,22 @@ func TestResolve(t *testing.T) {
 			spec: specOpencode(),
 			fs: fakeFS{
 				files: map[string]fs.FileMode{
-					"/home/u/.nvm/versions/node/v18/bin/opencode": exeMode,
-					"/home/u/.nvm/versions/node/v22/bin/opencode": exeMode,
+					p("/home/u/.nvm/versions/node/v18/bin/opencode"): exeMode,
+					p("/home/u/.nvm/versions/node/v22/bin/opencode"): exeMode,
 				},
 				globs: map[string][]string{
-					"/home/u/.nvm/versions/node/*/bin": {
-						"/home/u/.nvm/versions/node/v18/bin",
-						"/home/u/.nvm/versions/node/v22/bin",
+					p("/home/u/.nvm/versions/node/*/bin"): {
+						p("/home/u/.nvm/versions/node/v18/bin"),
+						p("/home/u/.nvm/versions/node/v22/bin"),
 					},
 				},
 			},
-			env: Env{GOOS: "linux", Home: "/home/u", ProcessPath: nil},
+			env: Env{GOOS: "linux", Home: p("/home/u"), ProcessPath: nil},
 			check: func(t *testing.T, r Resolution) {
 				if r.Verdict != VerdictOKOffPath {
 					t.Fatalf("verdict = %q, want ok_off_path", r.Verdict)
 				}
-				if r.Bin != "/home/u/.nvm/versions/node/v22/bin/opencode" {
+				if r.Bin != p("/home/u/.nvm/versions/node/v22/bin/opencode") {
 					t.Errorf("bin = %q, want v22 (newest-first glob order)", r.Bin)
 				}
 			},
@@ -460,19 +484,19 @@ func TestResolve(t *testing.T) {
 			spec: specOpencode(),
 			fs: fakeFS{
 				files: map[string]fs.FileMode{
-					"/home/u/.nvm/versions/node/v20.9.0/bin/opencode":  exeMode,
-					"/home/u/.nvm/versions/node/v20.11.0/bin/opencode": exeMode,
+					p("/home/u/.nvm/versions/node/v20.9.0/bin/opencode"):  exeMode,
+					p("/home/u/.nvm/versions/node/v20.11.0/bin/opencode"): exeMode,
 				},
 				globs: map[string][]string{
-					"/home/u/.nvm/versions/node/*/bin": {
-						"/home/u/.nvm/versions/node/v20.11.0/bin",
-						"/home/u/.nvm/versions/node/v20.9.0/bin",
+					p("/home/u/.nvm/versions/node/*/bin"): {
+						p("/home/u/.nvm/versions/node/v20.11.0/bin"),
+						p("/home/u/.nvm/versions/node/v20.9.0/bin"),
 					},
 				},
 			},
-			env: Env{GOOS: "linux", Home: "/home/u", ProcessPath: nil},
+			env: Env{GOOS: "linux", Home: p("/home/u"), ProcessPath: nil},
 			check: func(t *testing.T, r Resolution) {
-				if r.Bin != "/home/u/.nvm/versions/node/v20.11.0/bin/opencode" {
+				if r.Bin != p("/home/u/.nvm/versions/node/v20.11.0/bin/opencode") {
 					t.Errorf("bin = %q, want v20.11.0 (numeric-aware newest-first)", r.Bin)
 				}
 			},
@@ -485,12 +509,12 @@ func TestResolve(t *testing.T) {
 				Names: integration.BinaryNames{Windows: []string{"opencode.exe", "opencode.cmd"}},
 			},
 			fs: fakeFS{files: map[string]fs.FileMode{
-				"/opt/tools/opencode.exe": regMode,
-				"/opt/tools/opencode.cmd": regMode,
+				p("/opt/tools/opencode.exe"): regMode,
+				p("/opt/tools/opencode.cmd"): regMode,
 			}},
 			env: Env{
 				GOOS: "windows", Home: "",
-				ProcessPath: []string{"/opt/tools"},
+				ProcessPath: []string{p("/opt/tools")},
 				PathExt:     []string{".CMD", ".EXE"},
 			},
 			check: func(t *testing.T, r Resolution) {
@@ -502,10 +526,126 @@ func TestResolve(t *testing.T) {
 				}
 			},
 		},
+		{
+			// DI-22: a native-Windows daemon walks the WINDOWS probe table —
+			// before the split it walked the Unix table, where nothing exists.
+			name: "q windows daemon walks the windows probe table",
+			spec: specOpencode(),
+			fs: fakeFS{files: map[string]fs.FileMode{
+				p("/home/u/AppData/Roaming/npm/opencode.cmd"): regMode,
+			}},
+			env: Env{
+				GOOS: "windows", Home: p("/home/u"),
+			},
+			check: func(t *testing.T, r Resolution) {
+				if r.Verdict != VerdictOKOffPath {
+					t.Fatalf("verdict = %q, want ok_off_path", r.Verdict)
+				}
+				if r.Bin != p("/home/u/AppData/Roaming/npm/opencode.cmd") {
+					t.Errorf("bin = %q", r.Bin)
+				}
+			},
+		},
+		{
+			// A per-tool ProbeDir rooted at an environment variable rather than
+			// HOME (kiro-cli's %ProgramFiles%\Kiro-Cli).
+			name: "r windows EnvRoot probe dir is expanded from the environment",
+			spec: integration.BinaryResolveSpec{
+				Names: integration.BinaryNames{Windows: []string{"kiro-cli.exe"}},
+				ProbeDirs: []integration.ProbeDir{
+					{OS: integration.ProbeWindows, Rel: "Kiro-Cli", EnvRoot: "ProgramFiles"},
+				},
+			},
+			fs: fakeFS{files: map[string]fs.FileMode{
+				p("/pf/Kiro-Cli/kiro-cli.exe"): regMode,
+			}},
+			env: Env{
+				GOOS: "windows", Home: p("/home/u"),
+				Getenv: func(k string) string {
+					if k == "ProgramFiles" {
+						return p("/pf")
+					}
+					return ""
+				},
+			},
+			check: func(t *testing.T, r Resolution) {
+				if r.Verdict != VerdictOKOffPath {
+					t.Fatalf("verdict = %q, want ok_off_path", r.Verdict)
+				}
+				if r.Bin != p("/pf/Kiro-Cli/kiro-cli.exe") {
+					t.Errorf("bin = %q", r.Bin)
+				}
+			},
+		},
+		{
+			// An unset EnvRoot variable means the root does not exist on this
+			// host: skip the dir rather than probing a bare Rel off the cwd.
+			name: "s EnvRoot unset -> the probe dir is skipped",
+			spec: integration.BinaryResolveSpec{
+				Names: integration.BinaryNames{Windows: []string{"kiro-cli.exe"}},
+				ProbeDirs: []integration.ProbeDir{
+					{OS: integration.ProbeWindows, Rel: "Kiro-Cli", EnvRoot: "ProgramFiles"},
+				},
+			},
+			fs: fakeFS{files: map[string]fs.FileMode{
+				p("/pf/Kiro-Cli/kiro-cli.exe"): regMode,
+			}},
+			env: Env{
+				GOOS: "windows", Home: p("/home/u"),
+				Getenv: func(string) string { return "" },
+			},
+			check: func(t *testing.T, r Resolution) {
+				if r.Verdict != VerdictNotFound {
+					t.Fatalf("verdict = %q, want not_found", r.Verdict)
+				}
+				if consideredHas(r.Considered, p("/pf/Kiro-Cli/kiro-cli.exe")) {
+					t.Error("an unset EnvRoot must not be probed")
+				}
+			},
+		},
+		{
+			// The ABSOLUTE table (homebrew/snap/go), walked without a home join.
+			name: "t abs probe dir (linuxbrew) -> ok_off_path",
+			spec: specOpencode(),
+			fs: fakeFS{files: map[string]fs.FileMode{
+				absDir("/home/linuxbrew/.linuxbrew/bin", "opencode"): exeMode,
+			}},
+			env: Env{
+				GOOS: "linux", Home: p("/home/u"),
+			},
+			check: func(t *testing.T, r Resolution) {
+				if r.Verdict != VerdictOKOffPath {
+					t.Fatalf("verdict = %q, want ok_off_path", r.Verdict)
+				}
+				if r.Bin != absDir("/home/linuxbrew/.linuxbrew/bin", "opencode") {
+					t.Errorf("bin = %q", r.Bin)
+				}
+			},
+		},
+		{
+			// …and the abs table is Unix-only: a Windows daemon must not walk
+			// POSIX prefixes.
+			name: "u abs probe list is skipped on a windows daemon",
+			spec: specOpencode(),
+			fs: fakeFS{files: map[string]fs.FileMode{
+				absDir("/home/linuxbrew/.linuxbrew/bin", "opencode.cmd"): regMode,
+			}},
+			env: Env{
+				GOOS: "windows", Home: p("/home/u"),
+			},
+			check: func(t *testing.T, r Resolution) {
+				if r.Verdict != VerdictNotFound {
+					t.Fatalf("verdict = %q, want not_found", r.Verdict)
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.posixOnly && runtime.GOOS == "windows" {
+				t.Skip("depends on WSL /mnt bind semantics; POSIX-only by design")
+			}
 			env := tc.fs.env(tc.env)
 			r := Resolve(tc.spec, env)
 			tc.check(t, r)

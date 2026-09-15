@@ -90,6 +90,15 @@ jobs:
       - name: vet
         run: go vet ./...
 
+      - name: vet (windows)
+        # `go vet` above type-checks only the Linux build; a
+        # `//go:build windows` file or a test file that references
+        # unix-only symbols (cmd/observer/attach_resume_test.go, DI-20,
+        # 2026-09-02) compiles undetected until someone runs the suite on
+        # a Windows host. Cross-vet the Windows build so that class is
+        # red on CI, not on the operator's laptop.
+        run: GOOS=windows GOARCH=amd64 go vet ./...
+
       - name: lint
         # golangci-lint enforces the full .golangci.yml set — including
         # gofumpt + goimports formatting, errorlint, gosec, gocritic, and
@@ -235,4 +244,15 @@ jobs:
         run: make verify-assistant-migration
       - name: Verify the generated reasoning convergence migration
         run: make verify-reasoning-migration
+      - name: Verify the generated dashboard config schema
+        run: make verify-config-schema
+      - name: Verify the webcloud portal dist matches source
+        # webcloud is an npm workspace member (root package-lock.json), so its
+        # own npm ci here — separate from the web/ install above, which the
+        # setup-node cache is scoped to.
+        run: |
+          cd webcloud
+          npm ci
+          cd ..
+          make verify-webcloud-dist
 

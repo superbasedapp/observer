@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/advisor"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
@@ -34,6 +36,97 @@ type orgBundle struct {
 	store   *store.Store
 	cfg     config.Config
 	cleanup func()
+}
+
+// shareModeRule is one row of the share-mode line's table: the input that can
+// lift this node above metadata-only, and how that line reads.
+//
+// It is a table because the answer had THREE inputs and the status line read
+// exactly one of them (SF-12): a node running admin-managed, or holding the
+// enterprise enrolment grant, was shipping raw command bodies and assistant
+// prose while `observer org status` told its operator "metadata-only — the
+// default". A status line that contradicts the wire is worse than no status
+// line, and naming WHICH input lifted it is what lets an operator turn it back
+// off.
+type shareModeRule struct {
+	// name is for the tests and for reading the table.
+	name string
+	// lifted reads the three inputs in the same order ShareOptions does.
+	lifted func(fullContent, adminManaged, enterpriseGranted bool) bool
+	// line is the whole rendered value.
+	line string
+}
+
+// shareModeRules is ordered most-explicit-first: an operator who set
+// full_content themselves is told that, even on a node that also holds the
+// enterprise grant, because that is the switch they can turn off.
+var shareModeRules = []shareModeRule{
+	{
+		name:   "full_content",
+		lifted: func(full, _, _ bool) bool { return full },
+		line: "FULL CONTENT (raw command bodies + assistant prose + raw paths SHIPPED) " +
+			"— [org_client.share].full_content is true on this node",
+	},
+	{
+		name:   "admin_managed",
+		lifted: func(_, admin, _ bool) bool { return admin },
+		line: "FULL CONTENT (raw command bodies + assistant prose + raw paths SHIPPED) " +
+			"— [org_client.share].admin_managed is true; this node was provisioned as admin-managed",
+	},
+	{
+		name:   "enterprise_grant",
+		lifted: func(_, _, enterprise bool) bool { return enterprise },
+		line: "FULL CONTENT (raw command bodies + assistant prose + raw paths SHIPPED) " +
+			"— this node's managed enrolment grant carries the enterprise content authorities",
+	},
+	{
+		// The total fallback, and the only line that may claim the default.
+		name:   "metadata_only",
+		lifted: func(bool, bool, bool) bool { return true },
+		line:   "metadata-only (hashes; raws withheld) — the default",
+	},
+}
+
+// shareModeLine renders the status line, walking the table top-down.
+//
+// The GATE is store.ShareOptions.ShipsRawContent — the one predicate the wire
+// seam itself consults — so the line can never claim a posture the push does
+// not have; the table only names which input produced it.
+func shareModeLine(fullContent, adminManaged, enterpriseGranted bool) string {
+	opts := store.ShareOptions{
+		FullContent:       fullContent,
+		AdminManaged:      adminManaged,
+		EnterpriseGranted: enterpriseGranted,
+	}
+	if !opts.ShipsRawContent() {
+		return shareModeRules[len(shareModeRules)-1].line
+	}
+	for _, rule := range shareModeRules {
+		if rule.lifted(fullContent, adminManaged, enterpriseGranted) {
+			return rule.line
+		}
+	}
+	return shareModeRules[len(shareModeRules)-1].line
+}
+
+// enterpriseContentGranted resolves whether this node's managed enrolment
+// grant carries the enterprise content authorities — the third, grant-borne
+// input to ShipsRawContent, which no TOML key records.
+//
+// It mirrors budgetEnforcementGranted (costengine_wire.go) deliberately: both
+// are "resolve the live governance grant from a short-lived CLI process", and
+// both fail CLOSED on any error, because a status line must never claim a
+// narrower posture than the push actually has.
+func enterpriseContentGranted(ctx context.Context, cfg config.Config, st *store.Store, logger *slog.Logger) bool {
+	if st == nil {
+		return false
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	ngov := newNodeGovernanceHandle(governanceIdentityLoader(st), logger)
+	loadNodeGovernanceLKG(ctx, cfg, st, ngov, logger)
+	return ngov.Effective(ctx).GrantsEnterpriseContent()
 }
 
 // buildOrgClient assembles an orgclient.Client from config: the agent DB
@@ -89,6 +182,10 @@ func buildOrgBundle(ctx context.Context, configPath string) (orgBundle, error) {
 	st.SetAdvisorOrgProvider(func(ctx context.Context) ([]orgcontract.AdvisorSuggestionRow, error) {
 		return advisor.OrgSuggestionRows(ctx, database)
 	})
+	// G1-COST(b): price $0-stored token_usage rows at push time from the
+	// SAME cost.Engine the dashboard prices with, so the org rollup's SUM
+	// of estimated_cost_usd stops under-reporting hook-only adapters.
+	st.SetOrgPushPricer(orgPushPricer(acquireProcessCostEngine(ctx, cfg, database, logger)))
 	bs := orgclient.OpenBearerStore(cfg.OrgClient.KeychainID, filepath.Dir(cfg.Observer.DBPath), logger)
 	client := orgclient.New(cfg.OrgClient, st, bs, version, nil, logger)
 	client.SetPolicyResourceCacheDir(policyResourceCacheDir(cfg))
@@ -165,7 +262,7 @@ your config.toml (enabled=true, share.full_content=false,
 push_interval_seconds=900) so you don't have to hand-edit TOML, and
 (b) auto-wires the observer proxy + hooks + MCP into every detected
 AI client (claude-code, codex, cursor, cline). Pass --no-write-block
-or --no-wire-clients to opt out of either side. Only activity AFTER
+or --wire-clients=false to opt out of either side. Only activity AFTER
 enrolment is ever shared (the push cursor seeds at the current
 high-water id).`,
 		Args: cobra.MaximumNArgs(2),
@@ -219,6 +316,9 @@ high-water id).`,
 					return err
 				}
 			}
+			if enr.IsManaged() {
+				printEnrolledNodeControl(cmd.Context(), out, b.store, b.cfg.Observer.DBPath)
+			}
 			if writeBlock {
 				cfgPath, werr := resolveConfigPath(configPath)
 				if werr != nil {
@@ -265,7 +365,7 @@ high-water id).`,
 				fmt.Fprintln(out, "\nNote: [org_client] enabled = false — set it to true and restart `observer start` to begin pushing.")
 			}
 			if wireClients {
-				fmt.Fprintln(out, "\nAuto-wiring AI clients (hooks + MCP + proxy routing). Pass --no-wire-clients to skip.")
+				fmt.Fprintln(out, "\nAuto-wiring AI clients (hooks + MCP + proxy routing). Pass --wire-clients=false to skip.")
 				// Resolve the proxy port from config so we can both
 				// drive the registrar and probe whether the daemon
 				// is currently listening.
@@ -450,6 +550,12 @@ func ensureOrgClientBlock(path, orgServerURL string) (bool, error) {
 		urlLine +
 		"push_interval_seconds = 900\n" +
 		"max_push_bytes = 1048576  # 1 MiB\n" +
+		"# snapshot_interval_seconds bounds how often the SNAPSHOT wires (the\n" +
+		"# aggregates and per-session/per-developer detail) recompute, even when\n" +
+		"# their source data changed; the cursor wires (sessions/actions/turns)\n" +
+		"# always ship every tick. Unset = 4x push_interval_seconds. Raise it to\n" +
+		"# cut node CPU, set it negative to recompute on every tick.\n" +
+		"# snapshot_interval_seconds = 480\n" +
 		"\n" +
 		"[org_client.share]\n" +
 		"# full_content = true ships raw command bodies (run_command), assistant prose\n" +
@@ -474,20 +580,6 @@ func ensureOrgClientBlock(path, orgServerURL string) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-// hasOrgClientPolicyTableHeader reports whether body already declares a
-// real [org_client.policy] TOML table, matching only a header at the start
-// of a line (after indentation) — the same prefix-match idiom
-// hasOrgClientTableHeader uses, for the same reason (a comment mentioning
-// the table name must not false-positive the idempotence check).
-func hasOrgClientPolicyTableHeader(body string) bool {
-	for _, ln := range strings.Split(body, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(ln), "[org_client.policy]") {
-			return true
-		}
-	}
-	return false
 }
 
 // quotedTomlStringList renders items as a TOML inline array of quoted
@@ -521,21 +613,41 @@ func managedPolicyFamiliesToWrite(g grantOutcome) []string {
 	return govern.GovernedFamilies(g.Authority)
 }
 
-// ensureManagedPolicyBlock appends an [org_client.policy] block with
-// accept_families and preauthorize_enforce set to families when one is not
-// already present (W-5). It mirrors ensureOrgClientBlock exactly: an
-// append-only, comment-preserving, 0600 text write, idempotent via a
-// header-only presence check so a node's own hand edit — including editing
-// the block down to nothing and deleting it — is never clobbered on a later
-// `observer enroll` (Never-server-forced: this is a node-side config write
-// the enrolment makes, not a server override, and the node's own state
-// always wins).
+// ensureManagedPolicyBlock writes accept_families and preauthorize_enforce
+// into [org_client.policy] when either is missing (W-5).
 //
-// Both keys are set to the SAME family list: the operator ruling for W-5 is
-// that managed sign-in is the consent for exactly the families the accepted
-// grant's authority governs, for both installing (accept_families) and
-// live-enforcing (preauthorize_enforce) those families — a family the grant
-// does not govern is never added to either list.
+// Live finding, 2026-09-13: a managed devbox already carried a real
+// [org_client.policy] table - written earlier by `observer config` for its
+// node_workspace / node_environment / node_service keys - but never had
+// these two keys. The old check treated "the table header exists" as "there
+// is nothing to do here" and returned early, so `observer enroll
+// --accept-governance` printed the write and then silently made it a
+// no-op: the header's presence is not the presence of the keys it gates.
+//
+// The fix is a three-row decision table, walked top-down:
+//
+//  1. no [org_client.policy] table at all      -> append the whole default
+//     block (unchanged from before this fix).
+//  2. table exists, BOTH keys already present  -> no-op. A key is never
+//     rewritten even if its value differs from families - the operator may
+//     have deliberately narrowed it, and clobbering a hand-set value would
+//     be exactly the kind of remote-feeling overwrite Never-server-forced
+//     rules out for a node-side file.
+//  3. table exists, one or both keys missing   -> insert only the missing
+//     key line(s) right after the header line, before whatever the table
+//     already held. Every other line in the file is preserved byte for
+//     byte.
+//
+// Both keys, when written, are set to the SAME family list: the operator
+// ruling for W-5 is that managed sign-in is the consent for exactly the
+// families the accepted grant's authority governs, for both installing
+// (accept_families) and live-enforcing (preauthorize_enforce) those
+// families - a family the grant does not govern is never added to either
+// list.
+//
+// Never-server-forced holds under every row: this is a node-side config
+// write the enrolment makes, not a server override, and the node's own
+// state - including a value it already set - always wins.
 func ensureManagedPolicyBlock(path string, families []string) (bool, error) {
 	if len(families) == 0 {
 		return false, nil
@@ -544,16 +656,91 @@ func ensureManagedPolicyBlock(path string, families []string) (bool, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return false, err
 	}
-	if hasOrgClientPolicyTableHeader(string(body)) {
-		return false, nil
-	}
 	list := quotedTomlStringList(families)
+	lines := strings.Split(string(body), "\n")
+	headerIdx := managedPolicyHeaderLineIndex(lines)
+
+	var hasAccept, hasEnforce bool
+	if headerIdx != -1 {
+		section := lines[headerIdx+1 : tableSectionEnd(lines, headerIdx+1)]
+		hasAccept = sectionDeclaresKey(section, "accept_families")
+		hasEnforce = sectionDeclaresKey(section, "preauthorize_enforce")
+	}
+
+	switch {
+	case headerIdx == -1:
+		// Row 1.
+		return true, appendManagedPolicyBlock(path, list)
+	case hasAccept && hasEnforce:
+		// Row 2.
+		return false, nil
+	default:
+		// Row 3.
+		return true, insertManagedPolicyKeys(path, lines, headerIdx, list, hasAccept, hasEnforce)
+	}
+}
+
+// managedPolicyHeaderLineIndex returns the index into lines of the real
+// [org_client.policy] table header, or -1 when none exists. Matching uses
+// the same prefix-match idiom as hasOrgClientTableHeader (for [org_client]
+// itself), for the same reason: a header is a line whose TRIMMED content
+// starts with the literal table name, so indentation is tolerated but a
+// comment mentioning the name is not.
+func managedPolicyHeaderLineIndex(lines []string) int {
+	for i, ln := range lines {
+		if strings.HasPrefix(strings.TrimSpace(ln), "[org_client.policy]") {
+			return i
+		}
+	}
+	return -1
+}
+
+// tableSectionEnd returns the exclusive end, within lines, of the TOML
+// table section that starts at index from: the index of the next line
+// whose trimmed content opens a table header, or len(lines) when the
+// section runs to end of file. A key inserted into this table must land
+// before that boundary, or it silently re-homes into whichever table
+// follows.
+func tableSectionEnd(lines []string, from int) int {
+	for i := from; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "[") {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+// sectionDeclaresKey reports whether any non-comment, non-blank line in
+// section assigns key - a bare "key = ..." or "key=..." line. A commented-
+// out "# key = ..." line, or a different key that merely starts with the
+// same characters (e.g. "accept_families_extra"), does not count.
+func sectionDeclaresKey(section []string, key string) bool {
+	for _, ln := range section {
+		trimmed := strings.TrimSpace(ln)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		rest := strings.TrimPrefix(trimmed, key)
+		if rest == trimmed {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimLeft(rest, " \t"), "=") {
+			return true
+		}
+	}
+	return false
+}
+
+// appendManagedPolicyBlock is decision-table row 1: no [org_client.policy]
+// table exists yet, so the whole default block is appended - append-only,
+// comment-preserving, 0600, the same idiom as ensureOrgClientBlock.
+func appendManagedPolicyBlock(path, list string) error {
 	block := "\n[org_client.policy]\n" +
 		"# Written automatically by `observer enroll` when this machine accepted a\n" +
 		"# managed-organisation governance grant: managed sign-in is treated as the\n" +
 		"# consent for the policy families that grant's authority governs, so you are\n" +
 		"# not separately asked to hand-edit these keys. You may edit or remove this\n" +
-		"# block at any time — the organisation cannot rewrite it remotely; only a\n" +
+		"# block at any time - the organisation cannot rewrite it remotely; only a\n" +
 		"# future `observer enroll` in which you accept a grant writes it again.\n" +
 		"# Removing it re-imposes manual consent: these families revert to \"reported\n" +
 		"# but never durably installed\" until you (or a future accepted grant) add\n" +
@@ -562,17 +749,51 @@ func ensureManagedPolicyBlock(path string, families []string) (bool, error) {
 		"accept_families = " + list + "\n" +
 		"preauthorize_enforce = " + list + "\n"
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, err
+		return err
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer f.Close()
-	if _, err := f.WriteString(block); err != nil {
-		return false, err
+	_, err = f.WriteString(block)
+	return err
+}
+
+// managedPolicyInsertionLines renders the lines to splice in for whichever
+// of the two keys sectionDeclaresKey found missing - always at least one,
+// since the caller only reaches here when hasAccept && hasEnforce is false.
+func managedPolicyInsertionLines(list string, hasAccept, hasEnforce bool) []string {
+	lines := []string{
+		"# Added automatically by `observer enroll`: this machine accepted a",
+		"# managed governance grant, and this table already existed for an",
+		"# unrelated reason, so only the key(s) below were inserted rather than",
+		"# the whole block being appended again. Edit or remove either key at",
+		"# any time. See docs/teams-getting-started.md and `observer org grant show`.",
 	}
-	return true, nil
+	if !hasAccept {
+		lines = append(lines, "accept_families = "+list)
+	}
+	if !hasEnforce {
+		lines = append(lines, "preauthorize_enforce = "+list)
+	}
+	return lines
+}
+
+// insertManagedPolicyKeys is decision-table row 3: [org_client.policy]
+// already exists but is missing one or both keys. It splices the missing
+// key line(s) in immediately after the header line, before whatever the
+// table already held, so the insertion always lands inside THIS table
+// regardless of what follows in the file - and it writes atomically
+// (temp file + rename in the same directory, 0600) rather than appending,
+// since the new text lands in the middle of the file, not at the end.
+func insertManagedPolicyKeys(path string, lines []string, headerIdx int, list string, hasAccept, hasEnforce bool) error {
+	insertion := managedPolicyInsertionLines(list, hasAccept, hasEnforce)
+	newLines := make([]string, 0, len(lines)+len(insertion))
+	newLines = append(newLines, lines[:headerIdx+1]...)
+	newLines = append(newLines, insertion...)
+	newLines = append(newLines, lines[headerIdx+1:]...)
+	return fsatomic.WriteFile(path, []byte(strings.Join(newLines, "\n")), fsatomic.Options{FilePerm: 0o600})
 }
 
 func newUnenrollCmd() *cobra.Command {
@@ -704,14 +925,13 @@ func newOrgStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "Pushing enabled:  %t\n", b.cfg.OrgClient.Enabled)
 			fmt.Fprintln(out)
 
-			// Share mode — the v1.8.0 per-node opt-in. Default is
-			// metadata-only (hashes ship; raw paths + content
-			// withheld). full_content=true ships the raw values too.
-			shareDesc := "metadata-only (hashes; raws withheld) — the default"
-			if b.cfg.OrgClient.Share.FullContent {
-				shareDesc = "FULL CONTENT (raw command bodies + assistant prose + raw paths SHIPPED)"
-			}
-			fmt.Fprintf(out, "Share mode:       %s\n", shareDesc)
+			// Share mode — the v1.8.0 per-node opt-in, read through the
+			// SAME predicate the push seam uses (SF-12).
+			fmt.Fprintf(out, "Share mode:       %s\n", shareModeLine(
+				b.cfg.OrgClient.Share.FullContent,
+				b.cfg.OrgClient.Share.AdminManaged,
+				enterpriseContentGranted(cmd.Context(), b.cfg, b.store, newLogger("warn")),
+			))
 			if len(b.cfg.OrgClient.Share.TargetActionAllowlist) > 0 {
 				fmt.Fprintf(out, "Per-action raws: %v\n", b.cfg.OrgClient.Share.TargetActionAllowlist)
 			}

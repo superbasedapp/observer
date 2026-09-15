@@ -37,6 +37,32 @@ type CodeintelDevRow struct {
 	// sees the real repository identity, not just a hash (§0.1). Empty on
 	// rows pushed by older agents (both-direction compat).
 	ProjectRoot string `json:"project_root,omitempty"`
+	// ProjectRootHash is the PROJECT-IDENTITY hash — sha256 of the
+	// normalized git-root path, byte-for-byte the same value
+	// SessionRow.ProjectRootHash carries for the same root (both are
+	// store.sha256Hex(normalizeProjectRoot(root)); see
+	// internal/store/codeintelsummary.go::projectRootHashForPath and
+	// store.upsertProjectBase, which is what writes projects.root_path_hash).
+	// It belongs to the SAME hash-only always-ship class as
+	// SessionRow.ProjectRootHash: an unsalted, content-free, cross-node
+	// joinable digest of a path, never the path itself.
+	//
+	// WHY IT IS HERE. ProjectHash above is domain-separated
+	// ("codeintel:project:v1:" + path), a DIFFERENT hash space from the
+	// project identity every other org surface keys on, so a codeintel row
+	// could not be joined to (or linked at) /projects/{id}. Carrying the
+	// project-identity hash alongside it closes that gap without weakening
+	// ProjectHash's domain separation — both ship, each for its own job.
+	//
+	// NOT A NEW DISCLOSURE on this wire: this row already carries
+	// ProjectRoot RAW (it rides shipsRawContent()), so the server can
+	// already compute this digest itself. It is carried explicitly so the
+	// server never has to re-derive it — a re-derivation is exactly where a
+	// normalization drift would silently 404 the link.
+	//
+	// Empty on rows pushed by older agents; every read must treat empty as
+	// "unknown", never as a project id.
+	ProjectRootHash string `json:"project_root_hash,omitempty"`
 	// Language is the resolved codeintel.Language for this bucket
 	// (codeintel_files.lang).
 	Language string `json:"language"`

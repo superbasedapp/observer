@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -108,7 +109,10 @@ func newTagCmd() *cobra.Command {
 			// over-long note (or out-of-range rating) would otherwise commit the
 			// tags and then fail, leaving a partial write behind. Mirrors the
 			// handler's pre-flight.
-			if err := store.ValidateClassificationInput(add, remove, notePtr, ratingPtr); err != nil {
+			// `observer tag` does not expose a --title flag (title is a
+			// dashboard/web concept for now); title is always nil here, which
+			// keeps this command's behaviour byte-for-byte unchanged.
+			if err := store.ValidateClassificationInput(add, remove, notePtr, ratingPtr, nil); err != nil {
 				return err
 			}
 
@@ -129,7 +133,7 @@ func newTagCmd() *cobra.Command {
 				}
 			}
 			if favPtr != nil || notePtr != nil || ratingPtr != nil {
-				if err := st.SetSessionAnnotation(cmd.Context(), sessionID, favPtr, notePtr, ratingPtr); err != nil {
+				if err := st.SetSessionAnnotation(cmd.Context(), sessionID, favPtr, notePtr, ratingPtr, nil); err != nil {
 					return err
 				}
 			}
@@ -286,7 +290,7 @@ func computeTagRollup(ctx context.Context, cfg config.Config, database *sql.DB, 
 	// silently zeroed cost/token columns. The dashboard's Server.tagRollup
 	// (internal/intelligence/dashboard/sessiontags.go) shares the same helper so
 	// both surfaces report the same numbers at any vocabulary size.
-	byID, cErr := cost.NewEngine(cfg.Intelligence).SessionRowsByID(ctx, database, cost.Options{
+	byID, cErr := acquireProcessCostEngine(ctx, cfg, database, slog.Default()).SessionRowsByID(ctx, database, cost.Options{
 		Days:   36500,
 		Source: cost.SourceAuto,
 	}, ids)

@@ -155,6 +155,22 @@ func TestParseFixtureCounts(t *testing.T) {
 	}
 }
 
+// TestPlainPluginFixtureNoSurfaceStamp pins the honest gap that remains
+// after the 2026-09-07 CLI/IDE grounding (see surface.go): the
+// 2026-08-16 Phase-0 fixture predates the AI-Assistant merge, so it is
+// an IDE-hosted run that nonetheless carries NEITHER positive marker
+// (no extraAttachments — IDE-served MCP tools didn't exist yet — and,
+// being a plain-plugin capture, no SessionCostTrajectorySnapshotEvent
+// either). A session with no positive marker still gets no self-stamp,
+// exactly the pre-2026-09-07 behavior — not a regression, just an
+// unclosed corner of an ungrounded lane.
+func TestPlainPluginFixtureNoSurfaceStamp(t *testing.T) {
+	res, _ := parseFixture(t)
+	if len(res.SessionSurfaces) != 0 {
+		t.Errorf("SessionSurfaces = %+v, want none", res.SessionSurfaces)
+	}
+}
+
 // TestProjectRootFromHeaderScan pins that every emitted event resolves the
 // project root the session's own CurrentDirectoryUpdatedEvent states
 // (line 50 of the fixture: /home/marmutapp/parking-game), including

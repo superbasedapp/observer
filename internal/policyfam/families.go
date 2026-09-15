@@ -7,6 +7,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/policyfam/egress"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/nodefeatures"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
+	"github.com/marmutapp/superbased-observer/internal/policyfam/planebadmission"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/providers"
 )
 
@@ -55,7 +56,12 @@ const (
 // SupportedFamilies is the v1 closed enum, in a stable order. New families
 // are appended last so an index into this slice stays stable across
 // releases for any caller that persisted one.
-var SupportedFamilies = []string{FamilyAdmissionInput, FamilyEgressGuardrail, FamilyGatewayProviders, FamilyNodeGovernance, FamilyNodeFeatures}
+var SupportedFamilies = []string{FamilyAdmissionInput, FamilyEgressGuardrail, FamilyGatewayProviders, FamilyNodeGovernance, FamilyNodeFeatures, FamilyPlaneBAdmission}
+
+// FamilyPlaneBAdmission is the Plane-B judged-admission body (design §4.6,
+// gap register G1-JUDGED-ADM): the inner admission spec + the gateway judge
+// route + the default-OFF node-lane flip. See internal/policyfam/planebadmission.
+const FamilyPlaneBAdmission = planebadmission.Family
 
 // IsSupportedFamily reports whether family is one of the v1 closed set.
 func IsSupportedFamily(family string) bool {
@@ -106,6 +112,12 @@ func CompileFamilyBody(family string, raw []byte, maxBytes int64) (spec any, can
 			return nil, nil, cerr
 		}
 		return s, canon, nil
+	case FamilyPlaneBAdmission:
+		s, canon, cerr := planebadmission.CompileBody(raw, maxBytes)
+		if cerr != nil {
+			return nil, nil, cerr
+		}
+		return s, canon, nil
 	default:
 		return nil, nil, fmt.Errorf("policyfam.CompileFamilyBody: unsupported family %q", family)
 	}
@@ -152,6 +164,8 @@ func SpecRequestsEnforceMode(family string, spec any) bool {
 		// gateway.providers/node.governance above.
 		_ = spec.(nodefeatures.PolicySpec) //nolint:forcetypeassert // caller contract: spec came from CompileFamilyBody(family, ...)
 		return true
+	case FamilyPlaneBAdmission:
+		return planebadmission.Enforces(spec.(planebadmission.PolicySpec)) //nolint:forcetypeassert // caller contract: spec came from CompileFamilyBody(family, ...)
 	default:
 		panic(fmt.Sprintf("policyfam.SpecRequestsEnforceMode: unsupported family %q", family))
 	}

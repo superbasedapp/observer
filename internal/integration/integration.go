@@ -108,6 +108,19 @@ type ProxyRoute struct {
 	// (CLAUDE.md #3); meaningful only for the persisted RouteKinds
 	// (RouteEnvSettings / RouteConfigFile).
 	CrossOSBridge bool
+	// Proof states whether APPLYING this route establishes which backend the
+	// invocation actually reaches. The zero value (RouteProofUnproven) is the
+	// safe answer for every tool whose effective provider is chosen by an
+	// ambient variable, a profile, or a config merge the launcher does not
+	// own. See RouteProof.
+	Proof RouteProof
+	// SelectorArguments are the grounded, PRODUCT-SPECIFIC argv keys that can
+	// outrank this route (a model, provider, credential or settings selector
+	// this vendor honours over its own base-URL knob). The cross-vendor
+	// spellings stay with the launch boundary that owns the generic scan; a
+	// row lists only what that generic set misses. Keys only — the scan
+	// compares the token before any '=' — and never a value.
+	SelectorArguments []string
 }
 
 // Capability is one adapter's row in the registry: everything observer
@@ -229,6 +242,34 @@ type Capability struct {
 	// populated only after a real drive proves the argv, pinned to the
 	// exact grounded set by registry coverage tests.
 	Headless *HeadlessSpec
+	// Lifecycle is the product's vendor-support status under the harness
+	// lifecycle policy (docs/harness-lifecycle-policy.md; lifecycle.go).
+	// Zero value = active. A deprecated or dead row keeps capturing (rows
+	// are never deleted) but is excluded from every ADVERTISING surface —
+	// picker / launch / guided install / init targets — through the one
+	// predicate Lifecycle.Advertised() (TerminalLaunchable, Advertised),
+	// pinned by TestUnadvertisedRowsAreNeverDispatched.
+	Lifecycle Lifecycle
+	// LifecycleNote is REQUIRED (non-empty) whenever Lifecycle is not
+	// active: the vendor-grounded reason + date + URL the flip was made
+	// on (pinned by TestLifecycleNotesGrounded). Optional on an active row
+	// (an alias / name-collision caveat the docs should carry).
+	LifecycleNote string
+	// GUI, when non-nil, declares that this adapter's OWN product is an IDE
+	// or desktop app the dashboard can install + launch DETACHED (no PTY)
+	// with Observer's routing wrap injected (gui.go, docs/plans/
+	// ide-desktop-launch-plan-2026-09-03.md). Nil = the product has no GUI
+	// surface of its own, or it has one that is not yet grounded — see the
+	// row comment. Editor HOSTS with no adapter row of their own (VS Code,
+	// JetBrains IDEs, Zed) live in the guiHosts table instead; both feed
+	// the single GUILaunchables() accessor the dashboard dispatches on.
+	GUI *GUILaunchSpec
+	// PromptLane declares the tool's prompt-submit intervention
+	// mechanism (docs/plans/prompt-submit-intervention-exploration-2026-09-07.md
+	// Part B). Zero value (PromptLaneNone) = no grounded capability —
+	// the honest default for most rows. See internal/integration's
+	// PromptLane doc comment for the full vocabulary.
+	PromptLane PromptLane
 }
 
 // registry is the capability table, keyed by the adapter's canonical tool
@@ -242,9 +283,16 @@ type Capability struct {
 var registry = map[string]Capability{
 	// Full-capability flagships: proxy + hook + MCP + all native rails.
 	"claude-code": {
-		Tool:        "claude-code",
-		Vocabulary:  Vocabulary{InTaxonomy: true},
-		Proxy:       &ProxyRoute{Kind: RouteEnvSettings, EnvVar: "ANTHROPIC_BASE_URL", Suffix: "", Launcher: "observer claude", CrossOSBridge: true},
+		Tool:       "claude-code",
+		PromptLane: PromptLaneHook,
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// ANTHROPIC_BASE_URL is the whole route: the Anthropic client has no
+		// second provider selector to fall back to, so an invocation that
+		// carries the injected base URL reaches the Observer proxy.
+		Proxy: &ProxyRoute{
+			Kind: RouteEnvSettings, EnvVar: "ANTHROPIC_BASE_URL", Suffix: "",
+			Launcher: "observer claude", CrossOSBridge: true, Proof: RouteProofLauncherRoute,
+		},
 		Routability: RouteStatusRoutableNow,
 		Hook:        HookSpec{Mechanism: HookClaudeSettings, CrossOSBridge: true, AutoWired: true},
 		MCP:         &MCPTarget{Format: MCPServersJSON, PathHint: ".claude.json", Implemented: true},
@@ -264,11 +312,22 @@ var registry = map[string]Capability{
 			ProbeDirs: []ProbeDir{
 				{OS: ProbeUnix, Rel: ".claude/local"},
 				{OS: ProbeUnix, Rel: ".local/bin"},
+				// grounded 2026-09-02: bootstrap.ps1 installs the native
+				// binary under %USERPROFILE%\.local\bin, mirroring the Unix
+				// layout (code.claude.com/docs/en/setup uninstall section).
+				{OS: ProbeWindows, Rel: ".local/bin"},
 			},
 			Installs: []InstallHint{
 				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "@anthropic-ai/claude-code"}, Display: "npm install -g @anthropic-ai/claude-code"},
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://claude.ai/install.sh | bash"}, Display: "curl -fsSL https://claude.ai/install.sh | bash"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://claude.ai/install.sh | bash"}, Display: "curl -fsSL https://claude.ai/install.sh | bash"},
+				// grounded 2026-09-02: bootstrap.ps1 (claude.ai/install.ps1)
+				// downloads the platform .exe and execs `& $binaryPath
+				// install`; the winget manifest (Anthropic.ClaudeCode,
+				// InstallerType: portable, Commands: [claude]) is the
+				// package-manager alternative.
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-Command", "irm https://claude.ai/install.ps1 | iex"}, Display: "irm https://claude.ai/install.ps1 | iex"},
+				{OS: "windows", Channel: "winget", Argv: []string{"winget", "install", "Anthropic.ClaudeCode"}, Display: "winget install Anthropic.ClaudeCode"},
 			},
 		},
 		// Attachable: `observer claude --attach` hands the PTY to the daemon
@@ -316,14 +375,27 @@ var registry = map[string]Capability{
 		},
 	},
 	"codex": {
-		Tool:        "codex",
-		Vocabulary:  Vocabulary{InTaxonomy: true},
-		Proxy:       &ProxyRoute{Kind: RouteConfigFile, EnvVar: "", Launcher: "observer codex", Note: "codex routes through ~/.codex/config.toml openai_base_url (not an env var)", CrossOSBridge: true},
+		Tool:       "codex",
+		PromptLane: PromptLaneHook,
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// The config file the launcher writes is the route; the launcher also
+		// refuses to claim it when the invocation supplies its own config
+		// override, so an un-overridden launch reaches the Observer proxy.
+		Proxy: &ProxyRoute{
+			Kind: RouteConfigFile, EnvVar: "", Launcher: "observer codex",
+			Note:          "codex routes through ~/.codex/config.toml openai_base_url (not an env var)",
+			CrossOSBridge: true, Proof: RouteProofLauncherRoute,
+		},
 		Routability: RouteStatusRoutableNow,
-		Hook:        HookSpec{Mechanism: HookCodexConfig, AutoWired: true},
-		MCP:         &MCPTarget{Format: MCPCodexTOML, PathHint: ".codex/config.toml", Implemented: true},
-		Native:      NativeRails{A: true, B: true, C: true, Note: "Rail A (usage-export) config-gated on live keys"},
-		TokenTier:   TokenTier{Best: "proxy"},
+		// CrossOSBridge grounded 2026-09-02 (IDE-surface remediation T2):
+		// hook.registerCodexWindows writes the wsl.exe bridge into the
+		// Windows-side ~/.codex/hooks.json exactly like the claude-code and
+		// cursor targets, so init/start's hookSupported() may auto-wire the
+		// `codex-windows` target.
+		Hook:      HookSpec{Mechanism: HookCodexConfig, CrossOSBridge: true, AutoWired: true},
+		MCP:       &MCPTarget{Format: MCPCodexTOML, PathHint: ".codex/config.toml", Implemented: true},
+		Native:    NativeRails{A: true, B: true, C: true, Note: "Rail A (usage-export) config-gated on live keys"},
+		TokenTier: TokenTier{Best: "proxy"},
 		// P0.1 FULL: rollout JSONL (event_msg text lane + function_call
 		// pairing); reader derives the path by session-id glob.
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile, InjectMCP, InjectPrompt}, Launch: &LaunchSpec{Subcommand: "codex"}},
@@ -334,9 +406,22 @@ var registry = map[string]Capability{
 				Unix:    []string{"codex"},
 				Windows: []string{"codex.exe", "codex.cmd", "codex"},
 			},
+			// grounded 2026-09-02: the native/winget install lands
+			// codex.exe under %LOCALAPPDATA%\Programs\OpenAI\Codex\bin
+			// (CODEX_INSTALL_DIR override); releases live under
+			// %USERPROFILE%\.codex\packages\standalone\releases.
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeWindows, Rel: "AppData/Local/Programs/OpenAI/Codex/bin"},
+			},
 			Installs: []InstallHint{
 				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "@openai/codex"}, Display: "npm install -g @openai/codex"},
-				{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "codex"}, Display: "brew install codex"},
+				// DI-10 fix: codex is a brew CASK (formulae.brew.sh/cask/codex),
+				// not a formula — the bare `brew install codex` name collides.
+				{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "codex"}, Display: "brew install --cask codex"},
+				// grounded 2026-09-02: releases.openai.com/codex/install.ps1
+				// (302 from chatgpt.com/codex/install.ps1), vendor form uses
+				// -ExecutionPolicy ByPass. No winget id exists.
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-ExecutionPolicy", "ByPass", "-c", "irm https://chatgpt.com/codex/install.ps1 | iex"}, Display: "irm https://chatgpt.com/codex/install.ps1 | iex"},
 			},
 		},
 		// Attachable: `observer codex --attach` hands the PTY to the daemon
@@ -385,9 +470,22 @@ var registry = map[string]Capability{
 	// LIVE-VERIFIED 2026-06-27: `observer opencode -- run …` routed a
 	// gpt-5.4-nano turn through the proxy (api_turns grew).
 	"opencode": {
-		Tool:        "opencode",
-		Vocabulary:  Vocabulary{InTaxonomy: true},
-		Proxy:       &ProxyRoute{Kind: RouteLauncher, EnvVar: "OPENAI_BASE_URL", Suffix: "/v1", Launcher: "observer opencode"},
+		Tool:       "opencode",
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// FIX-7 (phase-2 review): no prompt-submit hook exists for
+		// OpenCode (its chat.message plugin hook is a REDACT-only
+		// lane per §2.2 of the contract, and even that is unbuilt),
+		// but it is already proxy-routed today — the proxy lane is
+		// its only realistic path to prompt-submit intervention.
+		PromptLane: PromptLaneProxyOnly,
+		// OPENAI_BASE_URL is the route AND the provider selection: the
+		// launcher's injected environment names the openai-compatible provider
+		// opencode then uses, and the live 2026-06-27 verification above ran
+		// through exactly that injection.
+		Proxy: &ProxyRoute{
+			Kind: RouteLauncher, EnvVar: "OPENAI_BASE_URL", Suffix: "/v1",
+			Launcher: "observer opencode", Proof: RouteProofLauncherRoute,
+		},
 		Routability: RouteStatusRoutableNow,
 		Hook:        HookSpec{Mechanism: HookNone},
 		// OpenCode hosts MCP under its own "mcp" object in
@@ -430,6 +528,11 @@ var registry = map[string]Capability{
 				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "opencode-ai@latest"}, Display: "npm install -g opencode-ai@latest"},
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://opencode.ai/install | bash"}, Display: "curl -fsSL https://opencode.ai/install | bash"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://opencode.ai/install | bash"}, Display: "curl -fsSL https://opencode.ai/install | bash"},
+				// grounded 2026-09-02: opencode.ai/docs lists scoop (Scoop
+				// main bucket) alongside npm for Windows. The choco listing
+				// (author SST = the vendor org) publishes a stale 0.11.1
+				// vs. npm's 1.18.26 — deliberately not adopted.
+				{OS: "windows", Channel: "scoop", Argv: []string{"scoop", "install", "opencode"}, Display: "scoop install opencode"},
 			},
 		},
 		// Model picker (B5). Grounded live 2026-08-08: `opencode --help`
@@ -460,12 +563,67 @@ var registry = map[string]Capability{
 		// list; every other launchable tool carries the honest zero note
 		// until a per-tool probe grounds its StateRW/StateRO paths.
 		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// GUI launch row (plan §2.2): OpenCode Desktop writes the SAME
+		// opencode.db this row's watcher reads (inventory §2.12,
+		// VERIFIED-LIVE via a drafts.sqlite session-id join) — the cleanest
+		// desktop case.
+		GUI: &GUILaunchSpec{
+			ID:      "opencode-desktop",
+			Label:   "OpenCode Desktop",
+			Surface: "desktop",
+			Binary: BinaryResolveSpec{
+				Names: BinaryNames{
+					Windows: []string{"OpenCode.exe"},
+				},
+				ProbeDirs: []ProbeDir{
+					{OS: ProbeWindows, Rel: "AppData/Local/Programs/@opencode-aidesktop"},
+				},
+				Installs: []InstallHint{
+					{OS: "windows", Channel: "winget", Argv: []string{"winget", "install", "--id", "SST.OpenCodeDesktop", "-e", "--source", "winget"}, Display: "winget install --id SST.OpenCodeDesktop -e --source winget"},
+					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "opencode-desktop"}, Display: "brew install --cask opencode-desktop"},
+				},
+				InstallNote: "no grounded Linux channel argv: the vendor ships .deb and .rpm artifacts " +
+					"(opencode.ai/download) and which applies depends on the distro, so no single command is " +
+					"offered.",
+			},
+			// PATH walk disabled: a bun-compiled `opencode.exe` CLI can sit
+			// on PATH and would match "OpenCode.exe" case-insensitively on
+			// Windows — that would spawn the TUI detached with no PTY.
+			ProbeOnly:      true,
+			DarwinApp:      "OpenCode",
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind: WrapChildEnv,
+				Env: []WrapEnvVar{
+					{Name: "OPENAI_BASE_URL", Suffix: "/v1"},
+				},
+				ColdStartOnly: true,
+				Reason: "child_env, NOT config_write, and the plan §2.2 sketch said the opposite — here is " +
+					"why. WrapConfigWrite's contract is that an EXISTING config-lane writer applies the route, " +
+					"but internal/proxyroute has no opencode registrar (claude/codex/crush/kimi/qwen only) and " +
+					"this row carries no ProxyProbe, so naming one would point the operator at a writer that " +
+					"does not exist. What IS grounded and live-verified for opencode is the launcher lane in " +
+					"this row's Proxy above: `observer opencode` exports OPENAI_BASE_URL=<proxy>/v1, and the " +
+					"desktop app embeds the same core. Injecting it on a cold start is the honest best effort; " +
+					"whether the Electron shell honours the env var (rather than only the per-provider baseURL " +
+					"in ~/.config/opencode/opencode.json, inventory §4.1) is NOT verified — treat a launch " +
+					"that produces no api_turns row as the config lane winning.",
+			},
+			Hosts:    []string{"opencode"},
+			Grounded: true,
+			Note: "Windows layout grounded on this box 2026-09-03: " +
+				"%LOCALAPPDATA%\\Programs\\@opencode-aidesktop\\OpenCode.exe, with NO bin\\ dir — hence " +
+				"ProjectDirArgv=false. macOS bundle \"OpenCode.app\" grounded from the Homebrew cask " +
+				"`opencode-desktop`; winget id `SST.OpenCodeDesktop` grounded from a live " +
+				"`winget search --exact` the same day (note the sibling `SST.opencode`, which is the CLI).",
+		},
 	},
 
 	// IDE/extension adapters that talk only to their own backend → no proxy
 	// route (Proxy=nil is DATA, not a missing feature). Hooks/MCP per tool.
 	"cursor": {
 		Tool:       "cursor",
+		PromptLane: PromptLaneHook,
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// Surface-split (2026-06-26): the NATIVE Cursor backend has no base-URL
 		// knob (exempt), but Cursor's custom "OpenAI Base URL" / BYOK model
@@ -490,9 +648,14 @@ var registry = map[string]Capability{
 		// per-generation tokens anymore: agent-transcripts JSONLs have none,
 		// chats/<ws>/<conv>/store.db blobs are message content only, and
 		// ai-tracking/ai-code-tracking.db tracks code hashes, not spend.
-		// The ff8ebc12 guard fix stands ready if usage returns; until a
-		// surface reappears this is an upstream capture ceiling.
-		TokenTier: TokenTier{Best: "sqlite", Gap: "3.15.x dropped usage from stop payloads entirely; no local token surface remains (upstream regression, watch cursor-stop-debug.jsonl)"},
+		// The ff8ebc12 guard fix stands ready if usage returns. Since
+		// 0c791f59e (2026-09-09, merged 2026-09-10) the CLI's own structured
+		// `agent_cli.turn.outcome` log records are captured too
+		// (cli_usage.go): they carry per-turn counters (input already net of
+		// both cache buckets) even when headless runs emit neither stop nor
+		// afterAgentResponse; a retried turn keeps the final attempt only, so
+		// totals are a lower bound and are labelled as such.
+		TokenTier: TokenTier{Best: "sqlite", Gap: "IDE builds since 3.15.x drop usage from stop payloads; per-turn usage comes from afterAgentResponse where it fires and, for the CLI, from its agent_cli.turn.outcome log records (final attempt only, so a lower bound)"},
 		// P0.1 FULL (CLI): ~/.cursor/projects/<slug>/agent-transcripts/
 		// <sid>/<sid>.jsonl, Anthropic-shaped; NOT referenced by DB
 		// source_file (sentinel) — derive by session id. IDE state.vscdb
@@ -532,13 +695,28 @@ var registry = map[string]Capability{
 		// Binary resolution + grounded install. Unix launcher resolves
 		// "cursor-agent"; the installer drops versioned binaries under
 		// .local/share/cursor-agent/versions/*. Official installer script
-		// (cursor.com/docs/cli/installation); Windows hint is display-only
-		// (no Windows binary spelling grounded yet).
+		// (cursor.com/docs/cli/installation). Windows hint is EXECUTABLE by
+		// a native-Windows daemon (ConPTY, since 2026-07-04); post-install
+		// detection needs Names.Windows (grounded 2026-09-02).
+		//
+		// Windows spellings GROUNDED 2026-09-02 by reading the installer
+		// source (`$agentPath = "$env:LOCALAPPDATA\cursor-agent"`, a
+		// `cursor-agent*` copy + `agent.*` alias block) and range-reading
+		// the ZIP central directory of
+		// downloads.cursor.com/lab/2026.08.31-4057e58/windows/x64/
+		// agent-cli-package.zip: root entries are cursor-agent.cmd,
+		// cursor-agent.ps1, node.exe, rg.exe, crepectl.exe,
+		// cursorsandbox.exe — NO cursor-agent.exe exists, so the agent.exe
+		// alias branch never fires. ARM64 zip not read (assumed identical).
 		Binary: &BinaryResolveSpec{
-			Names: BinaryNames{Unix: []string{"cursor-agent"}},
+			Names: BinaryNames{
+				Unix:    []string{"cursor-agent", "agent"},
+				Windows: []string{"cursor-agent.cmd", "agent.cmd"},
+			},
 			ProbeDirs: []ProbeDir{
 				{OS: ProbeUnix, Rel: ".local/bin"},
 				{OS: ProbeUnix, Rel: ".local/share/cursor-agent/versions/*"},
+				{OS: ProbeWindows, Rel: "AppData/Local/cursor-agent"},
 			},
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl https://cursor.com/install -fsS | bash"}, Display: "curl https://cursor.com/install -fsS | bash"},
@@ -559,10 +737,75 @@ var registry = map[string]Capability{
 		// list; every other launchable tool carries the honest zero note
 		// until a per-tool probe grounds its StateRW/StateRO paths.
 		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// GUI launch row (plan §2.2). Cursor IS an IDE, so the spec rides
+		// its own registry row rather than the guiHosts table.
+		GUI: &GUILaunchSpec{
+			ID:      "cursor-ide",
+			Label:   "Cursor",
+			Surface: "ide",
+			Binary: BinaryResolveSpec{
+				// The Electron exe, not the `resources\app\bin\cursor.cmd`
+				// PATH shim (a .cmd would allocate a console). No collision
+				// with this row's CLI Names above (`cursor-agent`/`agent`).
+				Names: BinaryNames{
+					Unix:    []string{"cursor"},
+					Windows: []string{"Cursor.exe"},
+				},
+				ProbeDirs: []ProbeDir{
+					{OS: ProbeWindows, Rel: "AppData/Local/Programs/cursor"},
+				},
+				Installs: []InstallHint{
+					{OS: "windows", Channel: "winget", Argv: []string{"winget", "install", "--id", "Anysphere.Cursor", "-e", "--source", "winget"}, Display: "winget install --id Anysphere.Cursor -e --source winget"},
+					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "cursor"}, Display: "brew install --cask cursor"},
+				},
+				InstallNote: "no grounded Linux channel: Cursor ships an AppImage/deb download page, not a " +
+					"scriptable one-liner (cursor.com/downloads).",
+			},
+			DarwinApp:      "Cursor",
+			ProjectDirArgv: true,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "the in-IDE agent's backend is hard-wired to Cursor's own service — no base-URL env " +
+					"var exists. The one BYOK knob (\"OpenAI Base URL\") is a VS Code setting persisted in the " +
+					"live `state.vscdb`, which Observer will not write; it is a manual paste, which is why this " +
+					"row's Routability is probe_required with RouteManual rather than a driven route " +
+					"(inventory §2.5 / §4.2). Launch yes, wrap no; capture rides the agent-transcripts + " +
+					"store.db watcher path.",
+			},
+			Hosts:    []string{"cursor"},
+			Grounded: true,
+			Note: "Windows layout grounded on this box 2026-09-03: " +
+				"%LOCALAPPDATA%\\Programs\\cursor\\Cursor.exe (+ resources\\app\\bin\\{cursor,cursor.cmd}, which " +
+				"grounds `cursor <dir>`). macOS bundle \"Cursor.app\" grounded from the Homebrew cask `cursor`; " +
+				"winget id `Anysphere.Cursor` grounded from a live `winget search --exact` against the official " +
+				"winget source the same day — the inventory rates Anysphere's vendor blessing of that package " +
+				"LOW, so treat it as a grounded id, not a vendor-endorsed channel.",
+		},
 	},
 	"cline": {
 		Tool:       "cline",
+		PromptLane: PromptLaneProbeRequired,
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// Cline itself is ACTIVE. The note records the DEAD product this
+		// row also services: internal/adapter/cline watches Roo Code's
+		// globalStorage ids alongside saoudrizwan.claude-dev
+		// (roovscode.roo-cline, roovscode.roo-code,
+		// rooveterinaryinc.roo-cline, rooveterinaryinc.roo-code,
+		// rooveterinaryinc.roo-code-nightly — see roots.go
+		// clineExtensions) and retags those rows Tool="roo-code" PER FILE
+		// (adapter.go toolFromPath). Roo Code shut down 2026-04-21 and its
+		// repo/extension were archived 2026-05-15; capture keeps running
+		// (lifecycle never gates capture) but nothing is advertised for
+		// it. There is NO roo-code registry row BY DESIGN — every cell
+		// would be zero or copied from this one (IDE-20 /
+		// registryRowlessTaxonomyTools); its lifecycle lives in
+		// productLifecycles["roo-code"] instead.
+		LifecycleNote: "also services the DEAD Roo Code retag identity: internal/adapter/cline watches the " +
+			"roovscode.roo-cline / roovscode.roo-code / rooveterinaryinc.roo-cline / " +
+			"rooveterinaryinc.roo-code / rooveterinaryinc.roo-code-nightly globalStorage ids and retags " +
+			"those rows Tool=\"roo-code\" per file. No roo-code registry row exists by design (every cell " +
+			"would be zero or copied) — see productLifecycles[\"roo-code\"] for that product's lifecycle. " +
+			"Cline itself is active.",
 		// VS Code extension → backend. The "OpenAI Compatible" Base URL surface
 		// is routable, but it is a MANUAL-PASTE route, not an auto-writer:
 		// live-grounded 2026-06-27, Cline stores its provider/base-URL config
@@ -608,6 +851,12 @@ var registry = map[string]Capability{
 	"copilot-cli": {
 		Tool:       "copilot-cli",
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// FIX-7 (phase-2 review): Copilot CLI/SDK's userPromptSubmitted
+		// is REDACT-capable but explicitly cannot block ("This hook
+		// cannot reject a prompt or enforce policy" — GitHub docs,
+		// contract §2.2) and no writer exists for it yet; the proxy
+		// lane (already routed today) is the only real coverage.
+		PromptLane: PromptLaneProxyOnly,
 		// BYOK path: COPILOT_PROVIDER_BASE_URL/_TYPE/_API_KEY + COPILOT_MODEL →
 		// OpenAI-compatible endpoint (GitHub Docs); native GitHub-hosted
 		// routing stays exempt.
@@ -618,7 +867,17 @@ var registry = map[string]Capability{
 		// AND was compressed (4 tools-trim compression_events). The launcher
 		// NEVER sets the key — that's the operator's BYOK env. Proxy is the
 		// launcher route (mirrors opencode); init does not auto-write it.
-		Proxy:       &ProxyRoute{Kind: RouteLauncher, EnvVar: "COPILOT_PROVIDER_BASE_URL", Suffix: "/v1", Launcher: "observer copilot-cli"},
+		// The BYOK lane is proven by the launcher because it injects the
+		// provider TYPE alongside the base URL; the argv keys below are the
+		// grounded ways an invocation can pick a different backend anyway.
+		Proxy: &ProxyRoute{
+			Kind: RouteLauncher, EnvVar: "COPILOT_PROVIDER_BASE_URL", Suffix: "/v1",
+			Launcher: "observer copilot-cli", Proof: RouteProofLauncherRoute,
+			SelectorArguments: []string{
+				"--provider-type", "--provider_type", "--provider-base-url",
+				"--provider_base_url", "--backend", "--auth-type", "--auth_type",
+			},
+		},
 		Routability: RouteStatusRoutableNow,
 		Hook:        HookSpec{Mechanism: HookNone},
 		MCP:         nil,
@@ -653,13 +912,15 @@ var registry = map[string]Capability{
 		// "copilot"; npm @github/copilot (any OS) + the cask/script/winget
 		// channels (docs.github.com copilot-cli install).
 		Binary: &BinaryResolveSpec{
-			// npm JS bin: Windows install lays down a `.cmd` shim (+
-			// .ps1/POSIX-shell forms), never an `.exe` — see the
-			// command-code row's Binary comment for the long-form
-			// rationale.
+			// npm JS launcher gives Windows a `.cmd` shim; the winget
+			// portable install ALSO grounds a `.exe` alias
+			// (NestedInstallerFiles: copilot.exe) in
+			// %LOCALAPPDATA%\Microsoft\WinGet\Links — grounded 2026-09-02
+			// against the winget manifest (GitHub.Copilot v1.0.82,
+			// Commands: [copilot]).
 			Names: BinaryNames{
 				Unix:    []string{"copilot"},
-				Windows: []string{"copilot.cmd", "copilot"},
+				Windows: []string{"copilot.exe", "copilot.cmd", "copilot"},
 			},
 			Installs: []InstallHint{
 				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "@github/copilot"}, Display: "npm install -g @github/copilot"},
@@ -750,10 +1011,19 @@ var registry = map[string]Capability{
 			// npm JS bin: Windows install lays down a `.cmd` shim (+
 			// .ps1/POSIX-shell forms), never an `.exe` — see the
 			// command-code row's Binary comment for the long-form
-			// rationale.
+			// rationale. `kilocode` is a second real bin key for the SAME
+			// binary (npm scratch-install bin map: {kilo: ./bin/kilo,
+			// kilocode: ./bin/kilo}, grounded 2026-09-02).
 			Names: BinaryNames{
-				Unix:    []string{"kilo"},
-				Windows: []string{"kilo.cmd", "kilo"},
+				Unix:    []string{"kilo", "kilocode"},
+				Windows: []string{"kilo.cmd", "kilo", "kilocode.cmd", "kilocode"},
+			},
+			// grounded 2026-09-02: the vendor's script channel (Git-Bash
+			// runnable, MINGW*/MSYS*/CYGWIN* branch) installs into
+			// $HOME/.kilo/bin on both OSes.
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".kilo/bin"},
+				{OS: ProbeWindows, Rel: ".kilo/bin"},
 			},
 			Installs: []InstallHint{
 				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "@kilocode/cli"}, Display: "npm install -g @kilocode/cli"},
@@ -773,6 +1043,13 @@ var registry = map[string]Capability{
 	"cline-cli": {
 		Tool:       "cline-cli",
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// FIX-7 (phase-2 review): no prompt-submit hook lane for
+		// cline-cli — it is already proxy-routed today, which is its
+		// only realistic path to prompt-submit intervention (Cline's
+		// UserPromptSubmit hook exists for the VS Code extension, a
+		// DIFFERENT tool row, `cline`, with its own POSIX-only
+		// registration caveat).
+		PromptLane: PromptLaneProxyOnly,
 		// ROUTABLE via the openai-compatible provider's persisted baseUrl —
 		// VERIFIED LIVE 2026-06-27. The NATIVE `openai` provider hardcodes
 		// api.openai.com and ignores OPENAI_BASE_URL (confirmed: `-P openai -k …`
@@ -844,6 +1121,13 @@ var registry = map[string]Capability{
 	"hermes": {
 		Tool:       "hermes",
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// FIX-7 (phase-2 review): Hermes' pre_llm_call hook is
+		// injection-only per the vendor's own docs ("the clean
+		// user-message content remains unchanged", contract §2.3) —
+		// it has a prompt-submit event but genuinely CANNOT block or
+		// redact. The proxy lane (already routed today) is Hermes'
+		// only realistic path to prompt-submit intervention.
+		PromptLane: PromptLaneProxyOnly,
 		// Proxy BLOCKED at the proxy-upstream layer, not a writer gap (live-
 		// grounded 2026-06-26). Hermes' only base-URL knob is model.base_url
 		// in ~/.hermes/config.yaml, live-set to https://openrouter.ai/api/v1
@@ -930,13 +1214,30 @@ var registry = map[string]Capability{
 		// are per-tool extras (the off-PATH hermes-bundled npm prefix from
 		// the opencode-WSL incident). Official install script
 		// (github.com/NousResearch/hermes-agent README; no official pip
-		// path). Windows hint is display-only (no Windows binary spelling
-		// grounded yet).
+		// path). Windows hint is EXECUTABLE by a native-Windows daemon
+		// (ConPTY, since 2026-07-04); post-install detection needs
+		// Names.Windows (grounded 2026-09-02).
+		//
+		// Windows spellings GROUNDED 2026-09-02 by reading the installer
+		// (`$HermesHome = $env:LOCALAPPDATA\hermes`,
+		// Install-HermesCommandLaunchers emits ONE of hermes.exe/hermes.cmd
+		// per install depending on whether the uv venv is relocatable) and
+		// `where.exe hermes` on this box, which resolved to the legacy
+		// venv\Scripts layout.
 		Binary: &BinaryResolveSpec{
-			Names: BinaryNames{Unix: []string{"hermes"}},
+			Names: BinaryNames{
+				Unix:    []string{"hermes"},
+				Windows: []string{"hermes.exe", "hermes.cmd"},
+			},
 			ProbeDirs: []ProbeDir{
 				{OS: ProbeUnix, Rel: ".hermes/bin"},
 				{OS: ProbeUnix, Rel: ".hermes/node/bin"},
+				{OS: ProbeUnix, Rel: ".local/bin"},
+				{OS: ProbeWindows, Rel: "AppData/Local/hermes/bin"},
+				// Legacy layout — what this box has (live `where.exe hermes`
+				// grounding); the installer actively removes these from PATH
+				// on newer installs but the dir can still be resolved off-PATH.
+				{OS: ProbeWindows, Rel: "AppData/Local/hermes/hermes-agent/venv/Scripts"},
 			},
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"}, Display: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"},
@@ -961,6 +1262,36 @@ var registry = map[string]Capability{
 		// list; every other launchable tool carries the honest zero note
 		// until a per-tool probe grounds its StateRW/StateRO paths.
 		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// GUI launch row (plan §2.2): Hermes Desktop shares ~/.hermes with
+		// this row's CLI ("one agent, one memory, every surface"). UNVERIFIED
+		// layout ⇒ Grounded=false, empty Binary, never launchable.
+		GUI: &GUILaunchSpec{
+			ID:             "hermes-desktop",
+			Label:          "Hermes Desktop",
+			Surface:        "desktop",
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind:       WrapConfigWrite,
+				ConfigTool: "hermes",
+				Reason: "Hermes reads its base URL from a persisted config file, never the environment: " +
+					"this row's verified Proxy above routes via a user-config `observer` provider in " +
+					"~/.hermes/config.yaml (written additively by the `observer hermes` launcher, never a " +
+					"key), and Desktop shares that same ~/.hermes. So a route already applied to the CLI " +
+					"applies to Desktop too — the GUI launch itself writes nothing and records " +
+					"wrap_applied=false naming that writer. Carry the CLI's known bug forward: an " +
+					"OpenRouter-catalog-matching model name can silently override an explicit custom " +
+					"base_url (upstream #39753).",
+			},
+			Hosts:    []string{"hermes"},
+			Grounded: false,
+			Note: "UNVERIFIED on the grounding box (2026-09-03): %LOCALAPPDATA%\\hermes exists but is the " +
+				"CLI's DATA dir (HERMES_HOME — config.yaml, auth.json, bin\\), and " +
+				"%LOCALAPPDATA%\\com.nousresearch.hermes.setup contains only an EBWebView profile left by an " +
+				"installer — neither grounds a desktop executable. No Homebrew cask `hermes` and no winget " +
+				"package (both checked live the same day). The vendor documents a `hermes desktop` verb " +
+				"(inventory §2.12) which would make this nearly free once someone grounds one install. " +
+				"Grounded=false ⇒ empty Binary, never launchable, listed for the record.",
+		},
 	},
 	"cowork": {
 		Tool:       "cowork",
@@ -980,10 +1311,66 @@ var registry = map[string]Capability{
 		// P0.1 FULL: audit.jsonl user/assistant records (Windows
 		// cross-mount; reader = P2 tranche).
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile}},
+		// GUI launch row (plan §2.2): Claude Desktop. It is the only row in
+		// the table with no launchable executable path at all on Windows —
+		// an MSIX package launched by AUMID.
+		GUI: &GUILaunchSpec{
+			ID:      "claude-desktop",
+			Label:   "Claude Desktop",
+			Surface: "desktop",
+			Binary: BinaryResolveSpec{
+				// Names.Windows deliberately EMPTY: the MSIX payload lives
+				// under %ProgramFiles%\WindowsApps, which is ACL-locked and
+				// must not be exec'd directly. AppsFolderAUMID is the launch
+				// path; WindowsNote carries the honest zero.
+				WindowsNote: "Claude Desktop installs as an MSIX package with no exe alias on PATH; it is " +
+					"launched via `explorer.exe shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude` " +
+					"(AppsFolderAUMID), never by executable path.",
+				Installs: []InstallHint{
+					{OS: "windows", Channel: "winget", Argv: []string{"winget", "install", "--id", "Anthropic.Claude", "-e", "--source", "winget"}, Display: "winget install --id Anthropic.Claude -e --source winget"},
+					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "claude"}, Display: "brew install --cask claude"},
+				},
+				InstallNote: "no Linux channel: Anthropic ships Claude Desktop for Windows and macOS only " +
+					"(claude.ai/download).",
+			},
+			// PATH walk disabled: `claude.exe` on PATH is the Claude Code
+			// CLI, an entirely different product (gui.go's ProbeOnly doc
+			// names this exact collision).
+			ProbeOnly:       true,
+			AppsFolderAUMID: "Claude_pzs8sxrjxfjjc!Claude",
+			DarwinApp:       "Claude",
+			ProjectDirArgv:  false,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "two independent reasons, either sufficient. (1) Claude Desktop reads base-URL / " +
+					"proxy / mTLS settings ONLY from managed settings and ~/.claude/settings.json — never from " +
+					"repo-local config, and no process env var is documented (inventory §4.2). (2) An " +
+					"AppsFolder launch goes through explorer.exe, so the child inherits explorer's " +
+					"environment, not the daemon's: a child_env wrap could not reach it even if a var existed " +
+					"(gui.go AppsFolderAUMID doc; pinned by TestGUIAppsFolderRowsAreWrapNone).",
+			},
+			// cowork is this row's own adapter (the Cowork code-session
+			// store); claude-code is listed because Claude Desktop's
+			// Claude Code lane writes the same ~/.claude/projects transcripts
+			// that adapter reads.
+			Hosts:    []string{"cowork", "claude-code"},
+			Grounded: true,
+			Note: "Windows identity grounded on this box 2026-09-03 via Get-AppxPackage: " +
+				"PackageFullName Claude_1.44121.4.0_x64__pzs8sxrjxfjjc, PackageFamilyName " +
+				"Claude_pzs8sxrjxfjjc, and the manifest's single Application Id \"Claude\" — so the AUMID is " +
+				"Claude_pzs8sxrjxfjjc!Claude (the family suffix is the publisher hash and is stable across " +
+				"versions). macOS bundle \"Claude.app\" grounded from the Homebrew cask `claude`; winget id " +
+				"`Anthropic.Claude` grounded from a live `winget search --exact` the same day.",
+		},
 	},
 	"gemini-cli": {
 		Tool:       "gemini-cli",
-		Vocabulary: Vocabulary{InTaxonomy: true},
+		PromptLane: PromptLaneHook,
+		// Lifecycle stays ACTIVE: Google retired Gemini CLI / GCA only for the individual and
+		// AI Pro/Ultra tiers on 2026-06-18 (Standard/Enterprise unchanged) — see the rowless
+		// "gemini-code-assist-individuals" product entry in lifecycle.go.
+		LifecycleNote: "Individual / AI Pro / AI Ultra tiers retired by Google on 2026-06-18 in favour of Antigravity (agy); Standard/Enterprise still served — https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals",
+		Vocabulary:    Vocabulary{InTaxonomy: true},
 		// Phase E SHIPPED + LIVE-VERIFIED 2026-06-27: the proxy bridges Google
 		// generateContent (providerForPath → ProviderGoogle, the
 		// generativelanguage upstream, parseGeminiResponse/parseGeminiStream
@@ -993,10 +1380,21 @@ var registry = map[string]Capability{
 		// 11092/132) with accurate token capture.
 		Proxy:       &ProxyRoute{Kind: RouteLauncher, EnvVar: "GOOGLE_GEMINI_BASE_URL", Suffix: "", Launcher: "observer gemini"},
 		Routability: RouteStatusRoutableNow,
-		Hook:        HookSpec{Mechanism: HookNone},
-		MCP:         nil,
-		Native:      NativeRails{},                   // Google Cloud usage API not yet investigated (Phase-4 ledger).
-		TokenTier:   TokenTier{Best: "events_jsonl"}, // gross-input netting fixed (tokenEventFor nets cached); no known gap.
+		// Part B item 1: the prompt-submit hook lane (BeforeAgent),
+		// registered by registerGenericSettingsHooks into
+		// ~/.gemini/settings.json's "hooks" block — the SAME
+		// Claude-Code-shaped structure HookClaudeSettings uses. This
+		// is DISTINCT from (and does not replace) the "future
+		// receiver lane" note below about the FULL CC-shaped
+		// lifecycle hook system (PreToolUse/PostToolUse/…) Gemini CLI
+		// also exposes — only BeforeAgent has a wired receiver today.
+		// CrossOSBridge: true — internal/hook's gemini-cli-windows target
+		// (registerGeminiCLIWindows) wraps the command in the wsl.exe
+		// bridge, mirroring claude-code/cursor/codex's own bridges.
+		Hook:      HookSpec{Mechanism: HookGeminiSettings, CrossOSBridge: true, AutoWired: true, PromptLaneOnly: true},
+		MCP:       nil,
+		Native:    NativeRails{},                   // Google Cloud usage API not yet investigated (Phase-4 ledger).
+		TokenTier: TokenTier{Best: "events_jsonl"}, // gross-input netting fixed (tokenEventFor nets cached); no known gap.
 		// P0.1 FULL: ~/.gemini/tmp/<proj>/chats/session-*.jsonl user/gemini
 		// records (reader = P2 tranche).
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile, InjectPrompt}, Launch: &LaunchSpec{Subcommand: "gemini"}},
@@ -1122,10 +1520,26 @@ var registry = map[string]Capability{
 				Unix:    []string{"openclaw"},
 				Windows: []string{"openclaw.cmd", "openclaw"},
 			},
+			// grounded 2026-09-02: git-source/dev installs land under
+			// .local/bin — optional, the primary channel is the script
+			// below.
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeWindows, Rel: ".local/bin"},
+			},
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://openclaw.ai/install.sh | bash"}, Display: "curl -fsSL https://openclaw.ai/install.sh | bash"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://openclaw.ai/install.sh | bash"}, Display: "curl -fsSL https://openclaw.ai/install.sh | bash"},
-				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "openclaw@latest"}, Display: "npm install -g openclaw@latest"},
+				// grounded 2026-09-02: openclaw.ai/install.ps1 installs Node
+				// (winget → choco → scoop → portable) then npm-installs
+				// itself; the CMD form here mirrors the vendor's Unix
+				// script shape for a native-Windows daemon.
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-Command", "iwr -useb https://openclaw.ai/install.ps1 | iex"}, Display: "iwr -useb https://openclaw.ai/install.ps1 | iex"},
+				// DI-12 fix: openclaw's own install.ps1
+				// (Get-NpmLifecycleAllowArgument) passes
+				// --allow-scripts=openclaw on a modern npm so the postinstall
+				// step (which drops the openclaw.cmd shim) actually runs; a
+				// bare `npm install -g` silently skips it on npm >= 11.16.
+				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "--allow-scripts=openclaw", "openclaw@latest"}, Display: "npm install -g --allow-scripts=openclaw openclaw@latest"},
 			},
 		},
 		// Model picker (B5): explicit ModelNone. `openclaw --help` and its
@@ -1139,10 +1553,59 @@ var registry = map[string]Capability{
 		// list; every other launchable tool carries the honest zero note
 		// until a per-tool probe grounds its StateRW/StateRO paths.
 		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// GUI launch row (plan §2.2): the OpenClaw desktop companion. It is
+		// Gateway-scoped, not project-scoped — there is no project argv and
+		// no per-workspace launch semantics.
+		GUI: &GUILaunchSpec{
+			ID:      "openclaw-hub",
+			Label:   "OpenClaw Hub",
+			Surface: "desktop",
+			Binary: BinaryResolveSpec{
+				// Names.Windows deliberately EMPTY (see WindowsNote); a
+				// Names.Unix entry would collide with this row's CLI
+				// (`openclaw`) above, so none is declared either.
+				WindowsNote: "the Windows Hub installer's layout is unverified: it is not installed on the " +
+					"grounding box (2026-09-03), no winget package exists, and the Hub provisions its own " +
+					"`OpenClawGateway` WSL distro — %LOCALAPPDATA%\\OpenClawTray\\ is state/logs, not a " +
+					"grounded executable path (inventory §2.12).",
+				Installs: []InstallHint{
+					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "openclaw"}, Display: "brew install --cask openclaw"},
+				},
+				InstallNote: "macOS only: no winget package (checked live 2026-09-03); on Linux the CLI's " +
+					"own install script in this row's Binary above is the surface, not a desktop app.",
+			},
+			DarwinApp:      "OpenClaw",
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "config-write is the ONLY route OpenClaw honours — ANTHROPIC_BASE_URL explicitly " +
+					"does not work (upstream #56679) and a pre-existing auth-profiles.json can silently " +
+					"bypass a configured baseUrl — but this row carries NEITHER a verified Proxy nor a " +
+					"ProxyProbe writer binding (Routability is probe_required and internal/proxyroute has no " +
+					"openclaw registrar), so a config_write ConfigTool here would name a writer that does not " +
+					"exist. Honest zero until a registrar for ~/.openclaw/openclaw.json " +
+					"models.providers.*.baseUrl lands; then this becomes config_write, and the route needs a " +
+					"post-launch verification that it actually took (inventory §4.2).",
+			},
+			Hosts:    []string{"openclaw"},
+			Grounded: true,
+			Note: "Grounded from the macOS side ONLY: the Homebrew cask `openclaw` (name \"OpenClaw\", " +
+				"homepage openclaw.ai) installs \"OpenClaw.app\", read from the cask API 2026-09-03. Whether " +
+				"that bundle is the menu-bar companion the inventory §2.12 describes or a different desktop " +
+				"shell was NOT separately verified. Windows Hub layout unverified — Names.Windows empty. " +
+				"Gateway-scoped, so ProjectDirArgv=false by design, and the Hub's own WSL Gateway is a " +
+				"documented double-counting risk (a distinct OPENCLAW_HOME).",
+		},
 	},
 	"pi": {
 		Tool:       "pi",
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// FIX-7 (phase-2 review): pi's before_provider_payload hook is
+		// REDACT-capable but explicitly cannot block ("Cannot: Block
+		// the turn or cancel it" — contract §2.2) and no writer exists
+		// for it yet; the proxy lane (already routed today) is the
+		// only real coverage.
+		PromptLane: PromptLaneProxyOnly,
 		// ROUTABLE via a custom provider in ~/.pi/agent/models.json — VERIFIED
 		// LIVE 2026-06-27. pi's BUILT-IN providers ignore OPENAI_BASE_URL
 		// (a dead-port base URL still reached api.openai.com; both env and the
@@ -1196,10 +1659,19 @@ var registry = map[string]Capability{
 				Unix:    []string{"pi"},
 				Windows: []string{"pi.cmd", "pi"},
 			},
+			// grounded 2026-09-02: pi.dev/install.ps1 lands
+			// %USERPROFILE%\.pi\agent\bin\{pi.cmd,pi.ps1,pi} (a private
+			// Node 22 install, separate from any system Node); the Unix
+			// script lands the analogous ~/.pi/agent/bin/pi.
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".pi/agent/bin"},
+				{OS: ProbeWindows, Rel: ".pi/agent/bin"},
+			},
 			Installs: []InstallHint{
 				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "--ignore-scripts", "@earendil-works/pi-coding-agent"}, Display: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"},
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://pi.dev/install.sh | sh"}, Display: "curl -fsSL https://pi.dev/install.sh | sh"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://pi.dev/install.sh | sh"}, Display: "curl -fsSL https://pi.dev/install.sh | sh"},
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-Command", "irm https://pi.dev/install.ps1 | iex"}, Display: "irm https://pi.dev/install.ps1 | iex"},
 			},
 		},
 		// Model picker (B5). Grounded live 2026-08-08: `pi --help` lists
@@ -1227,14 +1699,90 @@ var registry = map[string]Capability{
 		Hook:        HookSpec{Mechanism: HookNone},
 		MCP:         nil,
 		Native:      NativeRails{}, // Google Cloud usage API not yet investigated (Phase-4 ledger).
-		// Desktop + older-CLI .pb remain OSCrypt/gRPC-gated (Windows cipher unknown).
-		TokenTier: TokenTier{Best: "sqlite", Gap: "desktop/.pb path still decrypt-gated"},
-		// Desktop .pb OSCrypt-encrypted (Windows cipher unknown) → actions_only/partial.
-		Handoff: HandoffCapability{Transcript: TranscriptPartial, Inject: []InjectKind{InjectFile}, Note: "desktop .pb decrypt-gated"},
+		// Desktop CAPTURE (text + tool actions + model + surface) comes
+		// from the IDE's PLAINTEXT brain/<uuid>/.system_generated/logs/
+		// transcript.jsonl since 2026-09-03 (internal/adapter/antigravity/
+		// transcript.go). Desktop TOKENS: REAL per-generation usage + model
+		// id whenever an agy backend wrote the conversation — the VS Code
+		// extension (Google.google-antigravity, bundled agy) writes a
+		// plaintext conversations/<uuid>.db into the desktop tree with the
+		// CLI's exact schema (clidb.go, live-grounded 2026-09-03) — and
+		// ABSENT for the standalone IDE build, which wrote only the
+		// encrypted .pb + the transcript that day (no usage anywhere; the
+		// .pb cipher stays parked, IDE-12).
+		TokenTier: TokenTier{Best: "sqlite", Gap: "standalone-IDE conversations (no .db) carry no usage: transcript.jsonl has none, .pb still decrypt-gated"},
+		// Desktop transcript.jsonl is readable plaintext → text + actions
+		// present; tokens only for agy-backed (.db) conversations → partial.
+		Handoff: HandoffCapability{Transcript: TranscriptPartial, Inject: []InjectKind{InjectFile}, Note: "desktop transcript.jsonl plaintext (text + actions); tokens only when an agy .db exists (VS Code extension), absent for the standalone IDE"},
+		// Active row, but the lifecycle context is worth carrying: this is
+		// Google's SUCCESSOR family after the 2026-06-18 retirement of
+		// Gemini CLI + Gemini Code Assist for individual / AI Pro / AI Ultra
+		// tiers (the gemini-cli row is DEPRECATED on that event). Nine
+		// surfaces share the harness — desktop IDE (this row's store),
+		// Antigravity 2.0 dashboard, agy CLI (antigravity-cli row), VS Code /
+		// Visual Studio / JetBrains / Zed / Xcode integrations, Python SDK —
+		// only the IDE + CLI stores are grounded; see
+		// docs/audits/antigravity-family-surfaces-2026-09-03.md.
+		LifecycleNote: "Google's successor family after the 2026-06-18 individual-tier retirement of Gemini CLI / " +
+			"Gemini Code Assist (https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/); " +
+			"this row = the desktop IDE store, docs/audits/antigravity-family-surfaces-2026-09-03.md = the family.",
+		// GUI launch row (plan §2.2). Launch is buildable; capture of the
+		// IDE's conversations lands through the plaintext transcript.jsonl
+		// (tokens excepted — see TokenTier).
+		GUI: &GUILaunchSpec{
+			ID:      "antigravity-ide",
+			Label:   "Antigravity",
+			Surface: "ide",
+			Binary: BinaryResolveSpec{
+				Names: BinaryNames{
+					Windows: []string{"Antigravity.exe"},
+				},
+				ProbeDirs: []ProbeDir{
+					{OS: ProbeWindows, Rel: "AppData/Local/Programs/antigravity"},
+				},
+				Installs: []InstallHint{
+					{OS: "windows", Channel: "winget", Argv: []string{"winget", "install", "--id", "Google.Antigravity", "-e", "--source", "winget"}, Display: "winget install --id Google.Antigravity -e --source winget"},
+					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "antigravity"}, Display: "brew install --cask antigravity"},
+				},
+				InstallNote: "no grounded Linux channel: antigravity.google ships a direct download, not a " +
+					"scriptable one-liner.",
+			},
+			DarwinApp: "Antigravity",
+			// FALSE, grounded negative: unlike every other VS Code fork on
+			// this box (Kiro, Qoder, Windsurf, Cursor), the antigravity
+			// install dir has NO bin\ directory at all — no `antigravity`
+			// shim, so no grounded `<app> <dir>` argv form. Assuming one
+			// from the fork lineage would be a fabricated capability.
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "no base-URL knob found for the IDE (this row's Routability is native_exempt; the " +
+					"sibling `agy` CLI documents GOOGLE_GEMINI_BASE_URL but the antigravity-cli row records " +
+					"that as an UNVERIFIED contradiction, inventory §2.3). Launch yes, wrap no; capture " +
+					"rides the IDE's plaintext brain/<uuid>/.system_generated/logs/transcript.jsonl " +
+					"(text + tool actions + model + surface; tokens absent — the .pb cipher stays parked).",
+			},
+			Hosts:    []string{"antigravity"},
+			Grounded: true,
+			Note: "Windows layout grounded on this box 2026-09-03: " +
+				"%LOCALAPPDATA%\\Programs\\antigravity\\Antigravity.exe — and NO bin\\ dir, hence " +
+				"ProjectDirArgv=false and no unix shim name (the inventory left both \"to ground\"). macOS " +
+				"bundle \"Antigravity.app\" grounded from the Homebrew cask `antigravity`; winget id " +
+				"`Google.Antigravity` grounded from a live `winget search --exact` the same day. This row is " +
+				"the IDE; the `agy` CLI is the separate antigravity-cli registry row.",
+		},
 	},
 	"antigravity-cli": {
 		Tool:       "antigravity-cli",
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// Active; lifecycle context as on the antigravity row — agy is the
+		// named successor of Gemini CLI for individual tiers (retired
+		// 2026-06-18). No `agy login` subcommand exists: first interactive
+		// run opens a browser OAuth flow (OS keyring); BYOK = GEMINI_API_KEY
+		// + modelProvider:"gemini" in ~/.gemini/antigravity-cli/settings.json.
+		LifecycleNote: "Google's successor to Gemini CLI after the 2026-06-18 individual-tier retirement " +
+			"(https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/); " +
+			"family inventory: docs/audits/antigravity-family-surfaces-2026-09-03.md.",
 		// agy CLI itself is non-proxied (runs locally).
 		Proxy:       nil,
 		Routability: RouteStatusNativeExempt,
@@ -1262,10 +1810,22 @@ var registry = map[string]Capability{
 		// env — no grounded credential-env to forward.
 		// Binary resolution + grounded install. Unix launcher resolves "agy"
 		// (the agy CLI); official install script (antigravity.google/docs/
-		// cli/install). Windows hint is display-only (no Windows binary
-		// spelling grounded yet).
+		// cli/install). Windows hint is EXECUTABLE by a native-Windows
+		// daemon (ConPTY, since 2026-07-04); post-install detection needs
+		// Names.Windows (grounded 2026-09-02).
+		//
+		// Windows spelling GROUNDED 2026-09-02 by reading the installer
+		// (`$TARGET_DIR = Join-Path $env:LOCALAPPDATA "agy\bin"`,
+		// `$binaryPath = … "agy.exe"`) and `where.exe agy` on this box.
 		Binary: &BinaryResolveSpec{
-			Names: BinaryNames{Unix: []string{"agy"}},
+			Names: BinaryNames{
+				Unix:    []string{"agy"},
+				Windows: []string{"agy.exe"},
+			},
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".local/bin"},
+				{OS: ProbeWindows, Rel: "AppData/Local/agy/bin"},
+			},
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://antigravity.google/cli/install.sh | bash"}, Display: "curl -fsSL https://antigravity.google/cli/install.sh | bash"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://antigravity.google/cli/install.sh | bash"}, Display: "curl -fsSL https://antigravity.google/cli/install.sh | bash"},
@@ -1290,6 +1850,7 @@ var registry = map[string]Capability{
 	},
 	"qwen-code": {
 		Tool:       "qwen-code",
+		PromptLane: PromptLaneHook,
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// Live-captured 2026-07-09 (WSL + Windows): CC-shaped JSONL under
 		// ~/.qwen/projects/<slug>/chats/.
@@ -1330,8 +1891,14 @@ var registry = map[string]Capability{
 		Routability: RouteStatusRoutableNow,
 		// Upstream ships a full CC-shaped lifecycle hook system
 		// (PreToolUse/PostToolUse/… in settings.json) — a future receiver
-		// lane; no observer receiver wired, so the honest value is none.
-		Hook: HookSpec{Mechanism: HookNone},
+		// lane beyond UserPromptSubmit, which IS wired (Part B item 1):
+		// registerGenericSettingsHooks registers it into
+		// ~/.qwen/settings.json's "hooks" block, the same shape
+		// HookClaudeSettings uses.
+		// CrossOSBridge: true — internal/hook's qwen-code-windows target
+		// (registerQwenCodeWindows) wraps the command in the wsl.exe
+		// bridge, mirroring claude-code/cursor/codex's own bridges.
+		Hook: HookSpec{Mechanism: HookQwenSettings, CrossOSBridge: true, AutoWired: true, PromptLaneOnly: true},
 		// MCP client exists (Gemini lineage, mcpServers in settings.json),
 		// but settings.json embeds plaintext provider keys — an MCP writer
 		// needs a guarded additive write path before this can be grounded.
@@ -1371,11 +1938,19 @@ var registry = map[string]Capability{
 				Unix:    []string{"qwen"},
 				Windows: []string{"qwen.cmd", "qwen"},
 			},
+			// grounded 2026-09-02: the standalone installer (a .ps1 thin
+			// shim downloading + running install-qwen-standalone.bat)
+			// lands the command at %LOCALAPPDATA%\qwen-code\bin\qwen.cmd,
+			// bundling its own Node under qwen-code\node\node.exe.
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeWindows, Rel: "AppData/Local/qwen-code/bin"},
+			},
 			Installs: []InstallHint{
 				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "@qwen-code/qwen-code@latest"}, Display: "npm install -g @qwen-code/qwen-code@latest"},
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh | bash"}, Display: "curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh | bash"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh | bash"}, Display: "curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh | bash"},
 				{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "qwen-code"}, Display: "brew install qwen-code"},
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-Command", "irm https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1 | iex"}, Display: "irm https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1 | iex"},
 			},
 		},
 		// Model picker (B5). Grounded live 2026-08-08: `qwen --help` lists
@@ -1391,6 +1966,7 @@ var registry = map[string]Capability{
 	},
 	"kiro-cli": {
 		Tool:       "kiro-cli",
+		PromptLane: PromptLaneProbeRequired,
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// SigV4-signed AWS endpoints (CodeWhisperer lineage); no base-URL /
 		// BYOK surface exists on a live install — grounded negative.
@@ -1431,10 +2007,29 @@ var registry = map[string]Capability{
 		// Binary resolution + grounded install. Unix launcher resolves
 		// "kiro-cli"; official install script (kiro.dev/docs/cli/
 		// installation). Homebrew is explicitly NOT supported per vendor
-		// docs. Windows hint is display-only (no Windows binary spelling
-		// grounded yet).
+		// docs. Windows hint is EXECUTABLE by a native-Windows daemon
+		// (ConPTY, since 2026-07-04); post-install detection needs
+		// Names.Windows (grounded 2026-09-02).
+		//
+		// Windows spelling GROUNDED 2026-09-02 against the MSI's own File
+		// table (kiro-cli.exe / MainExecutable) and Directory table
+		// (LocalAppDataFolder → Kiro-Cli): the installer lands a single
+		// file at %LOCALAPPDATA%\Kiro-Cli\kiro-cli.exe, per-user, no
+		// elevation. The installer's OWN printed "installed to C:\Program
+		// Files\Kiro-Cli\" message is stale/wrong relative to the MSI
+		// tables — both dirs are probed honestly rather than trusting one
+		// source over the other; `where.exe kiro-cli` on this box: not
+		// installed (unconfirmed live, MSI-table-grounded).
 		Binary: &BinaryResolveSpec{
-			Names: BinaryNames{Unix: []string{"kiro-cli"}},
+			Names: BinaryNames{
+				Unix:    []string{"kiro-cli"},
+				Windows: []string{"kiro-cli.exe"},
+			},
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".local/bin"},
+				{OS: ProbeWindows, Rel: "AppData/Local/Kiro-Cli"},
+				{OS: ProbeWindows, Rel: "Kiro-Cli", EnvRoot: "ProgramFiles"},
+			},
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://cli.kiro.dev/install | bash"}, Display: "curl -fsSL https://cli.kiro.dev/install | bash"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://cli.kiro.dev/install | bash"}, Display: "curl -fsSL https://cli.kiro.dev/install | bash"},
@@ -1454,10 +2049,59 @@ var registry = map[string]Capability{
 		// list; every other launchable tool carries the honest zero note
 		// until a per-tool probe grounds its StateRW/StateRO paths.
 		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// GUI launch row (plan §2.2): the Kiro IDE is the same product line
+		// as this row's CLI and shares ~/.kiro, so the spec rides here.
+		GUI: &GUILaunchSpec{
+			ID:      "kiro-ide",
+			Label:   "Kiro",
+			Surface: "ide",
+			Binary: BinaryResolveSpec{
+				// No collision with this row's CLI Names above: the CLI is
+				// `kiro-cli`/`kiro-cli.exe`, the IDE shim is `kiro`.
+				Names: BinaryNames{
+					Unix:    []string{"kiro"},
+					Windows: []string{"Kiro.exe"},
+				},
+				ProbeDirs: []ProbeDir{
+					{OS: ProbeWindows, Rel: "AppData/Local/Programs/Kiro"},
+				},
+				Installs: []InstallHint{
+					{OS: "windows", Channel: "winget", Argv: []string{"winget", "install", "--id", "Amazon.Kiro", "-e", "--source", "winget"}, Display: "winget install --id Amazon.Kiro -e --source winget"},
+					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "kiro"}, Display: "brew install --cask kiro"},
+				},
+				InstallNote: "no grounded Linux channel: kiro.dev/downloads offers a deb/AppImage download, " +
+					"not a scriptable one-liner. (Distinct from the Kiro CLI's own cli.kiro.dev/install script " +
+					"in this row's Binary above — that installs the CLI, not the IDE.)",
+			},
+			DarwinApp:      "Kiro",
+			ProjectDirArgv: true,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "AWS ships no BYOK / base-URL surface for Kiro at all — four open vendor issues, and " +
+					"a third-party `kiro-gateway` proxy exists precisely because of the gap (inventory §2.8 / " +
+					"§4.2; this row's Routability is native_exempt). Launch yes, wrap no; capture rides " +
+					"~/.kiro/sessions.",
+			},
+			Hosts:    []string{"kiro-cli"},
+			Grounded: true,
+			Note: "Windows layout grounded on this box 2026-09-03: " +
+				"%LOCALAPPDATA%\\Programs\\Kiro\\Kiro.exe (+ bin\\{kiro,kiro.cmd}, which grounds both the unix " +
+				"shim stem and `kiro <dir>` — the inventory left the IDE binary name \"to ground\"). macOS " +
+				"bundle \"Kiro.app\" grounded from the Homebrew cask `kiro`; winget id `Amazon.Kiro` grounded " +
+				"from a live `winget search --exact` the same day.",
+		},
 	},
 	"grok": {
 		Tool:       "grok",
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// FIX-7 (phase-2 review): Grok Build's UserPromptSubmit hook
+		// has a prompt-submit event but cannot block — the vendor's
+		// own docs name PreToolUse "the only blocking event" (contract
+		// §2.3) and the documented base payload doesn't even carry a
+		// prompt field. The proxy lane (already routed today, opt-in
+		// --proxy) is Grok's only realistic path to prompt-submit
+		// intervention.
+		PromptLane: PromptLaneProxyOnly,
 		// LIVE-VERIFIED 2026-07-09: grok's CLI chat proxy base URL is
 		// overridable via the GROK_CLI_CHAT_PROXY_BASE_URL env var (the env
 		// form of the `grok agent --cli-chat-proxy-base-url` flag; the
@@ -1525,9 +2169,17 @@ var registry = map[string]Capability{
 			// .ps1/POSIX-shell forms), never an `.exe` — see the
 			// command-code row's Binary comment for the long-form
 			// rationale.
+			// grounded 2026-09-02: x.ai/cli/install.ps1 places grok.exe at
+			// %USERPROFILE%\.grok\bin\grok.exe (the script also drops an
+			// agent.exe alias to the same binary, not adopted here — see
+			// the ProbeDirs note below).
 			Names: BinaryNames{
 				Unix:    []string{"grok"},
-				Windows: []string{"grok.cmd", "grok"},
+				Windows: []string{"grok.exe", "grok.cmd", "grok"},
+			},
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".grok/bin"},
+				{OS: ProbeWindows, Rel: ".grok/bin"},
 			},
 			Installs: []InstallHint{
 				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "@xai-official/grok"}, Display: "npm install -g @xai-official/grok"},
@@ -1560,6 +2212,7 @@ var registry = map[string]Capability{
 	},
 	"kimi-code": {
 		Tool:       "kimi-code",
+		PromptLane: PromptLaneProbeRequired,
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// Live wire traces show an openai-compat endpoint (provider:openai,
 		// gpt-4o) configured in ~/.kimi-code/config.toml — a NEVER-READ file
@@ -1643,9 +2296,18 @@ var registry = map[string]Capability{
 			// .ps1/POSIX-shell forms), never an `.exe` — see the
 			// command-code row's Binary comment for the long-form
 			// rationale.
+			// grounded 2026-09-02: the install.ps1 (302 from
+			// code.kimi.com to cdn.kimi.com) places kimi.exe at
+			// %USERPROFILE%\.kimi-code\bin\kimi.exe (SHA256-verified),
+			// renaming a legacy uv-installed `kimi` stub to
+			// kimi-legacy.exe out of the way.
 			Names: BinaryNames{
 				Unix:    []string{"kimi"},
-				Windows: []string{"kimi.cmd", "kimi"},
+				Windows: []string{"kimi.exe", "kimi.cmd", "kimi"},
+			},
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".kimi-code/bin"},
+				{OS: ProbeWindows, Rel: ".kimi-code/bin"},
 			},
 			Installs: []InstallHint{
 				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "@moonshot-ai/kimi-code"}, Display: "npm install -g @moonshot-ai/kimi-code"},
@@ -1671,6 +2333,12 @@ var registry = map[string]Capability{
 	"crush": {
 		Tool:       "crush",
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// FIX-7 (phase-2 review): Crush documents exactly one hook,
+		// PreToolUse ("Crush currently supports just one hook… with
+		// plans to support the full gamut", contract §2.4) — no
+		// prompt-submit event at all. The proxy lane (already routed
+		// today) is Crush's only path to prompt-submit intervention.
+		PromptLane: PromptLaneProxyOnly,
 		// Crush providers support custom base_url incl. an `anthropic` type —
 		// a real proxy lane. The provider config lives in crush.json alongside
 		// literal API keys (never-read/never-write file); providers.openai
@@ -1719,17 +2387,43 @@ var registry = map[string]Capability{
 		},
 	},
 	"devin": {
-		Tool:       "devin",
+		Tool: "devin",
+		// FIX-7 (phase-2 review) promoted this from
+		// PromptLaneProbeRequired; Part B item 2 (phase-3a, 2026-09-07)
+		// wired it after re-fetching docs.devin.ai/desktop/cascade/hooks
+		// live: Windsurf/Devin Desktop Cascade's pre_user_prompt exit 2
+		// blocks, and the vendor is explicit that show_output does NOT
+		// apply to this event — no user-visible message channel at all
+		// (no JSON reply either), so ask-once degrades to a hard block
+		// per the conformance row (CanBlock:true, CanAsk:false). No
+		// session_id field is documented for this event; trajectory_id
+		// (the conversation identifier) is used as the reconsider-once
+		// scoping key instead. Registered at ~/.codeium/windsurf/hooks.json
+		// (HookCascadeJSON) — its OWN shape ({"hooks":{"pre_user_prompt":
+		// [{"command":…,"powershell":…}]}}), distinct from every other
+		// hooks.json writer in this repo.
+		PromptLane: PromptLaneHook,
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// Devin is ACTIVE. The note records the DEPRECATED NAME this row
+		// answers to: Cognition renamed Windsurf to Devin Desktop on
+		// 2026-06-02, and the Windsurf name survives as an install-path /
+		// shim alias only — see productLifecycles["windsurf"], which is
+		// the lifecycle carrier for the alias (Adapter: "devin").
+		LifecycleNote: "answers to the DEPRECATED name \"windsurf\": Cognition renamed Windsurf to Devin Desktop " +
+			"on 2026-06-02 and folded the IDE and the agent into one install, so the Windsurf name is an " +
+			"alias (install path + `windsurf` shim), not a separate product. See " +
+			"productLifecycles[\"windsurf\"] (deprecated, serviced by this row). Devin itself is active.",
 		// No base-URL override exists — the CLI talks to Cognition's own
 		// Windsurf backend (only an HTTP-proxy setting). No observer-routed
 		// turn is possible today.
 		Proxy:       nil,
 		Routability: RouteStatusNativeExempt,
 		// `.devin/hooks.v1.json` is explicitly Claude-Code-compatible but
-		// UNWIRED in the shipped CLI (live 3000.1.27) — honest none until a
-		// firing hook is grounded.
-		Hook: HookSpec{Mechanism: HookNone},
+		// UNWIRED in the shipped Devin CLI (live 3000.1.27) — that surface
+		// stays honest-none. The mechanism below targets a DIFFERENT,
+		// now-grounded surface instead: Devin Desktop (Cascade)'s own
+		// pre_user_prompt hooks.json, distinct from the CLI's unwired file.
+		Hook: HookSpec{Mechanism: HookCascadeJSON, AutoWired: true, PromptLaneOnly: true},
 		// MCP client only (reads .devin/ config). The registration format IS
 		// now grounded (`.devin-plugin/plugin.json` + root `mcp_config.json`,
 		// coverage wave A 2026-07-31 — see plugins/devin/); distribution is
@@ -1738,9 +2432,12 @@ var registry = map[string]Capability{
 		MCP:    nil,
 		Native: NativeRails{},
 		// Per-message metadata.metrics in sessions.db (input/output/cache
-		// fields + ttft). Cache read/creation were NULL in every captured
-		// row, so gross-vs-net is unverified until a cached row appears.
-		TokenTier: TokenTier{Best: "sqlite", Gap: "cache splits null in all captured rows (gross-vs-net unverified); no reasoning-token split (thinking folded into output)"},
+		// fields + ttft). CORRECTED 2026-09-03 against a live, signed-in
+		// Devin Desktop 2.3.15 run: cache_read_tokens IS populated, and
+		// input_tokens is NET of it (input + cache_read == the node's own
+		// num_tokens_preceding), so no netting is needed. cache_creation
+		// is still null in every captured row.
+		TokenTier: TokenTier{Best: "sqlite", Gap: "cache_creation null in all captured rows; no reasoning-token split (thinking folded into output)"},
 		// ReadTranscript re-walks the message_nodes main chain (DB lane).
 		// Positional seed contract operator-verified on a real TTY 2026-07-09
 		// (`devin -- "<prompt>"`, clap last-only positional after the `--`
@@ -1762,13 +2459,28 @@ var registry = map[string]Capability{
 		// AuthEnv zero: devin talks to Cognition's own backend with no grounded
 		// key env (file/OAuth auth) — no credential-env to forward.
 		// Binary resolution + grounded install. Unix launcher resolves
-		// "devin"; official install script (devin.ai/cli). No official
-		// Windows path — the winget listing is third-party, not shipped.
+		// "devin"; official install script (devin.ai/cli). CORRECTED
+		// 2026-09-02 — a Windows channel DOES exist: docs.devin.ai/cli
+		// documents `irm https://static.devin.ai/cli/setup.ps1 | iex`
+		// verbatim (incl. "Do not run this in Git Bash or CMD"), and the
+		// winget manifest CognitionAI.DevinCLI is vendor-published
+		// (NestedInstallerType: portable, depends on Git.Git) — the prior
+		// "third-party, not shipped" note was wrong.
 		Binary: &BinaryResolveSpec{
-			Names: BinaryNames{Unix: []string{"devin"}},
+			Names: BinaryNames{
+				Unix:    []string{"devin"},
+				Windows: []string{"devin.exe"},
+			},
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".local/bin"},
+				// setup.ps1: $EntryExe = …\devin\cli\bin\devin.exe.
+				{OS: ProbeWindows, Rel: "AppData/Local/devin/cli/bin"},
+			},
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://cli.devin.ai/install.sh | bash"}, Display: "curl -fsSL https://cli.devin.ai/install.sh | bash"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://cli.devin.ai/install.sh | bash"}, Display: "curl -fsSL https://cli.devin.ai/install.sh | bash"},
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-Command", "irm https://static.devin.ai/cli/setup.ps1 | iex"}, Display: "irm https://static.devin.ai/cli/setup.ps1 | iex"},
+				{OS: "windows", Channel: "winget", Argv: []string{"winget", "install", "--id", "CognitionAI.DevinCLI", "-e", "--source", "winget"}, Display: "winget install --id CognitionAI.DevinCLI -e --source winget"},
 			},
 		},
 		// Model picker (B5). Grounded live 2026-08-08: `devin --help` lists
@@ -1783,17 +2495,88 @@ var registry = map[string]Capability{
 		// list; every other launchable tool carries the honest zero note
 		// until a per-tool probe grounds its StateRW/StateRO paths.
 		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// GUI launch row (plan §2.2): Devin Desktop is the rebranded
+		// Windsurf IDE and shares ~/.devin with this row's CLI. See
+		// productLifecycles["windsurf"] for the deprecated alias.
+		GUI: &GUILaunchSpec{
+			ID:      "devin-desktop",
+			Label:   "Devin Desktop (Windsurf)",
+			Surface: "ide",
+			Binary: BinaryResolveSpec{
+				// No collision with this row's CLI Names above (`devin`).
+				Names: BinaryNames{
+					Unix:    []string{"windsurf", "devin-desktop"},
+					Windows: []string{"Windsurf.exe"},
+				},
+				ProbeDirs: []ProbeDir{
+					{OS: ProbeWindows, Rel: "AppData/Local/Programs/Windsurf"},
+				},
+				Installs: []InstallHint{
+					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "devin-desktop"}, Display: "brew install --cask devin-desktop"},
+				},
+				InstallNote: "no Windows or Linux channel offered on purpose. A winget package " +
+					"`Codeium.Windsurf` exists (grounded live 2026-09-03) but it carries the DEPRECATED " +
+					"Windsurf identity under the pre-rename vendor name, and whether it tracks post-rename " +
+					"Devin Desktop builds was not verified — advertising it could install the sunset product " +
+					"(docs/harness-lifecycle-policy.md). Use the vendor download at devin.ai/desktop.",
+			},
+			DarwinApp:      "Devin",
+			ProjectDirArgv: true,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "no DEVIN_BASE_URL or any documented base-URL knob for the desktop lane (this row's " +
+					"Routability is native_exempt; inventory §2.10 / §4.2). Launch yes, wrap no; the bundled " +
+					"devin.exe lane writes the CLI store this row's watcher already reads — CORRECTED " +
+					"and VERIFIED LIVE 2026-09-03: the store is %APPDATA%\\Devin\\cli\\sessions.db (the " +
+					"same NTFS directory as the CLI's %APPDATA%\\devin\\cli, schema-identical at " +
+					"refinery version 16), NOT ~/.devin, which holds only argv.json + extensions. No root " +
+					"widening was needed; the live daemon captured the desktop run through the existing " +
+					"root. Sessions the desktop opens are stamped surface ide/devin-desktop from " +
+					"sessions.metadata.client_meta[\"cognition.ai/requestingTabId\"], and Devin's own " +
+					"hidden=1 summary-agent sessions are marked ThreadSource=subagent. See " +
+					"docs/devin-adapter.md \"Devin Desktop\".",
+			},
+			Hosts:    []string{"devin"},
+			Grounded: true,
+			Note: "Windows layout grounded on this box 2026-09-03: the install dir STILL carries the " +
+				"deprecated Windsurf name — %LOCALAPPDATA%\\Programs\\Windsurf\\Windsurf.exe (+ " +
+				"bin\\{windsurf,windsurf.cmd}), NOT the `Devin.exe` the inventory §4.1 sketch guessed. macOS " +
+				"is the opposite: the Homebrew cask `devin-desktop` (name \"Devin Desktop\", homepage " +
+				"devin.ai/desktop) installs \"Devin.app\", so DarwinApp is \"Devin\". Names.Unix carries both " +
+				"the grounded `windsurf` shim stem and the vendor-documented `devin-desktop` shell command " +
+				"(docs.devin.ai/desktop via inventory §2.10); neither was verified on a unix host.",
+		},
 	},
 	"qoder": {
-		Tool:       "qoder",
+		Tool: "qoder",
+		// FIX-7 (phase-2 review): promoted from PromptLaneProbeRequired.
+		// Qoder's UserPromptSubmit wire shape is fully documented
+		// (docs.qoder.com/en/cli/hooks: `prompt` field, exit-2 block,
+		// reason/stderr shown to the developer) — the contract's §2.1b
+		// long-tail sweep VERIFIED it. Part B item 2 (phase-3a,
+		// 2026-09-07) wired the dialect, receiver, and registration
+		// writer after re-fetching docs.qoder.com/en/cli/hooks live: the
+		// UserPromptSubmit hook's config schema
+		// ({"hooks":{"UserPromptSubmit":[{"matcher":…,"hooks":[{"type":
+		// "command","command":…,"timeout":…}]}]}}) is byte-identical to
+		// Claude Code's own settings.json shape, so registerGenericSettingsHooks
+		// (already generalized off registerClaudeCode for Gemini CLI/Qwen
+		// Code) is reused, pointed at ~/.qoder/settings.json.
+		PromptLane: PromptLaneHook,
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// Hardcoded api.qoder.com, PAT auth, NO base-URL knob — token
 		// capture is proxy-tier or nothing, and there is no proxy lane.
 		Proxy:       nil,
 		Routability: RouteStatusNativeExempt,
-		// `qodercli hooks` manage-command exists (CC lineage) but no firing
-		// hook envelope has been grounded — honest none.
-		Hook: HookSpec{Mechanism: HookNone},
+		// `qodercli hooks` manage-command (a DIFFERENT, still-ungrounded
+		// CC-lineage hook envelope) remains honest-none; the
+		// UserPromptSubmit hook targeted here is a SEPARATE, now-verified
+		// mechanism — a config-file "hooks" block in settings.json, not
+		// that manage-command's own runtime registration.
+		// CrossOSBridge: true — internal/hook's qoder-windows target
+		// (registerQoderWindows) wraps the command in the wsl.exe
+		// bridge, mirroring claude-code/cursor/codex's own bridges.
+		Hook: HookSpec{Mechanism: HookQoderJSON, CrossOSBridge: true, AutoWired: true, PromptLaneOnly: true},
 		// MCP client exists (`qodercli mcp`, --mcp-config). The bundling
 		// format IS now grounded (`.qoder-plugin/plugin.json` + dotted
 		// `.mcp.json`, validated by `qodercli plugins validate` — coverage
@@ -1834,14 +2617,25 @@ var registry = map[string]Capability{
 			// .ps1/POSIX-shell forms), never an `.exe` — see the
 			// command-code row's Binary comment for the long-form
 			// rationale.
+			// grounded 2026-09-02: the script channel's own comment
+			// ("curl-bash installed versions at ~/.qoder/bin/ remain
+			// preferred") plus docs.qoder.com/cli symmetry ground the same
+			// %USERPROFILE%\.qoder\bin\qodercli.exe on Windows (.exe
+			// inferred for the native script channel; npm still lands the
+			// .cmd shim).
 			Names: BinaryNames{
 				Unix:    []string{"qodercli"},
-				Windows: []string{"qodercli.cmd", "qodercli"},
+				Windows: []string{"qodercli.exe", "qodercli.cmd", "qodercli"},
+			},
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".qoder/bin"},
+				{OS: ProbeWindows, Rel: ".qoder/bin"},
 			},
 			Installs: []InstallHint{
 				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "@qoder-ai/qodercli"}, Display: "npm install -g @qoder-ai/qodercli"},
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://qoder.com/install | bash"}, Display: "curl -fsSL https://qoder.com/install | bash"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://qoder.com/install | bash"}, Display: "curl -fsSL https://qoder.com/install | bash"},
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-Command", "irm https://qoder.com/install.ps1 | iex"}, Display: "irm https://qoder.com/install.ps1 | iex"},
 			},
 		},
 		// Model picker (B5). Grounded live 2026-08-08: `qodercli --help`
@@ -1855,10 +2649,63 @@ var registry = map[string]Capability{
 		// list; every other launchable tool carries the honest zero note
 		// until a per-tool probe grounds its StateRW/StateRO paths.
 		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// GUI launch row (plan §2.2). Launch is buildable today; CAPTURE for
+		// the IDE is not — its store schema is unknown (inventory §2.13,
+		// §3.1 #15) — so this row installs and launches honestly without
+		// claiming the IDE's sessions are ingested.
+		GUI: &GUILaunchSpec{
+			ID:      "qoder-ide",
+			Label:   "Qoder IDE",
+			Surface: "ide",
+			Binary: BinaryResolveSpec{
+				// No collision with this row's CLI Names above (`qodercli`).
+				Names: BinaryNames{
+					Unix:    []string{"qoder"},
+					Windows: []string{"Qoder IDE.exe"},
+				},
+				ProbeDirs: []ProbeDir{
+					{OS: ProbeWindows, Rel: "AppData/Local/Programs/Qoder IDE"},
+				},
+				Installs: []InstallHint{
+					{OS: "windows", Channel: "winget", Argv: []string{"winget", "install", "--id", "Alibaba.Qoder", "-e", "--source", "winget"}, Display: "winget install --id Alibaba.Qoder -e --source winget"},
+				},
+				InstallNote: "no grounded macOS or Linux channel: there is no Homebrew cask `qoder` " +
+					"(formulae.brew.sh 404 on 2026-09-03) and the vendor ships a direct download " +
+					"(qoder.com/download).",
+			},
+			// DarwinApp deliberately EMPTY: no cask and no macOS install to
+			// read, so the .app bundle name is not grounded. A guess here
+			// would be a fabricated capability (gui.go honesty rule).
+			ProjectDirArgv: true,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "no confirmed base-URL surface for the IDE (this row's Routability is native_exempt; " +
+					"inventory §2.13 flags the CLI's /cli/network doc page as a possible contradiction but the " +
+					"setting name was never extracted). Launch yes, wrap no.",
+			},
+			Hosts:    []string{"qoder"},
+			Grounded: true,
+			Note: "Windows layout grounded on this box 2026-09-03: %LOCALAPPDATA%\\Programs\\Qoder " +
+				"IDE\\Qoder IDE.exe (+ bin\\{qoder,qoder.cmd} — and, betraying the VS Code fork lineage, " +
+				"bin\\{code,code.cmd} too), which grounds both the unix shim stem and `qoder <dir>`. macOS " +
+				"bundle name NOT grounded (no cask) — DarwinApp left empty rather than guessed. The IDE's " +
+				"sessions ARE captured (batch-3 T4, 2026-09-03): the IDE writes " +
+				"~/.qoder/projects/<slug>/transcript/<task>.session.execution.jsonl into the same tree the " +
+				"CLI uses, which the qoder adapter ingests and stamps ide/qoder; its " +
+				"%APPDATA%\\Qoder\\SharedClientCache\\cache\\db\\local.db (sqlite-vec vec0 tables, plain " +
+				"chat tables empty live) is assessed and NOT read. The separate Qoder Work desktop app is " +
+				"the `qoder-work` host row.",
+		},
 	},
 	"aider": {
 		Tool:       "aider",
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// FIX-7 (phase-2 review): Aider's --lint-cmd/--git-commit-verify
+		// hooks act on GENERATED CODE, not prompts (contract §2.4) — no
+		// prompt-submit event exists at all. The proxy lane (already
+		// routed today) is Aider's only path to prompt-submit
+		// intervention.
+		PromptLane: PromptLaneProxyOnly,
 		// Aider honors OPENAI_API_BASE (LiteLLM-shaped) — a real base-URL
 		// surface, LIVE-GROUNDED 2026-07-09: a probe with
 		// OPENAI_API_BASE=http://127.0.0.1:8820/v1 (aider --message …
@@ -1872,7 +2719,19 @@ var registry = map[string]Capability{
 		// wire; the keyed run's usage fields read 0/0 in api_turns while
 		// aider itself reported 665/1 — a capture-parse gap on this shape
 		// worth a follow-up, not a routing doubt.)
-		Proxy:       &ProxyRoute{Kind: RouteLauncher, EnvVar: "OPENAI_API_BASE", Suffix: "/v1", Launcher: "observer aider"},
+		// Proof stays UNPROVEN: OPENAI_API_BASE routes the OpenAI-compatible
+		// lane only, and Aider's own model/provider selectors below can send
+		// the same run to Anthropic or Bedrock with that variable still set.
+		Proxy: &ProxyRoute{
+			Kind: RouteLauncher, EnvVar: "OPENAI_API_BASE", Suffix: "/v1",
+			Launcher: "observer aider",
+			SelectorArguments: []string{
+				"-m", "--model", "--env-file", "--model-settings-file",
+				"--openai-api-base", "--openai-api-type", "--api-type",
+				"--anthropic-api-version", "--anthropic-api-key",
+				"--openai-api-key", "--api-key",
+			},
+		},
 		Routability: RouteStatusRoutableNow,
 		// No pre/post-tool hook surface exists.
 		Hook: HookSpec{Mechanism: HookNone},
@@ -1917,13 +2776,23 @@ var registry = map[string]Capability{
 		},
 		// Binary resolution + grounded install. Unix launcher resolves
 		// "aider"; official install is the aider.chat uv-based script
-		// (installs Python 3.12 if needed). No Windows-native install path
-		// grounded here.
+		// (installs Python 3.12 if needed). Windows GROUNDED 2026-09-02:
+		// install.ps1 (astral's cargo-dist uv installer, re-hosted, with
+		// one appended `uv tool install --force --python python3.12
+		// --with pip aider-chat@latest` line) lands
+		// %USERPROFILE%\.local\bin\aider.exe alongside uv.exe/uvx.exe.
 		Binary: &BinaryResolveSpec{
-			Names: BinaryNames{Unix: []string{"aider"}},
+			Names: BinaryNames{
+				Unix:    []string{"aider"},
+				Windows: []string{"aider.exe"},
+			},
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeWindows, Rel: ".local/bin"},
+			},
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "script", Argv: []string{"sh", "-lc", "curl https://aider.chat/install.sh | sh"}, Display: "curl https://aider.chat/install.sh | sh"},
 				{OS: "darwin", Channel: "script", Argv: []string{"sh", "-lc", "curl https://aider.chat/install.sh | sh"}, Display: "curl https://aider.chat/install.sh | sh"},
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-ExecutionPolicy", "ByPass", "-c", "irm https://aider.chat/install.ps1 | iex"}, Display: "irm https://aider.chat/install.ps1 | iex"},
 			},
 		},
 	},
@@ -1972,6 +2841,12 @@ var registry = map[string]Capability{
 	"goose": {
 		Tool:       "goose",
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// FIX-7 (phase-2 review): Goose's UserPromptSubmit is
+		// explicitly observation-only per the vendor's own docs — only
+		// PreToolUse and Stop support denial (contract §2.3). The
+		// proxy lane (already routed today, opt-in --proxy) is Goose's
+		// only realistic path to prompt-submit intervention.
+		PromptLane: PromptLaneProxyOnly,
 		// Goose reads OPENAI_HOST (NOT OPENAI_BASE_URL; host ROOT — goose
 		// appends /v1) plus per-provider host settings in config.yaml — a
 		// real override surface, LIVE-GROUNDED 2026-07-09: a probe on the
@@ -2038,14 +2913,47 @@ var registry = map[string]Capability{
 		// per-tool extra). Official install script + brew (repo moved
 		// block/goose → aaif-goose/goose, Linux Foundation AAIF, Dec 2025 —
 		// goose-docs.ai installation page).
+		//
+		// Windows GROUNDED 2026-09-02: the .ps1 ($OUT_FILE = "goose.exe",
+		// GOOSE_BIN_DIR = $env:USERPROFILE\.local\bin) lands
+		// %USERPROFILE%\.local\bin\goose.exe but does NOT edit PATH
+		// ("Warning: goose installed, but … is not in your PATH") — so
+		// post-install detection depends entirely on the ProbeDir. The
+		// Git-Bash `.sh` channel's own MSYS branch
+		// (DEFAULT_BIN_DIR="$USERPROFILE/goose") lands in a DIFFERENT
+		// dir, so both are probed. The vendor documents only the
+		// branch-tip raw URL for download_cli.ps1 — the release-asset
+		// URL (…/releases/download/stable/download_cli.ps1) 404s as of
+		// 2026-09-02. CONFIGURE=false keeps the install non-interactive
+		// (skips `goose configure`) in the PTY. Windows ARM64 is
+		// refused by the vendor script (exit 1); no winget id exists.
 		Binary: &BinaryResolveSpec{
-			Names:     BinaryNames{Unix: []string{"goose"}},
-			ProbeDirs: []ProbeDir{{OS: ProbeUnix, Rel: ".local/bin"}},
+			Names: BinaryNames{
+				Unix:    []string{"goose"},
+				Windows: []string{"goose.exe"},
+			},
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".local/bin"},
+				{OS: ProbeWindows, Rel: ".local/bin"},
+				{OS: ProbeWindows, Rel: "goose"},
+			},
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | bash"}, Display: "curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | bash"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | bash"}, Display: "curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | bash"},
 				{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "block-goose-cli"}, Display: "brew install block-goose-cli"},
 				{OS: "linux", Channel: "brew", Argv: []string{"brew", "install", "block-goose-cli"}, Display: "brew install block-goose-cli"},
+				{
+					OS:      "windows",
+					Channel: "script",
+					Argv: []string{
+						"powershell",
+						"-ExecutionPolicy",
+						"Bypass",
+						"-Command",
+						`$env:CONFIGURE='false'; Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1' -OutFile "$env:TEMP\download_cli.ps1"; & "$env:TEMP\download_cli.ps1"`,
+					},
+					Display: `$env:CONFIGURE='false'; Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1' -OutFile "$env:TEMP\download_cli.ps1"; & "$env:TEMP\download_cli.ps1"`,
+				},
 			},
 		},
 		// Model picker (B5): ModelEnv, GOOSE_MODEL. Grounded live 2026-08-08:
@@ -2065,6 +2973,51 @@ var registry = map[string]Capability{
 		// list; every other launchable tool carries the honest zero note
 		// until a per-tool probe grounds its StateRW/StateRO paths.
 		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// GUI launch row (plan §2.2): Goose Desktop shares this row's
+		// sessions.db (inventory §2.11). NOT installed on this box, so the
+		// row is grounded from the macOS side only.
+		GUI: &GUILaunchSpec{
+			ID:      "goose-desktop",
+			Label:   "Goose Desktop",
+			Surface: "desktop",
+			Binary: BinaryResolveSpec{
+				// Names.Windows deliberately EMPTY (honest zero, see
+				// WindowsNote); Names.Unix likewise — `goose` on PATH is
+				// this row's CLI, a different binary from the desktop app.
+				WindowsNote: "Goose Desktop is not installed on the grounding box (2026-09-03) and the " +
+					"vendor ships a zip whose extracted layout was not verified, so no Windows executable " +
+					"spelling or probe dir is declared rather than guessing " +
+					"%LOCALAPPDATA%\\Programs\\Goose.",
+				Installs: []InstallHint{
+					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "block-goose"}, Display: "brew install --cask block-goose"},
+				},
+				InstallNote: "macOS only. The vendor also publishes a Windows zip and Linux deb/rpm/flatpak " +
+					"(inventory §4.1) but none has a grounded one-liner; note the winget package `Pressly.Goose` " +
+					"is the unrelated SQL migration tool and must never be offered here.",
+			},
+			DarwinApp:      "Goose",
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind: WrapChildEnv,
+				Env: []WrapEnvVar{
+					{Name: "OPENAI_HOST", Suffix: ""},
+				},
+				ColdStartOnly: true,
+				Reason: "OPENAI_HOST at the proxy ROOT (goose appends /v1) is the SAME knob this row's " +
+					"opt-in `observer goose --proxy` launcher lane uses, and the vendor says Desktop shares " +
+					"the CLI's config surface (inventory §2.11) — but the env lane is verified for the CLI " +
+					"only, NOT for the desktop app. Same caveats as the CLI: it needs GOOSE_PROVIDER=openai " +
+					"(or another OPENAI_HOST-honouring provider), and an ambient OPENAI_HOST in the operator's " +
+					"environment wins over the injection by design.",
+			},
+			Hosts:    []string{"goose"},
+			Grounded: true,
+			Note: "Grounded from the macOS side ONLY: bundle \"Goose.app\" and the cask token `block-goose` " +
+				"read from the Homebrew cask API on 2026-09-03. Goose Desktop is NOT installed on the " +
+				"Windows grounding box, so its Windows layout is unverified and Names.Windows is empty — " +
+				"the row is launchable on macOS and will preflight as unresolved on Windows until someone " +
+				"grounds the zip layout.",
+		},
 	},
 
 	// Browser-chatbot rail (Phase 1 = ChatGPT only). Captured by the opt-in
@@ -2163,14 +3116,22 @@ var registry = map[string]Capability{
 	// Phase-0 research only — no adapter package yet (Phase A wiring row).
 	"droid": {
 		Tool:       "droid",
+		PromptLane: PromptLaneHook,
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// No live-verified route today; BYOK custom models call the
 		// underlying provider directly (the only near-routable_now
 		// candidate) but that's unverified — no live turn through :8820.
 		Proxy:       nil,
 		Routability: RouteStatusProbeRequired,
-		// No hook subcommand found in `droid --help`.
-		Hook: HookSpec{Mechanism: HookNone},
+		// No hook SUBCOMMAND in `droid --help`, but the prompt-submit
+		// hook IS a config-file registration (Part B item 1) —
+		// ~/.factory/hooks.json, the same {"hooks":{<event>:[{matcher,
+		// hooks}]}} shape HookCodexConfig's hooks.json uses.
+		// CrossOSBridge: true — internal/hook's droid-windows target
+		// (registerFactoryDroidWindows) wraps the command in the
+		// wsl.exe bridge, mirroring claude-code/cursor/codex's own
+		// bridges.
+		Hook: HookSpec{Mechanism: HookFactoryJSON, CrossOSBridge: true, AutoWired: true, PromptLaneOnly: true},
 		// ~/.factory/mcp.json reuses claude-code/cursor's {"mcpServers":{}}
 		// shape (format confirmed live via a zero-cost `droid mcp add`/
 		// `remove` probe). A writer now exists (internal/mcp/register.go's
@@ -2208,18 +3169,60 @@ var registry = map[string]Capability{
 		// `<uuid>.jsonl` and its `session_start` line carries the same
 		// `"id"` (internal/adapter/droid/adapter.go), so no transform.
 		Resume: ResumeSpec{Kind: ResumeNative, Subcommand: "droid", IDMechanism: "flag:--resume"},
+		// GUI launch row: Factory Desktop (batch-3 T3, 2026-09-03). The
+		// Electron app bundles its OWN droid.exe and writes the SAME
+		// ~/.factory/sessions store this row's adapter reads — capture is
+		// free; desktop-composed prompts carry message.userMessageSource
+		// == "desktop", which is the grounded desktop/factory-desktop stamp.
+		GUI: &GUILaunchSpec{
+			ID:      "factory-desktop",
+			Label:   "Factory Desktop",
+			Surface: "desktop",
+			Binary: BinaryResolveSpec{
+				Names: BinaryNames{
+					// The Squirrel stub at the install root relaunches the
+					// current app-<ver>\factory-desktop.exe.
+					Windows: []string{"factory-desktop.exe"},
+				},
+				ProbeDirs: []ProbeDir{
+					{OS: ProbeWindows, Rel: "AppData/Local/Factory"},
+				},
+				InstallNote: "no grounded macOS or Linux channel: no Homebrew cask and no winget package found " +
+					"(checked 2026-09-03); the vendor ships a direct download (factory.ai/news/factory-desktop).",
+			},
+			ProbeOnly:      true,
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "probe_required and no writer: droid's BYOK route is the customModels array in " +
+					"~/.factory/settings.json (a file Observer never reads — plaintext keys) and this row " +
+					"carries neither a verified Proxy nor a ProxyProbe binding; the desktop reuses the " +
+					"bundled droid's provider config, so there is nothing to wrap. Launch yes, wrap no.",
+			},
+			Hosts:    []string{"droid"},
+			Grounded: true,
+			Note: "Windows layout grounded on this box 2026-09-03: %LOCALAPPDATA%\\Factory\\factory-desktop.exe " +
+				"(Squirrel stub) → app-0.168.0\\factory-desktop.exe (Electron) bundling " +
+				"app-0.168.0\\resources\\bin\\droid.exe. macOS bundle NOT grounded — DarwinApp left empty. " +
+				"Sessions land in ~/.factory/sessions/<slug>/<uuid>.jsonl exactly like the CLI's; " +
+				"cloudSessionSync defaults TRUE on the vendor side (mirrors to Factory's backend).",
+		},
 		Binary: &BinaryResolveSpec{
 			Names: BinaryNames{
 				Unix:    []string{"droid"},
 				Windows: []string{"droid.exe", "droid.cmd", "droid"},
 			},
-			// ~/.local/bin is where the live install landed (2026-07-29);
-			// Factory's docs describe the installer dropping the binary
-			// under ~/.factory/bin, which exists on this install too.
+			// ~/.local/bin is where the live install landed (2026-07-29).
+			// The ~/.factory/bin unix entry was DROPPED 2026-09-02:
+			// operator-verified 2026-07-29, but re-checked absent on this
+			// WSL box 2026-09-02 and no current vendor script references
+			// it — a stale probe dir. Windows GROUNDED 2026-09-02: the
+			// installer (`$binaryName = "droid.exe"`, `$userBin =
+			// Join-Path $env:USERPROFILE "bin"`) lands
+			// %USERPROFILE%\bin\droid.exe, not ~/.factory/bin.
 			ProbeDirs: []ProbeDir{
 				{OS: ProbeUnix, Rel: ".local/bin"},
-				{OS: ProbeUnix, Rel: ".factory/bin"},
-				{OS: ProbeWindows, Rel: ".factory/bin"},
+				{OS: ProbeWindows, Rel: "bin"},
 			},
 			// Officially documented channels only. The macOS/Linux line is
 			// the installer script's OWN documented usage (fetched
@@ -2230,15 +3233,20 @@ var registry = map[string]Capability{
 			// bin {"droid":"bin/droid"}); it carries OS "" so it is also
 			// the Windows answer.
 			//
-			// NO Windows script hint on purpose: app.factory.ai/cli/windows
-			// documents a THREE-step, optionally cookie-authenticated flow
-			// (`curl.exe -b 'session=…' … -o install.ps1` → `powershell
-			// -ExecutionPolicy Bypass -File install.ps1` → `del`), not a
-			// one-liner — so a piped `irm | iex` hint would be ours, not
-			// theirs.
+			// Windows script hint ADDED 2026-09-02 (operator decision):
+			// the vendor's OWN documented Windows form
+			// (app.factory.ai/cli/windows) is a THREE-step, optionally
+			// cookie-authenticated flow (`curl.exe -b 'session=…' … -o
+			// install.ps1` → `powershell -ExecutionPolicy Bypass -File
+			// install.ps1` → `del`), not a one-liner. The `irm … | iex`
+			// hint below fetches the SAME URL through observer's own
+			// piped-execution convention (no session cookie) — it is
+			// observer's construction, not a literal vendor one-liner;
+			// noted honestly rather than mis-attributed.
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://app.factory.ai/cli | sh"}, Display: "curl -fsSL https://app.factory.ai/cli | sh"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://app.factory.ai/cli | sh"}, Display: "curl -fsSL https://app.factory.ai/cli | sh"},
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-Command", "irm https://app.factory.ai/cli/windows | iex"}, Display: "irm https://app.factory.ai/cli/windows | iex"},
 				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "droid"}, Display: "npm install -g droid"},
 			},
 		},
@@ -2263,7 +3271,21 @@ var registry = map[string]Capability{
 	// (antigravity/antigravity-cli pattern), not a fresh package.
 	"open-interpreter": {
 		Tool:       "open-interpreter",
+		PromptLane: PromptLaneProbeRequired,
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// This row (the vendor's current Rust/codex-based rewrite) is
+		// ACTIVE. The note records the COMMAND-NAME COLLISION with the
+		// dead legacy Python line (pip `open-interpreter`), which also
+		// answers to `interpreter` — see
+		// productLifecycles["open-interpreter-python"]. This adapter is
+		// path-keyed (~/.openinterpreter/sessions via INTERPRETER_HOME)
+		// and never reads the Python line's data; any detector keyed on
+		// the command NAME must disambiguate by binary path / version.
+		LifecycleNote: "COMMAND-NAME COLLISION: the DEAD legacy Python line (pip `open-interpreter`, see " +
+			"productLifecycles[\"open-interpreter-python\"]) answers to the same `interpreter` command. " +
+			"This row is the vendor's current Rust rewrite and is active; capture is path-keyed " +
+			"(~/.openinterpreter/sessions via INTERPRETER_HOME), never command-name-keyed, and the " +
+			"install hints below deliberately exclude the pip channel.",
 		// config schema present (base_url/wire_api strings confirmed in
 		// the binary) but not live-verified on this fork.
 		Proxy:       nil,
@@ -2282,6 +3304,51 @@ var registry = map[string]Capability{
 		// input, nets the same way — Tier 2 until proxy routability
 		// confirmed.
 		TokenTier: TokenTier{Best: "jsonl", Gap: "no proxy path verified on this fork; hook mechanism unconfirmed"},
+		// GUI launch row: the Interpreter DESKTOP app (batch-3 T5,
+		// 2026-09-03). Two stores under one adapter: the CLI's
+		// ~/.openinterpreter/sessions (INTERPRETER_HOME) and the desktop
+		// app's embedded <userData>/interpreter/codex-home/sessions
+		// (Windows grounded: %APPDATA%\interpreter; macOS/Linux rungs are
+		// the Electron convention, UNVERIFIED). Both are codex-shaped
+		// rollouts parsed by codex.NewOpenInterpreter(); the desktop's own
+		// originator `codex_ui` stamps desktop/open-interpreter.
+		GUI: &GUILaunchSpec{
+			ID:      "open-interpreter-desktop",
+			Label:   "Interpreter",
+			Surface: "desktop",
+			Binary: BinaryResolveSpec{
+				Names: BinaryNames{
+					Windows: []string{"Interpreter.exe"},
+				},
+				ProbeDirs: []ProbeDir{
+					// Per-machine Program Files install, NOT the Squirrel
+					// per-user layout its updater dir suggests.
+					{OS: ProbeWindows, Rel: "Interpreter", EnvRoot: "ProgramFiles"},
+				},
+				InstallNote: "no grounded macOS or Linux channel: no Homebrew cask and no winget package found " +
+					"(checked 2026-09-03); the vendor ships a direct download (openinterpreter.com/docs/desktop; " +
+					"no account needed).",
+			},
+			// PATH walk disabled: the CLI answers to `interpreter` /
+			// `interpreter.exe`, which resolves case-insensitively against
+			// Interpreter.exe on Windows. Probe dirs only.
+			ProbeOnly:      true,
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "the desktop's provider base URLs live per profile in its own codex-home/config.toml " +
+					"(alongside plaintext API keys — a file Observer never reads), and this row carries " +
+					"neither a verified Proxy nor a ProxyProbe writer binding, so config_write would name a " +
+					"writer that does not exist. Launch yes, wrap no.",
+			},
+			Hosts:    []string{"open-interpreter"},
+			Grounded: true,
+			Note: "Windows layout grounded on this box 2026-09-03: %ProgramFiles%\\Interpreter\\Interpreter.exe " +
+				"(the updater payload sits at %LOCALAPPDATA%\\interpreter-updater\\installer.exe). macOS " +
+				"bundle NOT grounded — DarwinApp left empty. Sessions: %APPDATA%\\interpreter\\codex-home\\" +
+				"sessions\\YYYY\\MM\\DD\\rollout-*.jsonl, ingested by this row's adapter (tool id " +
+				"open-interpreter, surface desktop/open-interpreter).",
+		},
 		Handoff: HandoffCapability{
 			Transcript: TranscriptFull,
 			Inject:     []InjectKind{InjectFile, InjectPrompt},
@@ -2310,10 +3377,15 @@ var registry = map[string]Capability{
 		Binary: &BinaryResolveSpec{
 			Names: BinaryNames{Unix: []string{"interpreter"}, Windows: []string{"interpreter.exe"}},
 			// Live install layout (2026-07-29): ~/.local/bin/interpreter is
-			// a symlink into the standalone package's own bin dir.
+			// a symlink into the standalone package's own bin dir. Windows
+			// GROUNDED 2026-09-02: install.ps1's own
+			// $defaultVisibleBinDir = Join-Path $env:LOCALAPPDATA
+			// "Programs\Open Interpreter\bin" (a junction into the
+			// versioned store).
 			ProbeDirs: []ProbeDir{
 				{OS: ProbeUnix, Rel: ".local/bin"},
 				{OS: ProbeUnix, Rel: ".openinterpreter/packages/standalone/current/bin"},
+				{OS: ProbeWindows, Rel: "AppData/Local/Programs/Open Interpreter/bin"},
 			},
 			// Officially documented channels (openinterpreter.com
 			// /docs/terminal/install): the shell installer only — the docs
@@ -2344,7 +3416,29 @@ var registry = map[string]Capability{
 	// commandcode.ai's npm CLI (docs/plans/commandcode-adapter-plan-2026-07-29.md).
 	// Phase-0 research only — no adapter package yet (Phase A wiring row).
 	"command-code": {
-		Tool:       "command-code",
+		Tool: "command-code",
+		// FIX-7 (phase-2 review): promoted from PromptLaneProbeRequired.
+		// commandcode's prompt-submit lane is a documented Mods SDK
+		// module (commandcode.ai/docs/mods): `transformInput`,
+		// `{text}` input, `action:'handled'` info row, and a genuine
+		// redact lane via `action:'transform'` — a different
+		// PACKAGING (a Mods-SDK module, not a shell hook) than every
+		// other row here. Part B item 2 (phase-3a, 2026-09-07) wired it
+		// after re-fetching commandcode.ai/docs/mods live: mods are
+		// no-build TypeScript files (jiti-compiled at load time) loaded
+		// from ~/.commandcode/mods/*.ts, registered via
+		// `cmd.hooks({transformInput({text}){...}})`. The emitter is a
+		// go:embed'd .ts template (the hermesplugin precedent — an
+		// embedded, non-JSON-config registration model) that shells out
+		// to `observer hook command-code transformInput`, mirroring
+		// every other dialect's argv shape. The ONE documented input
+		// field is `text` — no session/conversation id anywhere in the
+		// signature, so ask-once/redact findings here fail closed to a
+		// hard, unconditional block (the engine's own documented
+		// empty-session-id rule; see internal/hook/promptsubmit.go's
+		// extractCommandCodePrompt). `action:'transform'` (the genuine
+		// redact lane) stays unpopulated — not wired on any channel yet.
+		PromptLane: PromptLaneHook,
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// COMMANDCODE_API_URL / COMMAND_CODE_API_KEY / COMMANDCODE_API_ENV
 		// point at Command Code's OWN closed gateway (not a BYOK
@@ -2352,8 +3446,11 @@ var registry = map[string]Capability{
 		// routable_now-shaped, so after_bridge rather than native_exempt.
 		Proxy:       nil,
 		Routability: RouteStatusAfterBridge,
-		// No hook mechanism grounded.
-		Hook: HookSpec{Mechanism: HookNone},
+		// CrossOSBridge: true — internal/hook's command-code-windows
+		// target (registerCommandCodeWindows) bakes the wsl.exe bridge
+		// into the go:embed'd TS mod's own runtime (resolveExec()),
+		// mirroring claude-code/cursor/codex's own bridges.
+		Hook: HookSpec{Mechanism: HookCommandCodeMod, CrossOSBridge: true, AutoWired: true, PromptLaneOnly: true},
 		// ~/.commandcode/mcp.json reuses claude-code/cursor/droid's
 		// {"mcpServers":{}} shape, grounded 2026-07-29 from the npm
 		// package's cli.mjs getUserMcpConfigPath + bundled reference/mcp.md.
@@ -2548,6 +3645,14 @@ var registry = map[string]Capability{
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://dev.meta.ai/install.sh | bash"}, Display: "curl -fsSL https://dev.meta.ai/install.sh | bash"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://dev.meta.ai/install.sh | bash"}, Display: "curl -fsSL https://dev.meta.ai/install.sh | bash"},
 			},
+			// Honest-zero carriers (2026-09-02): Names.Windows stays nil
+			// AND no Windows InstallHint exists — GROUNDED against
+			// muse-launcher.sh's own detect_platform() (dies on any
+			// uname -s other than Darwin/Linux) and Meta's developer blog
+			// ("Install Muse Code in macOS or Linux with a single
+			// command"). WSL2 works because uname -s reports Linux there.
+			WindowsNote: "macOS/Linux only per vendor (muse-launcher.sh detect_platform dies on any uname -s other than Darwin/Linux); runs under WSL2 because uname -s = Linux there",
+			InstallNote: "no Windows install channel — install inside WSL2 and run the observer daemon there",
 		},
 		// Model picker (B5). Grounded live 2026-08-08: `muse --help` lists
 		// `--model <MODEL>` — "Model id for non-echo providers" — under
@@ -2566,6 +3671,12 @@ var registry = map[string]Capability{
 	},
 	"prime-agent": {
 		Tool: "prime-agent",
+		// FIX-7 (phase-2 review): no prompt-submit hook mechanism has
+		// been found for Prime Agent CLI at all (PrimeIntellect-ai/
+		// prime-agent#872, contract §2.4). The proxy lane (already
+		// routed today) is its only path to prompt-submit
+		// intervention.
+		PromptLane: PromptLaneProxyOnly,
 		// Prime Agent is deliberately a ONE-TOOL agent: "Available
 		// built-in tools: `ipython`" (README) — the model drives a
 		// persistent Python kernel for everything. `bash` and `edit` are
@@ -2665,12 +3776,26 @@ var registry = map[string]Capability{
 		// installs the `prime-agent` command. No Windows build is
 		// documented (README leads with Linux/macOS) → Names.Windows stays
 		// nil.
+		// Windows GROUNDED 2026-09-02: the npm package itself carries no
+		// `os` restriction (tarball v0.9.1 package.json bin
+		// {prime-agent: dist/bundle/cli.js}), but the package is NOT
+		// published to the public npm registry (see the CORRECTED
+		// 2026-08-07 comment above) — so a Windows spelling is grounded
+		// through the SAME vendor install script the Unix rows use,
+		// runnable only under a bash shell (Git for Windows is
+		// sufficient per vendor docs/windows.md). No npm channel is
+		// declared here (TestGuidedInstallGapClosed pins that).
 		Binary: &BinaryResolveSpec{
-			Names: BinaryNames{Unix: []string{"prime-agent"}},
+			Names: BinaryNames{
+				Unix:    []string{"prime-agent"},
+				Windows: []string{"prime-agent.cmd", "prime-agent"},
+			},
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh"}, Display: "curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh"},
 				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh"}, Display: "curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh"},
+				{OS: "windows", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh"}, Display: "curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh"},
 			},
+			WindowsNote: "vendor: requires a bash shell on Windows (Git for Windows is sufficient); the install and the runtime both need bash — never PowerShell/CMD",
 		},
 		// Model picker (B5). Grounded live 2026-08-08: `prime-agent --help`
 		// lists a "Model options:" block with `--model <id>` — "Select a
@@ -2699,7 +3824,13 @@ var registry = map[string]Capability{
 		// the same honest-zero shape as the browser-chat *-web rows, for a
 		// different reason (structural block kinds vs. no tool-call surface
 		// at all).
-		Vocabulary: Vocabulary{Note: "no native tool vocabulary: events.jsonl carries fixed typed block/event kinds (Terminal/FileChanges/Result blocks), not model-chosen tool names"},
+		// Junie's own block kinds (Terminal/FileChanges/ViewFiles/Result)
+		// are structural, not tool names — but a Junie run hosted inside
+		// the JetBrains IDE calls the IDE's built-in `idea` MCP server tools
+		// through McpBlockUpdatedEvent, and THOSE are real tool names
+		// (grounded live 2026-09-03, batch-3 T6): internal/tooltax carries
+		// the four exercised rows, the rest fall through to mcp_call.
+		Vocabulary: Vocabulary{InTaxonomy: true, Note: "typed block kinds are structural; the tool names in the taxonomy are the JetBrains `idea/*` MCP server tools an IDE-hosted run calls"},
 		// No base-URL knob has been grounded (only ~/.junie/settings.json's
 		// non-credential model/provider fields were read, per the task's
 		// off-limits list) — honest "not yet investigated", not a proven
@@ -2723,12 +3854,95 @@ var registry = map[string]Capability{
 		// no "junie" case.
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile}},
 	},
+	// Poolside (docs/poolside-adapter.md). Phase-0 grounded 2026-09-05
+	// against a live JetBrains IDEA 2026.2.2 run on Windows — Poolside
+	// ships today ONLY as a JetBrains AI Assistant ACP agent
+	// (`acp.registry.poolside`), the same IDE-embedded shape as Junie: no
+	// standalone CLI/TUI process for `observer poolside` to launch.
+	"poolside": {
+		Tool: "poolside",
+		// FIX-7 (phase-2 review) promoted this from
+		// PromptLaneProbeRequired; Part B item 2 (phase-3a, 2026-09-07)
+		// wired it after re-fetching docs.poolside.ai/hooks live:
+		// UserPromptSubmit registers in settings.yaml (the SAME file
+		// this row's own pool.api_url already comes from) as
+		// {"hooks":{"UserPromptSubmit":[{"name":…,"matcher":"*",
+		// "command":…}]}}. The reply is snake_case JSON — {"decision":
+		// "block","reason":…,"hook_specific_output":{"updated_prompt",
+		// "additional_context"}} — used here over the vendor's
+		// documented exit-2 alternative because it needs no new
+		// exit-code plumbing beyond what Qoder/Cascade already require.
+		// updated_prompt (the genuine redact lane) stays unpopulated —
+		// not wired on any channel yet.
+		PromptLane: PromptLaneHook,
+		// 7 grounded native tool names (read/write/edit/shell/
+		// list_directory_tree/todo_action/exit) — the COMPLETE tool
+		// surface a live 22-call, single-prompt session exercised; no
+		// defensive rows exist because the ACP session/new response's own
+		// configOptions never enumerated a larger surface than what was
+		// actually called.
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// Model traffic goes to https://inference.poolside.ai per
+		// ~/.config/poolside/settings.yaml's pool.api_url. The agent is
+		// IDE-driven (no independent launch), so no base-URL override
+		// flag or env var could be grounded — probe_required, not a
+		// fabricated route.
+		Proxy:       nil,
+		Routability: RouteStatusProbeRequired,
+		// No hook mechanism is documented or grounded for the JetBrains
+		// ACP agent surface specifically; the mechanism below targets
+		// the SEPARATE standalone `pool` CLI's own hooks system
+		// (settings.yaml — see the PromptLane comment above), which
+		// applies whenever that standalone binary is installed
+		// regardless of whether the ACP-embedded surface this row's
+		// OWN capture adapter reads is in use.
+		// CrossOSBridge: true — internal/hook's poolside-windows target
+		// (registerPoolsideWindows) wraps the command in the wsl.exe
+		// bridge, mirroring claude-code/cursor/codex's own bridges.
+		Hook: HookSpec{Mechanism: HookPoolsideYAML, CrossOSBridge: true, AutoWired: true, PromptLaneOnly: true},
+		// Poolside is itself an MCP CLIENT inside the ACP session (the
+		// JetBrains host hands it the IDE's own `idea` MCP server), not a
+		// target any existing {"mcpServers":{…}}-shaped writer could
+		// register into.
+		MCP:    nil,
+		Native: NativeRails{},
+		// Tier-2 transcript capture only. tool_call.inference.end states
+		// input/output/cache_read/cache_write per call — richer than most
+		// Tier-2 sources, though still not a proxy intercept. No pricing
+		// entry exists for poolside/laguna-* models (a brand-new,
+		// non-mainstream vendor), so cost rows resolve as unknown.
+		TokenTier: TokenTier{
+			Best: "trajectory_ndjson",
+			Gap:  "no Tier-1 proxy path (IDE-driven, no base-URL knob); no pricing entry for poolside/laguna-* models",
+		},
+		// The trajectory re-reads in full (prompts, reasoning, assistant
+		// text, every tool call + outcome) — a genuinely re-readable
+		// transcript. No Launch/Attach/Resume: there is no standalone
+		// process — matches Junie's JetBrains-embedded precedent exactly.
+		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile}},
+	},
 	// zcode (Z.AI's OpenCode fork, docs/zcode-adapter.md). Phase-0 grounded
 	// 2026-08-18: a structural transposition of the opencode adapter with
 	// one difference — per-call tokens come from zcode's own `model_usage`
 	// SQLite table (OpenCode's message.data.tokens bundle is zeroed).
 	"zcode": {
 		Tool: "zcode",
+		// FIX-7 (phase-2 review) promoted this from
+		// PromptLaneProbeRequired. Part B item 2 (phase-3a, 2026-09-07)
+		// built and TESTED the dialect + receiver after re-fetching
+		// zcode.z.ai/en/docs/hooks live (continue:false, camelCase
+		// hookSpecificOutput, ~/.zcode/cli/config.json registration
+		// schema) — PromptLaneHook is honest because
+		// `observer hook zcode UserPromptSubmit` genuinely evaluates
+		// and can block, exactly like every other PromptLaneHook row.
+		// What's genuinely still open is a LIVENESS question
+		// (zai-org/feedback#32 claims configured hooks may not fire at
+		// all on the native agent), so the REGISTRATION WRITER is
+		// deliberately NOT built/auto-wired (Hook.AutoWired stays
+		// false, mirroring cline-cli's HookClineCLIJSONL precedent) —
+		// `observer doctor --probe-hook zcode` (Part B item 3) is what
+		// would confirm liveness before a writer is worth building.
+		PromptLane: PromptLaneHook,
 		// 10 native tool names grounded off mapTool (internal/adapter/zcode/
 		// adapter.go:1105-1156), OpenCode-derived short-name aliases, plus
 		// the step_finish harness marker (WP-T4 family). The default case's
@@ -2741,7 +3955,10 @@ var registry = map[string]Capability{
 		// zcode 0.16.3) — routing it through the proxy would be a guess.
 		Proxy:       nil,
 		Routability: RouteStatusProbeRequired,
-		Hook:        HookSpec{Mechanism: HookNone},
+		// AutoWired:false — see the PromptLane comment above: the
+		// receiver/dialect exist and are tested, but registration is
+		// gated on the zai-org/feedback#32 liveness question.
+		Hook: HookSpec{Mechanism: HookZcodeJSON, AutoWired: false, PromptLaneOnly: true},
 		// config.json carries an `mcp` object, but its shape is zcode's own
 		// and no writer emits it.
 		MCP:    nil,
@@ -2768,15 +3985,19 @@ var registry = map[string]Capability{
 		// `sess_<uuid>` verbatim (the id this adapter already keys on), so
 		// no transform.
 		Resume: ResumeSpec{Kind: ResumeNative, Subcommand: "zcode", IDMechanism: "flag:--resume"},
-		// Binary: install grounded 2026-08-18 (npmjs.com/package/
-		// zcode-app-cli; github.com/kingsword09/zcode-cli).
+		// Binary: install CORRECTED 2026-09-02 (DI-11). The prior
+		// `zcode-app-cli` npm hints were UNOFFICIAL: that package's
+		// maintainer (kingsword09 <kingsword09@gmail.com>, repo
+		// kingsword09/zcode-cli) is unaffiliated with Z.AI. Z.AI's own
+		// docs (zcode.z.ai/en/docs/install, v3.10.2) ship a DESKTOP GUI
+		// installer only ("Double-click it and follow the setup
+		// wizard") — no official CLI install channel exists, so
+		// Installs is deliberately empty with an honest InstallNote
+		// rather than a fabricated command.
 		Binary: &BinaryResolveSpec{
-			Names: BinaryNames{Unix: []string{"zcode"}, Windows: []string{"zcode.exe"}},
-			Installs: []InstallHint{
-				{OS: "linux", Channel: "npm", Argv: []string{"npm", "install", "-g", "zcode-app-cli@latest"}, Display: "npm install -g zcode-app-cli@latest"},
-				{OS: "darwin", Channel: "npm", Argv: []string{"npm", "install", "-g", "zcode-app-cli@latest"}, Display: "npm install -g zcode-app-cli@latest"},
-				{OS: "windows", Channel: "npm", Argv: []string{"npm", "install", "-g", "zcode-app-cli@latest"}, Display: "npm install -g zcode-app-cli@latest"},
-			},
+			Names:       BinaryNames{Unix: []string{"zcode"}, Windows: []string{"zcode.exe"}},
+			WindowsNote: "zcode.exe is bundled by the Z.ai desktop app; there is no CLI install channel",
+			InstallNote: "Z.ai ships a desktop installer only (zcode.z.ai/en/docs/install); the npm package zcode-app-cli is unaffiliated — no grounded CLI channel",
 		},
 		// `zcode --help` (0.16.3) exposes no top-level --model flag, so no
 		// ModelArg is claimed.
@@ -2784,6 +4005,50 @@ var registry = map[string]Capability{
 		// Sandbox filesystem-isolation row (B9). Not grounded — only
 		// claude-code has a verified state-dir bind list.
 		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// GUI launch row (plan §2.2): ZCode Desktop is the Electron ADE
+		// that BUNDLES this row's zcode CLI runtime and shares its
+		// ~/.zcode/cli/db/db.sqlite store.
+		GUI: &GUILaunchSpec{
+			ID:      "zcode-desktop",
+			Label:   "ZCode",
+			Surface: "desktop",
+			Binary: BinaryResolveSpec{
+				Names: BinaryNames{
+					Windows: []string{"ZCode.exe"},
+				},
+				ProbeDirs: []ProbeDir{
+					{OS: ProbeWindows, Rel: "AppData/Local/Programs/ZCode"},
+				},
+				Installs: []InstallHint{
+					{OS: "windows", Channel: "winget", Argv: []string{"winget", "install", "--id", "ZhipuAI.ZCode", "-e", "--source", "winget"}, Display: "winget install --id ZhipuAI.ZCode -e --source winget"},
+					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "zcode"}, Display: "brew install --cask zcode"},
+				},
+				InstallNote: "no grounded Linux channel: zcode.z.ai/en/docs/install ships a direct download.",
+			},
+			// PATH walk disabled: this row's own CLI Names above are
+			// `zcode`/`zcode.exe`, and on Windows that shim resolves
+			// case-insensitively against "ZCode.exe" — a PATH hit would
+			// spawn the CLI, not the desktop app. Probe dirs only.
+			ProbeOnly:      true,
+			DarwinApp:      "ZCode",
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "probe_required, and no writer exists to make it config_write: the base URL lives in " +
+					"~/.zcode/cli/config.json (plus a separate app-level HTTP proxy under Settings → General → " +
+					"Network that needs a restart), and this registry row carries NEITHER a verified Proxy nor " +
+					"a ProxyProbe writer binding — internal/proxyroute has registrars for claude/codex/crush/" +
+					"kimi/qwen only. Naming a config_write ConfigTool here would point the operator at a " +
+					"writer that does not exist (inventory §4.1). Revisit when a zcode registrar lands.",
+			},
+			Hosts:    []string{"zcode"},
+			Grounded: true,
+			Note: "Windows layout grounded on this box 2026-09-03: " +
+				"%LOCALAPPDATA%\\Programs\\ZCode\\ZCode.exe, with NO bin\\ dir — hence ProjectDirArgv=false " +
+				"(the inventory left the argv form \"to ground\"). macOS bundle \"ZCode.app\" grounded from the " +
+				"Homebrew cask `zcode` (homepage zcode.z.ai); winget id `ZhipuAI.ZCode` grounded from a live " +
+				"`winget search --exact` the same day, which also confirms the inventory §4.1 citation.",
+		},
 	},
 	// Mistral Code (`vibe`, docs/mistral-code-adapter.md). Phase-0 grounded
 	// 2026-08-18.
@@ -2832,10 +4097,23 @@ var registry = map[string]Capability{
 		// Windows it lands at %USERPROFILE%\.local\bin\vibe.exe.
 		Binary: &BinaryResolveSpec{
 			Names: BinaryNames{Unix: []string{"vibe"}, Windows: []string{"vibe.exe"}},
+			// grounded 2026-09-02: uv's tool bin dir resolution
+			// (docs.astral.sh/uv/reference/storage) lands on
+			// ~/.local/bin (XDG_BIN_HOME / XDG_DATA_HOME fallback) on
+			// every OS including Windows (%USERPROFILE%\.local\bin).
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".local/bin"},
+				{OS: ProbeWindows, Rel: ".local/bin"},
+			},
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "uv", Argv: []string{"uv", "tool", "install", "mistral-vibe"}, Display: "uv tool install mistral-vibe"},
 				{OS: "darwin", Channel: "uv", Argv: []string{"uv", "tool", "install", "mistral-vibe"}, Display: "uv tool install mistral-vibe"},
 				{OS: "windows", Channel: "uv", Argv: []string{"uv", "tool", "install", "mistral-vibe"}, Display: "uv tool install mistral-vibe"},
+				// grounded 2026-09-02: docs.mistral.ai's vibe install page
+				// documents this curl|bash form as the pip-alternative-free
+				// recommendation alongside uv on Linux/macOS.
+				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -LsSf https://mistral.ai/vibe/install.sh | bash"}, Display: "curl -LsSf https://mistral.ai/vibe/install.sh | bash"},
+				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -LsSf https://mistral.ai/vibe/install.sh | bash"}, Display: "curl -LsSf https://mistral.ai/vibe/install.sh | bash"},
 			},
 		},
 		// `vibe --help` exposes no --model flag (model comes from
@@ -2871,7 +4149,13 @@ var registry = map[string]Capability{
 		// context-window size, not usage — the adapter emits sessions +
 		// actions only, zero TokenEvents. The first launchable adapter with
 		// a "none" tier: a genuine upstream gap, surfaced honestly.
-		TokenTier: TokenTier{Best: "none", Gap: "no billable usage field anywhere in the on-disk store; run-state.json's contextTokenCount is a context-window size, not usage"},
+		// Two layouts, two truths (batch-3 T2, 2026-09-03): the CLI chats
+		// store has no billable usage anywhere (run-state.json's
+		// contextTokenCount is a context-window size); the DESKTOP store
+		// (~/.config/freebuff-desktop/projects/*/desktop-v2.db,
+		// messages.metrics_json.usage) carries real per-turn input /
+		// cached-input / output. Best names the better of the two.
+		TokenTier: TokenTier{Best: "sqlite", Gap: "desktop layout only — the CLI chats store has no billable usage field; the launchable CLI surface still records sessions + actions without tokens"},
 		// chat-messages.json reconstructs the full turn (prompt, reasoning,
 		// tool calls + results). NO --continue-from seed lane: freebuff
 		// exposes no positional prompt or one-shot flag to seed
@@ -2893,8 +4177,20 @@ var registry = map[string]Capability{
 		// verbatim (the id this adapter already keys on), so no transform.
 		Resume: ResumeSpec{Kind: ResumeNative, Subcommand: "freebuff", IDMechanism: "flag:--continue"},
 		// Binary: install grounded 2026-08-18 (npm `freebuff`, every OS).
+		// Windows spelling CORRECTED 2026-09-02: the npm package's bin key
+		// (`{freebuff: index.js}`) is a JS launcher, so a global npm
+		// install writes the shim trio (`freebuff.cmd` + bare + `.ps1`),
+		// never a `freebuff.exe` directly on PATH — the prior
+		// `freebuff.exe`-only spelling was DEAD (no ProbeDir pointed
+		// where it actually lands). The launcher then downloads a
+		// Bun-compiled native binary to ~/.config/manicode/freebuff(.exe)
+		// and spawns it — that binary is never itself on PATH.
 		Binary: &BinaryResolveSpec{
-			Names: BinaryNames{Unix: []string{"freebuff"}, Windows: []string{"freebuff.exe"}},
+			Names: BinaryNames{Unix: []string{"freebuff"}, Windows: []string{"freebuff.cmd", "freebuff", "freebuff.exe"}},
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".config/manicode"},
+				{OS: ProbeWindows, Rel: ".config/manicode"},
+			},
 			Installs: []InstallHint{
 				{OS: "linux", Channel: "npm", Argv: []string{"npm", "install", "-g", "freebuff"}, Display: "npm install -g freebuff"},
 				{OS: "darwin", Channel: "npm", Argv: []string{"npm", "install", "-g", "freebuff"}, Display: "npm install -g freebuff"},
@@ -2907,6 +4203,272 @@ var registry = map[string]Capability{
 		// Sandbox filesystem-isolation row (B9). Not grounded — only
 		// claude-code has a verified state-dir bind list.
 		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// GUI launch row (plan §2.2): Freebuff Desktop. Grounded on the
+		// operator's live Windows install 2026-09-03 (batch-3 T2); the
+		// desktop keeps its OWN store (~/.config/freebuff-desktop/projects/
+		// <name>-<uuid>/desktop-v2.db), captured by this row's adapter as a
+		// second layout with REAL per-turn usage.
+		GUI: &GUILaunchSpec{
+			ID:      "freebuff-desktop",
+			Label:   "Freebuff Desktop",
+			Surface: "desktop",
+			Binary: BinaryResolveSpec{
+				Names: BinaryNames{
+					Windows: []string{"Freebuff.exe"},
+				},
+				ProbeDirs: []ProbeDir{
+					// The per-user Electron install dir is the npm-scoped
+					// package id `@codebuff/freebuff-desktop` with the slash
+					// flattened.
+					{OS: ProbeWindows, Rel: "AppData/Local/Programs/@codebufffreebuff-desktop"},
+				},
+				InstallNote: "no grounded macOS or Linux channel: there is no Homebrew cask `freebuff` and no " +
+					"winget package (both checked live 2026-09-03); the vendor ships a direct download " +
+					"(freebuff.com/desktop).",
+			},
+			// PATH walk disabled: the CLI shim `freebuff` resolves
+			// case-insensitively against Freebuff.exe on Windows — a PATH hit
+			// would spawn the CLI, not the desktop app. Probe dirs only.
+			ProbeOnly:      true,
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "no BYOK and no base-URL surface: Freebuff runs its own hosted model pool with no " +
+					"API key on the free tier (this row's Routability is probe_required only because the " +
+					"question is open, not because a knob was found; inventory §2.13 / §4.1). Launch yes, " +
+					"wrap no.",
+			},
+			Hosts:    []string{"freebuff"},
+			Grounded: true,
+			Note: "Windows layout grounded on this box 2026-09-03: " +
+				"%LOCALAPPDATA%\\Programs\\@codebufffreebuff-desktop\\Freebuff.exe (Electron; uninstaller " +
+				"`Uninstall Freebuff.exe` beside it; no bin\\ shim, hence ProjectDirArgv=false). macOS bundle " +
+				"NOT grounded (no cask, no install to read) — DarwinApp left empty rather than guessed. The " +
+				"inventory's open question is SETTLED: the desktop does NOT share ~/.config/manicode with the " +
+				"CLI (that dir never appeared); it writes its own desktop-v2.db per project, which the " +
+				"freebuff adapter now ingests (sessions, actions, real usage), stamped desktop/freebuff-desktop.",
+		},
+	},
+	// Grok Bot DESKTOP app (xAI; Electron, productName "Grok Bot", internal
+	// package "sand", built on Anysphere/Cursor's agent stack). NOT the
+	// "grok" row above, which is the Grok CLI.
+	//
+	// Every cell below is a GROUNDED NEGATIVE rather than a pending
+	// discovery: Phase 0 (2026-08-28) read a live 0.28.0 Windows install and
+	// its shipped app.asar. The defining fact is that the agent executes in
+	// a REMOTE sandbox VM ("the box") — the desktop is a thin replicated
+	// client — so most integration surfaces do not exist to be wired.
+	"grokbot": {
+		Tool: "grokbot",
+		// No native tool vocabulary to declare: `tool-call` transcript
+		// entries carry only name/status/summary (arguments and results
+		// stay on the box), and no live tool-call entry has been captured
+		// yet, so the adapter maps them to ActionUnknown + RawToolName
+		// rather than guessing a taxonomy.
+		Vocabulary: Vocabulary{Note: "no native tool vocabulary grounded: tool-call entries carry name/status/summary only (args/results execute server-side in the remote box); none observed live yet"},
+		// No base-URL surface of any kind. Inference happens server-side;
+		// the desktop never emits a model request we could intercept, so
+		// this is exempt, not merely un-probed.
+		Proxy:       nil,
+		Routability: RouteStatusNativeExempt,
+		Hook:        HookSpec{Mechanism: HookNone},
+		// settings.json has an `mcpBoxServers` array, but that is OUTBOUND
+		// — MCP servers the REMOTE BOX connects out to. It is not a client
+		// config we can register an observer stdio server into, so this is
+		// nil rather than an MCPTarget.
+		MCP:    nil,
+		Native: NativeRails{},
+		// No usage envelope, no model name, no cost anywhere in the local
+		// store — a structural consequence of remote execution, not a
+		// parsing gap. The "grok-4.5"/"grok-4.6" strings on disk live only
+		// in sand-statsig-bootstrap.json as feature-flag config
+		// (upgradeModelId / effort_first_compact_model_ids); they record no
+		// session's actual model, so reading one would be fabrication.
+		TokenTier: TokenTier{Best: "none", Gap: "no usage/model/cost data exists locally: the agent runs in a remote sandbox and the desktop store holds transcript text only; the grok-4.x strings on disk are Statsig feature-flag config, not per-session model attribution"},
+		// Transcript is fully re-readable (the whole conversation lives in
+		// one plaintext-JSON blob). No Launch: a GUI desktop app has no
+		// `observer <verb> --continue-from` argv contract, so it is
+		// correctly absent from the fresh-launch picker and InjectFile
+		// stays the honest floor.
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull,
+			Inject:     []InjectKind{InjectFile},
+		},
+		// Not launchable ⇒ not attachable, no native resume, no binary
+		// resolution row, no seed-time model mechanism. All grounded
+		// negatives following from "it is a GUI app, not a CLI".
+		Attach: nil,
+		Resume: ResumeSpec{},
+		Binary: nil,
+		Model:  ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{
+			Note: "not sandbox-launchable: a GUI desktop app with no launcher verb, so there is no observer-spawned process to isolate",
+		},
+		// GUI launch row (plan §2.2): Grok Bot IS a desktop app — this row
+		// has no CLI at all, so the GUI spec is its only launch surface.
+		GUI: &GUILaunchSpec{
+			ID:      "grokbot-desktop",
+			Label:   "Grok Bot",
+			Surface: "desktop",
+			Binary: BinaryResolveSpec{
+				WindowsNote: "Grok Bot is not installed on the grounding box (2026-09-03) and there is no " +
+					"winget package, so its Windows install layout is unverified and no executable spelling " +
+					"or probe dir is declared rather than guessing %LOCALAPPDATA%\\Programs\\Grok Bot.",
+				Installs: []InstallHint{
+					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "grok-bot"}, Display: "brew install --cask grok-bot"},
+				},
+				InstallNote: "macOS only: no winget package exists (checked live 2026-09-03) and the Linux " +
+					"artifacts docs.x.ai lists (.deb/.rpm/AppImage) have no grounded one-liner.",
+			},
+			DarwinApp:      "Grok Bot",
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "there is no local request to route: Grok Bot is a thin client and inference runs in " +
+					"a remote sandbox VM (this row's Routability is native_exempt; inventory §2.13 / §4.2). " +
+					"That is also why this row captures sessions + actions only, with tokens/model/cost/cwd " +
+					"honestly absent.",
+			},
+			Hosts:    []string{"grokbot"},
+			Grounded: true,
+			Note: "Grounded from the macOS side ONLY: the Homebrew cask `grok-bot` (name \"Grok Bot\", " +
+				"homepage x.ai/bot) installs \"Grok Bot.app\", read from the cask API 2026-09-03. Windows " +
+				"layout unverified (not installed here, no winget package) — Names.Windows empty. This also " +
+				"partially settles the OS-matrix DISCREPANCY the inventory §2.13 carries (CLAUDE.md says " +
+				"Windows+macOS; docs.x.ai also lists Linux): macOS is now confirmed, Windows and Linux are " +
+				"still second-hand.",
+		},
+	},
+	"kiro-crew": {
+		Tool: "kiro-crew",
+		// Crew logs a tool call under its OWN three-token vocabulary
+		// (read / edit / execute) in meta.kind, not the kiro-cli tool name
+		// it drove. Declared in internal/tooltax as kiroCrewRows.
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// No base-URL surface. Kiro is hard-wired to AWS SigV4 endpoints
+		// (the same grounded negative kiro-cli carries); the local Gateway
+		// on :5476 is Crew's own control plane, not a model endpoint we
+		// could point elsewhere. Exempt, not merely un-probed.
+		Proxy:       nil,
+		Routability: RouteStatusNativeExempt,
+		// `~/.kiro/crew/hooks.json` exists but is `{"hooks": []}` with no
+		// documented command contract — nothing to register into.
+		Hook: HookSpec{Mechanism: HookNone},
+		// Crew DOES have an MCP surface: `~/.kiro/crew/mcp.json`, standard
+		// `mcpServers` shape (the grounding box's copy even carries three
+		// disabled observer entries a human added by hand). It is nil here
+		// deliberately: wiring an MCP target means owning idempotent writes
+		// into a vendor config whose merge semantics have not been
+		// grounded, which is a separate ticket. Recorded, not fabricated.
+		MCP:    nil,
+		Native: NativeRails{},
+		// NO tokens anywhere. The Crew transcript carries no usage field of
+		// any kind, and the kiro-cli session Crew drives reports
+		// input/output_token_count structurally 0 while billing in CREDITS
+		// (meta.turn_stats.credits = 1.2768 on the grounded capture, the
+		// sum of kiro-cli's per-call metering to 4dp). Credits are not
+		// tokens and are deliberately dropped, as they are for kiro-cli.
+		// context_snapshots.json's `used_tokens` is a context-WINDOW
+		// occupancy reading, not billable usage, and is not read.
+		TokenTier: TokenTier{Best: "none", Gap: "no billable token data exists: the Crew transcript has no usage envelope and the kiro-cli session it drives reports 0/0 with billing in credits (metering_usage / turn_stats.credits), which this repo does not treat as tokens"},
+		// The transcript is fully re-readable (one JSONL per chat tab, and
+		// the adapter re-reads it whole every tick anyway). No Launch: a
+		// GUI desktop app has no `observer <verb> --continue-from` argv
+		// contract, so InjectFile is the honest floor.
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull,
+			Inject:     []InjectKind{InjectFile},
+		},
+		// Not launchable as a terminal verb ⇒ not attachable, no native
+		// resume, no binary resolution row, no seed-time model mechanism.
+		// Model is ModelNone because Crew's metadata `model` field is
+		// structurally empty — agent_model_state.json records
+		// `{"kirocrew": {"model_managed": true}}`, i.e. Crew delegates the
+		// choice to the driven agent and never writes one on the chat.
+		Attach: nil,
+		Resume: ResumeSpec{},
+		Binary: nil,
+		Model:  ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{
+			Note: "not sandbox-launchable: a GUI desktop app with no launcher verb, so there is no observer-spawned process to isolate",
+		},
+		// GUI launch row: Kiro Crew IS a desktop app, so this is its only
+		// launch surface.
+		GUI: &GUILaunchSpec{
+			ID:      "kiro-crew-desktop",
+			Label:   "Kiro Crew",
+			Surface: "desktop",
+			Binary: BinaryResolveSpec{
+				Names: BinaryNames{Windows: []string{"KiroCrew.exe"}},
+				ProbeDirs: []ProbeDir{
+					// Grounded live 2026-09-03: C:\Program Files\KiroCrew\
+					// KiroCrew.exe. NOT %LOCALAPPDATA%\Programs like Kiro
+					// IDE — %LOCALAPPDATA%\kirocrew-desktop-updater holds
+					// only the updater's installer.exe, and
+					// %APPDATA%\kirocrew-desktop is Electron userData.
+					{OS: ProbeWindows, EnvRoot: "ProgramFiles", Rel: "KiroCrew"},
+				},
+				InstallNote: "no grounded one-click channel: the vendor ships a download.crew.kiro.dev " +
+					"installer (this box's install came from it) and there is no winget package or Homebrew " +
+					"cask for Kiro Crew as of 2026-09-03, so no InstallHint is declared rather than guessing one.",
+			},
+			// Bare launch only: Crew's agents are workspace-bound through
+			// its own folders.json / recent_projects.json, not through argv.
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "Kiro hard-wired: AWS ships no BYOK / base-URL surface for Kiro at all (this row's " +
+					"Routability is native_exempt, the same grounded negative kiro-cli carries), so there is " +
+					"nothing to inject. Launch yes, wrap no; capture rides ~/.kiro/sessions (kiro-cli owns a " +
+					"Crew-driven conversation) and ~/.kiro/crew/sessions.",
+			},
+			// Crew drives kiro-cli, so a Crew launch produces kiro-cli
+			// sessions as well as its own transcripts.
+			Hosts:    []string{"kiro-crew", "kiro-cli"},
+			Grounded: true,
+			Note: "Windows layout grounded on the step-in box 2026-09-03: C:\\Program Files\\KiroCrew\\" +
+				"KiroCrew.exe, Start-Menu shortcut C:\\ProgramData\\...\\KiroCrew.lnk. macOS/Linux layouts " +
+				"are NOT grounded (not installed here, no cask/package found), so Names.Unix and DarwinApp " +
+				"are empty rather than guessed.",
+		},
+	},
+	// Zed's own native coding agent (docs/zed-adapter.md). Grounded live
+	// 2026-09-06 against the operator's own prompt-kit run — the
+	// Claude-ACP-in-Zed integration path did not persist a usable local
+	// store, so this row is the built-in agent's own threads.db.
+	"zed": {
+		Tool: "zed",
+		// 7 grounded native tool names (read_file/write_file/edit_file/
+		// list_directory/find_path/terminal/delete_path) — the COMPLETE
+		// surface a live multi-call session exercised; no defensive rows.
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// Zed's built-in agent talks to zed.dev, Zed's own managed model
+		// gateway. No BYOK / base-URL override is grounded (Zed's
+		// documented `language_models` settings cover BYO-provider
+		// entries, but the captured session used Zed's own hosted
+		// provider, which is not user-overridable) — probe_required, not
+		// a fabricated route.
+		Proxy:       nil,
+		Routability: RouteStatusProbeRequired,
+		Hook:        HookSpec{Mechanism: HookNone},
+		// No {"mcpServers":{…}}-shaped (or any other known-format) MCP
+		// config surface has been grounded for Zed's own settings.json.
+		MCP:    nil,
+		Native: NativeRails{},
+		// Per-request tokens come straight off request_token_usage in the
+		// decompressed thread JSON — a SQLite-store capture tier, same
+		// bucket as zcode/kilo-code-cli. No cache-creation field exists in
+		// the envelope, and no pricing entry exists for zed.dev's
+		// gpt-5.6-luna (a closed, non-mainstream backend), so cost rows
+		// resolve as unknown rather than a fabricated price.
+		TokenTier: TokenTier{Best: "sqlite", Gap: "no pricing entry for zed.dev/gpt-5.6-luna"},
+		// The thread re-reads in full (every user/agent message, tool
+		// call + outcome) — a genuinely re-readable transcript. No
+		// Launch/Attach/Resume/Binary: Zed IS the editor, and its
+		// built-in agent has no separate `observer zed` CLI/TUI process
+		// to start — this is capture-only, the same shape as junie and
+		// poolside.
+		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile}},
 	},
 }
 
@@ -2921,8 +4483,13 @@ var registry = map[string]Capability{
 // as a golden pair, so adding/removing a tool without bumping this constant
 // fails loudly. Bumped 1 → 2 on 2026-08-25 (adapter-parity audit): the
 // constant had sat at 1 through ~24 tool additions, leaving the G25
-// ConsentRegistryChanged gate inert.
-const RegistryVersion = 2
+// ConsentRegistryChanged gate inert. Bumped 2 → 3 on 2026-08-28 (grokbot,
+// the Grok Bot desktop app, joined the vocabulary). Bumped 3 -> 4 on
+// 2026-09-03 (kiro-crew, AWS Kiro Crew, joined the vocabulary). Bumped
+// 4 -> 5 on 2026-09-05 (poolside joined the vocabulary). Bumped 5 -> 6
+// on 2026-09-06 (zed, Zed's own native coding agent, joined the
+// vocabulary).
+const RegistryVersion = 6
 
 // Tools returns every registered tool name, sorted. It is the canonical,
 // closed tool vocabulary (NOT config.EnabledAdapters, which is a

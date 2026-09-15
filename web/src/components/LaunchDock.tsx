@@ -13,8 +13,12 @@ import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { isRemoteView } from "@/lib/remote";
-import { LaunchTerminal, isLiveStatus } from "@/components/LaunchTerminal";
-import type { Status } from "@/components/LaunchTerminal";
+import {
+  LaunchTerminal,
+  isLiveStatus,
+  policyStopMessage,
+} from "@/components/LaunchTerminal";
+import type { Status, PolicyStopInfo } from "@/components/LaunchTerminal";
 import { NewTerminalDialog } from "@/components/NewTerminalDialog";
 import type { NewTerminalDraft } from "@/components/NewTerminalDialog";
 import {
@@ -40,6 +44,12 @@ const ProjectPanel = lazy(() => import("@/components/ProjectPanel"));
 // stays out of the critical chunk — it loads only when a terminal's Session
 // button fires. Same discipline as ProjectPanel above.
 const SessionCockpitPanel = lazy(() => import("@/components/cockpit/SessionCockpitPanel"));
+// Lazy for the same reason: the full session-detail slide-over pulls in the
+// whole sessiondetail tab tree (messages table, charts, predictor), which a
+// terminal-only visitor should never download.
+const TerminalSessionModal = lazy(
+  () => import("@/components/cockpit/TerminalSessionModal"),
+);
 
 // Project panels live in a BOUNDED z-band ABOVE the expanded-terminal backdrop
 // (z-80) and the dock (z-70), but comfortably BELOW the guided tour (z-120/130)
@@ -181,6 +191,16 @@ type LaunchDockCtx = {
    */
   openSessionPanel: (token: string) => void;
   /**
+   * Open the FULL session-detail slide-over over the terminal workspace for a
+   * token (Task 9) — the terminal's "⊙ Session" control. Distinct from
+   * openSessionPanel, which opens the small floating vitals cockpit that docks
+   * beside the terminal: this one is the whole session detail (KPIs, messages,
+   * cost & limits, cache, system) presented as a modal layer, so the terminal
+   * is never navigated away from. One at a time — it is a modal, not a
+   * cascading panel — so this is a plain "which token", not an array.
+   */
+  openSessionDetail: (token: string) => void;
+  /**
    * Register/unregister the live paste-into-terminal callback for a token.
    * LaunchTerminal registers one while its seat is live + write-capable; a
    * project panel shows its paste items only when a callback exists for its
@@ -218,6 +238,13 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<DockSession[]>([]);
   const [activeToken, setActiveToken] = useState<string | null>(null);
   const [statuses, setStatuses] = useState<Record<string, Status>>({});
+  // Node-intervention policy-stop explanations, keyed by token — populated
+  // from each mounted LaunchTerminal's exit frame (server:
+  // internal/intelligence/dashboard policystop.go) so the minimized pill can
+  // surface the same explanation as the expanded modal.
+  const [policyStops, setPolicyStops] = useState<
+    Record<string, PolicyStopInfo | undefined>
+  >({});
   const [newOpen, setNewOpen] = useState(false);
   // Guided installers run in a visible setup PTY and normally exit when the
   // package is installed. Preserve the launcher's exact choices while that PTY
@@ -247,6 +274,11 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
   sessionsRef.current = sessions;
   const statusesRef = useRef(statuses);
   statusesRef.current = statuses;
+  // Latest pendingInstall read by closeSession WITHOUT re-creating that
+  // callback (it is passed down to every terminal + panel and must stay
+  // identity-stable). Same pattern as sessionsRef/statusesRef above.
+  const pendingInstallRef = useRef(pendingInstall);
+  pendingInstallRef.current = pendingInstall;
   // Workspace grid cells: token → the registered cell element the session's
   // stable host is reparented into (dock-grid design D2). Docked sessions
   // hide their floating pill; undocked ones behave exactly as before.
@@ -287,6 +319,16 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
     });
     setSessions((prev) => prev.filter((p) => p.token !== token));
     setStatuses((prev) => {
+      // DI-17: closing the GUIDED-INSTALLER pill by hand must not destroy the
+      // auto-resume. The resume effect below waits for that token's status to
+      // reach "exited"/"error"; deleting the entry meant the condition could
+      // never be met, so the operator's tool/root/model/sandbox choices were
+      // silently dropped and they had to fill the dialog in again. The DELETE
+      // above has just reaped the PTY, so "exited" is the honest status —
+      // record it instead of forgetting the token.
+      if (pendingInstallRef.current?.token === token) {
+        return prev[token] === "exited" ? prev : { ...prev, [token]: "exited" };
+      }
       const next = { ...prev };
       delete next[token];
       return next;
@@ -297,6 +339,15 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
   const setStatus = useCallback((token: string, s: Status) => {
     setStatuses((prev) => (prev[token] === s ? prev : { ...prev, [token]: s }));
   }, []);
+
+  const setPolicyStop = useCallback(
+    (token: string, info: PolicyStopInfo | undefined) => {
+      setPolicyStops((prev) =>
+        prev[token] === info ? prev : { ...prev, [token]: info },
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!pendingInstall) return;
@@ -409,6 +460,30 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
   const closeSessionPanelToken = useCallback((tok: string) => {
     setPanels((prev) => prev.filter((p) => !(p.token === tok && p.kind === "session")));
   }, []);
+
+  // The full session-detail modal (Task 9). NOT part of the `panels` array:
+  // panels are cascading, independently-stacked, several-at-once floating
+  // windows, while this is a single modal layer with a scrim — modelling it as
+  // a panel would mean a scrim per instance and a stacking contest between
+  // modals. One token at a time; opening a second replaces the first.
+  const [sessionDetailToken, setSessionDetailToken] = useState<string | null>(null);
+  const openSessionDetail = useCallback((tok: string) => {
+    // Same liveness guard the panel openers use: a token whose run is gone can
+    // neither be correlated nor shown honestly.
+    const known = sessionsRef.current.some((s) => s.token === tok);
+    if (!known || !isLiveStatus(statusesRef.current[tok])) return;
+    setSessionDetailToken((prev) => (prev === tok ? null : tok));
+  }, []);
+  // A terminal that closes (or dies) while its detail modal is open must not
+  // leave the modal stranded against a dead token — the same reasoning the
+  // panels array's own liveness sweep uses.
+  useEffect(() => {
+    if (!sessionDetailToken) return;
+    const alive =
+      sessions.some((s) => s.token === sessionDetailToken) &&
+      isLiveStatus(statuses[sessionDetailToken]);
+    if (!alive) setSessionDetailToken(null);
+  }, [sessionDetailToken, sessions, statuses]);
   const registerPaste = useCallback(
     (tok: string, fn: ((text: string) => void) | null) => {
       setPasteFns((prev) => {
@@ -541,6 +616,7 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
       clearPendingDock,
       openProjectPanel,
       openSessionPanel,
+      openSessionDetail,
       registerPaste,
       panels,
     }),
@@ -559,6 +635,7 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
       clearPendingDock,
       openProjectPanel,
       openSessionPanel,
+      openSessionDetail,
       registerPaste,
       panels,
     ],
@@ -579,9 +656,10 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
           onMinimize={minimize}
           onClose={() => closeSession(s.token)}
           onStatus={(st) => setStatus(s.token, st)}
+          onPolicyStop={(info) => setPolicyStop(s.token, info)}
           onOpenFiles={() => openProjectPanel(s.token, "files")}
           onOpenGit={() => openProjectPanel(s.token, "git")}
-          onOpenSession={() => openSessionPanel(s.token)}
+          onOpenSession={() => openSessionDetail(s.token)}
           registerPaste={registerPaste}
           projectPanelEnabled={s.hasProjectRoot ?? false}
           sessionPanelEnabled={s.tool !== "terminal"}
@@ -591,6 +669,7 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
         sessions={sessions.filter((s) => !cells[s.token])}
         activeToken={activeToken}
         statuses={statuses}
+        policyStops={policyStops}
         onRestore={restore}
         onClose={closeSession}
         onNew={openNewTerminal}
@@ -652,6 +731,23 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
           </Suspense>
         ),
       )}
+      {/* The full session-detail modal (Task 9). Rendered LAST and outside the
+          panels pass: it is a modal layer with its own scrim at z-112/114,
+          above the panel band, not a member of it. Keyed on the token so
+          switching terminals resets the link poll cleanly. */}
+      {sessionDetailToken && (
+        <Suspense key={`detail:${sessionDetailToken}`} fallback={null}>
+          <TerminalSessionModal
+            token={sessionDetailToken}
+            onClose={() => setSessionDetailToken(null)}
+            onOpenVitals={() => {
+              const tok = sessionDetailToken;
+              setSessionDetailToken(null);
+              openSessionPanel(tok);
+            }}
+          />
+        </Suspense>
+      )}
       </CompanionProvider>
     </Ctx.Provider>
   );
@@ -683,6 +779,7 @@ function TerminalHost({
   onMinimize,
   onClose,
   onStatus,
+  onPolicyStop,
   onOpenFiles,
   onOpenGit,
   onOpenSession,
@@ -698,6 +795,7 @@ function TerminalHost({
   onMinimize: () => void;
   onClose: () => void;
   onStatus: (s: Status) => void;
+  onPolicyStop: (info: PolicyStopInfo | undefined) => void;
   onOpenFiles: () => void;
   onOpenGit: () => void;
   onOpenSession: () => void;
@@ -884,7 +982,7 @@ function TerminalHost({
         ref={boxRef}
         data-testid="terminal-float-panel"
         title={
-          showModal && !mobile ? "Drag the corner to resize — the terminal refits" : undefined
+          showModal && !mobile ? "Drag the corner to resize - the terminal refits" : undefined
         }
         // THE INLINE STYLE IS WHY A TAILWIND BREAKPOINT ALONE CANNOT FIX THIS
         // (defect D1). An inline `width` beats any class, so the mobile branch
@@ -978,6 +1076,7 @@ function TerminalHost({
           onMinimize={onMinimize}
           onClose={onClose}
           onStatus={onStatus}
+          onPolicyStop={onPolicyStop}
           onOpenFiles={onOpenFiles}
           onOpenGit={onOpenGit}
           onOpenSession={onOpenSession}
@@ -998,6 +1097,7 @@ function Dock({
   sessions,
   activeToken,
   statuses,
+  policyStops,
   onRestore,
   onClose,
   onNew,
@@ -1005,6 +1105,7 @@ function Dock({
   sessions: DockSession[];
   activeToken: string | null;
   statuses: Record<string, Status>;
+  policyStops: Record<string, PolicyStopInfo | undefined>;
   onRestore: (token: string) => void;
   onClose: (token: string) => void;
   onNew: () => void;
@@ -1043,6 +1144,7 @@ function Dock({
           session={s}
           agent={agentStatuses[s.token]}
           status={statuses[s.token]}
+          policyStop={policyStops[s.token]}
           onRestore={() => onRestore(s.token)}
           onClose={() => onClose(s.token)}
         />
@@ -1192,12 +1294,14 @@ function DockPill({
   session,
   status,
   agent,
+  policyStop,
   onRestore,
   onClose,
 }: {
   session: DockSession;
   status: Status | undefined;
   agent?: import("@/components/useTerminalStatuses").AgentStatusInfo;
+  policyStop?: PolicyStopInfo;
   onRestore: () => void;
   onClose: () => void;
 }) {
@@ -1217,19 +1321,44 @@ function DockPill({
     error: "error",
   };
   const st = status ?? "connecting";
+  // A policy-stopped run is exited FOR A REASON worth calling out — tint the
+  // dot/label danger|warn (matching the modal banner's own decision-aware
+  // color) instead of the default neutral "exited" grey, and surface the
+  // same message as a tooltip + native title (the label loses its own hover
+  // in favour of the wrapping Tooltip below, so both carry it).
+  const policyStopped = st === "exited" && !!policyStop;
+  const policyStoppedDefinitive =
+    policyStopped &&
+    (policyStop!.decision === "terminated" || policyStop!.decision === "killed");
+  const dotCls = policyStopped
+    ? policyStoppedDefinitive
+      ? "bg-danger"
+      : "bg-warn"
+    : dot[st];
+  const labelCls = policyStopped
+    ? policyStoppedDefinitive
+      ? "text-danger"
+      : "text-warn"
+    : "text-fg-3";
+  const restoreTip = policyStop
+    ? policyStopMessage(policyStop)
+    : `Restore ${session.tool} terminal`;
   return (
     <div className="flex items-center gap-2 rounded-full border bg-bg-1 py-1 pl-3 pr-1.5 shadow-lg">
-      <Tooltip content={`Restore ${session.tool} terminal`}>
+      <Tooltip content={restoreTip}>
         <button
           type="button"
           onClick={onRestore}
           aria-label={`Restore ${session.tool} terminal`}
+          title={policyStop ? policyStopMessage(policyStop) : undefined}
           className="flex items-center gap-2 text-[11px] text-fg-2 hover:text-fg-1 focus:outline-none"
         >
-          <span className={`h-2 w-2 rounded-full ${dot[st]}`} />
+          <span className={`h-2 w-2 rounded-full ${dotCls}`} />
           <span className="font-mono text-fg-1">{session.tool}</span>
           <AgentStatusBadge info={agent} />
-          <span className="text-[9.5px] uppercase tracking-[0.05em] text-fg-3">
+          <span
+            className={`text-[9.5px] uppercase tracking-[0.05em] ${labelCls}`}
+          >
             {label[st]}
           </span>
           <span aria-hidden className="text-fg-3">

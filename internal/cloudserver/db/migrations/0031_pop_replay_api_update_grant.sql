@@ -1,0 +1,17 @@
+-- 0031_pop_replay_api_update_grant.sql
+--
+-- Live defect (staging, 2026-09-03, first roll of the sbci_api-bound serve
+-- binary): every authenticated route answered `500 replay check failed`.
+-- store.RecordJTI is `INSERT INTO pop_replay ... ON CONFLICT (account_id, jti)
+-- DO UPDATE SET expires_at = ..., created_at = now() WHERE pop_replay.expires_at
+-- < $4` — the conflict arm is an UPDATE, so Postgres requires UPDATE privilege
+-- on the touched columns even when the row is brand new. 0015 granted sbci_api
+-- only SELECT, INSERT (the sweep's DELETE came later), so the front-door role
+-- could never record a jti. The api test-suite bound its store as sbci_app
+-- (which holds UPDATE) and therefore never exercised the serve role; the
+-- harness now binds the server's store as sbci_api so this class of gap fails
+-- in CI rather than in production.
+--
+-- Column-scoped on purpose: the replay row's identity (account_id, jti) is
+-- never rewritten by the front door.
+GRANT UPDATE (expires_at, created_at) ON pop_replay TO sbci_api;

@@ -55,7 +55,7 @@ export function canClassifySessions(): boolean {
 // CLASSIFY_REMOTE_BLOCKED_MSG is the tooltip/title shown on every disabled
 // classification affordance on a paired remote device.
 export const CLASSIFY_REMOTE_BLOCKED_MSG =
-  "Tagging from a paired device needs a remote-execute approval, and the only approval SuperBased mints is scoped to one terminal — tags, favorites and notes are read-only here. Use the owner's local dashboard to classify sessions.";
+  "Tagging from a paired device needs a remote-execute approval, and the only approval SuperBased mints is scoped to one terminal - tags, favorites and notes are read-only here. Use the owner's local dashboard to classify sessions.";
 
 const REMOTE_CSRF_KEY = "sb_remote_csrf";
 

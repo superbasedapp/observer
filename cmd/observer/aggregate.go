@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -17,7 +18,6 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/aggregatesvc"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/integration"
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -324,7 +324,7 @@ func liveState(cfg config.Config) aggregate.LiveState {
 // one collector; the Phase-5 daemon tick reuses the exact same constructor
 // (then calls Collector.SubmitDue).
 func newAggregateCollector(cfg config.Config, db *sql.DB) (*aggregatesvc.Collector, error) {
-	engine := cost.NewEngine(cfg.Intelligence)
+	engine := acquireProcessCostEngine(context.Background(), cfg, db, slog.Default())
 	return aggregatesvc.New(aggregatesvc.Config{
 		Store: store.New(db),
 		Build: func(ctx context.Context, month, submissionID string) (aggregate.Submission, error) {

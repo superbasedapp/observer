@@ -12,6 +12,7 @@ import { BudgetNotifier } from './notifications/budget';
 import { WatcherLagNotifier } from './notifications/watcherLag';
 import { createCostStatusBar, StatusBarController } from './status/costBar';
 import { createCacheStatusBar } from './status/cacheBar';
+import { registerLocTracker } from './loc/tracker';
 import { registerTerminalProfile } from './terminal/profile';
 import { TodayTreeProvider } from './views/todayTree';
 import { SessionsTreeProvider } from './views/sessionsTree';
@@ -42,6 +43,22 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     ctx.subscriptions.push(manager);
     output.appendLine(`Daemon mode: ${mode}`);
     await manager.reconcile();
+
+    // Tell the daemon which extension version is running (enterprise update
+    // management W5, ruling R6), so an org's fleet board can show
+    // editor/daemon skew. AFTER reconcile, because before it there may be no
+    // daemon listening; best-effort and never awaited into a failure path -
+    // this is a report about the editor, not a feature the user asked for.
+    void manager
+      .getClient()
+      .postExtensionVersion(ctx.extension.packageJSON.version ?? '')
+      .then((ok) => {
+        if (!ok) {
+          output.appendLine(
+            'Extension version not reported: the daemon has no /api/update/extension-version endpoint (older build, or update management is off).',
+          );
+        }
+      });
 
     registerCommands(ctx, bin, manager);
 
@@ -75,6 +92,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     registerInstructionFilesCodeLens(ctx);
     registerInstructionCommands(ctx, bin);
     registerFileFreshness(ctx, manager);
+    registerLocTracker(ctx, manager);
 
     const budget = new BudgetNotifier(ctx, manager);
     budget.start();

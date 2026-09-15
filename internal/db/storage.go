@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,24 +40,59 @@ type StorageReport struct {
 	Tables           []StorageTable `json:"tables"`
 }
 
+// Footprint is the CHEAP half of a StorageReport: the whole-file page
+// accounting, with no per-table breakdown.
+//
+// It exists because the two halves have wildly different costs and the
+// expensive one is rarely what the caller wants. Everything here comes from
+// three O(1) pragma header reads, so it is safe to take on a 36 GB database —
+// where the dbstat walk StorageStats performs is a full file scan.
+type Footprint struct {
+	PageSize      int64 `json:"page_size"`
+	PageCount     int64 `json:"page_count"`
+	FreelistPages int64 `json:"freelist_pages"`
+	TotalBytes    int64 `json:"total_bytes"`
+	// ReclaimableBytes estimates what a full rewrite would free right now
+	// (freelist pages × page size). Fragmentation inside live pages is not
+	// counted, so a reclaim usually returns somewhat more.
+	ReclaimableBytes int64 `json:"reclaimable_bytes"`
+}
+
+// ReadFootprint reports the whole-file page accounting without touching
+// dbstat. See [Footprint] for why the split exists.
+func ReadFootprint(ctx context.Context, database *sql.DB) (Footprint, error) {
+	var fp Footprint
+	for pragma, dst := range map[string]*int64{
+		"page_size":      &fp.PageSize,
+		"page_count":     &fp.PageCount,
+		"freelist_count": &fp.FreelistPages,
+	} {
+		if err := database.QueryRowContext(ctx, "PRAGMA "+pragma).Scan(dst); err != nil {
+			return fp, fmt.Errorf("db.ReadFootprint: pragma %s: %w", pragma, err)
+		}
+	}
+	fp.TotalBytes = fp.PageSize * fp.PageCount
+	fp.ReclaimableBytes = fp.PageSize * fp.FreelistPages
+	return fp, nil
+}
+
 // StorageStats walks dbstat for per-b-tree sizes and aggregates them
 // per user-visible table (indexes and FTS5 shadow tables fold into
 // their owner). NOTE: dbstat reads every page of every b-tree — on a
 // multi-hundred-MB database this is a full file scan. Call on demand,
-// never on a poll loop.
+// never on a poll loop. Callers that only need the whole-file numbers
+// should use [ReadFootprint], which skips the walk.
 func StorageStats(ctx context.Context, database *sql.DB) (StorageReport, error) {
 	var rep StorageReport
-	for pragma, dst := range map[string]*int64{
-		"page_size":      &rep.PageSize,
-		"page_count":     &rep.PageCount,
-		"freelist_count": &rep.FreelistPages,
-	} {
-		if err := database.QueryRowContext(ctx, "PRAGMA "+pragma).Scan(dst); err != nil {
-			return rep, fmt.Errorf("db.StorageStats: pragma %s: %w", pragma, err)
-		}
+	fp, err := ReadFootprint(ctx, database)
+	if err != nil {
+		return rep, err
 	}
-	rep.TotalBytes = rep.PageSize * rep.PageCount
-	rep.ReclaimableBytes = rep.PageSize * rep.FreelistPages
+	rep.PageSize = fp.PageSize
+	rep.PageCount = fp.PageCount
+	rep.FreelistPages = fp.FreelistPages
+	rep.TotalBytes = fp.TotalBytes
+	rep.ReclaimableBytes = fp.ReclaimableBytes
 
 	owners, ftsTables, err := schemaOwners(ctx, database)
 	if err != nil {
@@ -159,6 +195,70 @@ func resolveOwner(name string, owners map[string]string, ftsTables []string) str
 		return sqliteInternalGroup
 	}
 	return name
+}
+
+// Fingerprint is the cheap identity of a database file, used to prove a
+// compacted copy is the same database before anything is swapped.
+//
+// It deliberately does NOT include row counts or a content digest. A reclaim
+// copy is produced by SQLite's own VACUUM INTO, which is a page-level rewrite —
+// the failure modes it can actually have are a truncated/corrupt output file
+// and a wrong-file mixup, and those are exactly what quick_check plus the
+// schema identity catch. Re-counting every table would turn a bounded
+// verification into a second full scan of a 36 GB database to re-verify a
+// property SQLite already guarantees transactionally.
+type Fingerprint struct {
+	// QuickCheck is the PRAGMA quick_check result; "ok" is the only pass.
+	QuickCheck string `json:"quick_check"`
+	// UserVersion is PRAGMA user_version — the migration lineage marker.
+	UserVersion int64 `json:"user_version"`
+	// SchemaObjects counts rows in sqlite_schema (tables, indexes, triggers,
+	// views). A copy that lost objects is not the same database.
+	SchemaObjects int64 `json:"schema_objects"`
+}
+
+// ReadFingerprint reads the identity of an open database. See [Fingerprint].
+//
+// quick_check is used rather than integrity_check deliberately: it skips the
+// (expensive) index-consistency cross-checks and still detects the structural
+// damage a bad copy would have — the same trade the size-gated startup check
+// makes.
+func ReadFingerprint(ctx context.Context, database *sql.DB) (Fingerprint, error) {
+	var fp Fingerprint
+	if err := database.QueryRowContext(ctx, "PRAGMA quick_check(1)").Scan(&fp.QuickCheck); err != nil {
+		return fp, fmt.Errorf("db.ReadFingerprint: quick_check: %w", err)
+	}
+	if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&fp.UserVersion); err != nil {
+		return fp, fmt.Errorf("db.ReadFingerprint: user_version: %w", err)
+	}
+	if err := database.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_schema").Scan(&fp.SchemaObjects); err != nil {
+		return fp, fmt.Errorf("db.ReadFingerprint: schema count: %w", err)
+	}
+	return fp, nil
+}
+
+// OpenPlain opens an existing SQLite file with no migrations, no integrity
+// gate, and a single connection — the handle you want for INSPECTING a file
+// (a freshly written reclaim copy, say) rather than running the agent against
+// it. [Open] would apply the agent's migration lineage, which is precisely
+// what an inspection must not do.
+//
+// The caller closes the returned handle.
+func OpenPlain(ctx context.Context, path string) (*sql.DB, error) {
+	if path == "" {
+		return nil, errors.New("db.OpenPlain: path is required")
+	}
+	database, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("db.OpenPlain: %w", err)
+	}
+	database.SetMaxOpenConns(1)
+	if err := database.PingContext(ctx); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("db.OpenPlain: ping %s: %w", path, err)
+	}
+	return database, nil
 }
 
 // Vacuum rebuilds the database file, returning the freed bytes

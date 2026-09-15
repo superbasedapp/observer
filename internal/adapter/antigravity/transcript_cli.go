@@ -89,6 +89,11 @@ type cliTranscriptEntry struct {
 	CreatedAt string          `json:"created_at"`
 	Content   string          `json:"content,omitempty"`
 	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
+	// Thinking is the model's reasoning summary that the desktop IDE
+	// writes on some PLANNER_RESPONSE steps (live-grounded 2026-09-03;
+	// absent on the CLI corpus). Read only by transcript.go, where it
+	// becomes the PrecedingReasoning of the row the step produces.
+	Thinking string `json:"thinking,omitempty"`
 }
 
 // cliTranscriptPath returns the on-disk path for a given conversation's
@@ -160,6 +165,18 @@ func fileExists(path string) bool {
 // (missing brain/ subdir, file not yet created) so callers can fall
 // back to history.jsonl or the legacy bridge path.
 func readCLITranscriptEntries(path string) []cliTranscriptEntry {
+	return readTranscriptEntries(path, true)
+}
+
+// readTranscriptEntries is the worker behind readCLITranscriptEntries.
+// doneOnly=false keeps in-flight (non-DONE) lines so a caller that
+// pairs invocations with results (transcript.go) can keep its FIFO
+// aligned while still emitting nothing for a step the IDE has not
+// finalised.
+func readTranscriptEntries(path string, doneOnly bool) []cliTranscriptEntry {
+	if path == "" {
+		return nil
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -179,7 +196,7 @@ func readCLITranscriptEntries(path string) []cliTranscriptEntry {
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			continue
 		}
-		if e.Status != "DONE" {
+		if doneOnly && e.Status != "DONE" {
 			continue
 		}
 		out = append(out, e)

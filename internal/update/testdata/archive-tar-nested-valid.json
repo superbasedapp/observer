@@ -1,0 +1,5 @@
+[
+  {"name": "observer-v1.33.0-linux-x64/", "kind": "dir"},
+  {"name": "observer-v1.33.0-linux-x64/observer", "kind": "file", "size": 78123456},
+  {"name": "observer-v1.33.0-linux-x64/superbased", "kind": "symlink", "link_target": "observer"}
+]

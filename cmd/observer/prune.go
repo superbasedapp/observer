@@ -9,12 +9,16 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/marmutapp/superbased-observer/internal/archive"
+	"github.com/marmutapp/superbased-observer/internal/archivestore"
+	"github.com/marmutapp/superbased-observer/internal/archivesvc"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/retention"
@@ -158,7 +162,7 @@ func newPruneCmd() *cobra.Command {
 			}
 			fmt.Fprintf(
 				cmd.OutOrStdout(),
-				"prune complete in %dms: actions=%d sessions=%d logs=%d file_state=%d cache_rows=%d guard_rows=%d process_rows=%d handoff_rows=%d benchmark_rows=%d codeintel_projects=%d size_passes=%d (db %d → %d bytes)\n",
+				"prune complete in %dms: actions=%d sessions=%d logs=%d file_state=%d cache_rows=%d guard_rows=%d prompt_reconsider_rows=%d process_rows=%d handoff_rows=%d benchmark_rows=%d codeintel_projects=%d size_passes=%d (db %d → %d bytes)\n",
 				res.DurationMs,
 				res.ActionsDeleted,
 				res.OrphanedSessionsDeleted,
@@ -166,6 +170,7 @@ func newPruneCmd() *cobra.Command {
 				res.FileStateDeleted,
 				res.CacheRowsDeleted,
 				res.GuardRowsDeleted,
+				res.PromptReconsiderRowsDeleted,
 				res.ProcessRowsDeleted,
 				res.HandoffRowsDeleted,
 				res.BenchmarkRowsDeleted,
@@ -392,11 +397,43 @@ func runRetention(ctx context.Context, cfg config.Config, database *sql.DB) (ret
 		}
 		res.GuardRowsDeleted = n
 	}
+	// Prompt-submit "reconsider-once" sweep (migration 110,
+	// docs/plans/prompt-submit-intervention-exploration-2026-09-07.md
+	// §5.4) — same call site as the guard §10.3 sweep above, but
+	// unconditional: the table's own expires_at is its prune horizon
+	// (a short-lived grant, default 30 minutes), so there is no
+	// retention-days knob to gate on.
+	{
+		s := store.New(database)
+		n, perr := s.PrunePromptReconsider(ctx, time.Now().UTC())
+		if perr != nil {
+			return res, fmt.Errorf("runRetention: prune prompt-reconsider rows: %w", perr)
+		}
+		res.PromptReconsiderRowsDeleted = n
+	}
 	// Process-observability sweep ([observer.process].retention_days,
 	// docs/process-observability.md §11) — same composition rationale.
 	// ≤ 0 (incl. the feature being disabled with the default 30 but no
 	// rows) short-circuits inside PruneProcessRows.
-	if cfg.Observer.Process.RetentionDays > 0 {
+	//
+	// [archive].enabled changes the FATE of this bucket's rows exactly the
+	// way it does for codeintel above, but with one extra move: process
+	// capture is the ONLY-COPY bucket (design §2.2), so instead of a single
+	// horizon that deletes, it gets two — archive_days moves capture to cold
+	// storage, and retention_days becomes the archive file's own delete
+	// horizon. The hot prune is then NOT run, because everything past
+	// archive_days has already left the hot database and running a hot delete
+	// on the same rows would be at best a no-op and at worst a race against
+	// the mover.
+	if cfg.Archive.Enabled && cfg.Observer.Process.ArchiveDays > 0 {
+		sweep, aerr := runProcessArchiveSweep(ctx, cfg)
+		res.ProcessWindowsArchived = sweep.Archived
+		res.ProcessRowsArchived = sweep.RowsArchived
+		res.ProcessWindowsExpired = sweep.Expired
+		if aerr != nil {
+			return res, fmt.Errorf("runRetention: archive process windows: %w", aerr)
+		}
+	} else if cfg.Observer.Process.RetentionDays > 0 {
 		s := store.New(database)
 		n, perr := s.PruneProcessRows(ctx, cfg.Observer.Process.RetentionDays)
 		if perr != nil {
@@ -437,15 +474,163 @@ func runRetention(ctx context.Context, cfg config.Config, database *sql.DB) (ret
 	// delete -r` rides. A project whose last index pass is past the horizon
 	// is removed wholesale; never-indexed and actively-indexed projects are
 	// untouched. ≤ 0 short-circuits inside CodeIntelPruneStaleProjects.
+	//
+	// [archive].enabled swaps the ACTION on that same staleness set from
+	// delete to copy-then-delete-into-cold-storage
+	// (docs/plans/observer-corpus-archival-lazyload-design-2026-08-26.md).
+	// The trigger, the horizon and the conservatism are identical; only the
+	// fate of the rows differs.
 	if cfg.CodeIntel.RetentionDays > 0 {
-		s := store.New(database)
-		deleted, perr := s.CodeIntelPruneStaleProjects(ctx, cfg.CodeIntel.RetentionDays)
-		if perr != nil {
-			return res, fmt.Errorf("runRetention: prune codeintel projects: %w", perr)
+		if cfg.Archive.Enabled {
+			archived, rows, aerr := runCodeIntelArchiveSweep(ctx, cfg)
+			res.CodeIntelProjectsArchived = archived
+			res.CodeIntelRowsArchived = rows
+			if aerr != nil {
+				return res, fmt.Errorf("runRetention: archive codeintel projects: %w", aerr)
+			}
+		} else {
+			s := store.New(database)
+			deleted, perr := s.CodeIntelPruneStaleProjects(ctx, cfg.CodeIntel.RetentionDays)
+			if perr != nil {
+				return res, fmt.Errorf("runRetention: prune codeintel projects: %w", perr)
+			}
+			res.CodeIntelProjectsDeleted = len(deleted)
 		}
-		res.CodeIntelProjectsDeleted = len(deleted)
+	}
+	// Org-served Cloud Intelligence result-cache sweep (migration 112/114,
+	// org-served-cloud-intelligence plan §3.5; finding 7) — same composition
+	// rationale as the cachetrack sweep: the retention package stays sql.DB-only,
+	// so the node-local org_intel_cache prune is orchestrated here through the
+	// store seam. It runs UNCONDITIONALLY (orphans are always swept; the broad
+	// max_age_days window additionally ages rows when > 0) — the same
+	// reuse-the-existing-sweep shape as the prompt-reconsider prune, not a second
+	// scheduler.
+	{
+		s := store.New(database)
+		n, perr := s.PruneOrgIntelCache(ctx, cfg.Observer.Retention.MaxAgeDays, time.Now().UTC())
+		if perr != nil {
+			return res, fmt.Errorf("runRetention: prune org intel cache: %w", perr)
+		}
+		res.OrgIntelCacheDeleted = n
 	}
 	return res, nil
+}
+
+// runCodeIntelArchiveSweep moves one bounded batch of stale code-intelligence
+// projects into ~/.observer/archive.db.
+//
+// It opens the archive database for the duration of the sweep and closes it
+// again: the archive is touched once per retention pass, so holding a second
+// connection pool open for the daemon's whole lifetime would cost idle
+// connections (each a candidate temp-file holder) for no benefit.
+//
+// FAIL-OPEN, and specifically fail-open in ONE direction: if the archive
+// database cannot be opened, the codeintel sweep is SKIPPED for this pass —
+// it never falls back to the delete path. An operator who asked for archival
+// and got deletion because a file was momentarily unavailable would have lost
+// data to a config option whose entire purpose was to stop losing data. The
+// projects stay hot and are re-offered next pass.
+func runCodeIntelArchiveSweep(ctx context.Context, cfg config.Config) (projects int, rows int64, err error) {
+	path := cfg.Archive.Path
+	if path == "" {
+		return 0, 0, nil
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
+		slog.Warn("archive sweep skipped: archive directory unavailable",
+			"path", path, "error", mkErr)
+		return 0, 0, nil
+	}
+	cold, openErr := archivestore.Open(ctx, archivestore.Options{Path: path})
+	if openErr != nil {
+		slog.Warn("archive sweep skipped: archive database unavailable (projects stay hot)",
+			"path", path, "error", openErr)
+		return 0, 0, nil
+	}
+	defer func() { _ = cold.Close() }()
+
+	// A SEPARATE hot handle, not the caller's: an archive move streams a
+	// whole project through the pool, and borrowing the shared handle for
+	// that would put a long cold-path read on the same connections the
+	// daemon's hot work uses (design §1.2's explicit rejection).
+	hotDB, dbErr := db.Open(ctx, db.Options{Path: cfg.Observer.DBPath})
+	if dbErr != nil {
+		slog.Warn("archive sweep skipped: could not open a dedicated hot handle",
+			"error", dbErr)
+		return 0, 0, nil
+	}
+	defer func() { _ = hotDB.Close() }()
+
+	mover := &archivesvc.Mover{
+		Hot:       store.New(hotDB),
+		Cold:      cold,
+		BatchRows: cfg.Archive.BatchRows,
+	}
+	res, sweepErr := mover.SweepCodeIntel(ctx, cfg.CodeIntel.RetentionDays,
+		archive.PlanOptions{MaxUnitsPerPass: cfg.Archive.MaxProjectsPerPass})
+	if res.Considered > res.Attempted {
+		slog.Info("archive sweep capped for this pass",
+			"considered", res.Considered, "attempted", res.Attempted,
+			"max_projects_per_pass", cfg.Archive.MaxProjectsPerPass)
+	}
+	return res.Archived, res.RowsArchived, sweepErr
+}
+
+// runProcessArchiveSweep moves one bounded batch of stale process-capture
+// day-windows into ~/.observer/archive.db, then applies the archive file's own
+// (later) expiry horizon.
+//
+// Same open-for-the-pass, separate-hot-handle, FAIL-OPEN-IN-ONE-DIRECTION
+// posture as runCodeIntelArchiveSweep — and the fail-open direction matters
+// more here than anywhere else in the arc. If the archive database cannot be
+// opened, the sweep is SKIPPED and NOTHING is deleted; it never falls back to
+// the hot prune. An operator who turned archival on and got their only copy of
+// a process trail deleted because a file was momentarily unavailable would have
+// lost unrecoverable data to a setting whose entire purpose was to stop losing
+// it. The windows stay hot and are re-offered next pass.
+func runProcessArchiveSweep(ctx context.Context, cfg config.Config) (archivesvc.ProcessSweepResult, error) {
+	var zero archivesvc.ProcessSweepResult
+	path := cfg.Archive.Path
+	if path == "" {
+		return zero, nil
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr != nil {
+		slog.Warn("process archive sweep skipped: archive directory unavailable",
+			"path", path, "error", mkErr)
+		return zero, nil
+	}
+	cold, openErr := archivestore.Open(ctx, archivestore.Options{Path: path})
+	if openErr != nil {
+		slog.Warn("process archive sweep skipped: archive database unavailable (windows stay hot)",
+			"path", path, "error", openErr)
+		return zero, nil
+	}
+	defer func() { _ = cold.Close() }()
+
+	hotDB, dbErr := db.Open(ctx, db.Options{Path: cfg.Observer.DBPath})
+	if dbErr != nil {
+		slog.Warn("process archive sweep skipped: could not open a dedicated hot handle",
+			"error", dbErr)
+		return zero, nil
+	}
+	defer func() { _ = hotDB.Close() }()
+
+	mover := &archivesvc.ProcessMover{
+		Hot:       store.New(hotDB),
+		Cold:      cold,
+		BatchRows: cfg.Archive.BatchRows,
+	}
+	res, sweepErr := mover.SweepProcess(ctx, cfg.Observer.Process.ArchiveDays, cfg.Archive.MaxProjectsPerPass)
+
+	// The cold expiry runs even when the move half reported errors: a window
+	// that failed to archive is unrelated to windows whose cold copy is now
+	// past the delete horizon, and letting one block the other would grow the
+	// archive without bound.
+	expired, expErr := mover.ExpireProcessWindows(ctx, cfg.Observer.Process.RetentionDays, cfg.Archive.MaxProjectsPerPass)
+	res.Expired = expired
+	if res.Considered > res.Archived+res.Skipped+res.Failed {
+		slog.Info("process archive sweep capped for this pass", "considered", res.Considered)
+	}
+	return res, errors.Join(sweepErr, expErr)
 }
 
 // runRetentionLeased wraps runRetention with the T2.3 (P1-F) cross-process

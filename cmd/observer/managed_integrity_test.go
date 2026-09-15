@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
@@ -47,13 +49,25 @@ func TestCollectIntegritySignals(t *testing.T) {
 		{Path: nativeHome, OS: "linux", Origin: "native"},
 		{Path: foreignHome, OS: "windows", Origin: "wsl-mnt:marmu"},
 	}
-	siblings, drifted := collectIntegritySignalsFrom(daemonDB, nativeHome, homes)
+	report := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes)
 
-	if len(siblings) != 1 || siblings[0] != "wsl-mnt:marmu/windows" {
-		t.Errorf("siblings = %v, want [wsl-mnt:marmu/windows]", siblings)
+	if len(report.SiblingDetail) != 1 || report.SiblingDetail[0] != "wsl-mnt/windows" {
+		t.Errorf("siblings = %v, want [wsl-mnt/windows]", report.SiblingDetail)
 	}
-	if len(drifted) != 1 || drifted[0] != "claude-code" {
-		t.Errorf("drifted = %v, want [claude-code]", drifted)
+	if len(report.DriftedTools) != 1 || report.DriftedTools[0] != "claude-code" {
+		t.Errorf("drifted = %v, want [claude-code]", report.DriftedTools)
+	}
+	if report.CaptureCheckVersion != 1 {
+		t.Errorf("capture check version = %d, want 1", report.CaptureCheckVersion)
+	}
+	wire, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{nativeHome, foreignHome, "marmu", "/home/", "Users"} {
+		if strings.Contains(string(wire), forbidden) {
+			t.Errorf("managed-integrity wire leaked host identity/path %q: %s", forbidden, wire)
+		}
 	}
 }
 
@@ -79,8 +93,8 @@ func TestCollectIntegritySignals_Clean(t *testing.T) {
 	}
 
 	homes := []crossmount.HomeRoot{{Path: nativeHome, OS: "linux", Origin: "native"}}
-	siblings, drifted := collectIntegritySignalsFrom(daemonDB, nativeHome, homes)
-	if len(siblings) != 0 || len(drifted) != 0 {
-		t.Errorf("clean host produced evidence: siblings=%v drifted=%v", siblings, drifted)
+	report := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes)
+	if len(report.SiblingDetail) != 0 || len(report.DriftedTools) != 0 {
+		t.Errorf("clean host produced evidence: siblings=%v drifted=%v", report.SiblingDetail, report.DriftedTools)
 	}
 }

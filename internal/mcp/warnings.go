@@ -34,6 +34,19 @@ const (
 	// targeted a file whose extension is outside livesym's supported
 	// set AND the codeintel index is unavailable. Matches will be empty.
 	WarningRegexFallbackLanguageUnsupported = "regex_fallback_language_unsupported"
+
+	// WarningProjectArchived fires when a symbol tool's answer was empty
+	// or degraded AND the project carries a corpus-archival marker — its
+	// index was moved to cold storage rather than deleted
+	// (docs/plans/observer-corpus-archival-lazyload-design-2026-08-26.md).
+	//
+	// It is deliberately its own tag rather than a flavour of
+	// index_unavailable: "the index is missing" and "the index exists and
+	// is one rehydrate away" lead an agent to different next actions, and
+	// collapsing them would reproduce the silent-empty the marker exists
+	// to prevent. The accompanying `note` carries the date and the two
+	// recovery commands.
+	WarningProjectArchived = "project_archived"
 )
 
 // appendWarning adds tag to dst iff not already present. Cheap
@@ -57,5 +70,6 @@ func allKnownWarnings() []string {
 		WarningIndexStale,
 		WarningIndexChangedMidQuery,
 		WarningRegexFallbackLanguageUnsupported,
+		WarningProjectArchived,
 	}
 }

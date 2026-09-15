@@ -1,5 +1,10 @@
 package nodefeatures
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Feature names — the CLOSED set of node-local capabilities this family
 // can govern. New features are appended, never renamed/removed (an
 // already-published body's keys must keep meaning what they meant).
@@ -44,6 +49,24 @@ type TerminalsRule struct {
 	SandboxRequired bool
 }
 
+// ToolsRule governs which integration-registry tools (adapters) this node
+// may launch or route, as a disallow list — the P7 gateway-arc node-side
+// honor path for the "org_disallow" enforcement bucket
+// (docs/plans/plane-b-gateway-implementation-tracker-2026-08-29.md Phase
+// P7 item 4). Like the other rules in this family, Governed=false means
+// the org body never mentioned a tools stanza at all, which fails open
+// exactly like an absent Terminals/Remote/RoutingApply/PatternsWrite
+// stanza — an org can also publish a governed EMPTY disallow list as a
+// positive "nothing is disallowed" assertion, distinct from never having
+// opined.
+type ToolsRule struct {
+	Governed bool
+	// Disallow holds lower-cased, trimmed integration-registry tool names
+	// (Capability.Tool, e.g. "codex", "opencode") that this node must
+	// refuse to launch or route.
+	Disallow map[string]bool
+}
+
 // PolicySpec is the compiled, ready-to-evaluate node.features policy: one
 // rule per governed feature, plus the content hash used by policy_state to
 // report which body is currently effective. A feature absent from the
@@ -54,6 +77,7 @@ type PolicySpec struct {
 	Remote        FeatureRule
 	RoutingApply  FeatureRule
 	PatternsWrite FeatureRule
+	Tools         ToolsRule
 	Hash          string
 }
 
@@ -76,6 +100,12 @@ const denyReason = "disabled by organization policy — request access via 'obse
 // enabled but the org additionally requires sandboxing and the caller did
 // not request one.
 const sandboxDenyReason = "organization policy requires a sandboxed terminal for this feature — retry with sandbox enabled"
+
+// toolDenyReason names the specific disallowed tool so the operator sees
+// exactly what is blocked, rather than the generic denyReason.
+func toolDenyReason(tool string) string {
+	return fmt.Sprintf("organization policy disallows launching %q — request access via 'observer org request'", tool)
+}
 
 // allowOpen is the shared fail-open Decision: no policy installed, or the
 // installed policy doesn't opine on this feature.
@@ -122,6 +152,24 @@ func TerminalDecision(spec *PolicySpec, requestedSandbox bool) Decision {
 	}
 	if rule.SandboxRequired && !requestedSandbox {
 		return Decision{Allowed: false, Reason: sandboxDenyReason}
+	}
+	return allowOpen
+}
+
+// ToolDecision evaluates the tools feature — the P7 gateway-arc
+// org_disallow honor path. tool is matched case-insensitively (and
+// trimmed) against the published disallow list. spec == nil or an
+// ungoverned Tools stanza fails OPEN, matching every other
+// individual/ungoverned-node decision in this family; this function never
+// reaches out anywhere — the node enforces the decision locally at its own
+// launch seam.
+func ToolDecision(spec *PolicySpec, tool string) Decision {
+	if spec == nil || !spec.Tools.Governed {
+		return allowOpen
+	}
+	key := strings.ToLower(strings.TrimSpace(tool))
+	if spec.Tools.Disallow[key] {
+		return Decision{Allowed: false, Reason: toolDenyReason(tool)}
 	}
 	return allowOpen
 }

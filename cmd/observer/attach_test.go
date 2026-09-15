@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,8 +22,12 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/termsvc"
 )
 
-// TestAttachSocketPath pins the socket-path formula the daemon server and the
-// `--attach` client BOTH derive, so the two can never drift.
+// TestAttachSocketPath pins the ON-DISK attach path the daemon and the client
+// both derive — the AF_UNIX endpoint on unix, and on every platform the parent
+// of the owner-only attach directory that holds the durable resume-claim flock.
+// The wants are built with filepath.Join so the pin is about the FORMULA, not
+// about the host's path separator (the literal-slash spelling this test used
+// before was a Windows-only red).
 func TestAttachSocketPath(t *testing.T) {
 	cases := []struct {
 		dbPath string
@@ -30,14 +35,36 @@ func TestAttachSocketPath(t *testing.T) {
 	}{
 		// A1: the socket lives in a dedicated 0700 dir so the parent-dir
 		// permission (not a racy chmod) enforces owner-only connect().
-		{"/home/u/.observer/observer.db", "/home/u/.observer/attach/attach.sock"},
-		{"/var/lib/observer/observer.db", "/var/lib/observer/attach/attach.sock"},
+		{
+			filepath.Join("/home/u/.observer", "observer.db"),
+			filepath.Join("/home/u/.observer", "attach", "attach.sock"),
+		},
+		{
+			filepath.Join("/var/lib/observer", "observer.db"),
+			filepath.Join("/var/lib/observer", "attach", "attach.sock"),
+		},
 		{"observer.db", filepath.Join("attach", "attach.sock")},
 	}
 	for _, tc := range cases {
 		if got := attachSocketPath(tc.dbPath); got != tc.want {
 			t.Errorf("attachSocketPath(%q) = %q, want %q", tc.dbPath, got, tc.want)
 		}
+	}
+	// The daemon listens on, and the client dials, the TRANSPORT endpoint. On
+	// unix that is exactly this path; on a named-pipe host it is deliberately
+	// not a filesystem path at all — pin that they agree with the transport so
+	// the two sides can never drift.
+	dbPath := filepath.Join(t.TempDir(), "observer.db")
+	endpoint, err := attachEndpoint(dbPath)
+	if err != nil {
+		t.Fatalf("attachEndpoint(%q): %v", dbPath, err)
+	}
+	if runtime.GOOS == "windows" {
+		if endpoint == attachSocketPath(dbPath) {
+			t.Fatalf("attachEndpoint returned the on-disk socket path %q on the named-pipe transport", endpoint)
+		}
+	} else if endpoint != attachSocketPath(dbPath) {
+		t.Fatalf("attachEndpoint = %q, want the socket path %q", endpoint, attachSocketPath(dbPath))
 	}
 }
 
@@ -115,13 +142,6 @@ func (f *fakeAttachLauncher) LaunchAttachable(context.Context, termsvc.AttachReq
 		return termsvc.LaunchResult{}, f.launchErr
 	}
 	return f.res, nil
-}
-
-// launches returns the number of LaunchAttachable calls observed so far.
-func (f *fakeAttachLauncher) launches() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.launchCalls
 }
 
 func (f *fakeAttachLauncher) EndRunByHandle(_ context.Context, handle string, code int) {

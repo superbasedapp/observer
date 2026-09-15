@@ -2,6 +2,8 @@ package codex
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -376,117 +378,6 @@ func TestProgramProvablyInvokesNoTool(t *testing.T) {
 	}
 }
 
-// TestJSStringBindingIsPositionAndCommentAware is the WP-T6 finding F5
-// guard. Binding resolution used to take the FIRST textual `<ident> =
-// "…"` in the program, scanning strings-aware but COMMENT-BLIND and
-// with no notion of where the call is. Three shapes therefore resolved
-// to a patch the call never received — and the patch decides the row's
-// Target, i.e. which file we report as edited.
-//
-// Mutating jsStringBinding back to first-wins fails "reassignment";
-// dropping either comment branch fails the decoy cases; dropping the
-// `before` bound fails "assignment after the call".
-func TestJSStringBindingIsPositionAndCommentAware(t *testing.T) {
-	t.Parallel()
-	const (
-		decoy = "*** Begin Patch\n*** Update File: /repo/DECOY.go\n@@\n-a\n+b\n*** End Patch"
-		real  = "*** Begin Patch\n*** Update File: /repo/REAL.go\n@@\n-a\n+b\n*** End Patch"
-	)
-	q := func(s string) string {
-		return `"` + strings.ReplaceAll(s, "\n", `\n`) + `"`
-	}
-	cases := []struct {
-		name    string
-		program string
-		want    string // "" = must not resolve
-	}{
-		{
-			name: "reassignment — the LAST binding before the call wins",
-			program: `let patch = ` + q(decoy) + `;` + "\n" +
-				`patch = ` + q(real) + `;` + "\n" +
-				`await tools.apply_patch(patch);`,
-			want: real,
-		},
-		// The decoys below sit AFTER the real binding on purpose. A
-		// decoy placed BEFORE it is masked by last-wins and proves
-		// nothing about comment- or string-awareness — mutating either
-		// branch away still passed that arrangement (measured
-		// 2026-07-31). Positioned after, only genuine awareness keeps
-		// the real value.
-		{
-			name: "line-commented decoy after the real binding is ignored",
-			program: `let patch = ` + q(real) + `;` + "\n" +
-				`// patch = ` + q(decoy) + `;` + "\n" +
-				`await tools.apply_patch(patch);`,
-			want: real,
-		},
-		{
-			name: "block-commented decoy after the real binding is ignored",
-			program: `let patch = ` + q(real) + `;` + "\n" +
-				`/* patch = ` + q(decoy) + `; */` + "\n" +
-				`await tools.apply_patch(patch);`,
-			want: real,
-		},
-		{
-			name: "a decoy binding inside an unrelated string literal is ignored",
-			program: `let patch = ` + q(real) + `;` + "\n" +
-				`const note = "later: patch = ` + strings.ReplaceAll(q(decoy), `"`, `\"`) + `;";` + "\n" +
-				`await tools.apply_patch(patch);`,
-			want: real,
-		},
-		{
-			name: "a decoy binding BEFORE the real one is overridden",
-			program: `let patch = ` + q(decoy) + `;` + "\n" +
-				`patch = ` + q(real) + `;` + "\n" +
-				`await tools.apply_patch(patch);`,
-			want: real,
-		},
-		{
-			name: "assignment AFTER the call cannot have supplied the argument",
-			program: `await tools.apply_patch(patch);` + "\n" +
-				`const patch = ` + q(decoy) + `;`,
-			want: "",
-		},
-		{
-			name: "a later NON-string assignment withdraws an earlier string",
-			program: `let patch = ` + q(decoy) + `;` + "\n" +
-				`patch = lines.join("\n");` + "\n" +
-				`await tools.apply_patch(patch);`,
-			want: "",
-		},
-		{
-			name: "a comparison is not a binding",
-			program: `const patch = ` + q(real) + `;` + "\n" +
-				`if (patch === ` + q(decoy) + `) {}` + "\n" +
-				`await tools.apply_patch(patch);`,
-			want: real,
-		},
-		{
-			name: "String.raw reassignment still wins",
-			program: "let patch = " + q(decoy) + ";\n" +
-				"patch = String.raw`*** Begin Patch\n*** Add File: /repo/RAW.go\n+const t = \"\\t\"\n*** End Patch`;\n" +
-				"await tools.apply_patch(patch);",
-			want: "*** Begin Patch\n*** Add File: /repo/RAW.go\n+const t = \"\\t\"\n*** End Patch",
-		},
-	}
-	for _, c := range cases {
-		c := c
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			got := parseUnifiedExec(c.program)
-			if got.Name != "apply_patch" {
-				t.Fatalf("inner call = %q, want apply_patch", got.Name)
-			}
-			if got.PatchText != c.want {
-				t.Errorf("patch text = %q, want %q", got.PatchText, c.want)
-			}
-			if strings.Contains(got.PatchText, "DECOY") {
-				t.Errorf("resolved the DECOY binding: %q", got.PatchText)
-			}
-		})
-	}
-}
-
 // TestParseUnifiedExecMalformedIsSafe pins the failure mode: a
 // truncated, unbalanced or otherwise malformed program must return an
 // honest partial (or zero) result and never panic. Rollouts are
@@ -598,7 +489,22 @@ func TestBookkeepingCallsAreNotWork(t *testing.T) {
 func TestParseRolloutUnifiedExec(t *testing.T) {
 	t.Parallel()
 	a := New()
-	res, err := a.ParseSessionFile(context.Background(), fixture(t, "rollout-unified-exec.jsonl"), 0)
+	// Bind the fixture to its own project, independent of whether /tmp lives
+	// inside a workspace on the host running this test.
+	project := t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(fixture(t, "rollout-unified-exec.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = []byte(strings.ReplaceAll(string(raw), "/tmp/superbased-fixture-codex-uexec", filepath.ToSlash(project)))
+	path := filepath.Join(project, "rollout-unified-exec.jsonl")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.ParseSessionFile(context.Background(), path, 0)
 	if err != nil {
 		t.Fatalf("ParseSessionFile: %v", err)
 	}

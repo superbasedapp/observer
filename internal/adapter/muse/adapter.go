@@ -275,6 +275,9 @@ type parseState struct {
 	// root (see projectRoot). Unlike branch, the log never states its own
 	// remote, so this is git.Resolve's value unconditionally.
 	remote string
+	// identity is the Project Identity Resolver v2 bundle (2026-09-06,
+	// §3.1 / W1) resolved alongside branch/remote.
+	identity git.Identity
 	// model is the most recent model id seen, used to stamp tool/message
 	// events that carry no model of their own.
 	model string
@@ -501,19 +504,21 @@ func (st *parseState) projectRoot() string {
 	if root, ok := st.rootCache[cwd]; ok {
 		return root
 	}
-	info, err := git.Resolve(cwd)
+	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
 		st.rootCache[cwd] = cwd
 		return cwd
 	}
-	st.rootCache[cwd] = info.Root
+	st.rootCache[cwd] = id.Root
 	// The log's own workspace_branch record is authoritative when present;
-	// git.Resolve only fills the gap before one is seen.
+	// git.ResolveIdentity only fills the gap before one is seen.
 	if st.branch == "" {
-		st.branch = info.Branch
+		st.branch = id.Branch
 	}
-	st.remote = git.NormalizeRemote(info.Remote)
-	return info.Root
+	// id.Remote is already NormalizeRemote'd by ResolveIdentity.
+	st.remote = id.Remote
+	st.identity = id
+	return id.Root
 }
 
 // eventKey returns the record's deterministic identity for SourceEventID
@@ -530,15 +535,22 @@ func eventKey(rec *rawRecord, lineStart int64) string {
 // base builds the fields every emitted ToolEvent shares.
 func (st *parseState) base(rec *rawRecord) models.ToolEvent {
 	return models.ToolEvent{
-		SourceFile:  st.path,
-		SessionID:   st.sessionID,
-		ProjectRoot: st.projectRoot(),
-		Timestamp:   parseTimestamp(rec.RecordedAt),
-		GitBranch:   st.branch,
-		GitRemote:   st.remote,
-		Tool:        models.ToolMuse,
-		IsSidechain: st.isSubagent,
-		Success:     true,
+		SourceFile:         st.path,
+		SessionID:          st.sessionID,
+		ProjectRoot:        st.projectRoot(),
+		Timestamp:          parseTimestamp(rec.RecordedAt),
+		GitBranch:          st.branch,
+		GitRemote:          st.remote,
+		GitUpstreamRemote:  st.identity.UpstreamRemote,
+		GitRemoteOwner:     st.identity.RemoteOwner,
+		GitUpstreamOwner:   st.identity.UpstreamOwner,
+		RootCommitSHA:      st.identity.RootCommitSHA,
+		ContentFingerprint: st.identity.ContentFingerprint,
+		Workspace:          st.identity.Workspace,
+		IsWorktree:         st.identity.IsWorktree,
+		Tool:               models.ToolMuse,
+		IsSidechain:        st.isSubagent,
+		Success:            true,
 	}
 }
 
@@ -763,6 +775,13 @@ func (st *parseState) emitTokens(rec *rawRecord, e *sessionEvent, lineStart int6
 		ProjectRoot:         st.projectRoot(),
 		GitBranch:           st.branch,
 		GitRemote:           st.remote,
+		GitUpstreamRemote:   st.identity.UpstreamRemote,
+		GitRemoteOwner:      st.identity.RemoteOwner,
+		GitUpstreamOwner:    st.identity.UpstreamOwner,
+		RootCommitSHA:       st.identity.RootCommitSHA,
+		ContentFingerprint:  st.identity.ContentFingerprint,
+		Workspace:           st.identity.Workspace,
+		IsWorktree:          st.identity.IsWorktree,
 		Timestamp:           parseTimestamp(rec.RecordedAt),
 		Tool:                models.ToolMuse,
 		Model:               st.model,

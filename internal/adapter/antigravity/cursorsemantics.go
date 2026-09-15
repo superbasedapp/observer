@@ -15,8 +15,15 @@ import "github.com/marmutapp/superbased-observer/internal/adapter"
 // Byte lag stays meaningful: the cursor really is a file size, and a
 // grown `.pb` genuinely awaits another decrypt attempt.
 //
-// The newer CLI plaintext-protobuf SQLite `.db` store is parsed
-// directly and keeps ordinary byte-offset semantics.
+// The agy plaintext-protobuf SQLite `.db` stores (CLI tree and desktop
+// tree, plus their -wal / -shm sidecars) are WAL-mode databases: a turn
+// lands in the -wal without growing the main file, so a size cursor
+// would never re-fire. Their cursor is a WATERMARK — the max mtime
+// (unix ms) of the .db and its -wal (agyDBWatermark) — like cline-cli's
+// sessions.db, and the watcher's size gate does not apply.
+//
+// The desktop transcript.jsonl is re-read whole on every size change
+// and keeps ordinary byte-offset semantics.
 func (a *Adapter) CursorSemanticsFor(path string) adapter.FileCursorSemantics {
 	if !a.IsSessionFile(path) {
 		return adapter.FileCursorSemantics{}
@@ -26,6 +33,11 @@ func (a *Adapter) CursorSemanticsFor(path string) adapter.FileCursorSemantics {
 		return adapter.FileCursorSemantics{
 			Kind:   adapter.CursorEncrypted,
 			Detail: "antigravity .pb conversations are OSCrypt-encrypted; emitting no actions is expected wherever the secret or cipher is unavailable on this host",
+		}
+	case LayoutCLIDB, LayoutDesktopDB:
+		return adapter.FileCursorSemantics{
+			Kind:   adapter.CursorWatermark,
+			Detail: "agy conversation .db is WAL-mode SQLite scanned on a max-mtime(.db, .db-wal) unix-ms watermark; the cursor is not a byte offset",
 		}
 	default:
 		return adapter.FileCursorSemantics{}

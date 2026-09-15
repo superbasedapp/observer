@@ -2,14 +2,13 @@ package kilocode
 
 import (
 	"context"
-	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/cline"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/platform/vscodehost"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 )
 
@@ -26,6 +25,34 @@ import (
 // shared helper avoids touching the cline package's public surface and
 // keeps the cline adapter's regression suite untouched as the
 // authoritative cookbook for the format.
+//
+// # DEMOTION: this adapter serves PRE-7.x installs only (audit IDE-06)
+//
+// Kilo Code's IDE extension >= 7.x no longer persists its own task
+// bundles. It spawns the BUNDLED `kilo` CLI and the conversation lands
+// in that CLI's store (`~/.local/share/kilo/kilo.db`), which
+// CLIAdapter reads and tags models.ToolKiloCodeCLI. There is NO
+// persisted discriminator distinguishing an extension-spawned run from
+// a terminal one: the extension marks itself with the `KILO_CLIENT`
+// PROCESS ENVIRONMENT variable, which never reaches disk. So on a
+// current Kilo install an IDE session is indistinguishable from a CLI
+// session at rest, and this LegacyAdapter finds nothing at all.
+//
+// Do not "fix" that by inferring the surface for kilo-code-cli rows —
+// there is no grounded signal to infer from, and inventing one would
+// violate the honesty rule (plan §3.1). The correct scope of this
+// adapter is: installs still on the pre-7.x extension.
+//
+// # Surface attribution
+//
+// Surface stamps ride through the delegate untouched. The cline parser
+// stamps models.SurfaceIDE unconditionally (its store only ever exists
+// inside an editor extension) and resolves the host from the task path
+// via internal/platform/vscodehost, so a Kilo task under
+// `<Cursor>/User/globalStorage/kilocode.kilo-code/...` correctly stamps
+// host "cursor" and one under upstream Code stamps "vscode". Nothing
+// in the retag loop touches models.SessionSurface — it carries no Tool
+// field, being session-scoped rather than event-scoped.
 type LegacyAdapter struct {
 	scrubber   *scrub.Scrubber
 	watchRoots []string
@@ -94,64 +121,30 @@ func (a *LegacyAdapter) ParseSessionFile(ctx context.Context, path string, fromO
 	return res, nil
 }
 
+// legacyExtensionID is the marketplace id whose globalStorage the
+// legacy Kilo IDE extension writes its per-task bundles into.
+const legacyExtensionID = "kilocode.kilo-code"
+
 // defaultRoots returns the canonical `kilocode.kilo-code/tasks/` paths
-// under every cross-mount-resolved $HOME's VS Code globalStorage.
-// Mirrors the cline adapter's per-OS branching exactly so an observer
-// running under WSL2 reaches Kilo data living at
-// /mnt/c/Users/<u>/AppData/Roaming/Code/User/globalStorage and a
-// Windows-side observer reaches a WSL distro's Code-server install.
+// under EVERY VS Code-family product (upstream Code, Code - Insiders,
+// VSCodium, Cursor, Windsurf, Kiro, Qoder, Trae) and every remote
+// server layout (.vscode-server, .cursor-server), for every
+// cross-mount-resolved $HOME.
 //
-// Remote-WSL (VS Code Server) is covered by also globbing
-// `~/.vscode-server/data/User/globalStorage` per home — without this,
-// sessions captured by VS Code's Remote-WSL extension never appear.
+// Product enumeration is delegated wholesale to
+// internal/platform/vscodehost (audit IDE-14). It previously hand-
+// rolled the per-OS convention for upstream "Code" plus a single
+// `.vscode-server` special case, so a Kilo task recorded inside any
+// fork host — or inside a Cursor Server remote — was never watched.
+//
+// Non-existent roots are returned deliberately (Invariant #48); the
+// watcher owns existence filtering and root-identity dedup.
 func (a *LegacyAdapter) defaultRoots() []string {
 	var roots []string
 	for _, h := range crossmount.AllHomes() {
-		base := vsCodeGlobalStorage(h)
-		if base != "" {
-			roots = append(roots, filepath.Join(base, "kilocode.kilo-code", "tasks"))
-		}
-		// VS Code Server (Remote-WSL / SSH / Dev Containers) puts
-		// extension globalStorage under ~/.vscode-server/data/User/...
-		// — distinct from the desktop globalStorage covered above.
-		if remote := vsCodeServerGlobalStorage(h); remote != "" {
-			roots = append(roots, filepath.Join(remote, "kilocode.kilo-code", "tasks"))
+		for _, ref := range vscodehost.GlobalStorageDirs(h) {
+			roots = append(roots, filepath.Join(ref.Path, legacyExtensionID, "tasks"))
 		}
 	}
 	return roots
-}
-
-// vsCodeGlobalStorage returns the VS Code desktop globalStorage
-// subpath under the given cross-mount-resolved $HOME, branching on
-// the home's LOGICAL OS. Duplicated from
-// internal/adapter/cline/adapter.go::vsCodeGlobalStorage — the cline
-// version is package-private. Keeping a copy here avoids exporting a
-// helper that's only meaningful to two adapters.
-func vsCodeGlobalStorage(h crossmount.HomeRoot) string {
-	switch h.OS {
-	case crossmount.OSWindows:
-		if h.Origin == "native" && runtime.GOOS == "windows" {
-			if appData := os.Getenv("APPDATA"); appData != "" {
-				return filepath.Join(appData, "Code", "User", "globalStorage")
-			}
-		}
-		return filepath.Join(h.Path, "AppData", "Roaming", "Code", "User", "globalStorage")
-	case crossmount.OSDarwin:
-		return filepath.Join(h.Path, "Library", "Application Support", "Code", "User", "globalStorage")
-	case crossmount.OSLinux:
-		return filepath.Join(h.Path, ".config", "Code", "User", "globalStorage")
-	}
-	return ""
-}
-
-// vsCodeServerGlobalStorage returns the VS Code Server's per-user
-// globalStorage subpath. VS Code Server only runs on POSIX-shaped
-// homes (Linux distros under WSL, SSH remotes, Dev Container
-// userspaces) so we restrict to OSLinux + OSDarwin. Returns "" for
-// Windows homes — VS Code desktop runs natively there, not Server.
-func vsCodeServerGlobalStorage(h crossmount.HomeRoot) string {
-	if h.OS == crossmount.OSLinux || h.OS == crossmount.OSDarwin {
-		return filepath.Join(h.Path, ".vscode-server", "data", "User", "globalStorage")
-	}
-	return ""
 }

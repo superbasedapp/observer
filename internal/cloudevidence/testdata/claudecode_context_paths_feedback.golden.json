@@ -1,0 +1,86 @@
+{
+  "schema_version": "session-evidence.v1-candidate",
+  "cloud_session_id": "cs-cc-1001",
+  "cloud_project_id": "cp-cc-2002",
+  "tool": "claude-code",
+  "model_family": "claude",
+  "started_at_bucket": "2026-08-27T11:00:00Z",
+  "duration_seconds": 2400,
+  "metrics": {
+    "tokens_in": 12000,
+    "tokens_out": 5000,
+    "cache_read_tokens": 3000,
+    "cost_usd": 0.55,
+    "deterministic_score": 91,
+    "redundancy_ratio": 0.08,
+    "error_rate": 0.02,
+    "exploration_efficiency": 0.82,
+    "continuity_score": 0.93
+  },
+  "actions": [
+    {
+      "ref": "a1",
+      "kind": "read_file",
+      "category": "go",
+      "status": "ok",
+      "path_hash": "sha256:d769d2748142a200c3bd68ad70133fd54bcdd01fdc8448fcf0021c58d8f6a52b"
+    },
+    {
+      "ref": "a2",
+      "kind": "edit_file",
+      "category": "go",
+      "status": "ok",
+      "path_hash": "sha256:116808a8d58dd86bcb1f82df3af06967d6e268c389464feff8de0e62a18b2b98"
+    },
+    {
+      "ref": "a3",
+      "kind": "run_command",
+      "category": "other",
+      "status": "ok",
+      "path_hash": "sha256:0c91def8a62a49eac53802f06ad153c8ce2255e5fa2ddb85651413a2c15a87d6"
+    }
+  ],
+  "milestones": [
+    {
+      "ref": "m1",
+      "kind": "first_edit",
+      "elapsed_seconds": 200
+    },
+    {
+      "ref": "m2",
+      "kind": "tests_green",
+      "elapsed_seconds": 1900
+    }
+  ],
+  "outcomes": {
+    "tests_run": 12,
+    "tests_passed": 12,
+    "build": "passed"
+  },
+  "user_feedback": {
+    "rating": 8,
+    "note": "clean refactor"
+  },
+  "context": [
+    {
+      "source": "task_excerpt",
+      "text": "wire the retry-safe device auth flow",
+      "length_cap_bytes": 4096
+    },
+    {
+      "source": "final_summary",
+      "text": "implemented and tested the exchange",
+      "length_cap_bytes": 256
+    }
+  ],
+  "disclosure_purposes": [
+    "bounded_context_enrichment",
+    "structural_activity_insights"
+  ],
+  "scrubber_version": "scrub-v1",
+  "authority": {
+    "Authority": "personal",
+    "Version": 1
+  },
+  "evidence_content_digest": "sha256:a97d1d9cce6b8184f348173bde8d9c2865f065e6fa24c55d24d609c15679b5d5"
+}

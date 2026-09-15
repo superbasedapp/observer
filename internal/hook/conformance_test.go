@@ -116,7 +116,7 @@ func TestConformance_Cursor(t *testing.T) {
 			func(v guard.ActionVerdict) { persisted = append(persisted, v) },
 			sink, sc,
 			bytes.NewReader(loadFixture(t, "cursor", "before_shell_rmrf.json")),
-			&out, &bytes.Buffer{}, 0)
+			false, &out, &bytes.Buffer{}, 0)
 		var reply struct {
 			Permission string `json:"permission"`
 		}
@@ -148,7 +148,7 @@ func TestConformance_Cursor(t *testing.T) {
 			func(v guard.ActionVerdict) { persisted = append(persisted, v) },
 			sink, sc,
 			bytes.NewReader(loadFixture(t, "cursor", "before_shell_rmrf.json")),
-			&out, &bytes.Buffer{}, 0)
+			false, &out, &bytes.Buffer{}, 0)
 		if !strings.Contains(out.String(), `"permission":"allow"`) {
 			t.Errorf("observe reply = %s, want allow", out.String())
 		}
@@ -167,7 +167,7 @@ func TestConformance_Cursor(t *testing.T) {
 			func(v guard.ActionVerdict) { persisted = append(persisted, v) },
 			sink, sc,
 			bytes.NewReader(loadFixture(t, "cursor", "before_shell_benign.json")),
-			&out, &bytes.Buffer{}, 0)
+			false, &out, &bytes.Buffer{}, 0)
 		if !strings.Contains(out.String(), `"permission":"allow"`) {
 			t.Errorf("benign reply = %s", out.String())
 		}
@@ -185,7 +185,7 @@ func TestConformance_Cursor(t *testing.T) {
 		var out bytes.Buffer
 		HandleCursorEventGuarded("beforeShellExecution", nil, nil, sink, sc,
 			bytes.NewReader(loadFixture(t, "cursor", "before_shell_rmrf.json")),
-			&out, &bytes.Buffer{}, 0)
+			false, &out, &bytes.Buffer{}, 0)
 		if !strings.Contains(out.String(), `"permission":"allow"`) {
 			t.Errorf("nil-guard reply = %s, want unconditional allow", out.String())
 		}

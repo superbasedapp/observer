@@ -1,0 +1,28 @@
+{
+  "name": "superbased-observer-apps",
+  "version": "0.0.0",
+  "private": true,
+  "description": "npm workspace root for the application UI surfaces (web, web2, webcloud) and the shared design system (shared/). Not a Go concern; the Go module is defined by go.mod. The dependencies below are the shared design-system's runtime peers, declared here so they hoist to the root node_modules that shared/ resolves against; each app also declares the ones it uses and resolve.dedupe keeps a single React instance.",
+  "workspaces": [
+    "shared",
+    "web",
+    "web2",
+    "webcloud"
+  ],
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "recharts": "^2.13.3",
+    "clsx": "^2.1.1",
+    "@floating-ui/react": "^0.27.19",
+    "framer-motion": "^11.13.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.16",
+    "postcss": "^8.4.49",
+    "autoprefixer": "^10.4.20"
+  }
+}

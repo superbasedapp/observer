@@ -89,13 +89,23 @@ func (c *Client) FetchOrgAnnouncement(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	pinned := doc.PublicKey // TOFU on first receipt
+	// repinned: this cycle ADOPTED a changed key because it is the key this
+	// node was enrolled with (R1(c), the same rule the routing rail applies).
+	// It must reach the cache write even when the version did not move, or
+	// the rail would accept the new key and keep serving itself the old one.
+	repinned := false
 	if hasCached {
 		if cached.ServerPubkey != doc.PublicKey {
-			return false, fmt.Errorf("orgclient.FetchOrgAnnouncement: server announcement key CHANGED (pinned %s…, got %s…) — refusing; re-enrol to rotate trust",
-				prefix8(cached.ServerPubkey), prefix8(doc.PublicKey))
+			if err := c.acceptOfferedKeyChange(ctx, announcementRail, cached.ServerPubkey, doc.PublicKey); err != nil {
+				return false, fmt.Errorf("orgclient.FetchOrgAnnouncement: %w", err)
+			}
+			repinned = true
 		}
-		pinned = cached.ServerPubkey
-		if cached.Version >= doc.Version {
+		pinned = doc.PublicKey
+		if !repinned {
+			pinned = cached.ServerPubkey
+		}
+		if cached.Version >= doc.Version && !(repinned && doc.Version >= cached.Version) {
 			return false, nil // already current
 		}
 	}
@@ -115,6 +125,11 @@ func (c *Client) FetchOrgAnnouncement(ctx context.Context) (bool, error) {
 		Signature: doc.Signature, ServerPubkey: pinned, ReceivedAt: time.Now().UTC(),
 	}); err != nil {
 		return false, err
+	}
+	// M3: same ordering rule as the routing rail — the trust root is written
+	// only after this document verified and its cache write succeeded.
+	if repinned || !hasCached {
+		c.adoptEnrolmentKeyMaterial(ctx, pinned)
 	}
 	c.logger.Info("org announcement cached", "version", doc.Version, "retracted", strings.TrimSpace(doc.Body) == "")
 	return true, nil

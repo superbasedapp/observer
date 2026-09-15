@@ -12,10 +12,16 @@ import (
 	"fmt"
 	"log/slog"
 	mrand "math/rand/v2"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -25,10 +31,23 @@ import (
 )
 
 // Backoff bounds for the push loop on retryable failures (spec §2.4.2):
-// exponential 250ms→30s with ±25% jitter, reset to the floor after a success.
+// exponential 250ms→10min with ±25% jitter, reset to the floor after a
+// success.
 const (
 	initialBackoff = 250 * time.Millisecond
-	maxBackoff     = 30 * time.Second
+	// maxBackoff caps the retry cadence for a generic retryable failure
+	// (a dead/unreachable org server, a 5xx, etc). Raised 2026-09-07 from
+	// 30s to 10 minutes: at 30s, a dev box enrolled against a now-dead
+	// localhost:8443 logged 316 "org push failed, backing off" / "org
+	// announcement fetch failed" / "org routing policy fetch failed" WARN
+	// lines in the first hour after every restart — a 30s ceiling means
+	// the loop never settles below one attempt every 30s no matter how
+	// long the server has been down. Paired with failureDeduper (below),
+	// which independently silences the REPEATED identical WARNs down to
+	// one-time-then-DEBUG; the two fixes are complementary, not
+	// redundant — this cap slows how OFTEN the loop even tries, the
+	// deduper controls how much each try logs.
+	maxBackoff     = 10 * time.Minute
 	backoffFactor  = 2
 	jitterFraction = 0.25
 	// authFailMaxBackoff caps the retry cadence for a REJECTED credential
@@ -37,8 +56,17 @@ const (
 	// key rotation recovers on the next cycle without a restart. The climb
 	// starts at initialBackoff (a prompt re-enrol recovers within the first,
 	// fast retries) and settles here so a genuinely-revoked node does not spam
-	// the server — a much slower steady state than maxBackoff.
-	authFailMaxBackoff = 5 * time.Minute
+	// the server — a slower (1.5x) steady state than maxBackoff, preserving
+	// the "rejected credential settles slower than a generic failure"
+	// ordering without needing to keep scaling further. Raised in lockstep
+	// with maxBackoff (2026-09-07, 5min → 15min) to preserve that ordering
+	// now that maxBackoff itself grew to 10min.
+	authFailMaxBackoff = 15 * time.Minute
+	// oversizedBatchBackoff is a circuit breaker for a deterministic local
+	// payload that cannot satisfy the configured protocol limit. Rebuilding it
+	// aggressively only burns CPU/RAM; a long park still lets a daemon recover
+	// after retention/config changes without terminating the host process.
+	oversizedBatchBackoff = time.Hour
 )
 
 // ErrNotEnrolled is returned by push operations when the agent is not enrolled
@@ -54,12 +82,33 @@ var ErrNotEnrolled = errors.New("orgclient: not enrolled")
 // settles to a slow cadence instead of spamming the server.
 var ErrAuthFailed = errors.New("orgclient: authentication failed")
 
+// ErrBatchTooLarge reports that the complete serialized push envelope exceeds
+// either the node's configured maximum or the org server's accepted body size.
+// It is not a transient network failure and therefore uses a circuit-breaker
+// cadence in runLoop rather than exponential retry.
+var ErrBatchTooLarge = errors.New("orgclient: push batch too large")
+
+// ErrAgentTooOld reports that the org server refused this push because the
+// node runs below its [server].min_agent_version and the org set
+// min_agent_version_action = "refuse" (enterprise update management W5, §6
+// O5). The server ingested NOTHING.
+//
+// It is RETRYABLE in the same sense ErrAuthFailed is — the condition clears
+// the moment the node is updated, with no process restart — so the loop keeps
+// its normal backoff rather than parking. What it must not do is look like a
+// transient network error: the operator-facing message names both versions,
+// and RecordPush stores it as a FAILED push so the node dashboard's banner can
+// say exactly what is wrong and what to install.
+var ErrAgentTooOld = errors.New("orgclient: agent below the org's minimum version")
+
 // Client runs the agent side of the Teams enrolment + push protocol: it
 // enrols (binding a fresh Ed25519 keypair), reads content-free rollup rows
 // above the local push cursor, signs and ships them to the org server, and
 // advances the cursor on acceptance. Nothing here runs unless the agent is
 // both configured ([org_client] enabled) and enrolled; see package doc.
 type Client struct {
+	// bg owns the node-side break-glass lease state (breakglass.go).
+	bg           breakGlassState
 	cfg          config.OrgClientConfig
 	store        *store.Store
 	bearers      BearerStore
@@ -79,14 +128,15 @@ type Client struct {
 
 	// integrityCollector is the Arc 4 P6b managed-integrity probe seam (plan
 	// §9): a nil-defaulted func that returns this host's coarse tamper-evidence
-	// labels (sibling-observer origins, drifted AI-tool names). It is injected
+	// report (sibling-observer origins, drifted AI-tool names, and versioned
+	// capture-behavior checks). It is injected
 	// by cmd/observer so the client never imports internal/diag or
 	// internal/proxyroute (the boundary), and it is consulted ONLY inside
 	// PushLoop and ONLY for a managed node — so it rides the existing push cycle
 	// (no new timer/host/connection, the announce.go discipline) and the
 	// individual plane never computes or sends an integrity signal. Nil = an
 	// exact no-op. Set via SetIntegrityCollector.
-	integrityCollector func() (siblings, drifted []string)
+	integrityCollector func() orgcontract.ManagedIntegrityReport
 
 	// routingReloadSink is the P0-7 router hot-reload trigger (docs/plans/
 	// plane-a-p0-7-guard-router-hotreload-plan.md §2.2/§4.5): a nil-defaulted
@@ -123,6 +173,41 @@ type Client struct {
 	// (Codex SF3). Empty = no filesystem cleanup (tests that never install).
 	policyResourceCacheDir string
 
+	// policyResourceKick wakes PolicyResourcePollLoop for an immediate fetch
+	// cycle when a push acknowledgment reports a newer published policy
+	// version (the 2026-09-01 propagation nudge). Buffered(1) + non-blocking
+	// send: coalescing wake-ups is exactly right, one fetch cycle covers any
+	// number of publishes. The kick only ADVANCES the poll — every gate the
+	// fetch itself applies (signature, pin, accept_families) is unchanged.
+	policyResourceKick chan struct{}
+
+	// lastPolicyVersions is the most recent policy_versions map seen on a
+	// push acknowledgment, compared under policyVersMu to detect a version
+	// advance. In-memory only: on boot it is nil and the FIRST ack never
+	// kicks, because PolicyResourcePollLoop already fetches immediately on
+	// start.
+	policyVersMu       sync.Mutex
+	lastPolicyVersions map[string]int64
+
+	// railPinDriftOnce keeps the "a fetch rail still holds the older key"
+	// notice to ONE line per process (orgSigningKey). The condition is
+	// self-healing — the rail re-pins on its next accepted document — so
+	// repeating it on every 30-second poll would be noise, and staying
+	// silent about it would hide a real cut-over in progress.
+	railPinDriftOnce sync.Once
+
+	// updates is the Enterprise Update Management manifest rail's node-side
+	// cache (§3.5, update.go). It holds the last VERIFIED manifest, the
+	// posture that verification produced, the org key this rail has seen, and
+	// the last update_versions nudge — so a fetch happens only when the
+	// server is genuinely ahead and the steady state adds no requests at all.
+	//
+	// In-memory in W2; agent migration 105's update_state gives it durability
+	// in W3. A restart resetting the accepted ordinal is safe: only the replay
+	// rule reads it, and the downgrade rule compares against the INSTALLED
+	// binary, which a restart does not change.
+	updates updateCache
+
 	// shareProvider resolves the share posture PushOnce ships under
 	// (admin-controlled Plane B, Phase 1b §2.4). Nil means "use the config
 	// this client was constructed with", which is byte-identical to Phase
@@ -140,9 +225,82 @@ type Client struct {
 	// every test that never wires governance).
 	governanceSidecarPath string
 
+	// featuresSidecarPath is the node-local node.features LKG sidecar (the P7
+	// gateway-arc tools.disallow state), removed by Unenroll the same way as
+	// the governance sidecar so a one-shot CLI launcher spawned a millisecond
+	// after unenrol reads no stale disallow list. Empty = nothing to remove.
+	// The daemon-side WRITER lives in cmd/observer (the node.features poller);
+	// this field only tracks the path for deletion, mirroring
+	// governanceSidecarPath. Empty in the solo case and in every test that
+	// never wires node.features.
+	featuresSidecarPath string
+
 	// renewalSink receives the classified outcome of every authenticated
 	// agent request (§4.2). Nil = today's exact behaviour.
 	renewalSink func(RenewalOutcome)
+
+	// budget is the org BUDGET rail's node-side hot cache (budgetpolicy.go,
+	// wave W3b): the last VERIFIED per-caller body plus its ETag and exact
+	// enrollment identity. The signed document is also persisted for restart.
+	budget budgetCache
+	// budgetSink receives every budget poll's typed outcome so the caller can
+	// recompose the guard's effective thresholds in-process. Nil-defaulted
+	// additive seam (R6-1): with no sink installed the fetch still runs and
+	// caches, and nothing downstream changes. Set via SetBudgetSink.
+	budgetSink func(BudgetFetchOutcome)
+	// budgetMaxAge is the freshness window applied to a budget document's
+	// signed issued_at ([guard.budget].max_document_age, finding M3). Zero
+	// means orgcontract.BudgetPolicyDefaultMaxAge. Set via
+	// SetBudgetMaxDocumentAge; the guard config does not reach this package's
+	// constructor, and threading it through OrgClientConfig would put one
+	// knob in two config sections.
+	budgetMaxAge time.Duration
+	// budgetNow is the clock the freshness check reads. Nil means time.Now.
+	// A seam rather than a direct call so a test can age a document without
+	// sleeping — the only way to exercise a one-hour window.
+	budgetNow func() time.Time
+
+	// pricing is the org PRICING rail's in-memory mirror of the PERSISTED
+	// document (pricingpolicy.go, wave W2). Unlike the budget rail's cache
+	// this one has a durable twin (org_pricing_cache, agent migration 106):
+	// a mis-priced captured turn is permanent, so a restart must not re-price
+	// at list rates while it waits for the first poll.
+	pricing pricingCache
+	// pricingEnabled is the ruling-R2 gate, [guard.budget].from_org. Nil = the
+	// rail is OFF and makes no request at all.
+	pricingEnabled func() bool
+	// pricingAuthoritative resolves the live tenancy flag (managed +
+	// enforce.budget). Nil = never authoritative, which is every
+	// individual/BYO node.
+	pricingAuthoritative func() bool
+	// pricingSink receives every pricing poll's typed outcome so the caller
+	// can re-compose the live cost engine in-process. Nil-defaulted additive
+	// seam, exactly like budgetSink.
+	pricingSink func(PricingFetchOutcome)
+
+	// intelEnabled is the org-served-cloud-intelligence RESULT-pull gate
+	// ([intelligence].org_enrichment, org-served-cloud-intelligence plan
+	// §2.1/§2.4, W3). Nil = the rail is OFF and FetchIntelResults makes no
+	// request at all (the opt-in default). A func rather than a bool so a
+	// config reload / managed raise (W5) can turn it on without a restart.
+	// Set via SetIntelRail.
+	intelEnabled func() bool
+	// intelSince is the in-memory pagination cursor for the result pull: the
+	// NextCursor the server last returned. LOOP-OWNED — touched only by
+	// FetchIntelResults, which runs on the single push-loop goroutine. Not
+	// persisted: a restart re-pages from the start and org_intel_cache's
+	// UNIQUE(session_id, job_id) dedups the re-fetch.
+	intelSince string
+	// intelCursorOrgID is the org id the in-memory intelSince cursor (and any
+	// cached rows) belong to. FetchIntelResults resets the cursor and drops
+	// foreign-org cached rows when the live enrolment's org id no longer matches
+	// this (a re-enrol, possibly to a different org), so org A's cursor/results
+	// can never bleed into org B (adversarial finding 6). LOOP-OWNED, like
+	// intelSince.
+	intelCursorOrgID string
+	// intelNotSupportedLogged silences the 404 "pre-feature server" WARN to
+	// once per daemon lifetime (the pricing rail's not-supported posture).
+	intelNotSupportedLogged bool
 }
 
 // SetShareProvider installs the hot share-posture resolver (§2.4). Passing
@@ -173,6 +331,39 @@ func (c *Client) GovernanceSidecarPath() string {
 	return c.governanceSidecarPath
 }
 
+// SetFeaturesSidecarPath tells Unenroll which node.features LKG sidecar to
+// delete (the P7 gateway-arc tools.disallow state). Safe to leave unset;
+// mirrors SetGovernanceSidecarPath.
+func (c *Client) SetFeaturesSidecarPath(path string) {
+	if c == nil {
+		return
+	}
+	c.featuresSidecarPath = path
+}
+
+// FeaturesSidecarPath reports the node.features sidecar Unenroll would delete,
+// so the cmd layer can pin its wiring the same way it pins the governance one.
+func (c *Client) FeaturesSidecarPath() string {
+	if c == nil {
+		return ""
+	}
+	return c.featuresSidecarPath
+}
+
+// removeFeaturesSidecar deletes the node-local node.features LKG sidecar on
+// unenrol so a one-shot CLI launcher spawned immediately after reads no stale
+// tools.disallow list. Best-effort and logged; never an unenrol failure —
+// mirrors removeGovernanceSidecar.
+func (c *Client) removeFeaturesSidecar() {
+	if c == nil || c.featuresSidecarPath == "" {
+		return
+	}
+	if err := os.Remove(c.featuresSidecarPath); err != nil && !os.IsNotExist(err) {
+		c.logger.Warn("unenroll: could not remove the node.features sidecar — a stale tools.disallow list may briefly gate one-shot launchers until it is overwritten or expires",
+			"path", c.featuresSidecarPath, "err", err)
+	}
+}
+
 // shareOptions resolves the share posture for one push. The DEFAULT is
 // exactly the cfg-derived value Phase 1a built inline, so the seam is inert
 // until something installs a provider.
@@ -200,6 +391,8 @@ func ShareOptionsFromConfig(cfg config.OrgClientConfig) store.ShareOptions {
 		CodeintelDetail:       cfg.Share.CodeintelDetail,
 		ProcessDetail:         cfg.Share.ProcessDetail,
 		TerminalDetail:        cfg.Share.TerminalDetail,
+		TaskDetail:            cfg.Share.TaskDetail,
+		ToolAccountDetail:     cfg.Share.ToolAccountDetail,
 		ObsSummary:            cfg.Share.Obs.Summary,
 		ObsTraces:             cfg.Share.Obs.Traces,
 		ObsContent:            cfg.Share.Obs.Content,
@@ -248,14 +441,23 @@ func New(cfg config.OrgClientConfig, st *store.Store, bearers BearerStore, agent
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Client{
-		cfg:          cfg,
-		store:        st,
-		bearers:      bearers,
-		httpClient:   httpClient,
-		logger:       logger,
-		agentVersion: agentVersion,
+	c := &Client{
+		cfg:                cfg,
+		store:              st,
+		bearers:            bearers,
+		httpClient:         httpClient,
+		logger:             logger,
+		agentVersion:       agentVersion,
+		policyResourceKick: make(chan struct{}, 1),
 	}
+	// Lever 2 of the steady-state CPU remediation (plan Track R2): the PUSH
+	// LOOP owns the snapshot cadence, the store only applies it. Installed once
+	// here rather than per tick because it is a property of this client's
+	// config, not of any individual batch.
+	if st != nil {
+		st.SetOrgSnapshotInterval(c.snapshotInterval())
+	}
+	return c
 }
 
 // EnrolmentState is a read-only snapshot of the agent's enrolment for the CLI
@@ -270,6 +472,11 @@ type EnrolmentState struct {
 	EnrolledAt   string
 	Backend      string // bearer-store backend: "keychain" | "file"
 	LastPush     *store.PushLogEntry
+	// PushPaused is non-nil ONLY while the oversized-batch circuit is open:
+	// the composed rollup exceeded the accepted push limit, so the loop is
+	// parked (oversizedBatchBackoff) and no telemetry is reaching the org
+	// server. Nil is the normal case — pushes are running or simply idle.
+	PushPaused *store.PushBreakerState
 }
 
 // PushResult summarises one push attempt for the CLI / loop.
@@ -393,6 +600,15 @@ func (c *Client) Enroll(ctx context.Context, orgURL, token string) (*store.Enrol
 	if err != nil {
 		return nil, nil, fmt.Errorf("orgclient.Enroll: activate enrolment generation: %w", err)
 	}
+	// A budget document is signed for one member and one enrollment epoch.
+	// Clear the singleton after advancing the durable generation and before
+	// publishing the replacement enrollment. Any late save from the old epoch
+	// now fails its generation predicate; a cold process cannot restore the old
+	// member's cap under the new identity.
+	c.budget.clear()
+	if err := c.store.ClearOrgBudget(ctx); err != nil {
+		return nil, nil, fmt.Errorf("orgclient.Enroll: clear prior org budget: %w", err)
+	}
 	if err := c.store.WriteEnrolment(ctx, enr); err != nil {
 		return nil, nil, fmt.Errorf("orgclient.Enroll: write enrolment: %w", err)
 	}
@@ -413,8 +629,14 @@ func (c *Client) Enroll(ctx context.Context, orgURL, token string) (*store.Enrol
 		if keyHash, perr := pinBase64Key(er.OrgPolicyPublicKey); perr != nil {
 			c.logger.Warn("org policy key not pinned", "err", perr)
 		} else if _, perr := c.store.RecordGuardPolicyState(ctx, store.GuardPolicyStateRow{
-			Layer:       "org",
-			Path:        PolicyKeyPinPath(orgURL),
+			Layer: "org",
+			Path:  PolicyKeyPinPath(orgURL),
+			// PROVENANCE (C1). Enroll is the only writer that stamps this:
+			// the policy-bundle and policy-resource rails write the same row
+			// by trust-on-first-fetch with an empty version, and a pin this
+			// node did not receive over the enrolment channel must never be
+			// promoted to the trust root.
+			Version:     enrolmentPinProvenance,
 			ContentHash: keyHash,
 			LoadedAt:    time.Now().UTC(),
 		}); perr != nil {
@@ -422,6 +644,20 @@ func (c *Client) Enroll(ctx context.Context, orgURL, token string) (*store.Enrol
 		} else {
 			pinnedKeyHash = keyHash
 			c.logger.Info("org policy signing key pinned at enrolment", "key_sha256", keyHash)
+		}
+		// R1(b)/(d): the hash pin above cannot VERIFY anything, so the key
+		// ITSELF is persisted beside it (orgpin.go, OrgKeyMaterialSuffix) —
+		// this is the trust root every other rail is resolved and
+		// cross-checked against. Written unconditionally whenever the
+		// response carries a key, so a re-enrol against a rotated key wins
+		// over whatever a fetch rail pinned in between; an EMPTY response
+		// field still leaves the previous row alone (a server that stopped
+		// delivering a key is not a server that revoked one).
+		if keyStd, perr := c.recordEnrolmentKeyMaterial(ctx, orgURL, er.OrgPolicyPublicKey); perr != nil {
+			c.logger.Warn("org policy key material not stored (budget/pricing rails will fall back to the fetch-rail pins)", "err", perr)
+		} else {
+			c.logger.Info("org distribution key stored at enrolment",
+				"key_sha256_prefix", prefix12(pinnedKeyHash), "key_prefix", prefix8(keyStd))
 		}
 	}
 
@@ -580,6 +816,7 @@ func (c *Client) Unenroll(ctx context.Context) error {
 		// keys in short-lived processes until the grant lapsed, which is a
 		// bad enough surprise to be worth the attempt and the log line.
 		c.removeGovernanceSidecar()
+		c.removeFeaturesSidecar()
 		if err := c.store.ClearPolicyResourceState(ctx, orgKey); err != nil {
 			return fmt.Errorf("orgclient.Unenroll: clear policy-resource state: %w", err)
 		}
@@ -596,9 +833,11 @@ func (c *Client) Unenroll(ctx context.Context) error {
 	if err := c.store.DeleteEnrolment(ctx); err != nil {
 		return fmt.Errorf("orgclient.Unenroll: %w", err)
 	}
+	c.budget.clear()
 	if err := c.bearers.Clear(); err != nil {
 		return fmt.Errorf("orgclient.Unenroll: %w", err)
 	}
+	c.clearBreakGlass()
 	if c.orgIdentityChangedSink != nil {
 		c.orgIdentityChangedSink()
 	}
@@ -625,6 +864,14 @@ func (c *Client) Status(ctx context.Context) (EnrolmentState, error) {
 		return st, fmt.Errorf("orgclient.Status: %w", err)
 	}
 	st.LastPush = last
+	// Surface an OPEN oversized-batch circuit. A parked push loop is otherwise
+	// invisible except as a 'failed' row in org_push_log, which reads like any
+	// other transient failure rather than "telemetry has stopped for an hour".
+	paused, err := c.store.LoadPushBreaker(ctx)
+	if err != nil {
+		return st, fmt.Errorf("orgclient.Status: %w", err)
+	}
+	st.PushPaused = paused
 	return st, nil
 }
 
@@ -681,11 +928,22 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		return PushResult{}, fmt.Errorf("orgclient.PushOnce: select: %w", err)
 	}
 	if batch.Empty() {
+		// Nothing to deliver, so every snapshot family composed this tick is
+		// as delivered as it can be: commit, or a family that legitimately
+		// recomputes to zero rows would re-probe as dirty forever.
+		c.store.CommitPushedSnapshots()
 		return PushResult{Empty: true}, nil
 	}
 
 	env := orgcontract.PushEnvelope{
-		AgentVersion:              c.agentVersion,
+		AgentVersion: c.agentVersion,
+		// Managed tenancy only: ManagedMachineIdentity returns "" for an
+		// individual/BYO enrolment, an unresolvable machine id, or any load
+		// error, and the field is omitempty — so an unmanaged node's envelope
+		// stays byte-identical to the pre-feature shape. Reusing the SAME
+		// accessor PostPolicyState uses keeps one definition of "this node's
+		// machine identity" (the server keys on it across both rails).
+		MachineIdentity:           c.ManagedMachineIdentity(ctx),
 		CursorFrom:                maxCursor(cur),
 		CursorTo:                  maxCursor(batch.Cursor),
 		Sessions:                  batch.Sessions,
@@ -698,26 +956,38 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		ProcessSummaries:          batch.ProcessSummaries,
 		SessionVerbositySummaries: batch.SessionVerbositySummaries,
 		SessionCacheSummaries:     batch.SessionCacheSummaries,
-		SessionProcesses:          batch.SessionProcesses,
-		SessionNetworkEvents:      batch.SessionNetworkEvents,
-		AdvisorSuggestions:        batch.AdvisorSuggestions,
-		ProjectPatterns:           batch.ProjectPatterns,
-		BenchmarkRuns:             batch.BenchmarkRuns,
-		BenchmarkAttempts:         batch.BenchmarkAttempts,
-		CompressionStats:          batch.CompressionStats,
-		RoutingDevRows:            batch.RoutingDevRows,
-		CodeintelDevRows:          batch.CodeintelDevRows,
-		TerminalRuns:              batch.TerminalRuns,
-		TerminalCommands:          batch.TerminalCommands,
-		RemoteAudit:               batch.RemoteAudit,
-		GuardPins:                 batch.GuardPins,
-		GuardApprovals:            batch.GuardApprovals,
-		TerminalSummaries:         batch.TerminalSummaries,
-		RemoteAuditSummaries:      batch.RemoteAuditSummaries,
-		RoutingDetails:            batch.RoutingDetails,
-		LimitGauges:               batch.LimitGauges,
-		GuardEvents:               batch.GuardEvents,
-		OTelContent:               batch.OTelContent,
+		// Trickle-up wires (W2/W3/item 6b, 2026-09-11). Composed by their own
+		// store seams under their share tiers; nil/empty otherwise. Every
+		// PushBatch slice family with a same-named PushEnvelope field MUST be
+		// mapped here - TestPushEnvelopeMapsEveryBatchFamily fails by name when
+		// one is composed but never mapped (the class that dropped the obs
+		// slices once and these four a second time).
+		SessionCacheEvents:     batch.SessionCacheEvents,
+		SessionTaskItems:       batch.SessionTaskItems,
+		SessionTaskTransitions: batch.SessionTaskTransitions,
+		SessionToolAccounts:    batch.SessionToolAccounts,
+		SessionProcesses:       batch.SessionProcesses,
+		SessionNetworkEvents:   batch.SessionNetworkEvents,
+		SessionLOC:             batch.SessionLOC,
+		LOCDays:                batch.LOCDays,
+		AdvisorSuggestions:     batch.AdvisorSuggestions,
+		ProjectPatterns:        batch.ProjectPatterns,
+		BenchmarkRuns:          batch.BenchmarkRuns,
+		BenchmarkAttempts:      batch.BenchmarkAttempts,
+		CompressionStats:       batch.CompressionStats,
+		RoutingDevRows:         batch.RoutingDevRows,
+		CodeintelDevRows:       batch.CodeintelDevRows,
+		TerminalRuns:           batch.TerminalRuns,
+		TerminalCommands:       batch.TerminalCommands,
+		RemoteAudit:            batch.RemoteAudit,
+		GuardPins:              batch.GuardPins,
+		GuardApprovals:         batch.GuardApprovals,
+		TerminalSummaries:      batch.TerminalSummaries,
+		RemoteAuditSummaries:   batch.RemoteAuditSummaries,
+		RoutingDetails:         batch.RoutingDetails,
+		LimitGauges:            batch.LimitGauges,
+		GuardEvents:            batch.GuardEvents,
+		OTelContent:            batch.OTelContent,
 		// Org-tier observability (obs-org-tier plan). Each slice is
 		// composed by orgpush.go::composeObsTiers only under its own
 		// [org_client.share] flag; nil/empty when the node hasn't opted
@@ -743,11 +1013,39 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		// the score metadata + content_hash always ship.
 		ObsEvalItems:       batch.ObsEvalItems,
 		ObsEgressDecisions: batch.ObsEgressDecisions, // T8
+		// The node's own enum-only update posture (enterprise-update-management
+		// plan §3.5). nil until cmd/observer wires the posture environment, and
+		// the field is omitempty, so an envelope from a node without the
+		// feature stays byte-identical to the pre-feature shape.
+		UpdatePosture: batch.UpdatePosture,
+		// The node's own enum-only BUDGET posture (org-budget plan §3.3d):
+		// enforcement point, guard mode, where the effective numbers came
+		// from, the last fetch state, and the proxy-only coverage limit. No
+		// cap value, no resolved scope. nil until cmd/observer wires the
+		// provider, and omitempty, so a node without the feature pushes a
+		// byte-identical envelope.
+		BudgetPosture: batch.BudgetPosture,
+	}
+	// The posture's freshness horizon on the server is a function of how often
+	// this node reports, and the CLIENT is the one owner of that fact — the
+	// store composes the posture but does not tick the loop, and the server
+	// cannot derive a cadence from arrival gaps without mistaking one missed
+	// push for a slow node (SF-19). Stamped here rather than plumbed into the
+	// provider seam so "this node's cadence" keeps exactly one definition:
+	// pushInterval(), the same resolver the loop itself uses.
+	if env.BudgetPosture != nil {
+		stamped := *env.BudgetPosture
+		stamped.PushIntervalSeconds = int(c.pushInterval() / time.Second)
+		env.BudgetPosture = &stamped
 	}
 	raw, err := json.Marshal(env)
 	if err != nil {
 		_ = c.store.RecordPush(ctx, int64(batch.RowCount()), 0, "failed", err.Error())
 		return PushResult{}, fmt.Errorf("orgclient.PushOnce: marshal: %w", err)
+	}
+	if err := validatePushBodySize(raw, c.maxPushBytes()); err != nil {
+		_ = c.store.RecordPush(ctx, int64(batch.RowCount()), int64(len(raw)), "failed", err.Error())
+		return PushResult{}, fmt.Errorf("orgclient.PushOnce: %w", err)
 	}
 	wire, err := gzipBytes(raw)
 	if err != nil {
@@ -759,17 +1057,28 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 
 	ts := time.Now().Unix()
 	sig := ed25519.Sign(signKey, orgcontract.PushSigningMessage(ts, wire))
+	localFP := orgcontract.AgentKeyFingerprint(signKey.Public().(ed25519.PublicKey))
 
 	gc, err := c.genClient(enr.OrgServerURL)
 	if err != nil {
 		return PushResult{}, fmt.Errorf("orgclient.PushOnce: %w", err)
 	}
+	// P2b: report the grant-replacement generation this node has adopted so the
+	// server's fleet-ACK gate can converge. 0 (no grant, or no replacement yet)
+	// still registers the node in the fleet registry. Best-effort: a read
+	// failure just leaves the ACK at 0.
+	ackGen := c.currentReplacementGeneration(ctx, enr)
 	params := &gen.PushBatchParams{
 		XSBOTimestamp:      &ts,
 		XSBOAgentSignature: strPtr(base64.RawURLEncoding.EncodeToString(sig)),
 	}
+	// G1-BREAKGLASS: publish this node's seal key (signed, bound to org+node)
+	// and report any redeemed leases the server has not heard about yet.
+	bgAcks := c.pendingBreakGlassAcks()
 	resp, err := gc.PushBatchWithBodyWithResponse(ctx, params, "application/json", bytes.NewReader(wire),
-		bearerEditor(bearer), gzipEncodingEditor)
+		bearerEditor(bearer), gzipEncodingEditor, agentKeyFingerprintEditor(localFP),
+		grantReplacementAckEditor(ackGen), sealKeyEditor(signKey, enr.OrgID, enr.UserID),
+		breakGlassAckEditor(bgAcks))
 	if err != nil {
 		c.noteRenewal(RenewalPathPush, 0, err)
 		_ = c.store.RecordPush(ctx, int64(batch.RowCount()), int64(len(wire)), "retry", err.Error())
@@ -783,9 +1092,24 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 
 	switch resp.StatusCode() {
 	case http.StatusOK:
-		if err := c.store.SavePushCursor(ctx, batch.Cursor); err != nil {
+		// Compare-and-swap against the cursor THIS cycle loaded, never a blind
+		// save: an enrolment re-seed or an `observer org backfill` reset that
+		// landed while this batch was in flight owns the stored cursor, and
+		// overwriting it would either replay the node's whole pre-enrolment
+		// history (the 2026-09-07 re-enrol regression) or undo the operator's
+		// deliberate reset. The rows this cycle did deliver are absorbed by the
+		// server's dedup, so keeping the stored cursor loses nothing.
+		saved, err := c.store.SavePushCursorIfUnchanged(ctx, cur, batch.Cursor)
+		if err != nil {
 			return PushResult{}, fmt.Errorf("orgclient.PushOnce: save cursor: %w", err)
 		}
+		if !saved {
+			c.logger.Info("push cursor moved underneath this cycle (enrol or backfill); keeping the stored cursor")
+		}
+		// Snapshot families are "delivered" only once the server has ACCEPTED
+		// the batch — every other exit path leaves them dirty so the next tick
+		// recomposes what this one failed to ship (plan Track R2 constraint 4).
+		c.store.CommitPushedSnapshots()
 		// Persist the exact rollup that was shared so the dashboard can show it
 		// (best-effort: a failure here never fails an accepted push).
 		_ = c.store.SaveLastPushPayload(ctx, raw)
@@ -795,15 +1119,256 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 			res.AcceptedRows = resp.JSON200.AcceptedRows
 			res.DedupedRows = resp.JSON200.DedupedRows
 		}
+		// P2b grant-replacement delivery (design §5.3, Sol S4). An out-of-band
+		// authority change may ride the push response. The generated 200 struct
+		// does not carry the field, so decode it from the RAW body and feed the
+		// already-built, independently-tested accept path. Best-effort: a
+		// delivery or accept failure never fails an otherwise-accepted push.
+		c.maybeApplyGrantReplacement(ctx, resp.Body)
+		// The server has now heard the ACKs this push carried; then redeem any
+		// newly delivered leases / drop early-revoked ones (best-effort).
+		c.markBreakGlassAcked(bgAcks)
+		c.maybeRedeemBreakGlassLeases(ctx, resp.Body, signKey, enr)
+		c.maybeKickPolicyResourceFetch(resp.Body)
+		// Enterprise Update Management nudge (§3.5). Same raw-body,
+		// best-effort shape as the seams above: the response may name a newer
+		// published manifest version per channel, and only then does the node
+		// fetch the SIGNED manifest with a separate authenticated GET. An org
+		// that has published nothing adds ZERO requests to this cycle.
+		c.noteUpdateNudge(resp.Body)
+		// An accepted push proves this node is not below the org's floor, so
+		// a previously-recorded 426 refusal is stale the instant we get here.
+		c.clearAgentTooOld()
 		return res, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
-		msg := serverError(resp.Body, resp.StatusCode())
+		msg := c.reportAuthFailure(resp.Body, resp.StatusCode(), localFP, enr.OrgServerURL)
 		_ = c.store.RecordPush(ctx, int64(batch.RowCount()), int64(len(wire)), "failed", msg)
 		return PushResult{}, fmt.Errorf("orgclient.PushOnce: %w: %s", ErrAuthFailed, msg)
+	case http.StatusRequestEntityTooLarge:
+		msg := serverError(resp.Body, resp.StatusCode())
+		_ = c.store.RecordPush(ctx, int64(batch.RowCount()), int64(len(wire)), "failed", msg)
+		return PushResult{}, fmt.Errorf("orgclient.PushOnce: %w: %s", ErrBatchTooLarge, msg)
+	case http.StatusUpgradeRequired:
+		// Enterprise update management W5: the org refuses pushes from agents
+		// below [server].min_agent_version. Recorded as FAILED (not "retry")
+		// with the version-naming message, because this is not a transient
+		// condition an operator should wait out — it clears when the node is
+		// updated, and the node dashboard's update banner reads exactly this
+		// record to say so.
+		msg := c.noteAgentTooOld(resp.Body, resp.StatusCode())
+		c.logger.Error("org push refused: this node is below the org's minimum agent version", "detail", msg)
+		// A refused node is exactly the node that most needs an update, so
+		// the update rail is armed HERE rather than only on the 200 path. The
+		// server's 426 body carries the same update_versions nudge an
+		// accepted push does (an additive, optional field), and the channel
+		// is marked pending regardless so a server too old to send it still
+		// lifts this node over the floor. Without this the one mechanism that
+		// can fix the condition was gated behind the push the condition
+		// refuses.
+		c.noteUpdateNudge(resp.Body)
+		c.markUpdateChannelPendingAfterRefusal(ctx)
+		_ = c.store.RecordPush(ctx, int64(batch.RowCount()), int64(len(wire)), "failed", msg)
+		return PushResult{}, fmt.Errorf("orgclient.PushOnce: %w: %s", ErrAgentTooOld, msg)
 	default:
 		msg := serverError(resp.Body, resp.StatusCode())
 		_ = c.store.RecordPush(ctx, int64(batch.RowCount()), int64(len(wire)), "retry", msg)
-		return PushResult{}, fmt.Errorf("orgclient.PushOnce: server returned %d: %s", resp.StatusCode(), msg)
+		// A typed error (not a bare fmt.Errorf string) so normalizeFailureKey
+		// can key runLoop's dedup on the status code alone via errors.As —
+		// msg is the server's response body, which routinely carries a
+		// fresh request id or timestamp that would otherwise re-arm a WARN
+		// every single retry.
+		return PushResult{}, &httpStatusError{op: "orgclient.PushOnce", status: resp.StatusCode(), body: msg}
+	}
+}
+
+// failureDeduper tracks whether the CURRENT failure in a retry loop is new
+// or a repeat of the immediately-preceding one, so a wedged remote (a dead
+// org server, a persistent 5xx, ...) logs ONE WARN naming the remedy
+// instead of one WARN per retry forever. That was the actual 2026-09-07
+// complaint: a dev box enrolled against a now-dead localhost:8443 org
+// server logged 316 WARN lines in the first hour after every restart.
+//
+// Pure and stateful, no I/O of its own — see warnOnce for the logging
+// policy built on top of it. A caller owns one failureDeduper PER
+// independent failure stream it wants deduplicated (e.g. one for the
+// generic push failure, a separate one for auth failures, since those
+// already run on separate backoff tracks) and must call observe("") on
+// every cycle that did NOT fail, so a later failure — even one identical
+// to the last — is treated as fresh and re-WARNs (a recovery re-arms it).
+type failureDeduper struct {
+	// lastKind is normalizeFailureKey(err) for the most recent failure
+	// this deduper has seen, or "" if the tracker is currently clear
+	// (either nothing has failed yet, or the last observed cycle
+	// succeeded). Deliberately NOT err.Error(): the raw message embeds
+	// variable payload (a server-echoed request id, a decode error's
+	// byte offset, an OS-specific syscall rendering) that would compare
+	// unequal between two occurrences of the SAME class of failure and
+	// re-arm a WARN every single cycle — the exact bug class this type
+	// exists to prevent, just one level down.
+	lastKind string
+	// repeats counts consecutive identical failures, INCLUDING the
+	// current one — so the first sighting of a kind reports 1, not 0.
+	repeats int
+	// lastWarnAt is when warnOnce last actually emitted a WARN (zero
+	// until the first one). It backstops a normalization gap: a failure
+	// whose key keeps changing every cycle (because normalizeFailureKey
+	// hasn't learned to collapse whatever varies in it) must still
+	// degrade to "at most one WARN every warnBackstopInterval", not fall
+	// back to per-cycle spam.
+	lastWarnAt time.Time
+}
+
+// observe records one cycle's outcome. kind == "" means the cycle did NOT
+// fail (success, or not applicable) and always clears the tracker. A
+// non-empty kind identical to the previous failing cycle's kind is a
+// REPEAT; a changed kind, or the first failure after a clear/success, is
+// NOT a repeat (it deserves a fresh WARN, subject to warnOnce's time
+// backstop). Returns (isRepeat, repeats).
+func (d *failureDeduper) observe(kind string) (isRepeat bool, repeats int) {
+	if kind == "" {
+		d.lastKind = ""
+		d.repeats = 0
+		return false, 0
+	}
+	if kind == d.lastKind {
+		d.repeats++
+		return true, d.repeats
+	}
+	d.lastKind = kind
+	d.repeats = 1
+	return false, 1
+}
+
+// warnBackstopInterval bounds how often warnOnce will emit a fresh WARN
+// even when the dedup key changes every cycle. It exists for the case
+// normalizeFailureKey does NOT fully solve: a class of failure whose
+// message keeps mutating in a way the normalizer hasn't learned to
+// collapse. Without this, that gap would regress all the way back to
+// one WARN per retry — the original 316-lines-an-hour complaint — just
+// gated on a subtler trigger. clockNow is swappable in tests.
+const warnBackstopInterval = 10 * time.Minute
+
+var clockNow = time.Now
+
+// warnOnce logs err through d: the FIRST sighting of a given failure kind
+// (by normalizeFailureKey(err), not the raw message — see failureDeduper's
+// doc comment) — including a CHANGED kind, or the first failure after a
+// recovery — logs at WARN with msg and args, UNLESS the previous WARN from
+// this same deduper landed less than warnBackstopInterval ago, in which
+// case it too logs at DEBUG (the time backstop). Every IDENTICAL repeat of
+// the immediately-preceding failure logs at DEBUG instead, tagged with a
+// running "repeat_count" so the operator can still tell how long it's been
+// going without one line per cycle. Callers must clear d (d.observe(""))
+// on a successful cycle so the next failure — even an identical one —
+// gets a fresh WARN.
+func warnOnce(logger *slog.Logger, d *failureDeduper, err error, msg string, args ...any) {
+	isRepeat, repeats := d.observe(normalizeFailureKey(err))
+	fields := append(append([]any{}, args...), "err", err)
+	if isRepeat {
+		logger.Debug(msg+" (repeat, suppressed to DEBUG — see the first WARN for the remedy)", append(fields, "repeat_count", repeats)...)
+		return
+	}
+	now := clockNow()
+	if !d.lastWarnAt.IsZero() && now.Sub(d.lastWarnAt) < warnBackstopInterval {
+		logger.Debug(msg+" (dedup key changed but within the WARN backstop window — suppressed to DEBUG)", fields...)
+		return
+	}
+	d.lastWarnAt = now
+	logger.Warn(msg, fields...)
+}
+
+// httpStatusError carries an HTTP status code separately from the
+// (often server-controlled, and frequently variable — a request id, a
+// timestamp) response body text, so normalizeFailureKey can key on the
+// STATUS alone via errors.As instead of the full rendered message, which
+// would otherwise re-arm a WARN every cycle the server's error body
+// varies even slightly.
+type httpStatusError struct {
+	op     string
+	status int
+	body   string
+}
+
+func (e *httpStatusError) Error() string {
+	if e.body == "" {
+		return fmt.Sprintf("%s: server returned %d", e.op, e.status)
+	}
+	return fmt.Sprintf("%s: server returned %d: %s", e.op, e.status, e.body)
+}
+
+// longDigitRun matches a run of 4+ consecutive digits — long enough to
+// catch a request id, a unix timestamp, or a byte offset, short enough to
+// leave a 1-3 digit HTTP status code embedded in prose (e.g. "returned
+// 503") untouched.
+var longDigitRun = regexp.MustCompile(`\d{4,}`)
+
+// maxFailureKeyMsgLen bounds the fallback message tier of
+// normalizeFailureKey so an unusually long error string doesn't grow the
+// dedup key without bound.
+const maxFailureKeyMsgLen = 120
+
+// normalizeFailureKey derives failureDeduper's comparison key from err,
+// collapsing variable payload that would otherwise make two occurrences
+// of the SAME class of failure compare as different and re-arm a WARN
+// every cycle. Three tiers, most to least specific:
+//
+//  1. A *url.Error — the shape net/http.Client wraps every transport
+//     failure in — keys on Op plus a coarse network-error CLASS via
+//     errors.Is/errors.As (timeout vs connection-refused vs "other"),
+//     never the message text, which can carry a resolved address or an
+//     OS-specific syscall rendering that varies harmlessly between
+//     attempts while the underlying class does not.
+//  2. An *httpStatusError (see PushOnce) keys on the status code alone —
+//     never the echoed response body, which is exactly the variable
+//     payload this function exists to strip. A genuine status change
+//     (500 → 503) DOES yield a different key: that is an
+//     operator-meaningful change, not noise.
+//  3. Anything else falls back to the first maxFailureKeyMsgLen bytes of
+//     the message with digit runs of 4+ collapsed to a single '#' (see
+//     longDigitRun) — long enough to catch a request id / unix
+//     timestamp / byte offset, short enough to leave a short HTTP status
+//     embedded in prose untouched.
+func normalizeFailureKey(err error) string {
+	if err == nil {
+		return ""
+	}
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		return "net:" + uerr.Op + ":" + classifyNetError(uerr.Err)
+	}
+	var serr *httpStatusError
+	if errors.As(err, &serr) {
+		return fmt.Sprintf("status:%d", serr.status)
+	}
+	msg := err.Error()
+	if len(msg) > maxFailureKeyMsgLen {
+		msg = msg[:maxFailureKeyMsgLen]
+	}
+	return "msg:" + longDigitRun.ReplaceAllString(msg, "#")
+}
+
+// classifyNetError buckets a *url.Error's wrapped cause into a coarse,
+// stable class (timeout / connection-refused / connection-reset / other)
+// via errors.Is/errors.As rather than string matching, so an OS-specific
+// rendering of the same syscall never produces a different class.
+func classifyNetError(err error) string {
+	switch {
+	case err == nil:
+		return "unknown"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "conn-refused"
+	case errors.Is(err, syscall.ECONNRESET):
+		return "conn-reset"
+	case errors.Is(err, syscall.ETIMEDOUT):
+		return "timeout"
+	default:
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return "timeout"
+		}
+		return "other"
 	}
 }
 
@@ -822,18 +1387,50 @@ var errIdle = errors.New("orgclient: idle cycle")
 // terminal; see runLoop). Retryable failures shorten the next wait to the
 // current backoff (exponential, jittered); a success resets the backoff.
 func (c *Client) PushLoop(ctx context.Context) error {
-	return c.runLoop(ctx, c.pushInterval(), func(ctx context.Context) error {
+	// One failureDeduper PER independent failure stream, scoped to this
+	// single PushLoop call (a fresh set every time PushLoop is invoked,
+	// same lifetime as the closure below) — the enrolment-read, routing-
+	// policy, and announcement fetches ride PushLoop's cycle but are
+	// logged directly here rather than through runLoop's own switch, so
+	// runLoop's local dedupers (scoped to ITS invocation) can't cover
+	// them.
+	var enrolReadDeduper, routingDeduper, announcementDeduper failureDeduper
+	// RUN THE FIRST CYCLE IMMEDIATELY (org-observer fundamentals finding H3b).
+	// Every cycle carries the governance rails — routing, BUDGET, pricing,
+	// announcements — and sleeping a full interval before the first one meant
+	// a restarted daemon spent that interval with no answer from the org at
+	// all. On a node whose budget is org-REQUIRED that window is either a
+	// block or a bypass, depending only on what it had in memory; on every
+	// other node it is simply a push interval of stale governance for no
+	// reason. A pre-armed single-slot kick is the smallest expression of
+	// "start now, then settle into the interval".
+	kick := make(chan struct{}, 1)
+	kick <- struct{}{}
+	return c.runLoopKick(ctx, c.pushInterval(), kick, func(ctx context.Context) error {
 		enr, err := c.store.LoadEnrolment(ctx)
 		if err != nil {
-			c.logger.Warn("org push: enrolment read failed", "err", err)
+			warnOnce(c.logger, &enrolReadDeduper, err, "org push: enrolment read failed")
 			return errIdle
 		}
+		enrolReadDeduper.observe("")
 		if enr == nil {
 			return errIdle // not enrolled (yet, or unenrolled while running)
 		}
 		_, err = c.PushOnce(ctx)
 		if errors.Is(err, ErrNotEnrolled) {
 			return errIdle
+		}
+		// Oversized-batch circuit bookkeeping lives HERE, not in runLoop's
+		// timing switch: runLoop is shared with the policy-poll loops, and a
+		// poll succeeding while the push is parked must not close the push
+		// circuit. This is the one owner of that state.
+		switch {
+		case errors.Is(err, ErrBatchTooLarge):
+			c.noteOversizedBatch(ctx, err)
+		case err == nil:
+			if cerr := c.store.ClearPushBreaker(ctx); cerr != nil {
+				c.logger.Warn("org push: could not clear the oversized-batch pause record", "err", cerr)
+			}
 		}
 		// Best-effort §R19.1 policy sync rides the same cycle: a fetch
 		// failure never affects push health (P1 — the policy cache
@@ -845,25 +1442,90 @@ func (c *Client) PushLoop(ctx context.Context) error {
 		if routingOutcome != nil && c.routingOutcomeSink != nil {
 			c.routingOutcomeSink(*routingOutcome)
 		}
-		if perr != nil && !errors.Is(perr, ErrNotEnrolled) {
-			c.logger.Warn("org routing policy fetch failed", "err", perr)
+		switch {
+		case perr != nil && !errors.Is(perr, ErrNotEnrolled):
+			warnOnce(c.logger, &routingDeduper, perr,
+				"org routing policy fetch failed — if this persists, check the org server, or run `observer unenroll` / set [org_client].enabled = false to stop trying")
+		default:
+			routingDeduper.observe("")
+		}
+		// The org BUDGET rail (org-budget plan §3.3c) rides the SAME cycle,
+		// for the same reason as routing above: no new timer, no new host, no
+		// new connection. It is a conditional GET (If-None-Match over the
+		// document digest, not the version — a team-membership change moves a
+		// cap without moving the version), so the steady state is a 304. Every
+		// failure is FAIL-OPEN: the sink is poked with the typed state and the
+		// guard keeps the node's own [guard.budget] numbers.
+		budgetOutcome, berr := c.FetchBudgetPolicy(ctx)
+		if c.budgetSink != nil && !errors.Is(berr, context.Canceled) {
+			c.budgetSink(budgetOutcome)
+		}
+		if berr != nil && !errors.Is(berr, ErrNotEnrolled) && !errors.Is(berr, context.Canceled) {
+			c.logger.Warn("org budget policy fetch failed", "state", budgetOutcome.State, "err", berr)
+		}
+		// The org PRICING rail (enterprise-pricing plan §3.3) rides the SAME
+		// cycle, immediately after the budget rail and for the same reasons:
+		// no new timer, no new host, no new connection, and a conditional GET
+		// whose steady state is a 304.
+		//
+		// It is polled BESIDE the budget rather than on its own schedule
+		// because the two are one governance fact: a cap and the rate it is
+		// measured in. A node that refreshed one without the other would spend
+		// the gap enforcing this quarter's cap against last quarter's prices.
+		// Ruling R2 gates both on the same [guard.budget].from_org switch, and
+		// a disabled rail makes no request at all.
+		//
+		// The SINK is notified by FetchPricingPolicy itself, not here — the
+		// one place this rail's wiring diverges from the budget rail's, and
+		// deliberately. The pricing sink must also fire on the COLD-START
+		// path (LoadPersistedPricing, minutes before the first poll), and a
+		// loop that owned the notification would leave that path silently
+		// un-notified: the engine would hold the persisted rates while the
+		// posture said nothing had been applied.
+		pricingOutcome, prerr := c.FetchPricingPolicy(ctx)
+		if prerr != nil && !errors.Is(prerr, ErrNotEnrolled) && !errors.Is(prerr, context.Canceled) {
+			c.logger.Warn("org pricing policy fetch failed", "state", pricingOutcome.State, "err", prerr)
+		}
+		// The org-served Cloud Intelligence RESULT rail (org-served-cloud-
+		// intelligence plan §2.4, W3) rides the SAME cycle for the same reason:
+		// no new timer, no new host, no new connection. It is a PULL (the org's
+		// derived results coming back), gated internally by
+		// [intelligence].org_enrichment — a node that has not opted in makes no
+		// request at all, so this call is inert on every individual/unopted
+		// node. Every failure is FAIL-OPEN: the node keeps its cached results.
+		intelOutcome, ierr := c.FetchIntelResults(ctx)
+		if ierr != nil && !errors.Is(ierr, ErrNotEnrolled) && !errors.Is(ierr, context.Canceled) {
+			c.logger.Warn("org intelligence results fetch failed", "state", intelOutcome.State, "err", ierr)
 		}
 		// Rail R3 of the dashboard-announcements plan (§4) rides the
 		// SAME cycle for the same reason: no new timer, no new host, no
 		// new connection — and a fetch failure never affects push
 		// health (P1), it just leaves the banner at its last verified
 		// version.
-		if _, aerr := c.FetchOrgAnnouncement(ctx); aerr != nil && !errors.Is(aerr, ErrNotEnrolled) {
-			c.logger.Warn("org announcement fetch failed", "err", aerr)
+		_, aerr := c.FetchOrgAnnouncement(ctx)
+		switch {
+		case aerr != nil && !errors.Is(aerr, ErrNotEnrolled):
+			warnOnce(c.logger, &announcementDeduper, aerr,
+				"org announcement fetch failed — if this persists, check the org server, or run `observer unenroll` / set [org_client].enabled = false to stop trying")
+		default:
+			announcementDeduper.observe("")
 		}
 		// Arc 4 P6b managed-integrity probe rides the SAME cycle (plan §9,
 		// announce.go discipline: no new timer/host/connection). MANAGED nodes
 		// only — an individual node never computes a fingerprint or a signal, so
 		// the individual plane is untouched by construction. A report failure
 		// never affects push health (P1).
+		// Enterprise Update Management (§3.5) rides the SAME cycle, for the
+		// same reason as rail R3 above: no new timer, no new host, no new
+		// connection. It fetches ONLY the channels the push acknowledgment
+		// just said the server is ahead on, so a fleet with nothing published
+		// makes no extra request at all. A fetch failure never affects push
+		// health — it leaves the update card at its last verified manifest.
+		c.FetchPendingUpdateManifests(ctx)
 		if c.integrityCollector != nil && enr.IsManaged() {
-			siblings, drifted := c.integrityCollector()
-			if _, ierr := c.ReportIntegrity(ctx, siblings, drifted); ierr != nil && !errors.Is(ierr, ErrNotEnrolled) {
+			report := c.integrityCollector()
+			if _, ierr := c.ReportIntegrity(ctx, report); ierr != nil &&
+				!errors.Is(ierr, ErrNotEnrolled) && !errors.Is(ierr, ErrManagedIntegrityUnbound) {
 				c.logger.Warn("org managed-integrity report failed", "err", ierr)
 			}
 		}
@@ -871,11 +1533,34 @@ func (c *Client) PushLoop(ctx context.Context) error {
 	})
 }
 
+// noteOversizedBatch is the ONE owner of the ErrBatchTooLarge circuit state. It
+// does the two things a silent park does not: it says out loud, at Error level,
+// that org telemetry has STOPPED and for how long, and it persists the pause so
+// the dashboard and `observer org push-status` — which run in other processes —
+// can show it instead of the operator having to read org_push_log by hand.
+//
+// Persisting is best-effort: failing to write the record must never escalate a
+// parked push into a broken daemon (P1).
+func (c *Client) noteOversizedBatch(ctx context.Context, err error) {
+	until := time.Now().UTC().Add(oversizedBatchBackoff)
+	c.logger.Error("org push PAUSED — the composed rollup is larger than the accepted push limit, "+
+		"so NOTHING is reaching the org server until this clears",
+		"err", err,
+		"paused_for", oversizedBatchBackoff.String(),
+		"resumes_at", until.Format(time.RFC3339),
+		"what_to_check", "raise [org_client].max_push_bytes, narrow [org_client.scope] to fewer "+
+			"projects, or turn off a large [org_client.share] tier — the org server also enforces "+
+			"its own body limit, so a node-side raise alone may not be enough")
+	if serr := c.store.OpenPushBreaker(ctx, until, err.Error()); serr != nil {
+		c.logger.Warn("org push: could not record the oversized-batch pause for the dashboard", "err", serr)
+	}
+}
+
 // SetIntegrityCollector installs the Arc 4 P6b managed-integrity evidence
 // collector (plan §9). It must be called before PushLoop starts. The collector
 // is consulted only inside PushLoop and only for a managed node; see the
 // integrityCollector field comment.
-func (c *Client) SetIntegrityCollector(fn func() (siblings, drifted []string)) {
+func (c *Client) SetIntegrityCollector(fn func() orgcontract.ManagedIntegrityReport) {
 	c.integrityCollector = fn
 }
 
@@ -886,15 +1571,34 @@ func (c *Client) SetIntegrityCollector(fn func() (siblings, drifted []string)) {
 // interval (no backoff); ErrAuthFailed → capped-backoff retry on a dedicated
 // track (never terminal — self-heals on a re-enrol/rotation without a restart);
 // any other error → jittered exponential backoff.
+//
+// The generic-failure and auth-failure branches each dedup their own WARN
+// through a failureDeduper SCOPED TO THIS runLoop CALL (declared as local
+// variables below, same lifetime as backoff/authBackoff) — see
+// failureDeduper's doc comment. runLoop is shared by every org poll loop
+// (push, guard policy poll, policy-resource poll), so this benefits all of
+// them: a wedged remote no longer produces one WARN per retry forever,
+// only one WARN then DEBUG-with-counter until the error changes or a
+// cycle succeeds.
 func (c *Client) runLoop(ctx context.Context, interval time.Duration, action func(context.Context) error) error {
+	return c.runLoopKick(ctx, interval, nil, action)
+}
+
+// runLoopKick is runLoop with an optional wake channel: a receive on kick
+// runs the next cycle immediately (the 2026-09-01 policy-propagation nudge).
+// A nil kick blocks forever in the select, making this byte-identical to the
+// plain loop — every existing caller passes nil via runLoop.
+func (c *Client) runLoopKick(ctx context.Context, interval time.Duration, kick <-chan struct{}, action func(context.Context) error) error {
 	backoff := initialBackoff
 	authBackoff := initialBackoff
 	sleep := interval
+	var failDeduper, authFailDeduper failureDeduper
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(sleep):
+		case <-kick:
 		}
 
 		err := action(ctx)
@@ -912,17 +1616,33 @@ func (c *Client) runLoop(ctx context.Context, interval time.Duration, action fun
 			// genuinely-revoked node settles to a slow cadence instead of
 			// spamming, while a prompt re-enrol still recovers within the first
 			// (fast) retries.
-			c.logger.Warn("org push: authentication failed, retrying (re-enrol or rotate to recover)", "err", err, "backoff", authBackoff.String())
+			warnOnce(c.logger, &authFailDeduper, err,
+				"org push: authentication failed, retrying (re-enrol or rotate to recover)",
+				"backoff", authBackoff.String())
 			sleep = jitter(authBackoff)
 			authBackoff = nextBackoffCapped(authBackoff, authFailMaxBackoff)
+		case errors.Is(err, ErrBatchTooLarge):
+			// Deliberately silent: PushLoop's own handler (noteOversizedBatch)
+			// already logged the operator-facing explanation on this same cycle
+			// AND persisted the pause for the dashboard / CLI. Logging again
+			// here would double-report it with strictly less detail.
+			sleep = oversizedBatchBackoff
 		case err != nil:
-			c.logger.Warn("org push failed, backing off", "err", err, "backoff", backoff.String())
+			warnOnce(c.logger, &failDeduper, err,
+				"org push failed, backing off — if the org server stays unreachable, fix it, run `observer unenroll`, or set [org_client].enabled = false to stop retrying",
+				"backoff", backoff.String())
 			sleep = jitter(backoff)
 			backoff = nextBackoff(backoff)
 		default:
 			sleep = interval
 			backoff = initialBackoff
 			authBackoff = initialBackoff
+			// A successful cycle is a recovery: re-arm both trackers so a
+			// LATER failure — even one identical to whatever failed before
+			// — gets a fresh WARN instead of being mistaken for the same
+			// ongoing outage.
+			failDeduper.observe("")
+			authFailDeduper.observe("")
 		}
 	}
 }
@@ -931,6 +1651,23 @@ func (c *Client) runLoop(ctx context.Context, interval time.Duration, action fun
 // configured HTTP doer.
 func (c *Client) genClient(server string) (*gen.ClientWithResponses, error) {
 	return gen.NewClientWithResponses(server, gen.WithHTTPClient(c.httpClient))
+}
+
+// snapshotInterval resolves [org_client] snapshot_interval_seconds: the
+// shortest gap between two recomputes of the same SNAPSHOT wire family. Unset
+// (0) resolves to DefaultSnapshotIntervalMultiple × the EFFECTIVE push interval
+// — computed here rather than stored as an absolute so a node that retunes
+// push_interval_seconds keeps the same ratio. A negative value disables the
+// throttle (every changed family recomputes on every tick).
+func (c *Client) snapshotInterval() time.Duration {
+	secs := c.cfg.SnapshotIntervalSeconds
+	if secs < 0 {
+		return 0
+	}
+	if secs == 0 {
+		return time.Duration(config.DefaultSnapshotIntervalMultiple) * c.pushInterval()
+	}
+	return time.Duration(secs) * time.Second
 }
 
 func (c *Client) pushInterval() time.Duration {
@@ -954,7 +1691,140 @@ func (c *Client) maxPushBytes() int64 {
 	return mb
 }
 
+func validatePushBodySize(raw []byte, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return nil
+	}
+	if int64(len(raw)) > maxBytes {
+		return fmt.Errorf("%w: serialized_bytes=%d limit_bytes=%d", ErrBatchTooLarge, len(raw), maxBytes)
+	}
+	return nil
+}
+
 // --- helpers ---------------------------------------------------------------
+
+// agentKeyFingerprintEditor advertises this agent's own public-key fingerprint
+// so the SERVER can tell "your signature is corrupt" from "you are signing with
+// a key this member no longer has bound" and name the difference in its 401.
+//
+// It carries no authority: the server uses it only to sharpen a rejection
+// reason, never to grant anything (the Ed25519 signature remains the sole
+// authenticator). A server that predates the header ignores it, which is why
+// this is a plain RequestEditorFn rather than a generated parameter — the
+// OpenAPI contract is unchanged and no client/server regeneration is implied.
+func agentKeyFingerprintEditor(fingerprint string) gen.RequestEditorFn {
+	return func(_ context.Context, req *http.Request) error {
+		if fingerprint != "" {
+			req.Header.Set(orgcontract.HeaderAgentKeyFingerprint, fingerprint)
+		}
+		return nil
+	}
+}
+
+// grantReplacementAckEditor reports (via HeaderGrantReplacementAck) the highest
+// grant-replacement generation this node has adopted, so the server's fleet-ACK
+// gate learns the node is converged. Like the fingerprint editor it is a plain
+// header on an already-authenticated push (no OpenAPI change); the header can
+// only report the node's own adoption and never widens access.
+func grantReplacementAckEditor(generation int64) gen.RequestEditorFn {
+	return func(_ context.Context, req *http.Request) error {
+		req.Header.Set(orgcontract.HeaderGrantReplacementAck, strconv.FormatInt(generation, 10))
+		return nil
+	}
+}
+
+// authFailure is the ADDITIVE discriminator half of a 401/403 body. Both fields
+// are absent from a v1.8-class server's response, so every consumer must treat
+// the zero value as "the server did not say".
+type authFailure struct {
+	Reason              string `json:"reason"`
+	BoundKeyFingerprint string `json:"bound_key_fingerprint"`
+}
+
+// parseAuthFailure extracts the discriminator from an error body. A body that
+// carries none (an older server, or a proxy's own error page) yields the zero
+// value rather than an error: this is diagnosis, and failing to diagnose must
+// never change the outcome of the push.
+func parseAuthFailure(body []byte) authFailure {
+	var f authFailure
+	if err := json.Unmarshal(body, &f); err != nil {
+		return authFailure{}
+	}
+	return f
+}
+
+// reportAuthFailure logs WHY a push was rejected and returns the message string
+// recorded against the push (and shown by `observer org status`).
+//
+// Before this, a stranded node reported only "unauthorized: invalid per-push
+// signature" — indistinguishable from a clock skew, a revoked bearer, or the
+// key-binding collision that actually caused the 2026-08-26/27 incident, where
+// a second machine enrolling under the same org member silently took over the
+// binding and left this node 401ing forever.
+//
+// Two sources are combined. The server's `reason` is authoritative when
+// present. Independently, comparing our own key fingerprint against the
+// `bound_key_fingerprint` the server reports proves a binding conflict LOCALLY
+// — which is what lets a current agent diagnose the collision even against a
+// server too old to name it.
+func (c *Client) reportAuthFailure(body []byte, status int, localFP, orgURL string) string {
+	msg := serverError(body, status)
+	f := parseAuthFailure(body)
+
+	reason := f.Reason
+	// The local proof outranks a server that could only say "the signature did
+	// not verify": if the server holds a DIFFERENT key than ours, the cause is
+	// not a bad signature, it is a displaced binding.
+	if f.BoundKeyFingerprint != "" && localFP != "" && f.BoundKeyFingerprint != localFP &&
+		(reason == "" || reason == orgcontract.AuthReasonSignatureMismatch) {
+		reason = orgcontract.AuthReasonBindingConflict
+	}
+
+	attrs := []any{
+		"status", status,
+		"detail", msg,
+		"org_server", orgURL,
+		"local_key_fingerprint", localFP,
+	}
+	if reason != "" {
+		attrs = append(attrs, "reason", reason)
+	}
+	if f.BoundKeyFingerprint != "" {
+		attrs = append(attrs, "server_bound_key_fingerprint", f.BoundKeyFingerprint)
+	}
+	if remedy := authFailureRemedy(reason); remedy != "" {
+		attrs = append(attrs, "remedy", remedy)
+	}
+	c.logger.Warn("org push rejected", attrs...)
+
+	if reason != "" {
+		// Fold the reason into the RECORDED message too: `observer org status`
+		// and the dashboard read this string, and they are where an operator
+		// looks before they ever see a daemon log.
+		return reason + ": " + msg
+	}
+	return msg
+}
+
+// authFailureRemedy maps a reason to the one action that resolves it. A table,
+// not a conditional ladder (CLAUDE.md #5); an unknown reason yields "" so a
+// future server-side reason never produces confidently wrong advice.
+func authFailureRemedy(reason string) string {
+	switch reason {
+	case orgcontract.AuthReasonBindingConflict:
+		return "another machine enrolled under this org member and took the key binding; re-enrol this node, or give each machine its own member"
+	case orgcontract.AuthReasonUnknownKey:
+		return "no agent key is bound for this member; re-enrol this node"
+	case orgcontract.AuthReasonTimestampSkew:
+		return "this host's clock is outside the server's allowed skew; sync time"
+	case orgcontract.AuthReasonMissingSignature, orgcontract.AuthReasonMalformedSignature:
+		return "the per-push signature headers did not reach the server intact; check for an intermediate proxy stripping X-SBO-* headers"
+	case orgcontract.AuthReasonSignatureMismatch:
+		return "the signature did not verify against the bound key; re-enrol this node if it persists"
+	default:
+		return ""
+	}
+}
 
 // bearerEditor sets the Authorization header on the outgoing push request.
 func bearerEditor(bearer string) gen.RequestEditorFn {

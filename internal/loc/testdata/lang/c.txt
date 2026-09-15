@@ -1,0 +1,9 @@
+#include <stdio.h>
+
+// Line comment
+/* Block
+ * comment */
+int main(void) {
+    printf("// not a comment\n");
+    return 0;
+}

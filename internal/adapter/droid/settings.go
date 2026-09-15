@@ -61,6 +61,46 @@ type sidecar struct {
 		OutputTokens    int64 `json:"outputTokens"`
 		CacheReadTokens int64 `json:"cacheReadTokens"`
 	} `json:"lastCallTokenUsage"`
+	// EffectiveFactoryRouterModel names the CONCRETE model droid's own
+	// auto-router picked for an `auto`-mode session, once it has routed
+	// at least one turn. Grounded 2026-09-03: present
+	// (`{"modelId":"claude-opus-5","reasoningEffort":"high","fallbacks":[]}`)
+	// on an `auto`-mode sidecar that completed a routed turn, ABSENT on
+	// one that never did (an empty "New Session" scratch session with
+	// `model:"auto"` and no effectiveFactoryRouterModel key at all). See
+	// resolvedModel.
+	EffectiveFactoryRouterModel struct {
+		ModelID string `json:"modelId"`
+	} `json:"effectiveFactoryRouterModel"`
+}
+
+// autoModel is the sidecar's own sentinel for "let droid's router
+// choose", as opposed to an operator-pinned model id.
+const autoModel = "auto"
+
+// resolvedModel returns the session's effective model through droid's
+// auto-routing ladder:
+//
+//  1. an explicit, non-"auto" sidecar `model` wins outright — the
+//     common case, and the only case for a BYOK `custom:...` alias;
+//  2. otherwise, for an `auto`-mode session that has routed at least
+//     one turn, `effectiveFactoryRouterModel.modelId` names the
+//     concrete model droid actually called;
+//  3. otherwise (an `auto`-mode session with no routed turn yet — the
+//     empty "New Session" shape) the literal `"auto"` sentinel is
+//     returned verbatim rather than guessed at.
+//
+// A blank `model` (missing sidecar field entirely) falls through the
+// same way `"auto"` does, landing on tier 2 then tier 3.
+func (sc *sidecar) resolvedModel() string {
+	m := strings.TrimSpace(sc.Model)
+	if m != "" && m != autoModel {
+		return m
+	}
+	if eff := strings.TrimSpace(sc.EffectiveFactoryRouterModel.ModelID); eff != "" {
+		return eff
+	}
+	return m
 }
 
 // settingsPath maps a transcript path to its sidecar path. Returns ""
@@ -138,7 +178,7 @@ func tokenEvent(sc *sidecar, sourceFile, sessionID, projectRoot, gitBranch, gitR
 		GitRemote:           gitRemote,
 		Timestamp:           ts,
 		Tool:                models.ToolDroid,
-		Model:               strings.TrimSpace(sc.Model),
+		Model:               sc.resolvedModel(),
 		InputTokens:         u.InputTokens,
 		OutputTokens:        u.OutputTokens,
 		CacheReadTokens:     u.CacheReadTokens,

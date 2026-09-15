@@ -8,10 +8,46 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
+// ChildSubagent is a separately addressable runtime with exact transcript
+// ownership. Unlike legacy windows, simultaneous runtimes cannot mix usage.
+type ChildSubagent struct {
+	SessionID, AgentID, StartedAt, LastSeenAt                       string
+	ActionCount, ErrorCount                                         int
+	InputTokens, OutputTokens, CacheReadTokens, CacheCreationTokens int64
+	CostUSD                                                         float64
+}
+
+// ChildSubagentsForSession loads only the linked children of this parent.
+func (s *Store) ChildSubagentsForSession(ctx context.Context, parent string) ([]ChildSubagent, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT s.id, s.started_at,
+	 COALESCE((SELECT MAX(timestamp) FROM actions WHERE session_id=s.id),s.started_at),
+	 COALESCE((SELECT json_extract(metadata,'$.agent_id') FROM actions WHERE session_id=s.id AND json_extract(metadata,'$.agent_id') IS NOT NULL LIMIT 1),''),
+	 (SELECT COUNT(*) FROM actions WHERE session_id=s.id),
+	 (SELECT COUNT(*) FROM actions WHERE session_id=s.id AND success=0),
+	 COALESCE((SELECT SUM(input_tokens) FROM token_usage WHERE session_id=s.id AND is_sidechain=0),0),
+	 COALESCE((SELECT SUM(output_tokens) FROM token_usage WHERE session_id=s.id AND is_sidechain=0),0),
+	 COALESCE((SELECT SUM(cache_read_tokens) FROM token_usage WHERE session_id=s.id AND is_sidechain=0),0),
+	 COALESCE((SELECT SUM(cache_creation_tokens) FROM token_usage WHERE session_id=s.id AND is_sidechain=0),0),
+	 COALESCE((SELECT SUM(estimated_cost_usd) FROM token_usage WHERE session_id=s.id AND is_sidechain=0),0)
+	 FROM sessions s WHERE s.parent_thread_id=? AND s.thread_source='subagent' ORDER BY s.started_at,s.id`, parent)
+	if err != nil {
+		return nil, fmt.Errorf("store.ChildSubagentsForSession: %w", err)
+	}
+	defer rows.Close()
+	var out []ChildSubagent
+	for rows.Next() {
+		var c ChildSubagent
+		if err := rows.Scan(&c.SessionID, &c.StartedAt, &c.LastSeenAt, &c.AgentID, &c.ActionCount, &c.ErrorCount, &c.InputTokens, &c.OutputTokens, &c.CacheReadTokens, &c.CacheCreationTokens, &c.CostUSD); err != nil {
+			return nil, fmt.Errorf("store.ChildSubagentsForSession: scan: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // subagents.go — read seam for the session-detail sub-agents view.
 //
-// The claude-code sub-agent model (migration 010, commit 54a51540) keeps
-// every sub-agent's activity on the PARENT's session row, marked per-action
+// The legacy inline sub-agent model keeps activity on the PARENT's row, marked per-action
 // by is_sidechain=1; lifecycle brackets arrive as spawn_subagent /
 // subagent_start / subagent_stop actions. This seam loads that material in
 // chronological order; the grouping into per-sub-agent summaries is pure
@@ -20,6 +56,8 @@ import (
 // Since migration 087 token_usage rows carry the same is_sidechain flag, so
 // SidechainTokenUsageForSession loads the usage half (tokens + cost) and the
 // builder buckets it into the same windows.
+// Dedicated Claude runtime transcripts now use linked child sessions, read by
+// ChildSubagentsForSession; these legacy queries only load the remainder.
 
 // SidechainActionsForSession returns the session's sidechain activity plus
 // its lifecycle bracket actions, oldest first. The bracket types are

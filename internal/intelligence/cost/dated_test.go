@@ -137,6 +137,43 @@ func TestDated_PricingSourceIsDateIndependent(t *testing.T) {
 	}
 }
 
+// TestDated_CursorAliasUsesOwnTimeline pins that a Cursor-qualified exact
+// model keeps a historical timeline attached to its own table key.
+func TestDated_CursorAliasUsesOwnTimeline(t *testing.T) {
+	tbl := datedTestTable(t)
+	const alias = "cursor-grok-4.6-medium"
+	tbl.Merge(map[string]Pricing{alias: newRates})
+	tbl.MergeDated(map[string][]DatedPricing{
+		alias: {
+			{EffectiveFrom: time.Time{}, Pricing: oldRates},
+			{EffectiveFrom: boundary, Pricing: newRates},
+		},
+	})
+
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+		want Pricing
+	}{
+		{name: "before boundary", at: boundary.Add(-time.Hour), want: oldRates},
+		{name: "at boundary", at: boundary, want: newRates},
+		{name: "current", at: time.Time{}, want: newRates},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, src, ok := tbl.LookupWithSourceAt(alias, tc.at)
+			if !ok {
+				t.Fatalf("LookupWithSourceAt(%q) ok=false", alias)
+			}
+			if src != PricingSourceExact {
+				t.Fatalf("source=%q want %q", src, PricingSourceExact)
+			}
+			if want := fillDefaults(tc.want); got != want {
+				t.Fatalf("rate at %s = %+v, want %+v", tc.at, got, want)
+			}
+		})
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // 2. Fallback parity — the golden. A model with NO dated timeline, and
 //    a table with NO dated entries at all, must be byte-identical to the
@@ -634,6 +671,84 @@ func TestDated_GPT56TerraLunaPriceCut(t *testing.T) {
 	}
 	if flat, ok := tbl.Lookup("gpt-5.6-luna"); !ok || flat != fillDefaults(newLuna) {
 		t.Fatalf("undated Lookup(gpt-5.6-luna) = %+v (ok=%v), want the NEW rate %+v", flat, ok, fillDefaults(newLuna))
+	}
+}
+
+// TestDated_DeepSeekPeakOffPeakOverhaul pins the REAL 2026-08-16T16:00Z
+// DeepSeek V4 peak/off-peak overhaul (api-docs.deepseek.com, confirmed
+// live 2026-09-07) against the baked-in datedPricing seed. Boundary is
+// INCLUSIVE: usage timestamped exactly at the cutover bills at the NEW
+// (off-peak-representative) rate. Covers all six affected keys —
+// deepseek-v4-flash, deepseek-chat, deepseek-reasoner, deepseek-v4,
+// deepseek, and deepseek-v4-pro — since a dated timeline is per exact
+// table key, not inherited across aliases.
+func TestDated_DeepSeekPeakOffPeakOverhaul(t *testing.T) {
+	tbl := NewTable()
+	cutover := time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC)
+
+	oldFlash := Pricing{Input: 0.14, Output: 0.28, CacheRead: 0.0028}
+	newFlash := Pricing{Input: 0.22, Output: 0.66, CacheRead: 0.007}
+	oldPro := Pricing{Input: 0.435, Output: 0.87, CacheRead: 0.003625}
+	newPro := Pricing{Input: 0.66, Output: 1.98, CacheRead: 0.022}
+
+	flashAliases := []string{"deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner", "deepseek-v4", "deepseek"}
+	for _, model := range flashAliases {
+		t.Run(model, func(t *testing.T) {
+			for _, tc := range []struct {
+				name string
+				at   time.Time
+				want Pricing
+			}{
+				{"long before the cut", cutover.Add(-365 * 24 * time.Hour), oldFlash},
+				{"one nanosecond before", cutover.Add(-time.Nanosecond), oldFlash},
+				{"EXACTLY at cutover -> new (inclusive)", cutover, newFlash},
+				{"after the cut", cutover.Add(24 * time.Hour), newFlash},
+				{"zero time -> current flat rate", time.Time{}, newFlash},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					got, ok := tbl.LookupAt(model, tc.at)
+					if !ok {
+						t.Fatalf("LookupAt(%q, %s): ok=false", model, tc.at)
+					}
+					if want := fillDefaults(tc.want); got != want {
+						t.Fatalf("LookupAt(%q, %s) = %+v, want %+v", model, tc.at, got, want)
+					}
+				})
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+		want Pricing
+	}{
+		{"long before the cut", cutover.Add(-365 * 24 * time.Hour), oldPro},
+		{"one nanosecond before", cutover.Add(-time.Nanosecond), oldPro},
+		{"EXACTLY at cutover -> new (inclusive)", cutover, newPro},
+		{"after the cut", cutover.Add(24 * time.Hour), newPro},
+		{"zero time -> current flat rate", time.Time{}, newPro},
+	} {
+		t.Run("deepseek-v4-pro/"+tc.name, func(t *testing.T) {
+			got, ok := tbl.LookupAt("deepseek-v4-pro", tc.at)
+			if !ok {
+				t.Fatalf("LookupAt(deepseek-v4-pro, %s): ok=false", tc.at)
+			}
+			if want := fillDefaults(tc.want); got != want {
+				t.Fatalf("LookupAt(deepseek-v4-pro, %s) = %+v, want %+v", tc.at, got, want)
+			}
+		})
+	}
+
+	// deepseek-v4-flash-vision-exp has NO dated timeline (a new SKU, no
+	// history to preserve) — it must resolve to the current rate at every
+	// instant, including long before the DeepSeek cutover.
+	visionWant := fillDefaults(newFlash)
+	for _, at := range []time.Time{{}, cutover.Add(-365 * 24 * time.Hour), cutover, cutover.Add(time.Hour)} {
+		got, ok := tbl.LookupAt("deepseek-v4-flash-vision-exp", at)
+		if !ok || got != visionWant {
+			t.Fatalf("deepseek-v4-flash-vision-exp at %s = %+v (ok=%v), want %+v (no timeline, always current)", at, got, ok, visionWant)
+		}
 	}
 }
 

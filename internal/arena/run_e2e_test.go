@@ -2,10 +2,12 @@ package arena
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,6 +71,14 @@ func TestEndToEnd_RunJudgeKeepSquash(t *testing.T) {
 	repo := initArenaRepo(t)
 	r := startTestRunner(t, repo)
 	ctx := context.Background()
+	var admissionMu sync.Mutex
+	admissionCalls := map[string]int{}
+	r.opts.Admission = func(_ context.Context, tool, _ string) error {
+		admissionMu.Lock()
+		defer admissionMu.Unlock()
+		admissionCalls[tool]++
+		return nil
+	}
 
 	prep, err := r.StartRun(ctx, RunSpec{
 		ID:          "e2e1",
@@ -98,6 +108,13 @@ func TestEndToEnd_RunJudgeKeepSquash(t *testing.T) {
 	}
 	if err := r.JudgeRun(ctx, prep); err != nil {
 		t.Fatalf("JudgeRun: %v", err)
+	}
+	admissionMu.Lock()
+	claudeAdmissions := admissionCalls["claude-code"]
+	codexAdmissions := admissionCalls["codex"]
+	admissionMu.Unlock()
+	if claudeAdmissions != 3 || codexAdmissions != 1 {
+		t.Fatalf("admission calls = %v, want one per two candidates and two judges", admissionCalls)
 	}
 
 	rows, _ = r.opts.Store.ArenaCandidates(ctx, "e2e1")
@@ -206,7 +223,7 @@ func TestKeepSquashConflictAbortsCleanly(t *testing.T) {
 	}
 	if _, err := r.Keep(ctx, &rows[0], repo, KeepSquash); err == nil {
 		t.Fatal("conflicting keep succeeded — must refuse")
-	} else if err != ErrMergeConflict && !strings.Contains(err.Error(), "conflict") {
+	} else if !errors.Is(err, ErrMergeConflict) && !strings.Contains(err.Error(), "conflict") {
 		t.Fatalf("unexpected keep error: %v", err)
 	}
 	// Main repo's own edit must survive untouched.
@@ -344,6 +361,44 @@ exit 0
 	}
 	if dirty, _ := git.IsDirty(ctx, repo); dirty {
 		t.Fatal("failed judge merge left the tree dirty")
+	}
+}
+
+func TestKeepJudgeMerge_AdmissionFailureNeverStartsJudge(t *testing.T) {
+	repo := initArenaRepo(t)
+	r := startTestRunner(t, repo)
+	r.opts.ProxyURL = "http://127.0.0.1:8820"
+	marker := filepath.Join(t.TempDir(), "judge-started")
+	judge := fakeBin(t, t.TempDir(), "blocked-judge", `
+echo started > "`+marker+`"
+`)
+	prev := driveBinOverrides["claude-code"]
+	driveBinOverrides["claude-code"] = judge
+	defer func() { driveBinOverrides["claude-code"] = prev }()
+
+	wantErr := errors.New("managed budget refused keep judge")
+	admissionCalls := 0
+	r.opts.Admission = func(ctx context.Context, tool, proxyURL string) error {
+		admissionCalls++
+		if ctx == nil || tool != "claude-code" || proxyURL != r.opts.ProxyURL {
+			t.Fatalf("keep admission inputs: ctx=%v tool=%q proxy=%q", ctx, tool, proxyURL)
+		}
+		return wantErr
+	}
+	row := &models.ArenaCandidate{
+		RunID:      "keep-admission",
+		Tool:       "codex",
+		BranchName: "arena/keep-admission/codex",
+	}
+	_, err := r.judgeMergeKeep(context.Background(), row, repo, JudgeSpec{Tool: "claude-code"})
+	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "judge drive failed before landing") {
+		t.Fatalf("judgeMergeKeep error = %v, want wrapped admission refusal", err)
+	}
+	if admissionCalls != 1 {
+		t.Fatalf("admission calls = %d, want 1", admissionCalls)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("keep judge started before admission: %v", statErr)
 	}
 }
 

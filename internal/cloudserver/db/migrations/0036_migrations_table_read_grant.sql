@@ -1,0 +1,19 @@
+-- 0036_migrations_table_read_grant.sql - let the runtime roles READ the
+-- migration ledger.
+--
+-- `sbci_migrations` is created by the migrator itself (internal/cloudserver/db
+-- Migrate), never by a migration, so no GRANT ever named it: only the admin
+-- login that runs migrations could read it. That was invisible to the test
+-- harness (its pool logs in as the throwaway cluster's superuser and only
+-- SET LOCAL ROLEs inside tenant transactions) and surfaced live on the v15
+-- staging roll (2026-09-11): `GET /healthz`'s new `schema` block
+-- (db.Version through the api store's pool, logged in as sbci_svc) failed with
+-- `permission denied for table sbci_migrations` and the field was silently
+-- absent, and `observer-cloud schema-check` against the service DSN - the DSN
+-- `roll-cloud.sh` resolves from Key Vault for its pre-roll gate - would fail
+-- the same way.
+--
+-- SELECT only, to the two app roles (the login role sbci_svc is a member of
+-- both, 0015). Reading which migrations have run discloses nothing tenant-
+-- related. sbci_defs and the cross-tenant aggregator deliberately get nothing.
+GRANT SELECT ON sbci_migrations TO sbci_app, sbci_api;

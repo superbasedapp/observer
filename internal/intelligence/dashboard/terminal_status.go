@@ -25,6 +25,11 @@ type TerminalStatusResult struct {
 	Evidence   string  `json:"evidence"`
 	Confidence string  `json:"confidence"`
 	AgeSeconds float64 `json:"age_seconds"`
+	// PolicyStop is additively populated when this handle's PTY child was
+	// stopped by an org-managed node's own node-intervention loop (see
+	// policystop.go). Omitted when the seam is disabled or no matching audit
+	// row exists — never fabricated.
+	PolicyStop *PolicyStop `json:"policy_stop,omitempty"`
 }
 
 // TerminalStatusSubscription is one consumer of the live status stream. The
@@ -92,6 +97,9 @@ func (s *Server) handleTerminalStatus(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		http.NotFound(w, r)
 		return
+	}
+	if stop, ok := s.resolvePolicyStop(r.Context(), handle); ok {
+		res.PolicyStop = &stop
 	}
 	writeJSON(w, res)
 }

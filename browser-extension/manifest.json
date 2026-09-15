@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SuperBased Observer — Browser Capture",
-  "version": "1.32.0",
+  "version": "1.33.0",
   "description": "Opt-in, passive observability of your own AI chatbot web usage (ChatGPT, Claude, Perplexity, Gemini, Copilot). Captures per-turn metadata + estimated tokens locally; nothing leaves your machine except to your local observer daemon.",
   "minimum_chrome_version": "111",
   "permissions": [

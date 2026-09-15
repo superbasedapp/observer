@@ -13,7 +13,7 @@ import { HeroWordmark } from "@/components/HeroWordmark";
 import { CoinsIcon } from "@/components/icons";
 import { useApi } from "@/lib/useApi";
 import { useFilters, windowLabel, windowParams } from "@/lib/filters";
-import { fmtUSD } from "@/lib/format";
+import { fmtShortId, fmtUSD } from "@/lib/format";
 import type { AdvisorListResponse, AdvisorSuggestion } from "@/lib/types";
 
 const PAGE_LIMIT = 20;
@@ -44,8 +44,8 @@ export function SuggestionsPage() {
   const winParams = windowParams(win, customRange);
   const spendLabel =
     win === "all"
-      ? "Avoidable spend — all time"
-      : `Avoidable spend — last ${windowLabel(win, customRange)}`;
+      ? "Avoidable spend - all time"
+      : `Avoidable spend - last ${windowLabel(win, customRange)}`;
   const [category, setCategory] = useState("all");
   const [page, setPage] = useState(1);
 
@@ -93,7 +93,7 @@ export function SuggestionsPage() {
           helpId="tile.suggestions.avoidable"
           icon={<CoinsIcon />}
           loading={data.loading}
-          value={rep ? fmtUSD(rep.total_savings_usd) : "—"}
+          value={rep ? fmtUSD(rep.total_savings_usd) : "-"}
           sub={
             rep && rep.total_savings_min > 0
               ? `+ ~${Math.round(rep.total_savings_min)} min of recoverable time`
@@ -105,7 +105,7 @@ export function SuggestionsPage() {
           label="Open suggestions"
           helpId="tile.suggestions.open"
           loading={data.loading}
-          value={rep ? String(totalCount) : "—"}
+          value={rep ? String(totalCount) : "-"}
           sub={
             rep
               ? Object.entries(rep.by_detector ?? {})
@@ -120,7 +120,7 @@ export function SuggestionsPage() {
           label="Sessions scanned"
           helpId="tile.suggestions.scanned"
           loading={data.loading}
-          value={rep ? String(rep.sessions_scanned) : "—"}
+          value={rep ? String(rep.sessions_scanned) : "-"}
         />
       </div>
 
@@ -147,7 +147,7 @@ export function SuggestionsPage() {
         loading={data.loading}
         error={data.error}
         empty={!data.loading && suggestions.length === 0}
-        emptyHint="No suggestions above the confidence and savings floors — nothing worth nagging about in this window."
+        emptyHint="No suggestions above the confidence and savings floors - nothing worth nagging about in this window."
       >
         <div className="space-y-3">
           {suggestions.map((s) => (
@@ -171,13 +171,17 @@ function ScopeChip({ s }: { s: AdvisorSuggestion }) {
       <Link
         to={`/sessions?session=${encodeURIComponent(s.scope_id)}`}
         className="font-mono text-[10px] text-accent underline decoration-dotted underline-offset-2 hover:text-accent-strong"
-        title="Open session detail"
+        title={`Open session detail (${s.scope_id})`}
       >
-        session: {s.scope_id.slice(0, 8)}
+        session: {fmtShortId(s.scope_id, 8)}
       </Link>
     );
   }
-  return <Pill>{s.scope_id ? `${s.scope}: ${s.scope_id.slice(0, 24)}` : s.scope}</Pill>;
+  return (
+    <Pill title={s.scope_id || undefined}>
+      {s.scope_id ? `${s.scope}: ${fmtShortId(s.scope_id, 24)}` : s.scope}
+    </Pill>
+  );
 }
 
 // actionHref maps a suggestion's schema-level Action (C3) to a

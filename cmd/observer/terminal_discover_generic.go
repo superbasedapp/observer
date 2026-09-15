@@ -1,40 +1,3 @@
-// terminal_discover_generic.go — generic post-launch session discovery for
-// every launchable adapter, dispatched on adapter SHAPE (WatchPaths / an
-// optional CursorSemantics declaration), never on tool name (CLAUDE.md
-// module-boundary rule #3).
-//
-// Background: `observer codex` cannot force a session id (codex has no
-// `--session-id`), so codex_discover.go snapshots its rollout directory
-// before the child starts and polls for the one new rollout file the child
-// itself writes, announcing its session id on the trusted OOB channel at
-// SourceDiscovered confidence (below claude-code's forced-id SourceOOB, but
-// far better than the daemon's passive 10s cwd sweep in
-// terminal_discover.go, which is the fallback for every tool that gets no
-// active discovery). This file generalizes that mechanism: instead of
-// reading codex's rollout envelope format directly, it asks the tool's own
-// adapter — via the SAME internal/adapter.Adapter methods the watcher
-// itself uses (WatchPaths / IsSessionFile / ParseSessionFile) — which new
-// file appeared and what session id it carries. No adapter needs to change;
-// no per-tool code lives here.
-//
-// Hook points: the two shared exec helpers every simple launcher already
-// funnels through — runSeedOnlyLaunchSeeded (qwen.go) and runEnvLauncher
-// (launch.go) — call maybeStartGenericDiscovery right after child.Start()
-// and cancel it right after child.Wait() returns, mirroring codex.go's own
-// F1-fixed goroutine placement exactly. Both the manually-invoked CLI path
-// and the dashboard's "New Terminal"/attach PTY path exec the identical
-// `observer <tool>` subcommand (see terminal_launch.go's argvModeTable), so
-// hooking these two shared helpers covers both without touching
-// terminal_launch.go, attach_launcher.go, or resume_launcher.go: the
-// trusted OOB pipe (oob_emit_unix.go) and its daemon-side consumer
-// (terminal_launch.go's drainOOB / oobSessionSourceToTermrun) are already
-// fully generic — termoob.SessionSourceDiscovered maps to
-// termrun.SourceDiscovered for ANY tool, and termsvc.Service.Correlate
-// (internal/termsvc/termsvc.go) applies strict MAX-upgrade semantics, so a
-// discovery announcement can never downgrade a stronger link a resume's
-// known-id echo already established — see maybeStartGenericDiscovery's doc
-// comment for why that means this hook does not need to special-case resume
-// or --continue-from launches.
 package main
 
 import (
@@ -107,6 +70,7 @@ func resolveDiscoverableAdapter(tool string) adapter.Adapter {
 type genericDiscoverCandidate struct {
 	path        string
 	sessionID   string
+	info        os.FileInfo
 	projectRoot string // "" when the adapter's ParseResult didn't carry one
 }
 
@@ -188,39 +152,71 @@ func scanNewGenericSessionFiles(a adapter.Adapter, preexisting map[string]struct
 func resolveGenericCandidate(ctx context.Context, a adapter.Adapter, path string) (genericDiscoverCandidate, bool) {
 	if cs, ok := a.(adapter.CursorSemantics); ok {
 		switch cs.CursorSemanticsFor(path).Kind {
-		case adapter.CursorWatermark, adapter.CursorEncrypted:
+		case adapter.CursorWatermark, adapter.CursorEncrypted, adapter.CursorNoActions:
 			return genericDiscoverCandidate{}, false
 		}
+	}
+	before, err := os.Stat(path)
+	if err != nil || !before.Mode().IsRegular() {
+		return genericDiscoverCandidate{}, false
 	}
 	res, err := a.ParseSessionFile(ctx, path, 0)
 	if err != nil {
 		return genericDiscoverCandidate{}, false
 	}
-	sessionID, projectRoot := firstSessionIdentity(res)
+	sessionID, projectRoot := uniqueSessionIdentity(res)
 	if sessionID == "" {
 		return genericDiscoverCandidate{}, false
 	}
-	return genericDiscoverCandidate{path: path, sessionID: sessionID, projectRoot: projectRoot}, true
+	after, err := os.Stat(path)
+	if err != nil || !os.SameFile(before, after) {
+		return genericDiscoverCandidate{}, false
+	}
+	return genericDiscoverCandidate{path: path, sessionID: sessionID, projectRoot: projectRoot, info: after}, true
 }
 
-// firstSessionIdentity reads the session id + project root off the first
-// ToolEvent or TokenEvent in res that carries a non-empty SessionID. Every
-// adapter's ParseResult carries these per-event fields regardless of the
-// tool's on-disk storage shape (JSONL, structured JSON, whatever) — this is
-// the generic, adapter-agnostic identity seam the engine relies on so it
-// never needs tool-specific parsing of its own.
-func firstSessionIdentity(res adapter.ParseResult) (sessionID, projectRoot string) {
+// uniqueSessionIdentity accepts only a consistent primary session across the
+// entire parsed file. A first event cannot identify a shared history file,
+// and a subagent-only transcript cannot identify the terminal's primary run.
+func uniqueSessionIdentity(res adapter.ParseResult) (sessionID, projectRoot string) {
+	primary := false
+	observe := func(id, root string, sidechain bool) bool {
+		if id == "" {
+			return true
+		}
+		if sessionID != "" && sessionID != id {
+			return false
+		}
+		if root != "" {
+			root = filepath.Clean(root)
+			if projectRoot != "" && projectRoot != root {
+				return false
+			}
+			projectRoot = root
+		}
+		sessionID = id
+		primary = primary || !sidechain
+		return true
+	}
 	for _, e := range res.ToolEvents {
-		if e.SessionID != "" {
-			return e.SessionID, e.ProjectRoot
+		if !observe(e.SessionID, e.ProjectRoot, e.IsSidechain) {
+			return "", ""
 		}
 	}
 	for _, e := range res.TokenEvents {
-		if e.SessionID != "" {
-			return e.SessionID, e.ProjectRoot
+		if !observe(e.SessionID, e.ProjectRoot, e.IsSidechain) {
+			return "", ""
 		}
 	}
-	return "", ""
+	for _, lineage := range res.SessionLineages {
+		if lineage.SessionID == sessionID && (lineage.ParentThreadID != "" || lineage.ThreadSource == "subagent") {
+			return "", ""
+		}
+	}
+	if !primary {
+		return "", ""
+	}
+	return sessionID, projectRoot
 }
 
 // cwdUnderProjectRoot reports whether cwd denotes projectRoot itself, or a
@@ -258,7 +254,7 @@ func cwdUnderProjectRoot(cwd, projectRoot string) bool {
 // after cwd corroboration → its id; zero → nothing yet; two or more → the
 // caller abstains rather than picking.
 func selectDiscoveredGenericSession(cands []genericDiscoverCandidate, targetCwd string) (string, int) {
-	kept := make([]genericDiscoverCandidate, 0, len(cands))
+	kept := make(map[string]struct{})
 	for _, c := range cands {
 		if c.sessionID == "" {
 			continue
@@ -266,10 +262,12 @@ func selectDiscoveredGenericSession(cands []genericDiscoverCandidate, targetCwd 
 		if !cwdUnderProjectRoot(targetCwd, c.projectRoot) {
 			continue
 		}
-		kept = append(kept, c)
+		kept[c.sessionID] = struct{}{}
 	}
 	if len(kept) == 1 {
-		return kept[0].sessionID, 1
+		for id := range kept {
+			return id, 1
+		}
 	}
 	return "", len(kept)
 }
@@ -323,69 +321,54 @@ func runGenericDiscovery(ctx context.Context, a adapter.Adapter, preexisting map
 	}
 	cands := make([]genericDiscoverCandidate, 0, len(resolved))
 	for _, c := range resolved {
-		cands = append(cands, c)
+		fresh, ok := resolveGenericCandidate(ctx, a, c.path)
+		if !ok || fresh.sessionID != c.sessionID || fresh.projectRoot != c.projectRoot || !os.SameFile(c.info, fresh.info) {
+			return
+		}
+		cands = append(cands, fresh)
+	}
+	if ctx.Err() != nil {
+		return
 	}
 	if id, count := selectDiscoveredGenericSession(cands, targetCwd); count == 1 {
 		announce(id)
 	}
 }
 
-// maybeStartGenericDiscovery starts best-effort generic session discovery
-// for a freshly-launched tool and returns the CancelFunc to call the instant
-// the child exits (mirrors codex.go's discCancel — call it right after
-// child.Wait() returns, before any other post-flight work, so a window cut
-// short by child exit never announces a candidate that only looked unique
-// because the scan stopped early). Returns nil when discovery did not start
-// — the caller must nil-check before calling it.
-//
-// Discovery starts only when the trusted OOB channel is live (a daemon-
-// spawned launch — oobChannelActive(); a bare manual invocation has no pipe
-// to announce on, so starting the goroutine would be pure waste) and tool
-// resolves to an adapter with at least one session-file watch root
-// (resolveDiscoverableAdapter). Every other reason discovery might not
-// produce anything — no new file within the window, an ambiguous cwd, an
-// adapter shape resolveGenericCandidate excludes — is handled inside
-// runGenericDiscovery by silently not announcing; the daemon's passive
-// terminal_discover.go sweep remains the fallback in every one of those
-// cases, for every tool, exactly as it was before this file existed.
-//
-// It deliberately does NOT special-case a native --resume or
-// --continue-from launch the way codex.go's discoverSession gate does.
-// Both runSeedOnlyLaunchSeeded and runEnvLauncher are reached identically
-// whether or not the caller already resolved a KNOWN session id and echoed
-// it via announceOOBSession (resume_launcher.go's applyLauncherResume does
-// this in caller scope, before either shared helper runs) — and neither
-// helper's signature carries resume/continueFrom state this function could
-// consult even if it wanted to skip. That's safe, not just tolerated:
-// internal/termsvc/termsvc.go's Correlate applies strict MAX-upgrade
-// semantics ("a weaker later observation never downgrades a stronger
-// established link"), so a SourceDiscovered announcement arriving after an
-// already-recorded SourceOOB known-id link is a guaranteed no-op, not a
-// downgrade risk. The cost is a genuinely wasted ~30s poll loop on a resume
-// launch — a real but small inefficiency, traded for not having to thread
-// resume/continueFrom state through two shared helpers whose callers
-// (13+ launcher files, several outside this work-stream's territory) must
-// not change.
-//
-// dir is the child's working directory, using the same "" -> caller's own
-// cwd convention as runSeedOnlyLaunchSeeded's / envLauncherSpec's dir field.
-func maybeStartGenericDiscovery(ctx context.Context, tool, dir string) context.CancelFunc {
+// genericDiscoveryPlan takes its snapshot before spawn, then starts its bounded
+// poll only after spawn succeeds. A nil plan is an intentional no-op.
+type genericDiscoveryPlan struct {
+	ctx         context.Context
+	a           adapter.Adapter
+	preexisting map[string]struct{}
+	startedAt   time.Time
+	cwd         string
+}
+
+func prepareGenericDiscovery(ctx context.Context, tool, dir string) *genericDiscoveryPlan {
 	if !oobChannelActive() || tool == "" {
 		return nil
 	}
 	a := resolveDiscoverableAdapter(tool)
-	if a == nil {
+	if a == nil || terminalNativeDiscoveryAvailable(a) {
 		return nil
 	}
+	return prepareAdapterDiscovery(ctx, a, dir)
+}
+
+func prepareAdapterDiscovery(ctx context.Context, a adapter.Adapter, dir string) *genericDiscoveryPlan {
 	preexisting := snapshotGenericSessionFiles(a)
-	targetCwd := dir
-	if targetCwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			targetCwd = wd
-		}
+	if dir == "" {
+		dir, _ = os.Getwd()
 	}
-	startedAt := time.Now()
-	discCtx, cancel := context.WithCancel(ctx)
-	go runGenericDiscovery(discCtx, a, preexisting, startedAt, targetCwd, defaultGenericDiscoverConfig(), announceDiscoveredOOBSession)
+	return &genericDiscoveryPlan{ctx: ctx, a: a, preexisting: preexisting, startedAt: time.Now(), cwd: dir}
+}
+
+func (p *genericDiscoveryPlan) start() context.CancelFunc {
+	if p == nil {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(p.ctx)
+	go runGenericDiscovery(ctx, p.a, p.preexisting, p.startedAt, p.cwd, defaultGenericDiscoverConfig(), announceDiscoveredOOBSession)
 	return cancel
 }

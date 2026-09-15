@@ -122,12 +122,102 @@ func TestSessionTagsMutationRoundTrip(t *testing.T) {
 	if code, _ := doJSON(t, s, http.MethodPost, "/api/session/sess-a/tags", over); code != http.StatusBadRequest {
 		t.Fatalf("over-cap add = %d, want 400", code)
 	}
-	// GET on the sub-route is not allowed (the route is a mutation).
-	req := httptest.NewRequest(http.MethodGet, "/api/session/sess-a/tags", nil)
+	// GET on the sub-route is a read-only snapshot of the current state
+	// (used by SessionEnrichmentHeader) — it must NOT mutate anything.
+	code, body = doJSON(t, s, http.MethodGet, "/api/session/sess-a/tags", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /tags = %d, want 200", code)
+	}
+	tags, _ = body["tags"].([]any)
+	if len(tags) != 1 || tags[0] != "ui-ux" {
+		t.Fatalf("GET tags = %v, want [ui-ux] (unchanged by the rejected POSTs)", body["tags"])
+	}
+	if body["favorite"] != false || body["note"] != "baseline run" {
+		t.Fatalf("GET annotation = %v", body)
+	}
+	if _, ok := body["title"]; ok {
+		t.Fatalf("GET title = %v, want omitted (empty, no title set)", body["title"])
+	}
+
+	// A method the sub-route never accepts (neither GET nor POST) is 405.
+	req := httptest.NewRequest(http.MethodDelete, "/api/session/sess-a/tags", nil)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("GET /tags = %d, want 405", rec.Code)
+		t.Fatalf("DELETE /tags = %d, want 405", rec.Code)
+	}
+}
+
+// TestSessionTagsTitleRoundTrip pins the developer-authored title (migration
+// 116): it round-trips through POST, is readable via GET without mutating
+// anything, clearing it ("") garbage-collects an otherwise-empty annotation
+// row, and the store's length/newline rules surface as 400s.
+func TestSessionTagsTitleRoundTrip(t *testing.T) {
+	s, st := newTagTestServer(t)
+	ctx := context.Background()
+
+	// No title yet: GET reads the zero annotation, and the field is omitted.
+	code, body := doJSON(t, s, http.MethodGet, "/api/session/sess-a/tags", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /tags = %d", code)
+	}
+	if _, ok := body["title"]; ok {
+		t.Fatalf("untitled session title = %v, want omitted", body["title"])
+	}
+
+	code, body = doJSON(t, s, http.MethodPost, "/api/session/sess-a/tags", `{"title":"the compression baseline"}`)
+	if code != http.StatusOK {
+		t.Fatalf("POST title = %d", code)
+	}
+	if body["title"] != "the compression baseline" {
+		t.Fatalf("POST title echo = %v", body)
+	}
+	annot, err := st.GetSessionAnnotation(ctx, "sess-a")
+	if err != nil {
+		t.Fatalf("GetSessionAnnotation: %v", err)
+	}
+	if annot.Title != "the compression baseline" {
+		t.Fatalf("persisted title = %q", annot.Title)
+	}
+
+	// GET reflects the persisted title without touching it.
+	_, body = doJSON(t, s, http.MethodGet, "/api/session/sess-a/tags", "")
+	if body["title"] != "the compression baseline" {
+		t.Fatalf("GET title = %v", body)
+	}
+
+	// Clearing the title ("") is a valid mutation, distinct from omitting the
+	// field (which leaves it untouched).
+	code, body = doJSON(t, s, http.MethodPost, "/api/session/sess-a/tags", `{"title":""}`)
+	if code != http.StatusOK {
+		t.Fatalf("clear title = %d", code)
+	}
+	if _, ok := body["title"]; ok {
+		t.Fatalf("cleared title = %v, want omitted", body["title"])
+	}
+	annot, err = st.GetSessionAnnotation(ctx, "sess-a")
+	if err != nil {
+		t.Fatalf("GetSessionAnnotation: %v", err)
+	}
+	if annot.Title != "" {
+		t.Fatalf("title not cleared: %q", annot.Title)
+	}
+
+	// Store-level rules surface as 400s through the handler.
+	longTitle := strings.Repeat("t", store.MaxTitleLen+1)
+	if code, _ := doJSON(t, s, http.MethodPost, "/api/session/sess-a/tags", `{"title":"`+longTitle+`"}`); code != http.StatusBadRequest {
+		t.Fatalf("over-long title = %d, want 400", code)
+	}
+	if code, _ := doJSON(t, s, http.MethodPost, "/api/session/sess-a/tags", `{"title":"line one\nline two"}`); code != http.StatusBadRequest {
+		t.Fatalf("newline title = %d, want 400", code)
+	}
+	// Neither rejected mutation touched the (already-cleared) title.
+	annot, err = st.GetSessionAnnotation(ctx, "sess-a")
+	if err != nil {
+		t.Fatalf("GetSessionAnnotation: %v", err)
+	}
+	if annot.Title != "" {
+		t.Fatalf("a rejected title mutation still wrote: %q", annot.Title)
 	}
 }
 
@@ -145,7 +235,7 @@ func TestSessionsTagFilterPaginationCoherence(t *testing.T) {
 		t.Fatalf("tag sess-b: %v", err)
 	}
 	yes := true
-	if err := st.SetSessionAnnotation(ctx, "sess-c", &yes, nil, nil); err != nil {
+	if err := st.SetSessionAnnotation(ctx, "sess-c", &yes, nil, nil, nil); err != nil {
 		t.Fatalf("favorite sess-c: %v", err)
 	}
 
@@ -201,7 +291,7 @@ func TestSessionsTagFilterPaginationCoherence(t *testing.T) {
 func TestSessionsFavoriteSort(t *testing.T) {
 	s, st := newTagTestServer(t)
 	yes := true
-	if err := st.SetSessionAnnotation(context.Background(), "sess-a", &yes, nil, nil); err != nil {
+	if err := st.SetSessionAnnotation(context.Background(), "sess-a", &yes, nil, nil, nil); err != nil {
 		t.Fatalf("favorite sess-a: %v", err)
 	}
 
@@ -231,10 +321,10 @@ func TestSessionsRatingSort(t *testing.T) {
 	s, st := newTagTestServer(t)
 	ctx := context.Background()
 	nine, three := 9, 3
-	if err := st.SetSessionAnnotation(ctx, "sess-a", nil, nil, &three); err != nil {
+	if err := st.SetSessionAnnotation(ctx, "sess-a", nil, nil, &three, nil); err != nil {
 		t.Fatalf("rate sess-a: %v", err)
 	}
-	if err := st.SetSessionAnnotation(ctx, "sess-b", nil, nil, &nine); err != nil {
+	if err := st.SetSessionAnnotation(ctx, "sess-b", nil, nil, &nine, nil); err != nil {
 		t.Fatalf("rate sess-b: %v", err)
 	}
 	// sess-c is left unrated (rating 0).
@@ -381,7 +471,7 @@ func TestSessionDetailCarriesClassification(t *testing.T) {
 	}
 	yes := true
 	note := "compression baseline"
-	if err := st.SetSessionAnnotation(ctx, "sess-a", &yes, &note, nil); err != nil {
+	if err := st.SetSessionAnnotation(ctx, "sess-a", &yes, &note, nil, nil); err != nil {
 		t.Fatalf("annotate: %v", err)
 	}
 	_, body = doJSON(t, s, http.MethodGet, "/api/session/sess-a", "")

@@ -13,9 +13,11 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/attachsock"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/git"
+	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard"
 	"github.com/marmutapp/superbased-observer/internal/remotenotify"
+	"github.com/marmutapp/superbased-observer/internal/sshforward"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/termfeed"
 	"github.com/marmutapp/superbased-observer/internal/termrun"
@@ -76,6 +78,12 @@ type terminalStack struct {
 	// multi-orphan finding), while never touching the fresh replacement (finding:
 	// wrong-run supersede). Empty/nil when no DB is wired.
 	resumableRuns map[string][]string
+	// instances owns the instance switcher's SSH local port forwards
+	// (docs/ssh-terminals.md "Instance switcher"). It is built from the SAME
+	// [terminal.ssh] profile list the SSH terminal picker uses — one
+	// operator-authored allow-list, two surfaces over it — and is torn down by
+	// close so an `ssh -N` child can never outlive this daemon.
+	instances *sshforward.Manager
 	// attachDir is the attach socket's owner-only directory. The attach host
 	// takes a durable cross-process resume flock here (H3). Empty disables the
 	// flock layer (no DB).
@@ -99,6 +107,17 @@ type terminalStack struct {
 	// native-terminal writer-reclaim capability, resolved once at build time and
 	// handed to the attach host. Default TRUE.
 	reclaimOnInput bool
+	// guard is the process-wide egress-policy Guard (internal/guard), acquired
+	// nil-safely via acquireProcessGuard when a DB is wired and [guard] is
+	// enabled. Consulted by the launch surface (P7 gateway-arc item 3) to
+	// decide whether a fresh launch of a sandbox_enforce-classified tool must
+	// be auto-upgraded to a sandboxed launch. Nil when guarding is disabled or
+	// no DB is wired — every consumer must nil-check.
+	guard *guard.Guard
+	// nf is the node.features policy handle (P7 gateway-arc item 4's
+	// org_disallow honor path) shared with the rest of the process. Nil-safe
+	// on every method; a nil nf answers "allowed" for every tool.
+	nf *nodeFeaturesHandle
 	// close stops the status-hub reaper and kills every live session; wire it
 	// into the command's teardown BEFORE the DB is closed (start.go relies on
 	// defer-LIFO ordering to run it first).
@@ -137,13 +156,22 @@ func resolveTerminalSandbox(cfg config.Config, binPath string, logger *slog.Logg
 	return rt, rt.workspacesDir(), sandboxSeamProber(rt)
 }
 
-func buildTerminalStack(cfg config.Config, database *sql.DB, logger *slog.Logger) (*terminalStack, error) {
+func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB, logger *slog.Logger, nf *nodeFeaturesHandle) (*terminalStack, error) {
 	// Leave the stack unbuilt on an OS with no in-process PTY backend (a
 	// native-Windows daemon). A nil stack is the honest "disabled" state: the
 	// dashboard "Launch here" button is hidden and the attach socket is not
 	// served, rather than either failing on use.
 	if !termsession.PTYSupported() {
-		logger.Info("embedded terminal disabled — no in-process PTY backend on this OS (run the daemon under WSL/Linux); dashboard launch + session-attach are unavailable, handoff-doc migration is unaffected")
+		// This branch is gated on PTYSupported() alone, so name that cause
+		// (audit DI-16). The other way a nil stack arises — [handoff].
+		// allow_dashboard_launch = false — is reported where that gate lives
+		// (the dashboard's 503, errTerminalUnavailable). The stale "run the
+		// daemon under WSL/Linux" has been wrong since ConPTY landed
+		// (a6cc151c3, 2026-07-04) — a native Windows daemon runs these
+		// terminals fine when it's new enough.
+		logger.Info("embedded terminal disabled — unsupported on this OS " +
+			"(Windows before 10 version 1809 has no ConPTY; other platforms need a PTY backend); " +
+			"dashboard launch + session-attach are unavailable, handoff-doc migration is unaffected")
 		return nil, nil
 	}
 	binPath, err := os.Executable()
@@ -276,6 +304,24 @@ func buildTerminalStack(cfg config.Config, database *sql.DB, logger *slog.Logger
 		// Sandbox:true FreshRequest fails closed with ErrSandboxUnavailable).
 		Sandboxer:            sandboxSeam,
 		SandboxWorkspacesDir: sandboxWorkspacesDir,
+		// T2: the DETACHED IDE / desktop-app spawn seam. It shares this stack's
+		// service (one run-identity model, one policy, one recorder, one status
+		// feed) but NONE of its PTY machinery — a GUI child has no pseudo-
+		// terminal, no OOB channel and no job object (it must outlive the
+		// daemon, the exact opposite of a PTY child's contract).
+		//
+		// FOLLOW-UP (documented, not solved here): the terminal stack is only
+		// built when termsession.PTYSupported(), so a host with no PTY backend
+		// also gets no GUI launch — even though a detached spawn needs no PTY
+		// at all. On Windows 10 1809+ PTYSupported() is true, so this is not a
+		// live gap today; decoupling the GUI seam from the PTY stack is a
+		// separate change.
+		GUILauncher: &guiLauncher{
+			proxyPort:  cfg.Proxy.Port,
+			configPath: daemonConfigPath,
+			resolveEnv: dashResolveEnv,
+			logger:     logger,
+		},
 	})
 	// Wire the OOB run->session correlation seam (P2-1): when the launcher
 	// wrapper announces the child's agent session id on the trusted OOB channel,
@@ -301,9 +347,11 @@ func buildTerminalStack(cfg config.Config, database *sql.DB, logger *slog.Logger
 	// launcher that has no OOB id echo (only claude-code and codex correlate
 	// today; every other launcher's Session Cockpit otherwise waits forever). It
 	// reads the SAME svc seams the OOB path uses (HandleForRun = liveness truth;
-	// ProjectRoot = the validated launch dir; Correlate = the one scored-link
-	// seam) so a stale crash-orphan run from a previous boot simply misses the
-	// live-handle lookup and is skipped. Gated on a wired DB, and run on its OWN
+	// SpawnDir = the directory the run's child actually runs in — NOT
+	// ProjectRoot, whose emptiness for a launch with no requested project root
+	// used to make this sweep skip the run forever; Correlate = the one
+	// scored-link seam) so a stale crash-orphan run from a previous boot simply
+	// misses the live-handle lookup and is skipped. Gated on a wired DB, and run on its OWN
 	// context so the stack's close func can stop it FIRST — before the H2 shutdown
 	// stamps and mgr.Shutdown() — so no in-flight tick write can race the
 	// defer-LIFO DB close (the same ordering discipline the H2 stamps rely on).
@@ -312,8 +360,9 @@ func buildTerminalStack(cfg config.Config, database *sql.DB, logger *slog.Logger
 		disc := newTerminalDiscoverer(
 			store.New(database),
 			svc.HandleForRun,
+			newTerminalNativeResolver(svc.HandleForRun, mgr.ProcessIdentityForHandle, svc.KindForHandle, &cfg),
 			svc.SessionLinkForRun,
-			svc.ProjectRoot,
+			svc.SpawnDir,
 			correlate,
 			func(dir string) string {
 				info, gerr := git.Resolve(dir)
@@ -417,8 +466,29 @@ func buildTerminalStack(cfg config.Config, database *sql.DB, logger *slog.Logger
 		}
 	}
 
+	// Instance switcher forwards. Built over the SAME converted profile list
+	// and connection knobs terminalLaunchPolicy hands the terminal service, so
+	// the two surfaces can never disagree about which machines exist or how
+	// long a connect may take.
+	instances := sshforward.New(sshforward.Options{
+		Enabled:    cfg.Terminal.Enabled && cfg.Terminal.SSH.Enabled,
+		Profiles:   config.SSHProfiles(cfg.Terminal.SSH),
+		SSHOptions: config.SSHOptions(cfg.Terminal.SSH),
+		Logger:     logger,
+	})
+
+	// P7 gateway-arc item 3: acquire the SAME process-wide guard the proxy
+	// already primed (acquireProcessGuard is keyed + cached by DB path, so
+	// this is a cache hit in the common `observer start` path, not a second
+	// build). Nil-safe when no DB is wired or guarding is disabled.
+	var procGuard *guard.Guard
+	if database != nil {
+		procGuard = acquireProcessGuard(ctx, cfg, store.New(database), logger)
+	}
+
 	return &terminalStack{
 		svc:              svc,
+		instances:        instances,
 		mgr:              mgr,
 		status:           statusProvider,
 		sandboxProber:    sandboxProber,
@@ -429,6 +499,8 @@ func buildTerminalStack(cfg config.Config, database *sql.DB, logger *slog.Logger
 		supersedeResumed: supersedeResumed,
 		resumeAuthority:  resumeAuthority,
 		reclaimOnInput:   cfg.Terminal.Attach.ReclaimOnInput,
+		guard:            procGuard,
+		nf:               nf,
 		close: func() {
 			// Stop the discovery sweep FIRST — before ANY DB write below and before
 			// mgr.Shutdown() — and WAIT for its goroutine to drain, so no in-flight
@@ -474,6 +546,10 @@ func buildTerminalStack(cfg config.Config, database *sql.DB, logger *slog.Logger
 			// terminal that no longer exists. mgr.Shutdown's own exit edges are
 			// then a no-op (the seeder has already dropped the handles).
 			pidSeeder.releaseAll()
+			// Close every instance-switcher forward BEFORE the PTY shutdown, so
+			// no `ssh -N` child outlives the daemon that opened it (there is no
+			// reaper that would ever clean one up otherwise).
+			instances.Close()
 			mgr.Shutdown()
 		},
 	}, nil
@@ -579,7 +655,15 @@ func resumableSessionSet(runs []store.TerminalRunSummary) map[string][]string {
 // installs it (fail-closed until then). The returned adapter drives the SAME
 // svc + mgr the attach host does.
 func (s *terminalStack) launchManager() *launchManagerAdapter {
-	return &launchManagerAdapter{svc: s.svc, mgr: s.mgr, attachAudit: s.attachAudit}
+	return &launchManagerAdapter{
+		svc:           s.svc,
+		mgr:           s.mgr,
+		attachAudit:   s.attachAudit,
+		instances:     s.instances,
+		guard:         s.guard,
+		sandboxProber: s.sandboxProber,
+		nf:            s.nf,
+	}
 }
 
 // attachHost builds the session-attach socket Host over the shared stack's
@@ -619,7 +703,13 @@ func (s *terminalStack) attachHost() attachsock.Host {
 type terminalSurfaces struct {
 	launchMgr    dashboard.LaunchManager
 	launchStatus dashboard.TerminalStatusProvider
-	attachHost   attachsock.Host
+	// policyStop resolves a dashboard terminal run's node-intervention
+	// policy-stop explanation (policystop.go). Populated whenever launchMgr
+	// is (the launch manager's gate is the natural gate for this too — a
+	// policy stop only ever concerns a dashboard-launched PTY run); nil
+	// otherwise, which is the honest "nothing to show" seam state.
+	policyStop dashboard.PolicyStopProvider
+	attachHost attachsock.Host
 	// sandboxProber is the B9 dashboard.SandboxProber (nil unless
 	// [terminal.sandbox].enabled and the runtime initialized). start.go /
 	// dashboard.go wire it into dashboard.Options.SandboxProber; a nil value is
@@ -641,7 +731,7 @@ type terminalSurfaces struct {
 // is requested (or there is no PTY backend) it returns a zero-value result with
 // a no-op close and NO stack is built. The single source of the per-surface
 // gating truth — shared by `observer start` and its tests.
-func buildTerminalSurfaces(cfg config.Config, database *sql.DB, logger *slog.Logger) (terminalSurfaces, error) {
+func buildTerminalSurfaces(ctx context.Context, cfg config.Config, database *sql.DB, logger *slog.Logger, nf *nodeFeaturesHandle) (terminalSurfaces, error) {
 	surf := terminalSurfaces{close: func() {}}
 	// Terminal websocket liveness bounds ([terminal].ws_ping_*). Applied before
 	// any bridge can start; non-positive values leave the built-in defaults, and
@@ -656,7 +746,7 @@ func buildTerminalSurfaces(cfg config.Config, database *sql.DB, logger *slog.Log
 	if !cfg.Handoff.AllowDashboardLaunch && !cfg.Terminal.Attach.Enabled {
 		return surf, nil
 	}
-	stack, err := buildTerminalStack(cfg, database, logger)
+	stack, err := buildTerminalStack(ctx, cfg, database, logger, nf)
 	if err != nil {
 		return surf, err
 	}
@@ -679,6 +769,7 @@ func buildTerminalSurfaces(cfg config.Config, database *sql.DB, logger *slog.Log
 	if cfg.Handoff.AllowDashboardLaunch {
 		surf.launchMgr = stack.launchManager()
 		surf.launchStatus = stack.status
+		surf.policyStop = &policyStopProvider{mgr: stack.mgr, st: store.New(database)}
 	}
 	if cfg.Terminal.Attach.Enabled {
 		surf.attachHost = stack.attachHost()

@@ -300,6 +300,50 @@ func TestSummary_PricingSource(t *testing.T) {
 	}
 }
 
+// TestSummary_CursorGrokAliasCost pins the dashboard cost-summary path for
+// the live Cursor hook model shape. The row must use the explicit Cursor
+// pricing entry, include cached-input tokens, and retain a non-zero cost.
+func TestSummary_CursorGrokAliasCost(t *testing.T) {
+	database := openTestDB(t)
+	f := seedSession(t, database, "/repo/cursor", "sess-cursor-grok", "cursor")
+	now := time.Now().UTC()
+	_, err := database.ExecContext(context.Background(),
+		`INSERT INTO token_usage (session_id, timestamp, tool, model,
+			input_tokens, output_tokens, cache_read_tokens, source, reliability,
+			source_file, source_event_id)
+		 VALUES (?, ?, 'cursor', ?, ?, ?, ?, 'watcher', 'accurate', ?, ?)`,
+		f.sessionID, now.Format(time.RFC3339Nano), "cursor-grok-4.6-medium",
+		12_000, 400, 50_000, "cursor.jsonl", "cursor-grok-cost")
+	if err != nil {
+		t.Fatalf("insert Cursor token usage: %v", err)
+	}
+
+	e := NewEngine(config.IntelligenceConfig{})
+	got, err := e.Summary(context.Background(), database, Options{
+		GroupBy: GroupByModel,
+		Source:  SourceJSONL,
+	})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if len(got.Rows) != 1 {
+		t.Fatalf("rows: got %d want 1 (%+v)", len(got.Rows), got.Rows)
+	}
+	row := got.Rows[0]
+	if row.Key != "cursor-grok-4.6-medium" {
+		t.Fatalf("row key = %q", row.Key)
+	}
+	if row.Tokens.Input != 12_000 || row.Tokens.Output != 400 || row.Tokens.CacheRead != 50_000 {
+		t.Fatalf("tokens = %+v, want input=12000 output=400 cache_read=50000", row.Tokens)
+	}
+	if diff := row.CostUSD - 0.0514; diff > 1e-12 || diff < -1e-12 {
+		t.Fatalf("cost = %.9f want 0.0514", row.CostUSD)
+	}
+	if row.PricingSource != "exact" {
+		t.Fatalf("pricing_source = %q want exact", row.PricingSource)
+	}
+}
+
 // TestSummary_SourceAuto_PerTurnDedup_MatchingTurnID covers the
 // per-turn dedup happy path. When the proxy intercepted a turn AND
 // the JSONL adapter wrote a row for the SAME turn (same upstream

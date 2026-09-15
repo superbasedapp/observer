@@ -50,7 +50,7 @@ export function StorageSection() {
     <div className="space-y-4">
       <ChartShell
         title={<TitleWithHelp text="Storage" helpId="glossary.settings_storage" />}
-        sub="Where the database's bytes live — per table, indexes and search shadow tables folded into their owners"
+        sub="Where the database's bytes live - per table, indexes and search shadow tables folded into their owners"
         right={
           <button
             type="button"
@@ -75,7 +75,7 @@ export function StorageSection() {
                 <StatCard
                   label="Reclaimable by vacuum"
                   value={fmtBytes(rep.reclaimable_bytes)}
-                  sub={`${fmtInt(rep.freelist_pages)} free pages — live-page fragmentation can add more`}
+                  sub={`${fmtInt(rep.freelist_pages)} free pages - live-page fragmentation can add more`}
                 />
                 <StatCard label="Tables" value={fmtInt(rep.tables.length)} sub="indexes + FTS internals folded in" />
               </div>
@@ -92,7 +92,7 @@ export function StorageSection() {
                     <tr key={t.name} className="border-b border-line-1 last:border-0">
                       <td className="py-1 pr-2 font-mono text-fg-2">{t.name}</td>
                       <td className="py-1 pr-2 text-right text-fg-2">{fmtBytes(t.bytes)}</td>
-                      <td className="py-1 text-right text-fg-3">{t.rows >= 0 ? fmtInt(t.rows) : "—"}</td>
+                      <td className="py-1 text-right text-fg-3">{t.rows >= 0 ? fmtInt(t.rows) : "-"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -104,7 +104,7 @@ export function StorageSection() {
 
       <MaintenanceCard
         title="Back up the database"
-        description="Writes a consistent snapshot next to the live DB (VACUUM INTO — online-safe; capture keeps running). Months of history are worth a copy before upgrades or machine moves."
+        description="Writes a consistent snapshot next to the live DB (VACUUM INTO - online-safe; capture keeps running). Months of history are worth a copy before upgrades or machine moves."
         buttonLabel="Back up now"
         runningLabel="Backing up…"
         path="/api/storage/backup"
@@ -113,7 +113,7 @@ export function StorageSection() {
 
       <MaintenanceCard
         title="Vacuum"
-        description="Rebuilds the database file to return free pages to the OS. Needs the write lock and temporarily doubles disk usage — pick a quiet moment; if the daemon is busy writing, the job reports the conflict honestly."
+        description="Rebuilds the database file to return free pages to the OS. Needs the write lock and temporarily doubles disk usage - pick a quiet moment; if the daemon is busy writing, the job reports the conflict honestly."
         buttonLabel="Vacuum now"
         runningLabel="Vacuuming…"
         path="/api/storage/vacuum"

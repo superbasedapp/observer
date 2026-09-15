@@ -1,0 +1,1543 @@
+/* SuperBased Cloud portal — design system.
+ *
+ * Ported to match the local dev dashboard (web/) visual language:
+ * the same design tokens (web/src/styles/tokens.css — copied verbatim,
+ * dark + light), the same fonts (Inter + JetBrains Mono, latin subset),
+ * and the same component grammar (layered surface cards, accent nav
+ * pills, stat tiles, threshold progress bars, pill badges, switch
+ * toggles). Only the subset the portal actually uses is ported.
+ *
+ * Latin-only font subsets, matching web/src/index.css — the en-US
+ * portal never needs Cyrillic / Greek / Vietnamese / Latin-Ext, which
+ * the default @fontsource imports would auto-fetch. */
+@import "@fontsource/inter/latin-400.css";
+@import "@fontsource/inter/latin-500.css";
+@import "@fontsource/inter/latin-600.css";
+@import "@fontsource/inter/latin-700.css";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
+
+/* ============================================================
+   Design tokens — the single source of truth is the shared design
+   system (shared/styles/tokens.css), imported here rather than kept as
+   webcloud's own (previously drifting) copy. See docs/app-design-system.md.
+   ============================================================ */
+@import "../../shared/styles/tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* The shared Skeleton primitive emits `animate-shimmer`; per
+   docs/app-design-system.md that utility is defined in each app's entry CSS
+   (verbatim from web/src/index.css) so the sweep timing/easing matches. */
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@layer utilities {
+  .animate-shimmer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background-image: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.04) 50%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    animation: shimmer 1.6s var(--ease) infinite;
+  }
+}
+
+/* webcloud-only chart palette for the transitional hand-rolled mix bars
+   (being replaced by shared donut/area charts). NOT part of the shared
+   design tokens; theme-aware to match the shared palette's dark/light. */
+:root,
+:root[data-theme="dark"] {
+  --mix-1: #7c9eff;
+  --mix-2: #34d399;
+  --mix-3: #fbbf24;
+  --mix-4: #f472b6;
+  --mix-5: #a78bfa;
+  --mix-6: #22d3ee;
+}
+:root[data-theme="light"] {
+  --mix-1: #4763ed;
+  --mix-2: #10b981;
+  --mix-3: #d97706;
+  --mix-4: #db2777;
+  --mix-5: #7c3aed;
+  --mix-6: #0891b2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg-0);
+  color: var(--fg-1);
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+code,
+kbd,
+samp,
+pre,
+.mono {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+}
+
+h1 {
+  font-size: 1.4rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.35rem;
+  color: var(--fg-0);
+}
+
+h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 0.85rem;
+  color: var(--fg-0);
+  letter-spacing: -0.005em;
+}
+
+.page-intro {
+  margin: 0 0 1.5rem;
+}
+
+.muted {
+  color: var(--fg-2);
+}
+
+.small {
+  font-size: 0.82rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* Themed scrollbars, matching the dashboard. */
+* {
+  scrollbar-color: var(--line-3) transparent;
+  scrollbar-width: thin;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-3);
+  border-radius: 999px;
+  border: 2px solid var(--bg-0);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-3);
+}
+
+/* ============================================================
+   Brand mark + wordmark
+   ============================================================ */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.brand-mark {
+  display: inline-block;
+  flex-shrink: 0;
+  line-height: 1;
+  font-weight: 600;
+  /* --brand-blue is not part of the shared token set; fall back to the
+     accent token so the glyph is tinted (and theme-aware) either way. */
+  color: var(--brand-blue, var(--accent));
+}
+
+.brand-word {
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--fg-0);
+  white-space: nowrap;
+}
+
+/* ============================================================
+   App shell — left sidebar + top status bar, matching the local
+   dashboard's shell (web/src/App.tsx + Sidebar.tsx + TopBar.tsx).
+   Only rendered once a session is authenticated and past consent
+   setup (see App.tsx::RequireAuth); the sign-in / consent screens
+   render full-screen with none of this.
+   ============================================================ */
+.app-shell {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+}
+
+.app-shell-main {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+/* ---- Sidebar --------------------------------------------------------- */
+.sidebar {
+  display: flex;
+  flex: 0 0 var(--sidebar-w);
+  width: var(--sidebar-w);
+  flex-direction: column;
+  border-right: 1px solid var(--line-1);
+  background: var(--bg-1);
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  height: var(--header-h);
+  flex-shrink: 0;
+  padding: 0 1rem;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.75rem 0.6rem;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.42rem 0.55rem;
+  border-radius: var(--r-2);
+  color: var(--fg-2);
+  text-decoration: none;
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+
+.nav-item:hover {
+  color: var(--fg-1);
+  background: var(--bg-2);
+}
+
+.nav-item-active,
+.nav-item-active:hover {
+  color: var(--fg-0);
+  background: var(--bg-3);
+}
+
+.nav-item-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.nav-item-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Top bar ----------------------------------------------------------- */
+.topbar {
+  display: flex;
+  height: var(--header-h);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0 1.25rem;
+  border-bottom: 1px solid var(--line-1);
+  background: var(--bg-1);
+}
+
+.topbar-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--fg-1);
+  letter-spacing: -0.005em;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.topbar-account {
+  padding: 0.3rem 0.6rem;
+  border-radius: var(--r-pill);
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  color: var(--fg-2);
+  font-size: 11px;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-2);
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.icon-btn:hover {
+  color: var(--fg-0);
+  border-color: var(--line-3);
+}
+
+/* ============================================================
+   Layout
+   ============================================================ */
+/* .main is the routed content area inside the app shell — full-width
+   (no centering column, matching the dashboard's own main content),
+   and independently scrollable from the sidebar/top bar. */
+.main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.5rem 2rem;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+/* ---- Portal footer ------------------------------------------------------ */
+/* A thin, non-scrolling legal strip shared by every authenticated page
+   (mounted once in App.tsx::RequireAuth, outside .main's scroll region). */
+.portal-footer {
+  flex-shrink: 0;
+  padding: 0.6rem 2rem;
+  border-top: 1px solid var(--line-1);
+  background: var(--bg-1);
+}
+
+.portal-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.portal-footer-links a {
+  color: var(--fg-3);
+  text-decoration: none;
+}
+
+.portal-footer-links a:hover {
+  color: var(--fg-1);
+  text-decoration: underline;
+}
+
+.portal-footer-sep {
+  margin-right: 0.35rem;
+}
+
+/* ============================================================
+   Card
+   ============================================================ */
+.card {
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-3);
+  padding: 16px;
+  margin-bottom: 1rem;
+}
+
+.card-grid .card {
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.card-danger {
+  border-color: var(--danger-soft);
+}
+
+/* W6d export list: one live artifact per row (Download + size/expiry). */
+.export-list {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+}
+.export-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+}
+
+/* ============================================================
+   Stat tile
+   ============================================================ */
+.tile-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-3);
+  margin: 0 0 0.65rem;
+}
+
+.stat {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.05;
+  color: var(--fg-0);
+  letter-spacing: -0.025em;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-sub {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--fg-2);
+}
+
+.tile-body {
+  flex: 1;
+}
+
+/* Elegant empty state — a dashed placeholder rather than bare gray. */
+.tile-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.85rem 0;
+}
+
+.tile-empty-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-3);
+  border: 1px dashed var(--line-3);
+  color: var(--fg-4);
+}
+
+.tile-empty-text {
+  font-size: 0.8rem;
+  color: var(--fg-3);
+}
+
+.disclosure {
+  margin: 0.9rem 0 0;
+  padding-top: 0.6rem;
+  font-size: 0.72rem;
+  color: var(--fg-3);
+  border-top: 1px solid var(--line-1);
+}
+
+/* ============================================================
+   Breakdown key/value list
+   ============================================================ */
+.breakdown {
+  list-style: none;
+  padding: 0;
+  margin: 0.35rem 0 0;
+}
+
+.breakdown li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--line-1);
+  font-size: 0.86rem;
+}
+
+.breakdown li:last-child {
+  border-bottom: none;
+}
+
+.breakdown li > span:first-child {
+  color: var(--fg-2);
+}
+
+.breakdown li > span:last-child {
+  color: var(--fg-0);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ============================================================
+   Mix bar (categorical breakdown)
+   ============================================================ */
+.mixbar {
+  display: flex;
+  height: 10px;
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  background: var(--bg-4);
+  margin: 0.25rem 0 0.85rem;
+}
+
+.mixbar-seg {
+  height: 100%;
+  min-width: 3px;
+}
+
+.mix-legend {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.mix-legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  padding: 0.15rem 0;
+}
+
+.mix-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.mix-legend .mix-key {
+  color: var(--fg-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mix-legend .mix-count {
+  margin-left: auto;
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   Progress bars (Usage allowance)
+   ============================================================ */
+.bar-row {
+  margin: 0.9rem 0;
+}
+
+.bar-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  margin-bottom: 0.4rem;
+  color: var(--fg-1);
+}
+
+.bar-label .bar-val {
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.bar-track {
+  height: 8px;
+  background: var(--bg-4);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--r-pill);
+  transition: width var(--dur) var(--ease);
+}
+
+.bar-fill.warn {
+  background: var(--warn);
+}
+
+.bar-fill.danger {
+  background: var(--danger);
+}
+
+/* ============================================================
+   Banners
+   ============================================================ */
+.banner {
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-3);
+  padding: 0.7rem 0.9rem;
+  margin: 0 0 1rem;
+  font-size: 0.86rem;
+  color: var(--fg-1);
+}
+
+.banner-error {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--fg-0);
+}
+
+.banner-warn {
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  color: var(--fg-0);
+}
+
+/* ============================================================
+   Forms & buttons
+   ============================================================ */
+label {
+  display: block;
+  font-size: 0.82rem;
+  margin: 0.9rem 0 0.4rem;
+  color: var(--fg-2);
+}
+
+input[type="text"] {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-2);
+  color: var(--fg-0);
+  font-size: 0.9rem;
+  font-family: inherit;
+  transition: border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+input[type="text"]::placeholder {
+  color: var(--fg-4);
+}
+
+input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--fg-1);
+  margin: 0.9rem 0 0.4rem;
+  font-size: 0.86rem;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+input[type="checkbox"]:disabled {
+  cursor: default;
+}
+
+/* Switch — a checkbox restyled as a toggle. Behavior-preserving:
+   still a real <input type="checkbox">, only the appearance changes. */
+input[type="checkbox"].switch {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 40px;
+  height: 22px;
+  border-radius: var(--r-pill);
+  background: var(--bg-4);
+  border: none;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+  position: relative;
+  flex-shrink: 0;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+input[type="checkbox"].switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+input[type="checkbox"].switch:checked {
+  background: var(--accent);
+}
+
+input[type="checkbox"].switch:checked::after {
+  transform: translateX(20px);
+}
+
+input[type="checkbox"].switch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+input[type="checkbox"].switch:disabled {
+  opacity: 0.65;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 4px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-2);
+  background: var(--bg-2);
+  color: var(--fg-1);
+  font-size: 11px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--bg-4);
+  border-color: var(--line-3);
+  color: var(--fg-0);
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
+
+.btn-block {
+  width: 100%;
+  margin-top: 1rem;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-2);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-2);
+  border-color: var(--line-2);
+  color: var(--fg-0);
+}
+
+.btn-danger {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  color: var(--danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-sm {
+  padding: 0.32rem 0.7rem;
+  font-size: 10.5px;
+}
+
+/* ============================================================
+   Devices
+   ============================================================ */
+.device-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.device-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.device-row:last-child {
+  border-bottom: none;
+}
+
+.device-label {
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.device-meta {
+  margin-top: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--fg-3);
+}
+
+.device-meta .mono {
+  color: var(--fg-2);
+}
+
+/* ============================================================
+   Badges / pills
+   ============================================================ */
+.badge,
+.badge-off,
+.badge-revoked,
+.badge-mandatory,
+.badge-edited,
+.badge-head,
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  border: 1px solid transparent;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+}
+
+.badge {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 30%, transparent);
+}
+
+.badge-off,
+.tag-pill {
+  background: var(--bg-2);
+  color: var(--fg-2);
+  border-color: var(--line-2);
+}
+
+.badge-revoked {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
+.badge-mandatory {
+  margin-left: 0.5rem;
+}
+
+/* ============================================================
+   Grants / sharing rows
+   ============================================================ */
+.grant-block {
+  padding-top: 1rem;
+  margin-top: 1rem;
+  border-top: 1px solid var(--line-1);
+}
+
+.grant-block:first-of-type {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: none;
+}
+
+.grant-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.grant-title {
+  font-weight: 600;
+  color: var(--fg-0);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.grant-desc {
+  margin: 0 0 0.6rem;
+  color: var(--fg-2);
+}
+
+/* ============================================================
+   Sign-in / consent (centered card)
+   ============================================================ */
+.signin {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background:
+    radial-gradient(
+      1100px 520px at 50% -10%,
+      var(--brand-soft),
+      transparent 70%
+    ),
+    var(--bg-0);
+}
+
+.signin-card {
+  width: 100%;
+  max-width: 380px;
+  margin: 0;
+  box-shadow: var(--shadow-2);
+}
+
+.signin-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.1rem;
+  text-align: center;
+}
+
+.signin-brand h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.consent-card {
+  max-width: 520px;
+}
+
+.consent-list {
+  list-style: none;
+  padding: 0;
+  margin: 1.1rem 0;
+}
+
+.consent-row {
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.consent-row:last-child {
+  border-bottom: none;
+}
+
+.consent-row .check-row {
+  margin: 0;
+  align-items: center;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--fg-0);
+}
+
+.consent-desc {
+  margin: 0.45rem 0 0 calc(38px + 0.55rem);
+  color: var(--fg-2);
+}
+
+/* ============================================================
+   Boot loading gate
+   ============================================================ */
+.boot-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-3);
+  font-size: 0.9rem;
+}
+
+/* ============================================================
+   Sessions list (W6c)
+   ============================================================ */
+.session-card {
+  padding: 0.35rem 1.35rem;
+}
+
+.session-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.session-row {
+  border-bottom: 1px solid var(--line-1);
+}
+
+.session-row:last-child {
+  border-bottom: none;
+}
+
+.session-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.95rem 0;
+  text-decoration: none;
+  color: inherit;
+  border-radius: var(--r-2);
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.session-link:hover {
+  background: var(--bg-3);
+  /* Bleed the hover to the card padding edges without shifting the rows. */
+  box-shadow: 0 0 0 0.6rem var(--bg-3);
+  clip-path: inset(0 -0.6rem);
+}
+
+.session-main {
+  min-width: 0;
+}
+
+.session-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: var(--fg-0);
+  font-size: 0.95rem;
+}
+
+.session-title > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-meta {
+  margin-top: 0.25rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--fg-3);
+}
+
+.session-dot {
+  color: var(--fg-4);
+}
+
+.session-aside {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.session-count {
+  font-size: 0.8rem;
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.session-chevron {
+  display: inline-grid;
+  place-items: center;
+  color: var(--fg-4);
+}
+
+.session-link:hover .session-chevron {
+  color: var(--accent);
+}
+
+.load-more {
+  margin-top: 1rem;
+  display: flex;
+  justify-content: center;
+}
+
+.badge-edited {
+  background: var(--info-soft);
+  color: var(--info);
+  border-color: color-mix(in srgb, var(--info) 30%, transparent);
+}
+
+.badge-head {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* ============================================================
+   Session detail + result card (W6c)
+   ============================================================ */
+.back-link {
+  text-decoration: none;
+  color: var(--fg-2);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.back-link:hover {
+  color: var(--fg-0);
+}
+
+.detail-meta {
+  margin-bottom: 1.5rem;
+}
+
+.result-card {
+  margin-bottom: 1rem;
+}
+
+.result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.result-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.result-section {
+  padding-top: 0.9rem;
+  margin-top: 0.9rem;
+  border-top: 1px solid var(--line-1);
+}
+
+.result-section:first-of-type {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: none;
+}
+
+.result-section-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-3);
+  margin-bottom: 0.6rem;
+}
+
+.result-original {
+  background: var(--bg-1);
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-3);
+  padding: 0.85rem 1rem;
+}
+
+.result-actions {
+  margin-top: 0.9rem;
+}
+
+/* Key/value rows within a result. */
+.kv {
+  display: flex;
+  gap: 1rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--line-1);
+  font-size: 0.86rem;
+}
+
+.kv:last-child {
+  border-bottom: none;
+}
+
+.result-original .kv {
+  border-bottom-color: var(--line-2);
+}
+
+.kv-key {
+  flex: 0 0 8.5rem;
+  color: var(--fg-2);
+}
+
+.kv-val {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-1);
+  overflow-wrap: anywhere;
+}
+
+.kv-val.strong {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.mini-list {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.mini-list li {
+  margin: 0.1rem 0;
+}
+
+/* ============================================================
+   Revision history (W6c)
+   ============================================================ */
+.revision-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.revision-row {
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.revision-row:last-child {
+  border-bottom: none;
+}
+
+.revision-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.35rem;
+}
+
+.revision-seq {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.revision-changes .kv {
+  padding: 0.25rem 0;
+  border-bottom: none;
+  font-size: 0.82rem;
+}
+
+.revision-changes .kv-key {
+  flex: 0 0 7.5rem;
+}
+
+/* ============================================================
+   Inline edit form (W6c)
+   ============================================================ */
+.edit-form {
+  margin-top: 0.9rem;
+  padding: 1rem 1.1rem;
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-3);
+}
+
+.edit-form label:first-of-type {
+  margin-top: 0;
+}
+
+textarea,
+.edit-textarea {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-2);
+  color: var(--fg-0);
+  font-size: 0.9rem;
+  font-family: inherit;
+  line-height: 1.5;
+  resize: vertical;
+  transition: border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+textarea::placeholder,
+.edit-textarea::placeholder {
+  color: var(--fg-4);
+}
+
+textarea:focus,
+.edit-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+/* ============================================================
+   Community percentiles (W5)
+   ============================================================ */
+.community-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem 2rem;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.control-label {
+  font-size: 0.78rem;
+  color: var(--fg-2);
+}
+
+/* Segmented selector — a row of buttons where the active one is filled. */
+.seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-2);
+  padding: 2px;
+}
+
+.seg-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--fg-2);
+  font-family: inherit;
+  font-size: 0.82rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--r-2);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.seg-btn:hover {
+  color: var(--fg-0);
+}
+
+.seg-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.seg-btn-on {
+  background: var(--bg-4);
+  color: var(--fg-0);
+}
+
+.community-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.community-head h2 {
+  margin: 0;
+}
+
+.band-list {
+  margin-top: 0.75rem;
+}
+
+.band-row {
+  margin: 0.75rem 0;
+}
+
+.band-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  margin-bottom: 0.35rem;
+  color: var(--fg-1);
+}
+
+.band-label > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.band-count {
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.band-fill-own {
+  background: var(--accent-strong);
+}
+
+.band-row-own .band-label {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+/* Metric-definition list. */
+.def-list {
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.def-item {
+  padding: 0.7rem 0;
+  border-top: 1px solid var(--line-1);
+}
+
+.def-item:first-child {
+  border-top: none;
+}
+
+.def-item dt {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  color: var(--fg-0);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.def-unit {
+  color: var(--fg-3);
+  font-size: 0.78rem;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.def-item dd {
+  margin: 0.25rem 0 0;
+  color: var(--fg-2);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+/* ============================================================
+   Billing (checkout — Wave B)
+   ============================================================ */
+.billing-price {
+  margin: 0.6rem 0 0.9rem;
+}
+
+.billing-price-amount {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+/* ============================================================
+   Dev-mock ribbon (DEV builds only — see src/devmock.ts)
+   ============================================================ */
+.devmock-ribbon {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  z-index: 100;
+  font-size: 0.72rem;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: var(--r-pill);
+  padding: 0.25rem 0.7rem;
+  pointer-events: none;
+}
+
+/* At phone widths, navigation becomes a horizontal strip so the fixed
+   desktop rail does not consume the content column. */
+@media (max-width: 767px) {
+  .app-shell { flex-direction: column; height: 100dvh; }
+  .sidebar { width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--line-2); }
+  .sidebar-brand { height: 44px; }
+  .sidebar-nav { display: flex; flex-direction: row; overflow-x: auto; padding: 6px 10px; gap: 4px; }
+  .sidebar-nav .nav-item { flex: 0 0 auto; white-space: nowrap; }
+  .app-shell-main { min-height: 0; width: 100%; }
+  .topbar { padding-inline: 14px; gap: 8px; }
+  .topbar-account { max-width: 110px; }
+  .main { padding: 16px; }
+}

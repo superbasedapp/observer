@@ -19,6 +19,9 @@ export type ApiState<T> = {
 // where the underlying data evolves while the user watches (live
 // Antigravity-CLI capture, Session Detail mid-conversation).
 export type UseApiOptions = {
+  // Keep a failed read visible until a later read succeeds. Consent-sensitive
+  // controls must not re-enable merely because a refresh has started.
+  retainErrorOnRefresh?: boolean;
   // refreshMs polls the endpoint every N milliseconds. <=0 disables
   // (default). Pauses while the document is hidden unless
   // refreshWhenHidden is set — saves the proxy / dashboard server
@@ -70,6 +73,7 @@ export function useApi<T>(
   // so the user-facing surface is one tick latency, not zero.
   const refreshMs = opts?.refreshMs ?? 0;
   const refreshWhenHidden = opts?.refreshWhenHidden ?? false;
+  const retainErrorOnRefresh = opts?.retainErrorOnRefresh ?? false;
   useEffect(() => {
     if (refreshMs <= 0 || path == null) return;
     const id = window.setInterval(() => {
@@ -102,10 +106,11 @@ export function useApi<T>(
     if (!hasDataRef.current) {
       setLoading(true);
     }
-    setError(null);
+    if (!retainErrorOnRefresh) setError(null);
     fetchJSON<T>(path, params, { signal: ac.signal })
       .then((v) => {
         if (ac.signal.aborted) return;
+        setError(null);
         // Skip setData when the response is byte-identical to what
         // we already have. Auto-refresh tickers fire every N seconds
         // even on idle sessions; without this guard, every tick
@@ -144,7 +149,7 @@ export function useApi<T>(
     // (e.g. [win, tool] over passing the whole params object) because
     // a stable identity isn't guaranteed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, tick, ...deps]);
+  }, [path, tick, retainErrorOnRefresh, ...deps]);
 
   return { data, loading, error, reload: () => setTick((t) => t + 1) };
 }

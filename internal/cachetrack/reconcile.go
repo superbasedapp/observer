@@ -336,6 +336,13 @@ func MispredictRateGraded(eventKinds []Kind, tokensRead, tokensWritten []int64) 
 // columns explicitly at zero. Out-of-range indices return false
 // (treat unknown-tokens as "may have been a real mispredict";
 // the defensive bias is toward grading, not toward exclusion).
+//
+// This is the index-based, kind-agnostic form used inside the rate
+// denominator, where the caller has already established k ==
+// KindMispredict before calling it. The exported, kind-aware spelling
+// every event surface uses is [IsZeroUsage]; the two agree on a
+// mispredict row (kind check already satisfied here by the caller's
+// guard).
 func isZeroUsage(i int, tokensRead, tokensWritten []int64) bool {
 	if i >= len(tokensRead) || i >= len(tokensWritten) {
 		return false

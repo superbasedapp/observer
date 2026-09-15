@@ -92,20 +92,14 @@ export function secondsUntil(iso?: string | null, nowMs: number = Date.now()): n
 }
 
 /** Compact elapsed: "45s" · "3m 20s" · "4h 12m". */
-export function fmtElapsed(secs: number | null | undefined): string {
-  if (secs == null || !Number.isFinite(secs) || secs < 0) return "—";
-  if (secs < 60) return `${secs}s`;
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  if (m < 60) return s ? `${m}m ${s}s` : `${m}m`;
-  const h = Math.floor(m / 60);
-  const rm = m % 60;
-  return rm ? `${h}h ${rm}m` : `${h}h`;
-}
+// fmtElapsed was promoted into the shared design system (shared/lib/format.ts)
+// so the shared session-detail components can render elapsed times; re-exported
+// here so existing @/lib/cockpit importers are unchanged.
+export { fmtElapsed } from "@shared/lib/format";
 
 /** Short relative age: "4s ago" · "3m ago" · "2h ago" · "5d ago". */
 export function fmtAgo(secs: number | null | undefined): string {
-  if (secs == null || !Number.isFinite(secs) || secs < 0) return "—";
+  if (secs == null || !Number.isFinite(secs) || secs < 0) return "-";
   if (secs < 60) return `${secs}s ago`;
   const m = Math.floor(secs / 60);
   if (m < 60) return `${m}m ago`;

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"text/tabwriter"
 	"time"
@@ -60,7 +61,7 @@ func newPredictCmd() *cobra.Command {
 				prior, _ = st.LoadToolProjectPrior(cmd.Context(), shape.Tool, shape.ProjectID, priorWindow)
 			}
 
-			engine := cost.NewEngine(cfg.Intelligence)
+			engine := acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default())
 			rates, ok := predictRatePair(engine, shape.Model)
 			if !ok {
 				return fmt.Errorf("model %q has no pricing entry", shape.Model)

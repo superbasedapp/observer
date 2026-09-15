@@ -166,3 +166,57 @@ func TestDetectWindowsHome_OverrideWinsOverOwnership(t *testing.T) {
 		t.Errorf("Installed() = %v, want claude-code-windows for the contained override", r.Installed())
 	}
 }
+
+// TestDetectWindowsHome_NewVendorsShareTheSameGuardRails pins that the
+// six Part B item 1/2 cross-OS bridge targets added alongside
+// register*Windows (gemini-cli, qwen-code, droid, qoder, poolside,
+// command-code) resolve through the SAME detectWindowsHome guard rails
+// as claude-code/cursor/codex — table-driven rather than duplicating
+// six near-identical copies of TestDetectWindowsHome_OwnedAutoDetected /
+// TestDetectWindowsHome_UnownedRefused.
+func TestDetectWindowsHome_NewVendorsShareTheSameGuardRails(t *testing.T) {
+	cases := []struct {
+		name   string
+		subdir string
+		detect func(*Registry) string
+	}{
+		{"gemini-cli", ".gemini", (*Registry).detectWindowsGeminiHome},
+		{"qwen-code", ".qwen", (*Registry).detectWindowsQwenHome},
+		{"droid", ".factory", (*Registry).detectWindowsFactoryHome},
+		{"qoder", ".qoder", (*Registry).detectWindowsQoderHome},
+		{"poolside", filepath.Join(".config", "poolside"), (*Registry).detectWindowsPoolsideHome},
+		{"command-code", ".commandcode", (*Registry).detectWindowsCommandCodeHome},
+	}
+	for _, c := range cases {
+		t.Run(c.name+"/owned", func(t *testing.T) {
+			winHome := mkWinConfigHome(t, c.subdir)
+			forceHookCrossmount(t, []crossmount.HomeRoot{{OS: crossmount.OSWindows, Path: winHome}}, map[string]bool{winHome: true})
+			r, err := NewRegistry(Options{BinaryPath: "/bin/observer", HomeDir: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r = clearSandboxPin(r)
+			if got := c.detect(r); got != filepath.Join(winHome, c.subdir) {
+				t.Errorf("detect = %q, want owned home %q", got, filepath.Join(winHome, c.subdir))
+			}
+			if !containsString(r.Installed(), c.name+"-windows") {
+				t.Errorf("Installed() = %v, want %s-windows for the owned home", r.Installed(), c.name)
+			}
+		})
+		t.Run(c.name+"/unowned", func(t *testing.T) {
+			winHome := mkWinConfigHome(t, c.subdir)
+			forceHookCrossmount(t, []crossmount.HomeRoot{{OS: crossmount.OSWindows, Path: winHome}}, map[string]bool{winHome: false})
+			r, err := NewRegistry(Options{BinaryPath: "/bin/observer", HomeDir: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r = clearSandboxPin(r)
+			if got := c.detect(r); got != "" {
+				t.Errorf("detect = %q, want empty (unowned refused)", got)
+			}
+			if containsString(r.Installed(), c.name+"-windows") {
+				t.Errorf("Installed() = %v, must NOT include %s-windows for an unowned home", r.Installed(), c.name)
+			}
+		})
+	}
+}

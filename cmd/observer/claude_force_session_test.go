@@ -24,12 +24,13 @@ func TestRunClaudeEmptyUnset_PinProxyForcesSessionID(t *testing.T) {
 	ids := oobSessionSink(t) // live OOB channel → forceClaudeSessionID forces+announces
 	bin, argsFile := writeRecordingClaudeBin(t)
 	proxyURL := reachableProxyURL(t) // proxy UP → pin-proxy action
+	cfgPath, _ := writeGuardTestConfig(t)
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("ANTHROPIC_CONFIG_DIR", "")
 
 	route := claudeRouteResolution{class: claudeRouteEmptyUnset, scope: claudeScopeUser, file: "user settings"}
-	opts := claudeLauncherOptions{stderr: io.Discard, claudeArgs: []string{"--model", "opus"}}
+	opts := claudeLauncherOptions{configPath: cfgPath, stderr: io.Discard, claudeArgs: []string{"--model", "opus"}}
 	if err := runClaudeEmptyUnset(opts, bin, proxyURL, route, opts.claudeArgs, "", false); err != nil {
 		t.Fatalf("runClaudeEmptyUnset: %v", err)
 	}

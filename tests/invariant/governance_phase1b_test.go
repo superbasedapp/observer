@@ -18,14 +18,21 @@ import (
 // Admin-controlled Plane B, Phase 1b invariants
 // (docs/plans/admin-controlled-plane-b-phase-1b-mini-spec-2026-08-15.md §6.2).
 //
-// Two claims these tests exist to keep true:
+// Two claims these tests exist to keep true, under the TEAMS posture (the
+// only posture this Phase-1b governance-body mechanism concerns itself
+// with — the Plane B dual-mode gateway / RBAC-IA design's ENTERPRISE
+// posture, 2026-08-29 §5, authorizes raw content through a structurally
+// distinct, non-governance-body channel: store.ShareOptions.EnterpriseGranted,
+// set from a node's own managed enrolment grant per
+// govern.Effective.GrantsEnterpriseContent(), never from a governance body):
 //
 //  1. an ungoverned node is UNCHANGED — no sidecar, no new default, no new
 //     write; and
-//  2. the organization can only ever REDUCE what a node shares. There is no
-//     code path, under any org body, any grant, any authority token, or any
-//     compromise of the org signing key, by which a node that has not
-//     locally set full_content or admin_managed ships raw content.
+//  2. the organization can only ever REDUCE what a node shares THROUGH THIS
+//     GOVERNANCE-BODY CHANNEL. There is no code path, under any org body, any
+//     grant, any authority token, or any compromise of the org signing key,
+//     by which a governance-body directive causes a node that has not
+//     locally set full_content or admin_managed to ship raw content.
 
 func phase1bTempConfig(t *testing.T, dbDir, body string) string {
 	t.Helper()
@@ -132,13 +139,26 @@ func boolStr(b bool) string {
 }
 
 // TestOrgPushUnchangedByGovernance is the source-level pin behind the
-// "orgpush.go is byte-identical" claim.
+// "orgpush.go is byte-identical WITH RESPECT TO THE GOVERNANCE-BODY MERGE"
+// claim.
 //
 // store.ShareOptions has exactly ONE non-test construction site in the whole
 // tree, and shipsRawContent reads only the struct's own fields, so a
-// lowering merge applied upstream of that constructor needs no change at the
-// seam. This test kills the "just add a third disjunct" mutation, and it
-// kills the "let governance reach into orgpush.go" mutation.
+// governance lowering merge applied upstream of that constructor needs no
+// change at the seam. This test kills the "let a governance-body directive
+// add a disjunct" mutation and the "let governance reach into orgpush.go"
+// mutation.
+//
+// It does NOT forbid every future disjunct: the Plane B dual-mode gateway /
+// RBAC-IA design (2026-08-29, §5.3) legitimately added EnterpriseGranted as a
+// THIRD, non-governance-body path — set from a node's own managed enrolment
+// grant, never from a Phase-1b governance body, and covered by its own
+// dedicated invariant coverage (see the "enterprise_granted" subtest of
+// TestPushPayloadCarriesContentWhenOptedIn in privacy_test.go). What this
+// test pins is that shipsRawContent's ENTIRE
+// disjunct set is exactly {FullContent, AdminManaged, EnterpriseGranted} — no
+// more, no fewer — and that none of them, nor the file as a whole, ever
+// references the governance machinery.
 func TestOrgPushUnchangedByGovernance(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "internal", "store", "orgpush.go"))
 	if err != nil {
@@ -146,9 +166,9 @@ func TestOrgPushUnchangedByGovernance(t *testing.T) {
 	}
 	src := string(raw)
 
-	const want = "func (o ShareOptions) shipsRawContent() bool {\n\treturn o.FullContent || o.AdminManaged\n}"
+	const want = "func (o ShareOptions) shipsRawContent() bool {\n\treturn o.FullContent || o.AdminManaged || o.EnterpriseGranted\n}"
 	if !strings.Contains(src, want) {
-		t.Fatal("shipsRawContent is no longer exactly `FullContent || AdminManaged` — the single predicate every content-strip site consults must not grow a disjunct")
+		t.Fatal("shipsRawContent is no longer exactly `FullContent || AdminManaged || EnterpriseGranted` — the predicate every content-strip site consults must not grow a FOURTH disjunct, and must not lose one of these three")
 	}
 	for _, forbidden := range []string{
 		"internal/govern",

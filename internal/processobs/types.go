@@ -582,6 +582,42 @@ const (
 	DropEnrichFailed   DropReason = "enrich_failed"    // enrichment returned an error
 	DropExitBeforeExec DropReason = "exit_before_exec" // exit for a pid we never saw exec/fork for
 	DropSelfExcluded   DropReason = "self_excluded"    // the observer daemon's own binary — never an AI-tool worker (Options.ExcludeOwnBasenames)
+	// DropSinkError is a batch the run sink refused PERMANENTLY — a schema or
+	// constraint failure that no later attempt can fix (see ClassifySinkError).
+	// Retrying it would only delay the loss, so it is dropped at once and
+	// counted here.
+	DropSinkError DropReason = "sink_error"
+	// DropSinkRetryExhausted is a run discarded because the RETAINED batch hit
+	// Options.MaxRetainedRuns while the sink kept failing transiently. This is
+	// the bounded-memory release valve: the retention cannot grow forever
+	// against a sink that never recovers, so the OLDEST held rows are released
+	// and counted here. Non-zero means capture was lost to a persistently
+	// unavailable sink — a different fact from DropSinkError, and the one that
+	// says "the DB was busy for longer than the retention could cover".
+	DropSinkRetryExhausted DropReason = "sink_retry_exhausted"
+	// DropSinkShutdown is a run still retained (or newly failed) when the
+	// observer performed its FINAL flush. There is no next flush tick to retry
+	// on, so these are a real loss and are counted rather than silently
+	// discarded with the process.
+	DropSinkShutdown DropReason = "sink_shutdown"
+	// DropFlushBacklog is a run discarded on the DRAIN side because the
+	// flusher goroutine fell far enough behind that the hand-off buffer AND
+	// the drain's own backlog were both full (task 9g). It is the counterpart
+	// of DropSinkRetryExhausted at the other end of the pipeline: retry
+	// exhaustion means the sink kept refusing rows it had been offered, while
+	// this means the sink was so slow that rows never got offered at all.
+	//
+	// It exists so the decoupling cannot buy speed with silence. The drain
+	// never blocks on the flusher — that coupling is what made a 31 s flush a
+	// 31 s capture blackout — but "never blocks" must not degrade into "quietly
+	// forgets", so the overflow is bounded, oldest-first, and counted here.
+	// Non-zero means the sink was persistently slower than capture; zero with a
+	// non-zero FlushBacklogHits means the backlog absorbed the stall.
+	DropFlushBacklog DropReason = "flush_backlog"
+	// DropEventSinkError is the high-signal EVENT sink's failure counter. The
+	// event sink has no retention: an event is a point-in-time fact whose
+	// value decays, and it is emitted one at a time rather than batched.
+	DropEventSinkError DropReason = "event_sink_error"
 )
 
 // SessionTokenEnvKeys is the allowlist of process-environment variable names

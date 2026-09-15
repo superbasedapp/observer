@@ -1,0 +1,6 @@
+# Top comment
+key: value
+
+other: "# not a comment"
+list:
+  - one  # trailing

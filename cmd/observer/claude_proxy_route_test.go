@@ -571,6 +571,51 @@ func TestReadClaudeSettingsBaseURL_BestEffort(t *testing.T) {
 	}
 }
 
+// TestClaudeProxyBackendProven pins the budget-admission guard around Claude
+// Code's native cloud providers. ANTHROPIC_BASE_URL can remain present while
+// Bedrock, Vertex, or Foundry is selected through process env or settings, so
+// those launches must not receive positive proxy evidence.
+func TestClaudeProxyBackendProven(t *testing.T) {
+	proxyEnv := func() []string { return []string{"HOME=" + t.TempDir()} }
+	cases := []struct {
+		name       string
+		env        func() []string
+		settings   string
+		cliSetting string
+		want       bool
+	}{
+		{name: "no native backend selector", env: proxyEnv, want: true},
+		{name: "bedrock process selector", env: func() []string { return []string{"HOME=" + t.TempDir(), "CLAUDE_CODE_USE_BEDROCK=1"} }, want: false},
+		{name: "vertex process selector", env: func() []string { return []string{"HOME=" + t.TempDir(), "CLAUDE_CODE_USE_VERTEX=true"} }, want: false},
+		{name: "foundry process selector", env: func() []string { return []string{"HOME=" + t.TempDir(), "CLAUDE_CODE_USE_FOUNDRY=1"} }, want: false},
+		{name: "explicit false process selector", env: func() []string { return []string{"HOME=" + t.TempDir(), "CLAUDE_CODE_USE_VERTEX=false"} }, want: true},
+		{name: "bedrock user setting", env: proxyEnv, settings: `{"env":{"CLAUDE_CODE_USE_BEDROCK":"true"}}`, want: false},
+		{name: "disabled vertex user setting", env: proxyEnv, settings: `{"env":{"CLAUDE_CODE_USE_VERTEX":"0"}}`, want: true},
+		{name: "bedrock inline cli setting", env: proxyEnv, cliSetting: `{"env":{"CLAUDE_CODE_USE_BEDROCK":"on"}}`, want: false},
+		{name: "malformed user settings", env: proxyEnv, settings: `{not-json`, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgDir := t.TempDir()
+			t.Setenv("CLAUDE_CONFIG_DIR", cfgDir)
+			t.Setenv("ANTHROPIC_CONFIG_DIR", "")
+			if tc.settings != "" {
+				if err := os.WriteFile(filepath.Join(cfgDir, "settings.json"), []byte(tc.settings), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string(nil)
+			if tc.cliSetting != "" {
+				args = []string{"--settings", tc.cliSetting}
+			}
+			got := claudeProxyBackendProven(tc.env(), t.TempDir(), args)
+			if got != tc.want {
+				t.Fatalf("claudeProxyBackendProven()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestReadClaudeCLISettingsBaseURL pins finding N1: claude's `--settings` accepts
 // EITHER a file path OR an inline JSON literal, and an unreadable/unparseable
 // value must be flagged (never silently absent).
@@ -850,10 +895,11 @@ func TestRunClaudeEmptyUnset_DaemonDownSingleNotice(t *testing.T) {
 	bin, _ := writeRecordingClaudeBin(t)
 	proxyURL := closedProxyURL(t) // proxy DOWN → proxyReachable=false → direct-satisfied
 	route := claudeRouteResolution{class: claudeRouteEmptyUnset, scope: claudeScopeUser, file: "user settings"}
+	cfgPath, _ := writeGuardTestConfig(t)
 
 	t.Run("attach already noticed → one condensed notice", func(t *testing.T) {
 		var stderr bytes.Buffer
-		opts := claudeLauncherOptions{stderr: &stderr, claudeArgs: []string{"--model", "opus"}}
+		opts := claudeLauncherOptions{configPath: cfgPath, stderr: &stderr, claudeArgs: []string{"--model", "opus"}}
 		if err := runClaudeEmptyUnset(opts, bin, proxyURL, route, opts.claudeArgs, "", true); err != nil {
 			t.Fatalf("runClaudeEmptyUnset: %v", err)
 		}
@@ -871,7 +917,7 @@ func TestRunClaudeEmptyUnset_DaemonDownSingleNotice(t *testing.T) {
 
 	t.Run("attach NOT noticed → exactly one notice", func(t *testing.T) {
 		var stderr bytes.Buffer
-		opts := claudeLauncherOptions{stderr: &stderr, claudeArgs: []string{"--model", "opus"}}
+		opts := claudeLauncherOptions{configPath: cfgPath, stderr: &stderr, claudeArgs: []string{"--model", "opus"}}
 		if err := runClaudeEmptyUnset(opts, bin, proxyURL, route, opts.claudeArgs, "", false); err != nil {
 			t.Fatalf("runClaudeEmptyUnset: %v", err)
 		}
@@ -890,6 +936,7 @@ func TestRunClaudeEmptyUnset_DaemonDownSingleNotice(t *testing.T) {
 func TestRunClaudeEmptyUnset_PinWriteFailNoCapturedClaim(t *testing.T) {
 	bin, _ := writeRecordingClaudeBin(t) // captured under a valid TMPDIR first
 	proxyURL := reachableProxyURL(t)     // proxy UP → pin-proxy action
+	cfgPath, _ := writeGuardTestConfig(t)
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("ANTHROPIC_CONFIG_DIR", "")
 	// Point TMPDIR at a non-existent dir so os.CreateTemp (and thus the pin write)
@@ -898,7 +945,7 @@ func TestRunClaudeEmptyUnset_PinWriteFailNoCapturedClaim(t *testing.T) {
 
 	route := claudeRouteResolution{class: claudeRouteEmptyUnset, scope: claudeScopeUser, file: "user settings"}
 	var stderr bytes.Buffer
-	opts := claudeLauncherOptions{stderr: &stderr, claudeArgs: []string{"--model", "opus"}}
+	opts := claudeLauncherOptions{configPath: cfgPath, stderr: &stderr, claudeArgs: []string{"--model", "opus"}}
 	if err := runClaudeEmptyUnset(opts, bin, proxyURL, route, opts.claudeArgs, "", false); err != nil {
 		t.Fatalf("runClaudeEmptyUnset: %v", err)
 	}

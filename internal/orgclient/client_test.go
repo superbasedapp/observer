@@ -9,11 +9,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -29,8 +31,11 @@ import (
 
 // memBearerStore is an in-memory BearerStore for tests.
 type memBearerStore struct {
-	bearer string
-	key    ed25519.PrivateKey
+	bearer  string
+	key     ed25519.PrivateKey
+	vkey    string
+	vkeyGen uint64
+	vkeySet bool
 }
 
 func (m *memBearerStore) SaveBearer(b string) error { m.bearer = b; return nil }
@@ -47,7 +52,23 @@ func (m *memBearerStore) LoadAgentKey() (ed25519.PrivateKey, error) {
 	}
 	return m.key, nil
 }
-func (m *memBearerStore) Clear() error    { m.bearer = ""; m.key = nil; return nil }
+
+func (m *memBearerStore) SaveVirtualKey(key string, generation uint64) error {
+	m.vkey, m.vkeyGen, m.vkeySet = key, generation, true
+	return nil
+}
+
+func (m *memBearerStore) LoadVirtualKey() (string, uint64, error) {
+	if !m.vkeySet {
+		return "", 0, ErrNoSecret
+	}
+	return m.vkey, m.vkeyGen, nil
+}
+
+func (m *memBearerStore) Clear() error {
+	m.bearer, m.key, m.vkey, m.vkeyGen, m.vkeySet = "", nil, "", 0, false
+	return nil
+}
 func (m *memBearerStore) Backend() string { return "mem" }
 
 // --- helpers ----------------------------------------------------------------
@@ -596,6 +617,42 @@ func TestRunLoop_IdleKeepsIntervalCadence(t *testing.T) {
 	})
 }
 
+func TestValidatePushBodySize(t *testing.T) {
+	if err := validatePushBodySize([]byte("1234"), 4); err != nil {
+		t.Fatalf("exact-limit body rejected: %v", err)
+	}
+	if err := validatePushBodySize([]byte("12345"), 4); !errors.Is(err, ErrBatchTooLarge) {
+		t.Fatalf("oversized body = %v, want ErrBatchTooLarge", err)
+	}
+}
+
+func TestRunLoop_OversizedBatchUsesCircuitBreakerCadence(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := New(config.OrgClientConfig{}, nil, &memBearerStore{}, "v", http.DefaultClient, quietLogger())
+		ctx, cancel := context.WithCancel(context.Background())
+		var gaps []time.Duration
+		last := time.Now()
+		calls := 0
+		action := func(context.Context) error {
+			now := time.Now()
+			gaps = append(gaps, now.Sub(last))
+			last = now
+			calls++
+			if calls == 2 {
+				cancel()
+			}
+			return ErrBatchTooLarge
+		}
+		_ = c.runLoop(ctx, time.Minute, action)
+		if len(gaps) != 2 {
+			t.Fatalf("ran %d cycles, want 2", len(gaps))
+		}
+		if gaps[0] != time.Minute || gaps[1] != oversizedBatchBackoff {
+			t.Fatalf("gaps = %v, want [%v %v]", gaps, time.Minute, oversizedBatchBackoff)
+		}
+	})
+}
+
 // ctx cancellation makes the loop return ctx.Err() promptly.
 func TestRunLoop_ContextCancel(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -657,4 +714,75 @@ var testPubKeys = map[string]ed25519.PublicKey{}
 func bindPub(srv *httptest.Server, pub ed25519.PublicKey) { testPubKeys[srv.URL] = pub }
 func pubFromCtx(r *http.Request) ed25519.PublicKey {
 	return testPubKeys["http://"+r.Host]
+}
+
+// TestNoteOversizedBatch_PersistsPauseForOtherProcesses pins the H2 breaker
+// surface: opening the oversized-batch circuit must leave a DURABLE record, not
+// just a log line. The dashboard and `observer org push-status` run in different
+// processes from the daemon that parks the loop, so an in-memory flag would
+// leave "no telemetry is shipping for the next hour" completely invisible.
+func TestNoteOversizedBatch_PersistsPauseForOtherProcesses(t *testing.T) {
+	s := newAgentStore(t)
+	c := newTestClient(t, s, &memBearerStore{})
+	ctx := context.Background()
+
+	before := time.Now().UTC()
+	c.noteOversizedBatch(ctx, fmt.Errorf("orgclient.PushOnce: %w: serialized_bytes=250000000 limit_bytes=1048576", ErrBatchTooLarge))
+
+	paused, err := s.LoadPushBreaker(ctx)
+	if err != nil {
+		t.Fatalf("LoadPushBreaker: %v", err)
+	}
+	if paused == nil {
+		t.Fatal("the oversized-batch pause was not persisted — a parked push loop would be invisible")
+	}
+	if !strings.Contains(paused.Reason, "limit_bytes=1048576") {
+		t.Errorf("Reason = %q, want the serialized-vs-limit diagnostic operators act on", paused.Reason)
+	}
+	if got := paused.Until.Sub(before); got < oversizedBatchBackoff-time.Minute || got > oversizedBatchBackoff+time.Minute {
+		t.Errorf("pause window = %v, want ~%v (the circuit-breaker cadence)", got, oversizedBatchBackoff)
+	}
+
+	// A successful cycle closes the circuit — the same call PushLoop makes.
+	if err := s.ClearPushBreaker(ctx); err != nil {
+		t.Fatalf("ClearPushBreaker: %v", err)
+	}
+	if paused, err = s.LoadPushBreaker(ctx); err != nil || paused != nil {
+		t.Fatalf("circuit still open after a success: %+v, %v", paused, err)
+	}
+}
+
+// TestStatusReportsOpenPushBreaker pins that the persisted pause reaches the
+// EnrolmentState the dashboard + CLI read, not only the store.
+func TestStatusReportsOpenPushBreaker(t *testing.T) {
+	s := newAgentStore(t)
+	bs := &memBearerStore{}
+	c := newTestClient(t, s, bs)
+	ctx := context.Background()
+
+	// Status short-circuits on a non-enrolled node, so enrol first.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeTestJSON(w, http.StatusOK, orgcontract.EnrollResponse{
+			Bearer: "bearer-xyz", BearerExpiresAt: "2026-08-23T00:00:00Z",
+			OrgID: "org-1", OrgName: "Acme", UserID: "scim-42", UserEmail: "dev@acme.example",
+		})
+	}))
+	defer srv.Close()
+	if _, _, err := c.Enroll(ctx, srv.URL, "tok_id.secret"); err != nil {
+		t.Fatalf("Enroll: %v", err)
+	}
+	if err := s.OpenPushBreaker(ctx, time.Now().UTC().Add(oversizedBatchBackoff), "serialized_bytes=9 limit_bytes=1"); err != nil {
+		t.Fatalf("OpenPushBreaker: %v", err)
+	}
+
+	st, err := c.Status(ctx)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.PushPaused == nil {
+		t.Fatal("EnrolmentState.PushPaused is nil while the circuit is open — the dashboard would show a healthy push loop")
+	}
+	if !strings.Contains(st.PushPaused.Reason, "limit_bytes=1") {
+		t.Errorf("PushPaused.Reason = %q", st.PushPaused.Reason)
+	}
 }

@@ -48,7 +48,7 @@ const TESTIMONIALS: { quote: string; author: string; role?: string }[] = [];
 // in the text would double it up. LinkedIn's share intent only takes
 // a url param at all (no text), so it never sees this string.
 const SHARE_TEXT_STATIC =
-  "I've been using SuperBased to see what my AI coding tools actually cost and do — it's worth a look";
+  "I've been using SuperBased to see what my AI coding tools actually cost and do - it's worth a look";
 
 function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
@@ -81,7 +81,7 @@ function emailShareURL(text: string): string {
   return buildEmailShareURL("You should try SuperBased", text, SITE);
 }
 function feedbackURL(): string {
-  const subject = encodeURIComponent("SuperBased — feedback / testimonial");
+  const subject = encodeURIComponent("SuperBased - feedback / testimonial");
   return `mailto:${CONTACT}?subject=${subject}`;
 }
 
@@ -254,11 +254,11 @@ export function CommunityCard() {
               href={feedbackURL()}
               icon={<HeartIcon />}
               title="Send feedback"
-              desc={`Tell us what works (or doesn't) — ${CONTACT}.`}
+              desc={`Tell us what works (or doesn't) - ${CONTACT}.`}
             />
           </div>
 
-          {/* Share payload preview — the exact text below is what
+          {/* Share payload preview - the exact text below is what
               "Refer a friend" / X / LinkedIn / email will post; the
               operator sees it before acting, never a hidden payload. */}
           <div className="mt-3 rounded-2 border border-line-2 bg-bg-1 px-3 py-2">
@@ -282,7 +282,7 @@ export function CommunityCard() {
             </p>
             <p className="mt-1.5 text-[10.5px] text-fg-4">
               X, email, and the native share sheet add the superbased.app
-              link automatically. LinkedIn shares the link only — no text.
+              link automatically. LinkedIn shares the link only - no text.
             </p>
           </div>
 
@@ -309,7 +309,7 @@ export function CommunityCard() {
                   <blockquote key={t.author} className="rounded-2 border border-line-2 bg-bg-1 p-3">
                     <p className="text-[12px] italic text-fg-2">&ldquo;{t.quote}&rdquo;</p>
                     <footer className="mt-1 text-[11px] text-fg-4">
-                      — {t.author}
+                      - {t.author}
                       {t.role ? `, ${t.role}` : ""}
                     </footer>
                   </blockquote>
@@ -322,7 +322,7 @@ export function CommunityCard() {
                 <a href={feedbackURL()} className="font-medium text-accent hover:underline">
                   Send us a testimonial
                 </a>{" "}
-                — we'd love to hear how you use it, and we may feature it (with your OK).
+                - we'd love to hear how you use it, and we may feature it (with your OK).
               </p>
             )}
           </div>

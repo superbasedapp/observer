@@ -13,6 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/proxy"
 	"github.com/marmutapp/superbased-observer/internal/routing"
+	"github.com/marmutapp/superbased-observer/internal/selfobs/emit"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -272,6 +273,38 @@ func TestRunRoutingCalibration_EndToEnd(t *testing.T) {
 	n, err := s.CountModelCalibrations(context.Background())
 	if err != nil || n == 0 {
 		t.Fatalf("calibration cells = %d err=%v, want > 0", n, err)
+	}
+}
+
+// TestWireRouting_RoutingEnabledGate is the W5 proof (plan
+// docs/plans/org-observer-fundamentals-fix-plan-2026-09-13.md R4) that
+// cmd/observer/proxy.go's wireRouting gate ("if !cfg.Routing.Enabled ...
+// return nil, nil") reads whatever value ends up on cfg.Routing.Enabled —
+// so a governance-pinned routing.enabled=true (proven to reach cfg in
+// internal/config's TestGovernancePinnedRoutingEnabledYieldsARouter) is
+// enough to get a router with NO change to this function.
+func TestWireRouting_RoutingEnabledGate(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "observer.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	s := store.New(database)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	disabled := config.Default()
+	disabled.Routing.Enabled = false
+	if demotions, handle := wireRouting(ctx, disabled, s, &proxy.Options{}, logger, emit.Nop()); demotions != nil || handle != nil {
+		t.Fatalf("Routing.Enabled=false yielded a router: demotions != nil = %v, handle = %+v", demotions != nil, handle)
+	}
+
+	enabled := config.Default()
+	enabled.Routing.Enabled = true
+	enabled.Routing.Mode = "advise"
+	enabled.Routing.Policy = "value"
+	if demotions, handle := wireRouting(ctx, enabled, s, &proxy.Options{}, logger, emit.Nop()); demotions == nil || handle == nil {
+		t.Fatalf("Routing.Enabled=true (the shape a governance pin produces) did not yield a router: demotions != nil = %v, handle = %+v", demotions != nil, handle)
 	}
 }
 

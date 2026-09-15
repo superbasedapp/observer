@@ -1,0 +1,6 @@
+{
+  "url": "https://example.com",
+
+  "note": "// not a comment",
+  "n": 1
+}

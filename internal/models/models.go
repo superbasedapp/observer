@@ -38,8 +38,23 @@ const (
 	// (the npm-distributed `cline` 3.x CLI), which is a different
 	// product from the same authors with its own SQLite-backed
 	// persistence at `~/.cline/data/`.
-	ToolCline    = "cline"
-	ToolRooCode  = "roo-code"
+	ToolCline   = "cline"
+	ToolRooCode = "roo-code"
+	// ToolZooCode is ZooCode (`ZooCodeOrganization.zoo-code`), the
+	// community continuation of Roo Code v3.54.0 published on the VS
+	// Code Marketplace since 2026-05-16 after Roo's 2026-04-21
+	// shutdown — the vendor's own listing describes it as "same
+	// features, settings structure" as Roo v3.54.0. Like ToolRooCode
+	// it is a cline-package RETAG, not an adapter of its own:
+	// internal/adapter/cline recognises its globalStorage directory
+	// (`zoocodeorganization.zoo-code` — VS Code lower-cases the
+	// marketplace id on disk; the on-disk spelling is still unconfirmed
+	// on a live install) via the clineExtensions table and emits
+	// Tool="zoo-code" for tasks found there, parsed by the exact same
+	// Roo-shaped task layout. Matching the roo-code precedent, it has
+	// no internal/integration registry row by design (see
+	// registryRowlessTaxonomyTools in internal/integration).
+	ToolZooCode  = "zoo-code"
 	ToolCopilot  = "copilot"
 	ToolOpenCode = "opencode"
 	ToolOpenClaw = "openclaw"
@@ -180,7 +195,10 @@ const (
 	// history,lock}` (the `.json` state carries per-turn
 	// `conversation_metadata.user_turn_metadatas[]` with
 	// input/output_token_count + credit `metering_usage`; the `.jsonl` is
-	// the Prompt/AssistantMessage stream), while `--no-interactive` runs
+	// the Prompt / AssistantMessage / ToolResults stream, whose content
+	// blocks are POLYMORPHIC — only `kind:"text"` carries a string,
+	// while `thinking` / `toolUse` / `toolResult` carry objects), while
+	// `--no-interactive` runs
 	// write ONLY the SQLite `conversations_v2` table in
 	// `~/.local/share/kiro-cli/data.sqlite3` (Windows:
 	// `%LOCALAPPDATA%\Kiro-Cli\data.sqlite3`), keyed by the RAW cwd string
@@ -228,6 +246,10 @@ const (
 	// and need session correlation. `session_search.sqlite` is an FTS
 	// index only — not the store. Directory names percent-encode the cwd;
 	// records carry the raw OS path.
+	//
+	// DISTINCT from ToolGrokbot, the Grok Bot DESKTOP app: different
+	// product, different vendor stack, different on-disk format, no path
+	// overlap (~/.grok vs %APPDATA%\Grok Bot).
 	ToolGrok = "grok"
 	// ToolDevin is Cognition's Devin CLI (binary `devin`, the local CLI
 	// released ~2026-04, distinct from cloud Devin; proprietary,
@@ -458,6 +480,154 @@ const (
 	// context-window size, not usage) — sessions + actions only. See
 	// internal/adapter/freebuff and docs/freebuff-adapter.md.
 	ToolFreebuff = "freebuff"
+	// ToolGrokbot is Grok Bot, the xAI DESKTOP agent app (Electron;
+	// productName "Grok Bot", internal package name "sand", author
+	// "SpaceXAI", built on Anysphere/Cursor's agent stack — the asar
+	// depends on 30+ @anysphere/* workspaces and ships cursor-proclist).
+	//
+	// DISTINCT from ToolGrok, the Grok CLI: different product, different
+	// format, no path overlap.
+	//
+	// Store: <electron userData>/sand-client-persistence/<base32(key)>.blob
+	// (%APPDATA%\Grok Bot on Windows, ~/Library/Application Support/Grok Bot
+	// on macOS; not distributed for Linux). Every blob is PLAINTEXT JSON
+	// {"schemaVersion":N,"value":{…}} — no encryption/DPAPI/protobuf/SQLite.
+	// The filename is the persistence-slice key in RFC-4648 base32 over a
+	// LOWERCASE alphabet, unpadded. Only the
+	// `…transcript.replicas.<agentId>` slice is ingested (one blob per
+	// conversation, whole-file rewrite ⇒ the cursor is an ENTRY COUNT); the
+	// sibling roster slice is deliberately not watched.
+	//
+	// THIN store: the agent executes in a REMOTE sandbox ("the box"), so
+	// there are NO tokens, NO model names, NO cost and NO cwd on disk —
+	// sessions + actions only, under the synthetic root "[grokbot]". The
+	// roster's `path` (/home/box/sand-data/…) is a REMOTE path and must
+	// never be resolved. NEVER read sand-secrets.json, the sealed
+	// local-exec-daemon-*.json, "Local State", or Network/Cookies. See
+	// internal/adapter/grokbot and
+	// docs/plans/grokbot-adapter-plan-2026-08-28.md.
+	ToolGrokbot = "grokbot"
+	// ToolKiroCrew is AWS's Kiro Crew — the multi-agent orchestration
+	// layer on top of Kiro: a desktop app (installed under
+	// %LOCALAPPDATA%\kirocrew-desktop-updater on Windows) plus a
+	// `kirocrew` CLI, both talking to a local HTTP Gateway on
+	// localhost:5476. AWS Builder ID / Google sign-in; same auth gate as
+	// kiro-cli. Grounded on a live signed-in Windows run 2026-09-03.
+	//
+	// Store: `~/.kiro/crew/sessions/<thread>_<slot>.jsonl` (override
+	// KIROCREW_HOME) — one JSONL per desktop chat tab, line 1 a MUTABLE
+	// `{"_type":"metadata", …}` header (title/project/agent/model/tags),
+	// then `role` ∈ {user, assistant, tool} lines. NOT the
+	// `conversations/` directory the vendor README's tree implies; that
+	// directory does not exist on a live install.
+	//
+	// OWNERSHIP / DOUBLE-COUNT: Crew DRIVES kiro-cli as its execution
+	// engine, and the driven session writes its own richer store at
+	// `~/.kiro/sessions/cli/<sid>.{json,jsonl}` with `session_state.
+	// agent_name == "kirocrew"` and BYTE-IDENTICAL `tooluse_*` call ids.
+	// kiro-cli is the CANONICAL owner of the conversation (it is the
+	// superset — 3 Crew-driven sessions on the grounded host vs 1 Crew
+	// transcript — and carries typed tool kinds, per-turn metering and
+	// the model id); the kirocli adapter stamps those sessions
+	// `desktop`/`kiro-crew`. This adapter emits conversation rows ONLY
+	// for a Crew chat with no kiro-cli twin, resolved through the
+	// Gateway's `~/.kiro/crew/session_map.json` index.
+	//
+	// Tokens: NONE. The Crew transcript carries no usage fields at all,
+	// and the driven kiro-cli bundle reports input/output_token_count
+	// structurally 0 with billing in CREDITS (deliberately not tokens).
+	//
+	// NEVER read `~/.kiro/crew/.env` (Slack bot tokens, workspace owner
+	// id), `config.json`, `audit.log`, `memory.db`, `workspace/**` or
+	// `security_events.jsonl`. See internal/adapter/kirocrew and
+	// docs/kiro-crew-adapter.md.
+	ToolKiroCrew = "kiro-crew"
+	// ToolPoolside is Poolside's agentic coding model ("laguna"), reached
+	// today ONLY as a JetBrains AI Assistant ACP agent
+	// (`acp.registry.poolside`) — no standalone CLI/TUI launch surface was
+	// found on the grounding host. JetBrains downloads the per-OS binary
+	// under `<JetBrains vendor root>/acp-agents/poolside/<ver>/
+	// pool-<os>-<arch>[.exe]` (Windows-grounded 2026-09-05:
+	// `pool-windows-amd64.exe`); config/skills/credentials live at the
+	// UNIVERSAL (even on Windows) `~/.config/poolside/` XDG path
+	// (settings.yaml, credentials.json — NEVER READ — skills/).
+	//
+	// Store: `<AppData-Local-equivalent>/poolside/trajectories/
+	// trajectory-<agentId>_<sessionId>.ndjson` — an event-sourced,
+	// flat-envelope NDJSON (one `{"type":"<kind>","<kind_with_dots_as_
+	// underscores>":{...}}` record per line) recording the FULL turn
+	// loop: thought.start/end (model reasoning), assistant_message.
+	// start/end (visible reply), tool_call.parsed (name + args, a JSON
+	// OBJECT not a string) + tool_call.approval (user allow/deny) +
+	// tool_call.result (a per-tool typed result object PLUS a generic
+	// `observation` string), and tool_call.inference.start/.end (the
+	// PER-CALL token usage — richer than most Tier-2 sources). The
+	// SESSION ID lives ONLY in the filename (no `session_id` field
+	// anywhere in the body), matching the ACP registry pointer's sid
+	// VERBATIM — grounded 2026-09-05 against a live IntelliJ IDEA
+	// 2026.2.2 run (`acp.registry.poolside:01a06e04-7ef2-…`).
+	//
+	// Tokens: `tool_call_inference_end.input_tokens` is GROSS (includes
+	// `cache_read_input_tokens`, confirmed by summing every per-call
+	// value against the session-level `usageTotals` rollup in the
+	// sibling flat `acp/<encoded-cwd>/<sessionId>.json` summary file —
+	// exact match); netted the same way as muse/codex. No reasoning-
+	// token field is present. No pricing entry exists for
+	// `poolside/laguna-*` models, so cost rows resolve as `unknown`.
+	//
+	// NEVER reads `~/.config/poolside/credentials.json` (OAuth/API
+	// tokens) or the sibling `acp/…/<id>.json` flat summary and
+	// `pool/logs/…/acp.log.jsonl` protocol log — both are redundant with
+	// (and derivable from) the trajectory this adapter parses. See
+	// internal/adapter/poolside and docs/poolside-adapter.md.
+	ToolPoolside = "poolside"
+
+	// ToolZed is Zed's own NATIVE coding agent (zed.dev; the Claude-ACP-in-
+	// Zed integration path did not persist a usable local store, so this
+	// adapter targets the built-in agent instead). Grounded live 2026-09-06.
+	//
+	// Store: `<Zed-app-data-dir>/threads/threads.db` (SQLite, opened
+	// read-only, WAL-tolerant) — a per-OS app-data directory (%LOCALAPPDATA%
+	// \Zed on Windows, ~/Library/Application Support/Zed on macOS,
+	// ~/.local/share/zed on Linux — note the Linux path is XDG_DATA_HOME,
+	// NOT ~/.config). One `threads` row is one session; `data_type`="zstd"
+	// + `data` (a zstd-compressed JSON blob, magic 28 B5 2F FD) hold the
+	// FULL thread, REWRITTEN WHOLE on every turn — the freebuff-desktop
+	// rewrite-in-place pattern, not an append. `updated_at` (TEXT,
+	// RFC3339Nano) is the watermark; there is no per-message timestamp
+	// anywhere in the payload, so per-block Timestamps are synthesized
+	// from a session-start base plus a per-message-index increment (the
+	// freebuff CLI-layout precedent) — never taken as literal wall-clock
+	// times.
+	//
+	// The decompressed JSON's `messages` array is an EXTERNALLY-TAGGED
+	// enum: each element is `{"User":{...}}` or `{"Agent":{...}}}`. A User
+	// message carries `content:[{"Text":...}]`; an Agent message carries
+	// `content` blocks (`Text` / `ToolUse` / `Thinking`, at minimum —
+	// unknown kinds are skipped, never guessed) plus a `tool_results` map
+	// keyed by the ToolUse call id. 7 grounded native tool names: read_file
+	// / write_file / edit_file / list_directory / find_path / terminal /
+	// delete_path.
+	//
+	// Tokens: `request_token_usage` (keyed by the user message id) is
+	// per-turn and, unlike most adapters here, `input_tokens` is ALREADY
+	// NET of `cache_read_input_tokens` — no netting arithmetic applies.
+	// `cumulative_token_usage` is a thread-level running total and is
+	// never itself turned into a row (it would double-count every
+	// `request_token_usage` entry). Model traffic in the one grounded
+	// capture reports `model.provider`="zed.dev" / `model.model`=
+	// "gpt-5.6-luna" — Zed's own managed model gateway; no pricing entry
+	// exists for it (a closed, non-mainstream backend), so cost rows
+	// resolve as unknown rather than a fabricated price.
+	//
+	// Surface: stamped SurfaceIDE / "zed" — Zed is itself the editor, and
+	// its built-in agent has no separate CLI/TUI launch surface for
+	// `observer zed` to start (capture-only: no proxy, no hook, no MCP).
+	//
+	// NEVER reads Zed's `settings.json` / `keymap.json` or any credential
+	// store — only `threads/threads.db` (+ its `-wal` / `-shm` siblings).
+	// See internal/adapter/zed and docs/zed-adapter.md.
+	ToolZed = "zed"
 )
 
 // Normalized action types. See spec §5. Adapters map their tool-specific
@@ -852,12 +1022,32 @@ const (
 // Project is a git-root-scoped grouping of sessions. Non-git directories use
 // the working directory as the project root. See spec §20.
 type Project struct {
-	ID            int64
-	RootPath      string
-	GitRemote     string
-	Name          string
-	CreatedAt     time.Time
-	LastSessionAt time.Time
+	ID        int64
+	RootPath  string
+	GitRemote string
+	// The following fields are the Project Identity Resolver v2 identity
+	// bundle (docs/plans/project-identity-resolver-v2-plan-2026-09-06.md
+	// §3.1 / W1, migration 102). GitUpstreamRemote ships raw only under
+	// ShareOptions.shipsRawContent() (like GitRemote); GitRemoteOwner and
+	// GitUpstreamOwner have NO raw column at all — they exist only as
+	// their sha256 hash (git_remote_owner_hash / git_upstream_owner_hash),
+	// computed at store time from these transient string values.
+	// RootCommitSHA and ContentFingerprint are NODE-LOCAL pre-images
+	// (root_commit_sha / content_fingerprint columns) that never leave
+	// the node in any share mode — only sha256(RootCommitSHA) and
+	// sha256(ContentFingerprint) ship, always. RootCommitCheckedAt is the
+	// 7-day retry fence for the lazy root-commit exec (see
+	// internal/store/projectidentity.go's RootCommitNeedsCheck) and is
+	// never on the wire.
+	GitUpstreamRemote   string
+	GitRemoteOwner      string
+	GitUpstreamOwner    string
+	RootCommitSHA       string
+	ContentFingerprint  string
+	RootCommitCheckedAt time.Time
+	Name                string
+	CreatedAt           time.Time
+	LastSessionAt       time.Time
 }
 
 // Session is a single AI coding tool run. Session IDs are tool-supplied
@@ -886,6 +1076,27 @@ type Session struct {
 	ForkedFromID   string
 	ParentThreadID string
 	ThreadSource   string
+	// Workspace / IsWorktree are the per-session half of the Project
+	// Identity Resolver v2 bundle (migration 102, §3.1). Workspace is
+	// the session cwd's position inside the repo ("" == repo root);
+	// its raw value ships only under ShareOptions.shipsRawContent(),
+	// like GitBranch, while workspace_hash ships always. IsWorktree
+	// (whether this session's cwd reached the root through a linked git
+	// worktree) ships always as a plain bool, never content.
+	Workspace  string
+	IsWorktree bool
+	// Surface / SurfaceHost are the normalized capture-surface
+	// attribution (migration 107): WHICH kind of client produced the
+	// session (SurfaceCLI / SurfaceIDE / SurfaceDesktop / SurfaceSDK /
+	// SurfaceWeb) and the concrete host token ("vscode", "cursor",
+	// "jetbrains", "claude-desktop", ...). NODE-LOCAL — never on the
+	// org-push wire. Written ONLY through Store.SetSessionSurface (not
+	// UpsertSession), FIRST-WINS-UNLESS-EMPTY per column: the first
+	// grounded stamp sticks and a later parse can only fill a column
+	// that is still empty. Empty = the adapter found no grounded
+	// discriminator on disk (never fabricated).
+	Surface     string
+	SurfaceHost string
 }
 
 // ActionMetadata is the per-event JSON-marshaled metadata column on
@@ -1029,6 +1240,12 @@ type ActionMetadata struct {
 	// non-browser adapters and for turns with no estimate.
 	PromptTokensEst   int64 `json:"prompt_tokens_est,omitempty"`
 	ResponseTokensEst int64 `json:"response_tokens_est,omitempty"`
+	// CaptureSource is the RAW client-discriminator value an adapter read
+	// from the store before resolving it into the normalized
+	// SessionSurface (antigravity: `trajectory_meta.source=<int>`).
+	// Recorded on the session-opening user_prompt rows so an unmapped
+	// value stays auditable after the fact; never interpreted downstream.
+	CaptureSource string `json:"capture_source,omitempty"`
 }
 
 // IsZero reports whether the struct has no non-zero fields. Used by
@@ -1077,7 +1294,7 @@ func (m ActionMetadata) identityFieldsZero() bool {
 	return m.ParentSessionID == "" && m.ParentAgentID == "" && m.AgentID == "" &&
 		!m.IsSubagent && m.TeamName == "" && m.StopReason == "" &&
 		m.RequestURL == "" && m.IDSource == "" && m.Granularity == "" &&
-		m.PromptTokensEst == 0 && m.ResponseTokensEst == 0
+		m.PromptTokensEst == 0 && m.ResponseTokensEst == 0 && m.CaptureSource == ""
 }
 
 // Action is one normalized tool call within a session. The
@@ -1170,7 +1387,37 @@ type ToolEvent struct {
 	// Project Identity Mapping plan, 2026-08-21, §0.4). Flows to
 	// Store.Ingest -> UpsertProject as the project-level identity
 	// signal used for cross-machine/cross-developer team grouping.
-	GitRemote          string
+	GitRemote string
+	// The following six fields are the Project Identity Resolver v2
+	// capture bundle (docs/plans/project-identity-resolver-v2-plan-2026-
+	// 09-06.md §3.1 / W1), set from the same internal/git.Identity a
+	// git-aware adapter already resolves alongside GitRemote/GitBranch.
+	// Every field here ships to an org server as a hash ALWAYS
+	// (git_upstream_remote_hash, git_remote_owner_hash,
+	// git_upstream_owner_hash, root_commit_hash, content_fingerprint_hash,
+	// workspace_hash — unsalted sha256, joinable across nodes); the raw
+	// GitUpstreamRemote and Workspace values additionally ship in the
+	// clear ONLY under ShareOptions.shipsRawContent(), exactly like
+	// GitRemote/ProjectRoot today (internal/store/orgpush.go). RootCommitSHA
+	// and ContentFingerprint have NO raw wire counterpart in any share
+	// mode — only their hashes ever leave the node. All are honestly
+	// empty when the adapter has no git info to offer, or (RootCommitSHA)
+	// when the lazy per-project exec hasn't run yet — see
+	// internal/store/projectidentity.go.
+	GitUpstreamRemote  string
+	GitRemoteOwner     string
+	GitUpstreamOwner   string
+	RootCommitSHA      string
+	ContentFingerprint string
+	// Workspace is this session's position inside the repo — the cwd's
+	// nearest ancestor manifest directory, relative to the git root (""
+	// == repo root). Raw value gated like GitUpstreamRemote above;
+	// workspace_hash ships always.
+	Workspace string
+	// IsWorktree marks a session whose cwd reached its project root
+	// through a linked git worktree rather than the main checkout. Ships
+	// always (bool, not content).
+	IsWorktree         bool
 	Model              string
 	Tool               string
 	ActionType         string
@@ -1262,7 +1509,19 @@ type TokenEvent struct {
 	// from the same per-session state GitBranch already flows through
 	// wherever an adapter builds TokenEvent and ToolEvent from the same
 	// source.
-	GitRemote           string
+	GitRemote string
+	// The following six fields mirror ToolEvent's Project Identity
+	// Resolver v2 bundle exactly (see that struct's doc comment for the
+	// full field-by-field hash-always / raw-gated wire posture); set
+	// from the same per-session internal/git.Identity wherever an
+	// adapter builds a TokenEvent and ToolEvent from the same source.
+	GitUpstreamRemote   string
+	GitRemoteOwner      string
+	GitUpstreamOwner    string
+	RootCommitSHA       string
+	ContentFingerprint  string
+	Workspace           string
+	IsWorktree          bool
 	Timestamp           time.Time
 	Tool                string
 	Model               string
@@ -1450,7 +1709,50 @@ type APITurn struct {
 	// the same request_id is seen by more than one source. Node-local
 	// metadata — never pushed to the org wire.
 	Source string
+	// Route / RoutingGeneration / AuthoritySource are the Plane B per-turn
+	// authority stamps (Sol S5 / Luna L15, migration 095). Content-free
+	// routing metadata — enum strings + an integer generation, never text
+	// from a request. Unlike Source these DO ride the org wire
+	// (orgcontract.APITurnRow) so a mixed-mode fleet's rollup can single-
+	// count a turn and know which source owns its usage authority.
+	//
+	// Route is TurnRouteDirect / TurnRouteGateway / TurnRouteFallback (empty
+	// == direct). RoutingGeneration is the immutable routing-snapshot
+	// generation (proxy.Proxy.RoutingGeneration) the turn was served under;
+	// 0 when no org route was live. AuthoritySource is TurnAuthorityNode /
+	// TurnAuthorityGateway (empty == node).
+	Route             string
+	RoutingGeneration int64
+	AuthoritySource   string
 }
+
+// Route classes for APITurn.Route (Plane B per-turn authority stamp, Sol
+// S5). Content-free enum: how the node proxy served a turn.
+const (
+	// TurnRouteDirect is a turn forwarded straight to the fixed provider
+	// upstream — Node Mode, or a build with no org route installed. The
+	// zero value ("") is treated as direct everywhere.
+	TurnRouteDirect = "direct"
+	// TurnRouteGateway is a turn forwarded to the org AI Gateway primary
+	// (Gateway Mode, Sol S8 default-lane redirect).
+	TurnRouteGateway = "gateway"
+	// TurnRouteFallback is a turn served via an org AI Gateway fallback
+	// rung after the primary was unreachable (Sol S10 ladder).
+	TurnRouteFallback = "fallback"
+)
+
+// Authority sources for APITurn.AuthoritySource (Sol S12 — who owns the
+// org-level usage authority for a turn). Content-free enum.
+const (
+	// TurnAuthorityNode means this node's proxy observation is the
+	// authority for the turn's org-level usage. The zero value ("") is
+	// treated as node everywhere.
+	TurnAuthorityNode = "node"
+	// TurnAuthorityGateway means the org AI Gateway's own audit row is the
+	// authority; this api_turns row is the node-side shadow and an org
+	// rollup must let the gateway row win on a request_id collision.
+	TurnAuthorityGateway = "gateway"
+)
 
 // OTelContent is one captured content body from a coding assistant's native
 // OTel stream (native-console integration, migration 048): a user prompt, tool
@@ -1460,13 +1762,20 @@ type APITurn struct {
 // ships ContentHash always and Content (raw) only under the content-sharing
 // gate (full_content / admin_managed).
 type OTelContent struct {
-	ID          int64
-	RequestID   string // turn join key (may be empty for session-level prompts)
-	SessionID   string
-	ToolUseID   string // set for tool_input/tool_output kinds
-	Kind        string // prompt | tool_input | tool_output | raw_body
-	Content     string // scrubbed raw body
-	ContentHash string // sha256-hex of Content
+	ID        int64
+	RequestID string // turn join key (may be empty for session-level prompts)
+	SessionID string
+	ToolUseID string // set for tool_input/tool_output kinds
+	Kind      string // prompt | tool_input | tool_output | raw_body
+	Content   string // scrubbed raw body, bounded to a storage cap (may be truncated)
+	// ContentHash is the sha256-hex of the FULL scrubbed body as received,
+	// BEFORE any storage truncation — never of the (possibly-truncated)
+	// Content above. It is the dedup/idempotency anchor
+	// (UNIQUE(content_hash, kind, request_id, tool_use_id)); hashing the
+	// truncated text would collide two distinct large bodies that share an
+	// identical prefix and silently drop the second on insert. See
+	// store.HashOTelContent / the ContentHash note on store.InsertOTelContent.
+	ContentHash string
 	Timestamp   time.Time
 	Source      string // cc_otel
 }
@@ -1679,6 +1988,12 @@ type SubagentTokenRef struct {
 // are no-ops (COALESCE-preserving), so a re-parse never clobbers a
 // captured value.
 type SessionLineage struct {
+	// SourceFile identifies a transcript that older adapters stored under
+	// ParentThreadID. Ingest transfers its existing rows to SessionID before
+	// replay, preserving row IDs and avoiding duplicate usage. Empty is a no-op.
+	SourceFile string
+	// AgentID is the native runtime identity for that transcript, when known.
+	AgentID string
 	// SessionID is the owning (child) session the markers belong to.
 	SessionID string
 	// ForkedFromID is the parent session a user-fork or subagent spawn
@@ -1690,4 +2005,84 @@ type SessionLineage struct {
 	// ThreadSource discriminates the rollout origin: "user" (normal +
 	// user-fork) or "subagent".
 	ThreadSource string
+}
+
+// Surface KIND vocabulary — the normalized answer to "what kind of
+// client produced this session?". Every adapter resolves its vendor's
+// own discriminator (Claude Code `entrypoint`, Codex `originator` /
+// `source`, Cline `source`, a path shape, ...) into one of these at
+// its boundary through a table (CLAUDE.md #3/#5), so nothing
+// downstream ever switches on a tool name to infer the surface. The
+// finer identity of the host rides separately in SessionSurface.
+// SurfaceHost so the kind set stays closed and small.
+//
+// "ide-vscode" in the audit's shorthand is Surface=SurfaceIDE +
+// SurfaceHost="vscode"; "ide-jetbrains" is SurfaceIDE + "jetbrains".
+const (
+	// SurfaceCLI is an interactive or non-interactive terminal run of
+	// the tool's own CLI (incl. `codex exec`, `claude -p`).
+	SurfaceCLI = "cli"
+	// SurfaceIDE is an editor extension / plugin / IDE fork driving the
+	// tool (VS Code, JetBrains, Neovim, Cursor, Kiro, Windsurf, ...).
+	SurfaceIDE = "ide"
+	// SurfaceDesktop is a standalone desktop app (Claude Desktop,
+	// Codex Desktop, Hermes Desktop, ...).
+	SurfaceDesktop = "desktop"
+	// SurfaceSDK is a programmatic embedding (Agent SDK, API harness).
+	SurfaceSDK = "sdk"
+	// SurfaceWeb is a browser / web-app surface.
+	SurfaceWeb = "web"
+)
+
+// SessionSurface is the per-session capture-surface attribution an
+// adapter resolved from a grounded on-disk discriminator. NODE-LOCAL
+// (migration 107): `sessions.surface` / `sessions.surface_host` never
+// enter the org-push wire (pinned by tests/invariant/privacy_test.go).
+// Written through the single store seam Store.SetSessionSurface with
+// FIRST-WINS-UNLESS-EMPTY semantics, per column: the first grounded
+// stamp sticks, a later parse can only FILL a still-empty column, and a
+// re-parse can never clear or change a captured value (an identical
+// re-stamp — and a differing later one — are both no-ops). The surface
+// is a property of the session's ORIGIN, fixed when the session was
+// created, so a later re-derivation from less context is not a
+// correction; genuine repair is a backfill concern. An adapter that
+// finds NO grounded discriminator emits nothing — the zero value on
+// the session row is the honest "unknown", never a guess.
+type SessionSurface struct {
+	// SessionID is the session the attribution belongs to.
+	SessionID string
+	// Surface is one of the Surface* kind constants.
+	Surface string
+	// SurfaceHost is a lowercase host token refining Surface: "vscode",
+	// "cursor", "jetbrains", "neovim", "kiro", "claude-desktop",
+	// "codex-desktop", "codex-exec", "cursor-agent", ... Never prose,
+	// never a path. Optional.
+	SurfaceHost string
+	// Hosted marks a stamp that comes from the HOSTING layer's own
+	// record rather than the agent's self-report: an IDE orchestration
+	// store that names which agent session it drove (JetBrains
+	// `aia-task-history/*.agentsession`, Qoder Work `main.sqlite`).
+	// The host layer is strictly better informed about the session's
+	// origin than the agent it spawned — Claude Code inside IntelliJ
+	// truthfully reports `entrypoint=sdk-ts`, Qoder driven by Qoder Work
+	// truthfully reports `entrypoint=cli` — so a hosted stamp is not a
+	// weaker re-derivation of the same fact, it is the fact the
+	// self-report cannot see. Store.SetSessionSurface therefore lets a
+	// hosted stamp REPLACE a differing self-reported value (host-wins),
+	// while an empty field still never clears a stored one and an
+	// identical re-stamp is still a no-op. Zero value = the ordinary
+	// first-wins-unless-empty self-report every adapter emits today.
+	Hosted bool
+}
+
+// KnownSurface reports whether kind is one of the Surface* constants.
+// Adapters should never need it (their tables emit constants), but
+// the store uses it to refuse an out-of-vocabulary write loudly rather
+// than persist a vendor token as a kind.
+func KnownSurface(kind string) bool {
+	switch kind {
+	case SurfaceCLI, SurfaceIDE, SurfaceDesktop, SurfaceSDK, SurfaceWeb:
+		return true
+	}
+	return false
 }

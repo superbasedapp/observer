@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/ccotel"
+	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/store"
 
@@ -32,7 +33,7 @@ func TestOTLPLogsHandler_UpsertsTurn(t *testing.T) {
 	}
 	defer func() { _ = database.Close() }()
 	st := store.New(database)
-	h := otlpLogsHandler(st, slog.New(slog.NewTextHandler(io.Discard, nil)), true)
+	h := otlpLogsHandler(st, slog.New(slog.NewTextHandler(io.Discard, nil)), true, config.DefaultIngestOTelContentMaxBytes)
 
 	req := &collogspb.ExportLogsServiceRequest{
 		ResourceLogs: []*logspb.ResourceLogs{{

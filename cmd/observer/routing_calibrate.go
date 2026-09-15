@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/modelvalue"
 	"github.com/marmutapp/superbased-observer/internal/routing"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -72,7 +71,7 @@ func runRoutingCalibration(ctx context.Context, st *store.Store, cfg config.Conf
 	if err != nil {
 		return fmt.Errorf("load facts: %w", err)
 	}
-	facts.Price = routingPriceFn(cost.NewEngine(cfg.Intelligence))
+	facts.Price = routingPriceFn(acquireProcessCostEngine(ctx, cfg, nil, logger))
 	rep := modelvalue.Build(facts, modelvalue.Options{
 		MinSample: int64(cfg.Routing.Calibration.MinSamples),
 	})

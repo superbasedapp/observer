@@ -5,7 +5,7 @@ import { HandoffCard } from "@/components/HandoffCard";
 import { JumpInButton } from "@/components/JumpInButton";
 import { ResumeButton } from "@/components/ResumeButton";
 import { TagPill } from "@/components/TagPill";
-import { FavoriteStar, RatingStars, TagEditor } from "@/components/TagEditor";
+import { FavoriteStar, RatingChip, TagEditor } from "@/components/TagEditor";
 import { postSessionTags } from "@/lib/api";
 import {
   CLASSIFY_REMOTE_BLOCKED_MSG,
@@ -319,19 +319,9 @@ function SessionAnnotationChips({
   return (
     <section className="flex flex-wrap items-center gap-2">
       <FavoriteStar favorite={favorite} onToggle={() => void toggleFavorite()} />
-      <span
-        className="inline-flex items-center gap-1.5 rounded-2 border border-line-2 bg-bg-2 px-1.5 py-0.5"
-        title="Overall session rating — how well this session performed (1-10)"
-      >
-        <span className="text-[10px] uppercase tracking-[0.06em] text-fg-4">
-          rating
-        </span>
-        <RatingStars
-          rating={rating}
-          onRate={(next) => void saveRating(next)}
-          size={13}
-        />
-      </span>
+      {/* Rating is a collapsed chip + popover (RatingChip) so a 10-star row no
+          longer eats the header width. */}
+      <RatingChip rating={rating} onRate={(next) => void saveRating(next)} />
       {tags.length === 0 ? (
         <span className="text-[11px] text-fg-4">no tags</span>
       ) : (
@@ -368,7 +358,7 @@ function SessionAnnotationChips({
             ? CLASSIFY_REMOTE_BLOCKED_MSG
             : hasNote
               ? "Read or edit this session's note"
-              : "Add a note — why this session matters"
+              : "Add a note - why this session matters"
         }
         onClick={() => setNoteOpen((o) => !o)}
         className={clsx(
@@ -398,7 +388,7 @@ function SessionAnnotationChips({
         {externalNote !== null && (
           <span
             className="text-warn"
-            title="This note changed elsewhere while you were editing — your text is kept; saving writes it over theirs."
+            title="This note changed elsewhere while you were editing - your text is kept; saving writes it over theirs."
           >
             changed elsewhere
           </span>
@@ -451,8 +441,8 @@ function SessionAnnotationChips({
             title={classifyBlocked ? CLASSIFY_REMOTE_BLOCKED_MSG : undefined}
             placeholder={
               classifyBlocked
-                ? "Note — read-only on a paired device"
-                : "Note — why this session matters (saved when you click away)…"
+                ? "Note - read-only on a paired device"
+                : "Note - why this session matters (saved when you click away)…"
             }
             onChange={(e) => setDraft(e.target.value)}
             onBlur={() => void saveNote()}
@@ -463,7 +453,7 @@ function SessionAnnotationChips({
           />
           {externalNote !== null && (
             <p className="mt-1 text-[10.5px] text-warn">
-              Note changed elsewhere while you were editing — your text is kept;
+              Note changed elsewhere while you were editing - your text is kept;
               clicking away saves it over theirs. Press Esc to discard yours and
               keep the other version.
             </p>

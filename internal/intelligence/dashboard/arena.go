@@ -15,6 +15,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/arena"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // arena.go — Agent Arena API surface (plan:
@@ -35,6 +36,27 @@ var (
 	arenaActionInFlight = map[string]bool{}
 )
 
+// reconcileStaleArena closes stranded in-flight Arena rows (a candidate stuck
+// "running" under a finished run; a crash-orphaned run) to a terminal status on
+// read, so the run history stops showing dead work as live. Runs currently
+// being driven by this process (arenaInFlight) are passed through as known-live
+// and never reconciled. Best-effort: a reconcile error is swallowed so a
+// transient DB hiccup never blanks the history view.
+func reconcileStaleArena(ctx context.Context, st *store.Store) {
+	if st == nil {
+		return
+	}
+	arenaMu.Lock()
+	live := make(map[string]bool, len(arenaInFlight))
+	for id, v := range arenaInFlight {
+		if v {
+			live[id] = true
+		}
+	}
+	arenaMu.Unlock()
+	_, _ = st.ReconcileStaleArena(ctx, time.Now().UTC(), live)
+}
+
 // arenaWorkspaceDir resolves the worktree root, defaulting to
 // ~/.observer/arena.
 func arenaWorkspaceDir() string {
@@ -54,6 +76,7 @@ func (s *Server) newArenaRunner() (*arena.Runner, error) {
 		WorkspaceDir: arenaWorkspaceDir(),
 		ProxyURL:     fmt.Sprintf("http://127.0.0.1:%d", s.opts.ProxyPort),
 		MaxParallel:  3,
+		Admission:    s.opts.ArenaAdmission,
 	})
 }
 
@@ -139,6 +162,7 @@ func (s *Server) handleArenaRunsList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"runs": []any{}})
 		return
 	}
+	reconcileStaleArena(r.Context(), st)
 	limit := intArg(r, "limit", 20, 1, 100)
 	runs, err := st.RecentArenaRuns(r.Context(), limit)
 	if err != nil {
@@ -252,6 +276,7 @@ func (s *Server) handleArenaRunsCreate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleArenaRunDetail(w http.ResponseWriter, r *http.Request, runID string) {
 	st := s.remoteManageStore()
+	reconcileStaleArena(r.Context(), st)
 	rn, err := st.ArenaRun(r.Context(), runID)
 	if err != nil {
 		writeErr(w, err)

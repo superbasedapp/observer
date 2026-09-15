@@ -91,3 +91,26 @@ func firstReasonCode(codes string) string {
 	}
 	return ""
 }
+
+// probeRouterDecisions is the Track R2 change-detection probe SHARED by every
+// wire fed from the routing decision log: routing_summary (this file),
+// routing_detail (routingdetail.go) and routing_dev (routingdevorgrows.go).
+// It lives here — with the other router_decisions SQL — so orgsnapgate.go and
+// orgpush.go stay free of the table name.
+//
+// PROBE: COALESCE(MAX(id),0) over the whole table — a single index-endpoint
+// seek on the AUTOINCREMENT primary key, O(1) regardless of history depth.
+//
+// WHY THAT REFLECTS MUTATION: router_decisions is append-only. The only writes
+// are InsertRouterDecisions and the retention sweep's DELETE; there is no
+// UPDATE path, so a new decision always advances MAX(id).
+//
+// RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: a retention DELETE inside the
+// 7-day aggregate window (only reachable with a retention cutoff at or below
+// that window) shrinks a bucket without moving MAX(id). AUTOINCREMENT means
+// ids are never reused, so the value can only fall if the newest rows
+// themselves are deleted. Either way snapGate's maxSkipAge forces a full
+// recompute within the hour.
+func (s *Store) probeRouterDecisions(ctx context.Context) (string, error) {
+	return s.snapProbeScalar(ctx, `SELECT 'rd' || COALESCE(MAX(id), 0) FROM router_decisions`)
+}

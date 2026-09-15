@@ -95,22 +95,32 @@ func absResolveSymlinks(p string) (string, error) {
 // (the latter indicates a git worktree). Returns the enclosing directory
 // and true on success.
 func findGitRoot(dir string) (string, bool) {
+	root, ok, _ := findGitRootDetailed(dir)
+	return root, ok
+}
+
+// findGitRootDetailed is findGitRoot plus the worktree bit (Project
+// Identity Resolver v2, 2026-09-06, §3.1): isWorktree is true exactly
+// when the `.git` entry found during the walk was a FILE (a linked
+// worktree's pointer to its main repo's common dir), false when it was a
+// directory or when dir isn't inside a git working tree at all.
+func findGitRootDetailed(dir string) (root string, ok bool, isWorktree bool) {
 	cur := dir
 	for {
 		gitPath := filepath.Join(cur, ".git")
 		if fi, err := os.Stat(gitPath); err == nil {
 			if fi.IsDir() {
-				return cur, true
+				return cur, true, false
 			}
 			// .git file → worktree. Resolve to the main repo dir.
-			if commonDir, ok := readWorktreeCommonDir(gitPath); ok {
-				return filepath.Dir(commonDir), true
+			if commonDir, ok2 := readWorktreeCommonDir(gitPath); ok2 {
+				return filepath.Dir(commonDir), true, true
 			}
-			return cur, true
+			return cur, true, false
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
-			return "", false
+			return "", false, false
 		}
 		cur = parent
 	}
@@ -188,6 +198,71 @@ func readOriginRemote(root string) string {
 			if eq := strings.Index(line, "="); eq >= 0 {
 				return strings.TrimSpace(line[eq+1:])
 			}
+		}
+	}
+	return ""
+}
+
+// remoteEntry is one `[remote "<name>"]` section's url, in the file
+// order it appears in `.git/config`.
+type remoteEntry struct {
+	name string
+	url  string
+}
+
+// readAllRemotes parses .git/config for every `[remote "<name>"] url =
+// ...` entry, in file order (Project Identity Resolver v2, 2026-09-06,
+// §3.1 — fork/upstream resolution needs every declared remote, not just
+// origin). Deliberately does not share code with readOriginRemote: the
+// latter is a heavily-depended-on pure function and a change here must
+// not risk it.
+func readAllRemotes(root string) []remoteEntry {
+	f, err := os.Open(filepath.Join(root, ".git", "config"))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var out []remoteEntry
+	var curName string
+	inRemote := false
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "[") {
+			if strings.HasPrefix(line, `[remote "`) && strings.HasSuffix(line, `"]`) {
+				curName = line[len(`[remote "`) : len(line)-2]
+				inRemote = true
+			} else {
+				inRemote = false
+				curName = ""
+			}
+			continue
+		}
+		if !inRemote {
+			continue
+		}
+		if strings.HasPrefix(line, "url") {
+			if eq := strings.Index(line, "="); eq >= 0 {
+				out = append(out, remoteEntry{name: curName, url: strings.TrimSpace(line[eq+1:])})
+			}
+		}
+	}
+	return out
+}
+
+// pickUpstreamRemote returns the url of the remote literally named
+// "upstream"; failing that, the first non-"origin" remote in file order;
+// failing that, "".
+func pickUpstreamRemote(remotes []remoteEntry) string {
+	for _, r := range remotes {
+		if r.name == "upstream" {
+			return r.url
+		}
+	}
+	for _, r := range remotes {
+		if r.name != "origin" {
+			return r.url
 		}
 	}
 	return ""

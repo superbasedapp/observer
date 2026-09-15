@@ -91,6 +91,10 @@ func (a *realManagerAdapter) CreateResume(spec ResumeLaunchSpec) (string, string
 	return h, "R", err
 }
 func (a *realManagerAdapter) CreateSetup(SetupSpec) (string, error) { return "", nil }
+func (a *realManagerAdapter) CreateGUI(GUILaunchSpec) (GUILaunchResult, error) {
+	return GUILaunchResult{}, ErrLaunchGUIUnsupported
+}
+func (a *realManagerAdapter) GUIRuns() []GUIRunInfo { return nil }
 func (a *realManagerAdapter) Subscribe(handle string) (LaunchSubscription, error) {
 	return a.mgr.Subscribe(handle)
 }

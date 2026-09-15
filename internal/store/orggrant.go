@@ -59,6 +59,15 @@ type EnrolmentGrant struct {
 	LastRenewedAt time.Time
 	Signature     string
 	ReceiptHash   string
+	// ReplacementGeneration orders grant REPLACEMENTS (migration 094, Plane B
+	// dual-mode design §5.3 item 5) against each other. It is a wholly
+	// separate counter from Generation above (the P0-5 enrolment-IDENTITY
+	// fence): Generation names which enrolment epoch this grant belongs to;
+	// ReplacementGeneration names how many out-of-band replacements have been
+	// accepted for that epoch. 0 means "never replaced" (the grant on file is
+	// either the original enrolment grant or has never been superseded).
+	// ReplaceEnrolmentGrant is the only writer that advances it.
+	ReplacementGeneration int64
 }
 
 // WriteEnrolmentGrant stores (or replaces) the grant for one enrolment
@@ -90,8 +99,9 @@ func (s *Store) WriteEnrolmentGrant(ctx context.Context, g EnrolmentGrant) error
 		INSERT INTO org_enrolment_grant
 		  (org_key, generation, org_id, org_name, org_server_url, key_pin_sha256,
 		   authority_json, consent_mode, consent_actor, granted_at, expires_at,
-		   signed_expires_at, last_renewed_at, signature, receipt_hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   signed_expires_at, last_renewed_at, signature, receipt_hash,
+		   replacement_generation)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(org_key) DO UPDATE SET
 		   generation     = excluded.generation,
 		   org_id         = excluded.org_id,
@@ -110,12 +120,16 @@ func (s *Store) WriteEnrolmentGrant(ctx context.Context, g EnrolmentGrant) error
 		   signed_expires_at = excluded.signed_expires_at,
 		   last_renewed_at   = excluded.last_renewed_at,
 		   signature      = excluded.signature,
-		   receipt_hash   = excluded.receipt_hash`,
+		   receipt_hash   = excluded.receipt_hash,
+		   -- A whole new enrolment (this path, not ReplaceEnrolmentGrant)
+		   -- resets the replacement counter too: it is a fresh epoch's
+		   -- grant, with no replacements yet accepted against it.
+		   replacement_generation = excluded.replacement_generation`,
 		g.OrgKey, g.Generation, g.OrgID, g.OrgName, g.OrgServerURL, g.KeyPinSHA256,
 		string(raw), g.ConsentMode, g.ConsentActor,
 		formatGrantTime(g.GrantedAt), formatGrantTime(g.ExpiresAt),
 		formatGrantTime(signedExpiry), formatGrantTime(g.LastRenewedAt),
-		g.Signature, g.ReceiptHash)
+		g.Signature, g.ReceiptHash, g.ReplacementGeneration)
 	if err != nil {
 		return fmt.Errorf("store.WriteEnrolmentGrant: %w", err)
 	}
@@ -125,6 +139,10 @@ func (s *Store) WriteEnrolmentGrant(ctx context.Context, g EnrolmentGrant) error
 // LoadEnrolmentGrant returns the grant for orgKey, or ok=false when this
 // machine holds none (the solo / enrolled-but-ungoverned case).
 func (s *Store) LoadEnrolmentGrant(ctx context.Context, orgKey string) (EnrolmentGrant, bool, error) {
+	return loadEnrolmentGrant(ctx, s.db, orgKey)
+}
+
+func loadEnrolmentGrant(ctx context.Context, q querier, orgKey string) (EnrolmentGrant, bool, error) {
 	var (
 		g                            EnrolmentGrant
 		authority                    string
@@ -132,14 +150,16 @@ func (s *Store) LoadEnrolmentGrant(ctx context.Context, orgKey string) (Enrolmen
 		signedExpiry, lastRenewedRaw string
 	)
 	g.OrgKey = orgKey
-	err := s.db.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 		SELECT generation, org_id, org_name, org_server_url, key_pin_sha256,
 		       authority_json, consent_mode, consent_actor, granted_at, expires_at,
-		       signed_expires_at, last_renewed_at, signature, receipt_hash
+		       signed_expires_at, last_renewed_at, signature, receipt_hash,
+		       replacement_generation
 		  FROM org_enrolment_grant WHERE org_key = ?`, orgKey).
 		Scan(&g.Generation, &g.OrgID, &g.OrgName, &g.OrgServerURL, &g.KeyPinSHA256,
 			&authority, &g.ConsentMode, &g.ConsentActor, &grantedAt, &expiry,
-			&signedExpiry, &lastRenewedRaw, &g.Signature, &g.ReceiptHash)
+			&signedExpiry, &lastRenewedRaw, &g.Signature, &g.ReceiptHash,
+			&g.ReplacementGeneration)
 	if errors.Is(err, sql.ErrNoRows) {
 		return EnrolmentGrant{}, false, nil
 	}
@@ -192,6 +212,106 @@ func (s *Store) RenewEnrolmentGrant(ctx context.Context, orgKey string, generati
 		return fmt.Errorf("store.RenewEnrolmentGrant: %w", err)
 	}
 	return nil
+}
+
+// ReplaceEnrolmentGrant atomically supersedes the stored grant for
+// g.OrgKey with g, the store half of grant replacement (Plane B dual-mode
+// design §5.3 item 5, Sol S4). It is applied ONLY when g.ReplacementGeneration
+// is STRICTLY GREATER than the replacement_generation currently on file (0
+// when no grant is stored yet at all, so the very first replacement always
+// applies). Callers — internal/orgclient's accept path — MUST have already
+// verified the replacement's signature and its key pin against the pin
+// recorded at enrolment before calling; this method enforces ordering only,
+// exactly as WriteEnrolmentGrant enforces nothing beyond org_key being set.
+//
+// applied=false, err=nil means the replacement was REJECTED for being
+// non-monotonic (stale, replayed, or arriving out of order) — this is NOT an
+// error. The caller keeps the existing grant in force and is expected to log
+// the rejection with a named reason, mirroring the codebase's established
+// evaluateGrantOffer idiom (internal/orgclient/client.go) for "offered but
+// refused" outcomes.
+//
+// The identity-generation column (`generation`) is DELIBERATELY left
+// untouched on every accepted replacement: a replacement supersedes
+// authority within the SAME enrolment epoch, it does not start a new one.
+// See migration 094's header comment for the full reasoning.
+//
+// The read-compare-write runs inside one transaction so two racing accept
+// calls for the same org_key cannot both pass the monotonic check against a
+// value the other has already superseded.
+func (s *Store) ReplaceEnrolmentGrant(ctx context.Context, g EnrolmentGrant) (applied bool, err error) {
+	if g.OrgKey == "" {
+		return false, errors.New("store.ReplaceEnrolmentGrant: org_key is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("store.ReplaceEnrolmentGrant: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var current int64
+	scanErr := tx.QueryRowContext(ctx,
+		`SELECT replacement_generation FROM org_enrolment_grant WHERE org_key = ?`, g.OrgKey).Scan(&current)
+	switch {
+	case errors.Is(scanErr, sql.ErrNoRows):
+		current = 0
+	case scanErr != nil:
+		return false, fmt.Errorf("store.ReplaceEnrolmentGrant: read current replacement generation: %w", scanErr)
+	}
+	if g.ReplacementGeneration <= current {
+		return false, nil
+	}
+
+	authority := g.Authority
+	if authority == nil {
+		authority = []string{}
+	}
+	raw, err := json.Marshal(authority)
+	if err != nil {
+		return false, fmt.Errorf("store.ReplaceEnrolmentGrant: %w", err)
+	}
+	signedExpiry := g.SignedExpiresAt
+	if signedExpiry.IsZero() {
+		signedExpiry = g.ExpiresAt
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO org_enrolment_grant
+		  (org_key, generation, org_id, org_name, org_server_url, key_pin_sha256,
+		   authority_json, consent_mode, consent_actor, granted_at, expires_at,
+		   signed_expires_at, last_renewed_at, signature, receipt_hash,
+		   replacement_generation)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(org_key) DO UPDATE SET
+		   -- generation (the P0-5 enrolment-identity fence) is intentionally
+		   -- absent from this SET list: a replacement supersedes authority
+		   -- within the CURRENT epoch, it must never touch which epoch a
+		   -- grant belongs to.
+		   org_id         = excluded.org_id,
+		   org_name       = excluded.org_name,
+		   org_server_url = excluded.org_server_url,
+		   key_pin_sha256 = excluded.key_pin_sha256,
+		   authority_json = excluded.authority_json,
+		   consent_mode   = excluded.consent_mode,
+		   consent_actor  = excluded.consent_actor,
+		   granted_at     = excluded.granted_at,
+		   expires_at     = excluded.expires_at,
+		   signed_expires_at      = excluded.signed_expires_at,
+		   last_renewed_at        = excluded.last_renewed_at,
+		   signature              = excluded.signature,
+		   receipt_hash           = excluded.receipt_hash,
+		   replacement_generation = excluded.replacement_generation`,
+		g.OrgKey, g.Generation, g.OrgID, g.OrgName, g.OrgServerURL, g.KeyPinSHA256,
+		string(raw), g.ConsentMode, g.ConsentActor,
+		formatGrantTime(g.GrantedAt), formatGrantTime(g.ExpiresAt),
+		formatGrantTime(signedExpiry), formatGrantTime(g.LastRenewedAt),
+		g.Signature, g.ReceiptHash, g.ReplacementGeneration)
+	if err != nil {
+		return false, fmt.Errorf("store.ReplaceEnrolmentGrant: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("store.ReplaceEnrolmentGrant: commit: %w", err)
+	}
+	return true, nil
 }
 
 // DeleteEnrolmentGrant removes the grant for one identity. Absent is not an

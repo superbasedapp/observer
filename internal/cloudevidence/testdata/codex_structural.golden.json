@@ -1,0 +1,55 @@
+{
+  "schema_version": "session-evidence.v1-candidate",
+  "cloud_session_id": "cs-abc123",
+  "cloud_project_id": "cp-def456",
+  "tool": "codex",
+  "model_family": "gpt",
+  "started_at_bucket": "2026-08-27T10:00:00Z",
+  "duration_seconds": 600,
+  "metrics": {
+    "tokens_in": 500,
+    "tokens_out": 300,
+    "cache_read_tokens": 100,
+    "cost_usd": 0.01,
+    "deterministic_score": 75,
+    "redundancy_ratio": 0.1,
+    "error_rate": 0,
+    "exploration_efficiency": 0.7,
+    "continuity_score": 0.85
+  },
+  "actions": [
+    {
+      "ref": "a1",
+      "kind": "read_file",
+      "category": "go",
+      "status": "ok"
+    },
+    {
+      "ref": "a2",
+      "kind": "edit_file",
+      "category": "go",
+      "status": "ok"
+    }
+  ],
+  "milestones": [
+    {
+      "ref": "m1",
+      "kind": "first_edit",
+      "elapsed_seconds": 90
+    }
+  ],
+  "outcomes": {
+    "tests_run": 3,
+    "tests_passed": 3,
+    "build": "passed"
+  },
+  "disclosure_purposes": [
+    "structural_activity_insights"
+  ],
+  "scrubber_version": "scrub-v1",
+  "authority": {
+    "Authority": "personal",
+    "Version": 1
+  },
+  "evidence_content_digest": "sha256:51c9396b68ff3d1beca77cb176c90979c3a717d14ae2d81f66cc2315afc2de86"
+}

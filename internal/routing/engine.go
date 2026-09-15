@@ -76,6 +76,7 @@ func Decide(p Policy, snap *Snapshot, in DecisionInput) Decision {
 	bin := BasisInput{In: in, Kind: cls.Kind, OriginalTier: tier, Policy: &p, Snap: snap}
 	res := RunPipeline(bases, assembleCandidates(snap.Tiers, in, tier), bin)
 	d.AdviseOnly = res.Mod.AdviseOnly
+	d.HardStop = res.Mod.HardStop
 
 	mc := MatchContext{
 		Kind:          cls.Kind,
@@ -93,14 +94,14 @@ func Decide(p Policy, snap *Snapshot, in DecisionInput) Decision {
 		if len(d.FallbackModels) == 0 {
 			d.FallbackModels = resolveFallbacks(p, snap, d.SelectedModel)
 		}
-		return d
+		return stampHardStop(d, res)
 	}
 
 	// No rule matched: privacy enforcement and modifier demotions still
 	// apply from the pipeline alone; otherwise the quiet no-change
 	// default. The fallback chain resolves either way so reliability
 	// (§R12.1) covers unrouted turns too.
-	d = applyPipelineDefaults(snap, in, tier, p, d, res)
+	d = stampHardStop(applyPipelineDefaults(snap, in, tier, p, d, res), res)
 	if len(d.FallbackModels) == 0 {
 		d.FallbackModels = resolveFallbacks(p, snap, d.SelectedModel)
 	}
@@ -501,4 +502,21 @@ func dedupReasons(in []ReasonCode) []ReasonCode {
 		}
 	}
 	return out
+}
+
+// stampHardStop guarantees a hard_stop exhaustion (§R14) is visible on the
+// decision row whatever branch produced it: the flag is already threaded from
+// the modifier, and ReasonBudgetHardStop is appended (deduped) so the row's
+// reason codes name it even when the winning rule/branch replaced the reason
+// list (G1-HARDSTOP). No other reason is touched, so rows for the other two
+// exhaustion behaviors are unchanged.
+func stampHardStop(d Decision, res PipelineResult) Decision {
+	if !res.Mod.HardStop {
+		return d
+	}
+	d.HardStop = true
+	if !hasReason(d.ReasonCodes, ReasonBudgetHardStop) {
+		d.ReasonCodes = append(d.ReasonCodes, ReasonBudgetHardStop)
+	}
+	return d
 }

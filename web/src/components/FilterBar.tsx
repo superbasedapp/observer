@@ -95,7 +95,7 @@ function SearchTrigger({
     <Tooltip
       content={
         <>
-          Open command palette <kbd>⌘K</kbd> — search pages, sessions, actions
+          Open command palette <kbd>⌘K</kbd> - search pages, sessions, actions
         </>
       }
       maxWidth={320}
@@ -385,7 +385,7 @@ function FolderIcon() {
 }
 
 function shortenPath(p: string): string {
-  if (!p) return "—";
+  if (!p) return "-";
   const parts = p.split("/").filter(Boolean);
   if (parts.length <= 2) return p;
   return ".../" + parts.slice(-2).join("/");

@@ -140,14 +140,20 @@ func TestLegacy_DefaultRootsIncludesVSCodeServer(t *testing.T) {
 	hasDesktop := false
 	hasServer := false
 	for _, r := range a.WatchPaths() {
-		// Crude substring checks — sufficient because the two paths
-		// disambiguate cleanly on their parent dir name.
-		if filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(r)))) == "Code" ||
-			filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(r)))) == "Code - Insiders" {
+		// A root is `<product>/User/globalStorage/<extId>/tasks` for a
+		// desktop product and `<serverDir>/data/User/globalStorage/
+		// <extId>/tasks` for a remote one, so the PRODUCT segment is
+		// four Dir() hops up from `tasks`. (This was three hops before
+		// the vscodehost switch, which silently made the check
+		// vacuous — it compared against `User`.)
+		product := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(r)))))
+		switch product {
+		case "Code", "Code - Insiders":
 			hasDesktop = true
-		}
-		if filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(r)))) == ".vscode-server" {
-			hasServer = true
+		case "data": // <serverDir>/data/User/globalStorage/<extId>/tasks
+			if filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(r)))))) == ".vscode-server" {
+				hasServer = true
+			}
 		}
 	}
 	// Only assert when we actually got roots back; on a sandboxed

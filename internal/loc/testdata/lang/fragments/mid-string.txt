@@ -1,0 +1,3 @@
+var doc = `line one
+line two
+line three

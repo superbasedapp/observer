@@ -293,7 +293,7 @@ func Build(ctx context.Context, deps Deps, req Request) (Result, error) {
 	}
 
 	targetModel := resolveTargetModel(req, deps, ex.Model)
-	estimate := buildEstimate(ex, forkRes, opts, targetModel, deps.Price)
+	estimate := buildEstimate(ex, forkRes, opts, targetModel, deps.Price, sourceHasFullReader(deps.Adapters, sub.Session.Tool))
 	if deps.Stay != nil {
 		if st, ok := deps.Stay(ctx, req.SessionID); ok {
 			estimate.Stay = &st
@@ -505,7 +505,7 @@ func resolveTargetModel(req Request, deps Deps, sourceModel string) string {
 
 // buildEstimate renders the carry variants to weigh them (plan §9: the
 // boundary measures, the pure layer prices).
-func buildEstimate(ex handoff.Extract, res handoff.ForkResolution, opts handoff.Options, targetModel string, price handoff.PriceFunc) handoff.EstimateResult {
+func buildEstimate(ex handoff.Extract, res handoff.ForkResolution, opts handoff.Options, targetModel string, price handoff.PriceFunc, hasFullReader bool) handoff.EstimateResult {
 	render := func(carry handoff.CarryMode) int64 {
 		o := opts
 		o.Carry = carry
@@ -518,14 +518,30 @@ func buildEstimate(ex handoff.Extract, res handoff.ForkResolution, opts handoff.
 		tailTok = 0
 	}
 	return handoff.Estimate(handoff.EstimateInput{
-		TargetModel:     targetModel,
-		MetadataTokens:  metaTok,
-		DistilledTokens: distTok,
-		TailTokens:      tailTok,
-		ContextTokens:   ex.ContextTokens,
-		ForkShare:       handoff.ForkShare(ex.Transcript, res),
-		Price:           price,
+		TargetModel:         targetModel,
+		MetadataTokens:      metaTok,
+		DistilledTokens:     distTok,
+		TailTokens:          tailTok,
+		ContextTokens:       ex.ContextTokens,
+		ForkShare:           handoff.ForkShare(ex.Transcript, res),
+		SourceHasFullReader: hasFullReader,
+		Price:               price,
 	})
+}
+
+// sourceHasFullReader reports whether the source tool's adapter implements the
+// un-excerpted FullTranscriptReader that the full_cache carry needs. It is the
+// same capability probe readSessionTranscript uses to pick the reader, hoisted
+// so the estimate can price full_cache honestly (= full when absent).
+func sourceHasFullReader(adapters []adapter.Adapter, tool string) bool {
+	for _, a := range adapters {
+		if a.Name() != tool {
+			continue
+		}
+		_, ok := a.(FullTranscriptReader)
+		return ok
+	}
+	return false
 }
 
 // fullCacheBudget resolves the doc-byte budget for the full_cache carry:

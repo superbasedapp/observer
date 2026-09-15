@@ -71,6 +71,39 @@ func runGovernanceSidecarWriter(ctx context.Context, ngov *nodeGovernanceHandle)
 	}
 }
 
+// intelOrgEnrichmentShareKey is the govern share-tier / nodegov.ShareKey
+// identifier for the org-served Cloud Intelligence result-rail gate
+// ([intelligence].org_enrichment). It is named once here so the resolver and
+// its test cannot drift from the govern/nodegov tables that own the string.
+const intelOrgEnrichmentShareKey = "intelligence.org_enrichment"
+
+// intelRailEnabled resolves whether the org-served Cloud Intelligence RESULT
+// rail is ON for this node (org-served-cloud-intelligence plan §2.1/W5). It is
+// the single resolver orgclient.Client.SetIntelRail is bound to.
+//
+// `local` is the node-authored [intelligence].org_enrichment value (config
+// default false — the "never server-forced" floor of the individual posture;
+// the enterprise posture is where a managed grant may raise it). This is the
+// SAME gated merge every other share tier uses (govern.Effective.MergeBoolGated,
+// via lowerShareOptions): the org may LOWER the node's value unconditionally,
+// and may RAISE it only when the node is MANAGED, holds the tier's extraction
+// authority (extract.intel), AND the org body's own `share` directive turns the
+// tier on. Using a bare `local || ExtractionAuthorized(...)` (the pre-fix code)
+// ignored the org directive entirely, so a managed node with the authority went
+// ON even when the org said false — finding 4. Reading the tier through the one
+// table (govern.shareTierTable) keeps this rail and the push seam in lockstep.
+//
+// Truth table (the resolver test pins it):
+//   - individual + config false                        -> off
+//   - individual + config true                         -> on   (node-authored)
+//   - managed, no extract.intel, config false          -> off
+//   - managed + extract.intel, no org directive        -> off  (raise needs the org's own share:true)
+//   - managed + extract.intel + org directive true     -> on   (managed raise)
+//   - managed + extract.intel + org directive false    -> off  (org lowers/withholds)
+func intelRailEnabled(local bool, eff govern.Effective) bool {
+	return eff.MergeBoolGated(intelOrgEnrichmentShareKey, local)
+}
+
 // governanceShareProvider resolves the share posture each push ships under:
 // the node's OWN [org_client.share] block, LOWERED by whatever the
 // organization has directed (§2.1/§2.4).
@@ -121,12 +154,15 @@ func lowerShareOptions(local store.ShareOptions, eff govern.Effective) store.Sha
 	out.CodeintelDetail = eff.LowerBool("codeintel_detail", local.CodeintelDetail)
 	out.ProcessDetail = eff.LowerBool("process_detail", local.ProcessDetail)
 	out.TerminalDetail = eff.LowerBool("terminal_detail", local.TerminalDetail)
+	out.TaskDetail = eff.LowerBool("task_detail", local.TaskDetail)
+	out.ToolAccountDetail = eff.LowerBool("tool_account_detail", local.ToolAccountDetail)
 	out.ObsSummary = eff.LowerBool("obs.summary", local.ObsSummary)
 	out.ObsTraces = eff.LowerBool("obs.traces", local.ObsTraces)
 	out.ObsContent = eff.LowerBool("obs.content", local.ObsContent)
 	out.ObsEvalSummary = eff.LowerBool("obs.eval_summary", local.ObsEvalSummary)
 	out.ObsAdmission = eff.LowerBool("obs.admission", local.ObsAdmission)
 	out.ObsEvalItems = eff.LowerBool("obs.eval_items", local.ObsEvalItems)
+	out.ObsEgress = eff.LowerBool("obs.egress", local.ObsEgress)
 	out.TargetActionAllowlist = eff.LowerList("target_action_allowlist", local.TargetActionAllowlist)
 
 	// Enterprise-Managed Tenancy extraction raise (managed plane only;
@@ -147,18 +183,36 @@ func lowerShareOptions(local store.ShareOptions, eff govern.Effective) store.Sha
 	// is the one place the gate itself is decided — including the operator
 	// ruling that the three highest-sensitivity tiers (codeintel/process/
 	// terminal) each require their OWN token and are never satisfied by the
-	// extract.managed umbrella alone. The list tier (target_action_allowlist)
-	// is intentionally NOT raised — RaiseBool is boolean-only, and an
-	// allowlist RAISE would need a RaiseList sibling with union semantics if
-	// it is ever wanted; it is one of sharetiers.go's two documented
-	// exemptions. admin_managed is absent from the org vocabulary in BOTH
-	// directions by construction.
+	// extract.managed umbrella alone. admin_managed is absent from the org
+	// vocabulary in BOTH directions by construction.
 	for _, f := range shareRaiseFields {
 		if !govern.ExtractionAuthorized(eff, f.Key) {
 			continue
 		}
 		f.Set(&out, eff.RaiseBool(f.Key, f.Get(&out)))
 	}
+
+	// The list tier (target_action_allowlist) is NOT boolean, so it cannot
+	// ride shareRaiseFields/RaiseBool — it rides govern.RaiseList instead,
+	// gated on the SAME ExtractionAuthorized(eff, key) check as every other
+	// tier (its own strict AuthorityExtractTargetActions token, per
+	// sharetiers.go; the umbrella extract.managed does not satisfy it). Union
+	// semantics: the org may only ADD action types to what already ships raw,
+	// never remove one the node itself allowed (Plane B dual-mode gateway /
+	// RBAC-IA design, 2026-08-29 §5.3).
+	if govern.ExtractionAuthorized(eff, "target_action_allowlist") {
+		out.TargetActionAllowlist = eff.RaiseList("target_action_allowlist", out.TargetActionAllowlist)
+	}
+
+	// The Plane B enterprise-content grant (§5.3 scope item 4): a managed
+	// node whose enrolment grant honors extract.managed AND all three
+	// highest-sensitivity extraction tokens unlocks the SAME raw-content
+	// posture FullContent/AdminManaged already provide, without requiring the
+	// node operator to separately flip full_content. Computed fresh every
+	// push from the live grant (govern.Effective), never cached, so a grant
+	// lapsing takes effect on the very next push — same posture as every
+	// other raise in this function.
+	out.EnterpriseGranted = eff.GrantsEnterpriseContent()
 	return out
 }
 
@@ -174,11 +228,14 @@ type shareRaiseField struct {
 	Set func(*store.ShareOptions, bool)
 }
 
-// shareRaiseFields is every boolean tier lowerShareOptions may raise on the
-// managed plane — one row per shareTierTable entry in
-// internal/govern/sharetiers.go (the list tier and the two exemptions
-// documented there are absent here for the same reasons). Order does not
-// matter: every row touches a distinct ShareOptions field, so this loop
+// shareRaiseFields is every BOOLEAN tier lowerShareOptions may raise on the
+// managed plane via RaiseBool — one row per shareTierTable entry in
+// internal/govern/sharetiers.go that is boolean-kind. The two exceptions are
+// handled separately, right after this loop runs in lowerShareOptions:
+// target_action_allowlist is list-valued (govern.RaiseList, not RaiseBool)
+// and policy_state is not a store.ShareOptions field at all (it rides its
+// own reporting channel — see cmd/observer/policystate_wire.go). Order does
+// not matter: every row touches a distinct ShareOptions field, so this loop
 // commutes with the eff.GrantsXxxExtraction()-block form it replaces.
 var shareRaiseFields = []shareRaiseField{
 	{"full_tool_bodies", func(o *store.ShareOptions) bool { return o.FullToolBodies }, func(o *store.ShareOptions, v bool) { o.FullToolBodies = v }},
@@ -195,6 +252,13 @@ var shareRaiseFields = []shareRaiseField{
 	{"obs.eval_summary", func(o *store.ShareOptions) bool { return o.ObsEvalSummary }, func(o *store.ShareOptions, v bool) { o.ObsEvalSummary = v }},
 	{"obs.admission", func(o *store.ShareOptions) bool { return o.ObsAdmission }, func(o *store.ShareOptions, v bool) { o.ObsAdmission = v }},
 	{"obs.eval_items", func(o *store.ShareOptions) bool { return o.ObsEvalItems }, func(o *store.ShareOptions, v bool) { o.ObsEvalItems = v }},
+	// obs.egress (§5.3 scope item 3) — the obs admission/egress-routing
+	// destination surface, added alongside its obs.* siblings above. It is
+	// HEADLINE-gated (govern.sharetiers.go's GrantsObsEgressExtraction is the
+	// non-strict grantsExtractionOrManaged form), not strict, so the umbrella
+	// extract.managed authority alone is enough to raise it — unlike
+	// codeintel_detail/process_detail/terminal_detail below.
+	{"obs.egress", func(o *store.ShareOptions) bool { return o.ObsEgress }, func(o *store.ShareOptions, v bool) { o.ObsEgress = v }},
 	// Highest-sensitivity per-tier extraction raises (Arc 4 P5f-h). Each
 	// gates on its OWN managed authority, NOT the umbrella extract.managed
 	// alias — by operator ruling, granting the headline tiers (cache/
@@ -206,6 +270,14 @@ var shareRaiseFields = []shareRaiseField{
 	{"codeintel_detail", func(o *store.ShareOptions) bool { return o.CodeintelDetail }, func(o *store.ShareOptions, v bool) { o.CodeintelDetail = v }},
 	{"process_detail", func(o *store.ShareOptions) bool { return o.ProcessDetail }, func(o *store.ShareOptions, v bool) { o.ProcessDetail = v }},
 	{"terminal_detail", func(o *store.ShareOptions) bool { return o.TerminalDetail }, func(o *store.ShareOptions, v bool) { o.TerminalDetail = v }},
+	// Node session-detail trickle-up W2/W3. Same STRICT posture as the three
+	// above (their own extract.tasks / extract.tool_accounts token, never the
+	// umbrella — operator decision D4): a work plan and a developer's vendor
+	// login are highest-sensitivity surfaces. Raising either tier still does
+	// NOT disclose the item prose or the raw account identity — those ride the
+	// node's own shipsRawContent() posture, decided inside the push seam.
+	{"task_detail", func(o *store.ShareOptions) bool { return o.TaskDetail }, func(o *store.ShareOptions, v bool) { o.TaskDetail = v }},
+	{"tool_account_detail", func(o *store.ShareOptions) bool { return o.ToolAccountDetail }, func(o *store.ShareOptions, v bool) { o.ToolAccountDetail = v }},
 }
 
 // grantRenewer owns the renewal clock for one daemon run.

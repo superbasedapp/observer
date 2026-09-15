@@ -168,7 +168,7 @@ func newGooseCmd() *cobra.Command {
 				if cfg, cErr := config.Load(config.LoadOptions{GlobalPath: configPath}); cErr == nil {
 					dbPath = cfg.Observer.DBPath
 				}
-				return runSeedOnlyLaunchSeeded(dbPath, "goose", "goose", bin, args, continueDir)
+				return runSeedOnlyLaunchSeeded(configPath, dbPath, "goose", "goose", bin, args, continueDir)
 			}
 			cfg, cErr := config.Load(config.LoadOptions{GlobalPath: configPath})
 			if cErr != nil {
@@ -176,11 +176,12 @@ func newGooseCmd() *cobra.Command {
 			}
 			resolved := resolveProxyURL(cfg.Proxy.Port, "")
 			return runEnvLauncher(envLauncherSpec{
-				tool:     "goose",
-				bin:      bin,
-				args:     args,
-				dir:      continueDir,
-				proxyURL: resolved,
+				tool:       "goose",
+				bin:        bin,
+				args:       args,
+				configPath: configPath,
+				dir:        continueDir,
+				proxyURL:   resolved,
 				// Goose wants the HOST ROOT — it appends /v1 itself.
 				env:    map[string]string{"OPENAI_HOST": resolved},
 				dbPath: cfg.Observer.DBPath,

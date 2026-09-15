@@ -49,6 +49,15 @@ type rawRecord struct {
 	Owner  string `json:"owner"`
 	Cwd    string `json:"cwd"`
 	HostID string `json:"hostId"`
+	// Parent / ForkedAtMessageID mark a Factory Desktop "fork" — the
+	// operator branched a NEW session off an existing one at a specific
+	// message boundary rather than continuing linearly. Parent is the
+	// source session's id; ForkedAtMessageID is a MESSAGE id inside that
+	// parent transcript (not a session/thread id), so it has no home on
+	// models.SessionLineage and is deliberately not captured — see
+	// lineageForHeader.
+	Parent            string `json:"parent"`
+	ForkedAtMessageID string `json:"forkedAtMessageId"`
 
 	// message
 	Message *rawMessage `json:"message"`
@@ -85,6 +94,16 @@ type rawMessage struct {
 	ModelID    string          `json:"modelId"`
 	// ReasoningEffort is droid's per-turn effort knob (low|medium|high).
 	ReasoningEffort string `json:"reasoningEffort"`
+	// UserMessageSource is droid's OWN client-provenance marker on a
+	// real user-typed turn (role="user", no visibility). Grounded
+	// 2026-09-03 (docs/droid-adapter.md "Factory Desktop"): present as
+	// "desktop" on every genuine user prompt a Factory Desktop-composed
+	// session sends, absent (the key is missing entirely, never an empty
+	// string or a "cli" value) on every CLI-composed prompt — both a
+	// fresh CLI session and one resumed via `droid --resume` — and also
+	// absent on the tool_result-carrying synthetic user messages a turn
+	// emits. See userMessageSourceDesktop in surface.go.
+	UserMessageSource string `json:"userMessageSource"`
 }
 
 // rawBlock is one entry of message.content[]. Field sets are disjoint per

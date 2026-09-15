@@ -128,3 +128,156 @@ func TestWriteEnrolmentGrantRequiresOrgKey(t *testing.T) {
 		t.Fatal("WriteEnrolmentGrant accepted a grant with no org_key")
 	}
 }
+
+// TestReplaceEnrolmentGrant_FreshRow pins the INSERT path (Plane B dual-mode
+// design §5.3 item 5): a node that has never held a grant before can still
+// accept a replacement as its very first grant.
+func TestReplaceEnrolmentGrant_FreshRow(t *testing.T) {
+	ctx := context.Background()
+	s := newPolicyResourceTestStore(t)
+
+	r := testGrantRow()
+	r.ReplacementGeneration = 1
+	applied, err := s.ReplaceEnrolmentGrant(ctx, r)
+	if err != nil {
+		t.Fatalf("ReplaceEnrolmentGrant: %v", err)
+	}
+	if !applied {
+		t.Fatal("first-ever replacement was not applied")
+	}
+	got, ok, err := s.LoadEnrolmentGrant(ctx, "org-key-1")
+	if err != nil || !ok {
+		t.Fatalf("load after fresh-row replace: ok=%v err=%v", ok, err)
+	}
+	if got.ReplacementGeneration != 1 {
+		t.Fatalf("ReplacementGeneration = %d, want 1", got.ReplacementGeneration)
+	}
+	if got.Generation != r.Generation {
+		t.Fatalf("Generation = %d, want %d carried through on the INSERT path", got.Generation, r.Generation)
+	}
+}
+
+// TestReplaceEnrolmentGrant_UpdatePathLeavesGenerationUntouched pins the most
+// load-bearing invariant of this method: a replacement supersedes AUTHORITY
+// within the current enrolment epoch, and must never move the identity
+// generation column — migration 094's header comment explains why a spurious
+// bump there would make a legitimately-replaced grant misread as stale.
+func TestReplaceEnrolmentGrant_UpdatePathLeavesGenerationUntouched(t *testing.T) {
+	ctx := context.Background()
+	s := newPolicyResourceTestStore(t)
+
+	original := testGrantRow()
+	original.Generation = 7 // the P0-5 enrolment-identity fence value
+	if err := s.WriteEnrolmentGrant(ctx, original); err != nil {
+		t.Fatalf("seed original: %v", err)
+	}
+
+	replacement := testGrantRow()
+	replacement.Generation = 999 // a caller bug or a stale value — must be IGNORED
+	replacement.Authority = []string{"settings.pin"}
+	replacement.ReplacementGeneration = 1
+	applied, err := s.ReplaceEnrolmentGrant(ctx, replacement)
+	if err != nil {
+		t.Fatalf("ReplaceEnrolmentGrant: %v", err)
+	}
+	if !applied {
+		t.Fatal("first replacement (generation 1 > current 0) was refused")
+	}
+
+	got, ok, err := s.LoadEnrolmentGrant(ctx, "org-key-1")
+	if err != nil || !ok {
+		t.Fatalf("load: ok=%v err=%v", ok, err)
+	}
+	if got.Generation != 7 {
+		t.Fatalf("Generation = %d, want 7 (untouched by the replacement's own Generation=999 field)", got.Generation)
+	}
+	if len(got.Authority) != 1 || got.Authority[0] != "settings.pin" {
+		t.Fatalf("Authority = %v, want the replacement's authority to fully replace, not merge", got.Authority)
+	}
+	if got.ReplacementGeneration != 1 {
+		t.Fatalf("ReplacementGeneration = %d, want 1", got.ReplacementGeneration)
+	}
+}
+
+// TestReplaceEnrolmentGrant_MonotonicOrdering pins the ordering fence: a
+// stale or replayed replacement (ReplacementGeneration <= current) is
+// refused with applied=false, err=nil, and the last-good grant is left
+// completely untouched — never even partially applied.
+func TestReplaceEnrolmentGrant_MonotonicOrdering(t *testing.T) {
+	ctx := context.Background()
+	s := newPolicyResourceTestStore(t)
+
+	first := testGrantRow()
+	first.ReplacementGeneration = 3
+	first.Authority = []string{"dashboard.visibility"}
+	if applied, err := s.ReplaceEnrolmentGrant(ctx, first); err != nil || !applied {
+		t.Fatalf("seed first replacement: applied=%v err=%v", applied, err)
+	}
+
+	stale := testGrantRow()
+	stale.ReplacementGeneration = 3 // equal, not greater — must be refused
+	stale.Authority = []string{"settings.pin", "capture.raise", "process.detail"}
+	applied, err := s.ReplaceEnrolmentGrant(ctx, stale)
+	if err != nil {
+		t.Fatalf("ReplaceEnrolmentGrant (equal generation): %v", err)
+	}
+	if applied {
+		t.Fatal("a replacement with ReplacementGeneration == current was applied, want refused")
+	}
+
+	older := testGrantRow()
+	older.ReplacementGeneration = 1 // strictly less — must be refused
+	older.Authority = []string{"settings.pin", "capture.raise", "process.detail"}
+	applied, err = s.ReplaceEnrolmentGrant(ctx, older)
+	if err != nil {
+		t.Fatalf("ReplaceEnrolmentGrant (lower generation): %v", err)
+	}
+	if applied {
+		t.Fatal("a replacement with a LOWER ReplacementGeneration was applied, want refused")
+	}
+
+	// The last-good grant (from `first`) must be exactly what's still on
+	// file — a rejected replacement is not even partially applied.
+	got, ok, err := s.LoadEnrolmentGrant(ctx, "org-key-1")
+	if err != nil || !ok {
+		t.Fatalf("load: ok=%v err=%v", ok, err)
+	}
+	if got.ReplacementGeneration != 3 {
+		t.Fatalf("ReplacementGeneration = %d, want 3 (unchanged by the refused replacements)", got.ReplacementGeneration)
+	}
+	if len(got.Authority) != 1 || got.Authority[0] != "dashboard.visibility" {
+		t.Fatalf("Authority = %v, want only the first accepted replacement's single token", got.Authority)
+	}
+
+	// A strictly-greater generation now applies cleanly.
+	next := testGrantRow()
+	next.ReplacementGeneration = 4
+	next.Authority = []string{"settings.pin"}
+	applied, err = s.ReplaceEnrolmentGrant(ctx, next)
+	if err != nil {
+		t.Fatalf("ReplaceEnrolmentGrant (generation 4): %v", err)
+	}
+	if !applied {
+		t.Fatal("a strictly-greater replacement generation was refused")
+	}
+	got, ok, err = s.LoadEnrolmentGrant(ctx, "org-key-1")
+	if err != nil || !ok {
+		t.Fatalf("load after generation-4 replace: ok=%v err=%v", ok, err)
+	}
+	if got.ReplacementGeneration != 4 || len(got.Authority) != 1 || got.Authority[0] != "settings.pin" {
+		t.Fatalf("got = %+v, want ReplacementGeneration=4 Authority=[settings.pin]", got)
+	}
+}
+
+// TestReplaceEnrolmentGrant_RequiresOrgKey mirrors
+// TestWriteEnrolmentGrantRequiresOrgKey for the replacement path.
+func TestReplaceEnrolmentGrant_RequiresOrgKey(t *testing.T) {
+	ctx := context.Background()
+	s := newPolicyResourceTestStore(t)
+	g := testGrantRow()
+	g.OrgKey = ""
+	g.ReplacementGeneration = 1
+	if _, err := s.ReplaceEnrolmentGrant(ctx, g); err == nil {
+		t.Fatal("ReplaceEnrolmentGrant accepted a grant with no org_key")
+	}
+}

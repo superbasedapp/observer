@@ -8,17 +8,36 @@ import (
 // Exfiltration & network rules R-170…R-173 (spec §5.3) — the exfil
 // category table, deferred from G1 to G9 where its proxy half lands.
 //
-// R-172 spans TWO rows under one public ID (approved deviation 3):
+// R-172 spans THREE rows under one public ID (approved deviation 3):
 // the shell-arg half (secrets in network-command arguments, evaluated
-// on every shell event) and the api_request half (typed detector
+// on every shell event), the api_request half (typed detector
 // findings stamped onto proxy egress events by the guard layer,
-// §8.2). Both rows agree on category/severity per validateRules.
+// §8.2), and — since F1 (phase-3a review) — a third row for the
+// prompt-submit-intervention surface (typed detector findings on the
+// developer's own KindUserPrompt event). All three rows agree on
+// category/severity per validateRules; each carries its own
+// surface-specific Doc text (the api_request and prompt rows used to
+// share one AppliesTo=[KindAPIRequest,KindUserPrompt] row and one Doc
+// string trying to describe both surfaces at once — split apart so
+// `observer guard rules` / docs/guard-rules.md render an honest,
+// single-surface description per row instead).
 //
 // Category note: spec §4.3 declares CategorySecrets "secrets egress
 // (§8.2)" while the §5.3 catalog table places R-172 under exfil. One
-// ID cannot span two categories (validateRules), so BOTH R-172 halves
-// use CategoryExfil — the §5.3 table is the catalog of record.
+// ID cannot span two categories (validateRules), so ALL THREE R-172
+// rows use CategoryExfil — the §5.3 table is the catalog of record.
 // CategorySecrets stays declared-but-reserved.
+//
+// R-190 (prompt-submit intervention, docs/plans/
+// prompt-submit-intervention-exploration-2026-09-07.md §5.6) is a
+// separate row appended to this same table: deterministic PII in the
+// developer's OWN prompt text (KindUserPrompt, Event.PIIFindings),
+// CategoryPII. Secret-shaped content typed into the SAME prompt is
+// deliberately NOT folded into R-190 — it stays on R-172's own
+// dedicated KindUserPrompt row above, since matchSecretsOnAPIRequest
+// already keys off Event.Secrets regardless of which kind carried it.
+// R-190 and R-172 therefore never double-report the same finding:
+// PIIFindings drives R-190, Secrets drives R-172, on the same event.
 
 // remoteFetchBases are the canonical download-command bases R-170/
 // R-171 treat as remote-content sources. psparse resolves the
@@ -88,12 +107,78 @@ func exfilRules() []Rule {
 			Advice: "Check what placed the secret in the conversation (a file read, a shell output); rotate it if it already left, and add an [guard.proxy] egress_allow pattern only for known-fake fixtures.",
 		},
 		{
+			// F1 (phase-3a review): the prompt-submit-intervention
+			// surface (docs/plans/
+			// prompt-submit-intervention-exploration-2026-09-07.md
+			// §5.6/§9 Phase 1) is a THIRD R-172 row, split out from
+			// the proxy-egress row above rather than sharing its Doc
+			// text — the original single api_request row had
+			// AppliesTo covering both KindAPIRequest and
+			// KindUserPrompt with one Doc string trying to describe
+			// both surfaces at once ("...in an outbound LLM API
+			// request, or typed directly into a prompt"), which read
+			// oddly on a prompt-submit block (nothing has gone
+			// "outbound" yet — see matchSecretsOnAPIRequest's own
+			// kind-aware detail text, which already drew this same
+			// distinction for the runtime reason's SUFFIX; this row
+			// does the same for the catalog-level Doc PREFIX). Same
+			// matcher (matchSecretsOnAPIRequest keys off
+			// Event.Secrets regardless of which kind carried it,
+			// keying the surface-specific "in the prompt text" vs
+			// "in the outbound request body" detail off
+			// ctx.Event.Kind) and same Category/Severity as the
+			// sibling rows (validateRules requires same-ID rows to
+			// agree on both) — approved deviation 3 extended by one
+			// more sub-shape.
+			ID: "R-172", Category: CategoryExfil, Severity: SeverityCritical,
+			AppliesTo: []EventKind{KindUserPrompt},
+			Match:     matchSecretsOnAPIRequest,
+			Observe:   DecisionFlag, Enforce: DecisionDeny,
+			Doc:    "secret-shaped content typed directly into a prompt to your coding-agent tool, before it reaches the model",
+			Advice: "Check what placed the secret in the conversation (a file read, a shell output, a pasted value); rotate it if it's real, and add a [guard.prompt] allow pattern only for known-fake test data.",
+		},
+		{
 			ID: "R-173", Category: CategoryExfil, Severity: SeverityWarn,
 			AppliesTo: []EventKind{KindShellExec},
 			Match:     nil, MatchCmd: matchDNSExfilShape,
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "DNS lookup of an encoded-looking subdomain (DNS-tunnel exfil shape)",
 			Advice: "Long random-looking DNS labels are the classic low-bandwidth exfil channel; verify the domain is one your tooling legitimately queries.",
+		},
+		{
+			// R-190 (prompt-submit intervention, docs/plans/
+			// prompt-submit-intervention-exploration-2026-09-07.md
+			// §5.6): deterministic PII in the developer's own prompt
+			// text. The reconsider-once mode vocabulary
+			// (off/warn/ask-once/block/redact, [guard.prompt]) is
+			// layered on TOP of this baseline observe/enforce verdict
+			// by the guard layer's prompt-reconsider engine — this row
+			// only supplies the standard category/severity/reason
+			// machinery every other rule gets (org policy compilation,
+			// overrides, guard_events shape).
+			//
+			// Severity is SeverityWarn, NOT SeverityCritical (round-2
+			// review F2; superseding the contract's own original text,
+			// which asserted "SeverityHigh... so a routine ask-once does
+			// not also raise a toast the developer is already seeing
+			// inline" — that premise doesn't hold: [guard.alerts]
+			// defaults to min_severity="high" + desktop=true, and
+			// notify.Desktop's MaybeAlert fires on severity >=
+			// min_severity (guard.go:446, "<" not "<="), so
+			// SeverityHigh toasts exactly as much as SeverityCritical
+			// does. The only severity that does NOT double-notify under
+			// the DEFAULT config is one strictly below "high" — hence
+			// SeverityWarn, matching R-173's own "flag, don't also
+			// alert" posture. (MaybeAlert isn't wired to PromptVerdict
+			// yet — phase 1 has no hook/proxy caller — so this doesn't
+			// change observable behavior today; it's the correct value
+			// for when phase 2/3 wires it.)
+			ID: "R-190", Category: CategoryPII, Severity: SeverityWarn,
+			AppliesTo: []EventKind{KindUserPrompt},
+			Match:     matchPromptFindings,
+			Observe:   DecisionFlag, Enforce: DecisionDeny,
+			Doc:    "deterministic PII (credit card, SSN, IBAN, ...) in the developer's own prompt text",
+			Advice: "Remove or redact the value before sending, or add a [guard.prompt] allow pattern only for known-fake test data.",
 		},
 	}
 }
@@ -294,7 +379,19 @@ func matchSecretsOnAPIRequest(ctx *MatchContext) (bool, string) {
 	if len(ctx.Event.Secrets) == 0 {
 		return false, ""
 	}
-	return true, "detected " + SummarizeSecretFindings(ctx.Event.Secrets) + " in the outbound request body"
+	// FIX-6 (phase-2 review): this row's AppliesTo covers BOTH
+	// KindAPIRequest (the proxy egress seam) and KindUserPrompt (the
+	// prompt-submit intervention hook lane) — two genuinely different
+	// surfaces sharing one detector. "in the outbound request body"
+	// is accurate for the proxy but nonsensical for a developer who
+	// just typed a prompt into their coding-agent CLI (nothing has
+	// gone "outbound" yet); the vocabulary must match the surface
+	// that actually produced this Event, not always assume the proxy.
+	surface := "in the outbound request body"
+	if ctx.Event.Kind == KindUserPrompt {
+		surface = "in the prompt text"
+	}
+	return true, "detected " + SummarizeSecretFindings(ctx.Event.Secrets) + " " + surface
 }
 
 // SummarizeSecretFindings renders findings as a stable, content-free
@@ -302,6 +399,50 @@ func matchSecretsOnAPIRequest(ctx *MatchContext) (bool, string) {
 // type order. Exported for the guard layer's verdict reasons and the
 // per-session dedup signature — both sides must render identically.
 func SummarizeSecretFindings(findings []SecretFinding) string {
+	var order []string
+	counts := map[string]int{}
+	for _, f := range findings {
+		if counts[f.Type] == 0 {
+			order = append(order, f.Type)
+		}
+		counts[f.Type]++
+	}
+	var b strings.Builder
+	for i, ty := range order {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(ty)
+		if counts[ty] > 1 {
+			b.WriteString("×")
+			b.WriteString(strconv.Itoa(counts[ty]))
+		}
+	}
+	return b.String()
+}
+
+// matchPromptFindings implements the R-190 prompt-submit half
+// (docs/plans/prompt-submit-intervention-exploration-2026-09-07.md
+// §5.6): the guard layer ran the typed PII detectors over the
+// developer's own prompt text and stamped Event.PIIFindings; any
+// finding is a hit. The detail names types and counts only — never
+// values. Distinct from matchSecretsOnAPIRequest (R-172), which stays
+// keyed on Event.Secrets on the same KindUserPrompt events — the two
+// matchers never read each other's slice, so a prompt carrying both a
+// secret and PII fires both rules independently.
+func matchPromptFindings(ctx *MatchContext) (bool, string) {
+	if len(ctx.Event.PIIFindings) == 0 {
+		return false, ""
+	}
+	return true, "detected " + SummarizePIIFindings(ctx.Event.PIIFindings) + " in the prompt text"
+}
+
+// SummarizePIIFindings renders findings as a stable, content-free
+// "type×count" summary, mirroring SummarizeSecretFindings exactly (in
+// first-seen type order) — the guard layer's verdict reasons and
+// per-session dedup/fingerprint signature depend on both rendering
+// identically in shape.
+func SummarizePIIFindings(findings []PIIFinding) string {
 	var order []string
 	counts := map[string]int{}
 	for _, f := range findings {

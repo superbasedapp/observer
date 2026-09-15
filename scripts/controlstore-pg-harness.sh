@@ -150,6 +150,9 @@ if [[ "${#pkg_patterns[@]}" -eq 0 ]]; then
     go test ./internal/orgserver/controlstore/ -run LivePG -v -count=1
   ) || test_status=$?
 else
+  export OBSERVER_DATA_STORE_DSN="${OBSERVER_CONTROL_STORE_DSN}"
+  # Fully migrated templates live only until this disposable container exits.
+  export OBSERVER_DBTEST_USE_TEMPLATE="1"
   # -p 1 serializes the per-package test binaries: controltest.Open truncates
   # the shared waveShadowTables list on the ONE live database this harness
   # provisions, so package binaries running in parallel truncate each other's

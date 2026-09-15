@@ -1,0 +1,94 @@
+{
+  "data": {
+    "id": "sub_01m290dhcfmmw89vzvharwqb4b",
+    "items": [
+      {
+        "price": {
+          "id": "pri_01m28zcjpqftf2s3efcg8v0j18",
+          "name": "Plus monthly",
+          "type": "standard",
+          "status": "active",
+          "quantity": {
+            "maximum": 999999,
+            "minimum": 1
+          },
+          "tax_mode": "location",
+          "created_at": "2026-09-11T19:33:52.471Z",
+          "product_id": "pro_01m28zasd614dhqry2g8c3h9v3",
+          "unit_price": {
+            "amount": "1500",
+            "currency_code": "USD"
+          },
+          "updated_at": "2026-09-11T19:33:52.471Z",
+          "custom_data": null,
+          "description": "plus_beta v1 month, 7-day trial",
+          "import_meta": null,
+          "trial_period": {
+            "interval": "day",
+            "frequency": 7,
+            "requires_payment_method": true
+          },
+          "billing_cycle": {
+            "interval": "month",
+            "frequency": 1
+          },
+          "unit_price_overrides": []
+        },
+        "status": "trialing",
+        "product": {
+          "id": "pro_01m28zasd614dhqry2g8c3h9v3",
+          "name": "Plus",
+          "type": "standard",
+          "status": "active",
+          "image_url": null,
+          "created_at": "2026-09-11T19:32:53.798Z",
+          "updated_at": "2026-09-11T19:32:53.798Z",
+          "custom_data": null,
+          "description": "SuperBased Cloud Intelligence Plus: hosted session-enrichment for individual developers. USD 15 per month, 7-day free trial.",
+          "tax_category": "saas"
+        },
+        "quantity": 1,
+        "recurring": true,
+        "created_at": "2026-09-11T19:51:52.463Z",
+        "updated_at": "2026-09-11T19:51:52.463Z",
+        "trial_dates": {
+          "ends_at": "2026-09-18T19:51:52.458Z",
+          "starts_at": "2026-09-11T19:51:52.458Z"
+        },
+        "next_billed_at": null,
+        "previously_billed_at": null
+      }
+    ],
+    "status": "canceled",
+    "discount": null,
+    "paused_at": null,
+    "address_id": "add_01m290c84ad7e0xd3ddhwxntq4",
+    "created_at": "2026-09-11T19:51:52.463Z",
+    "started_at": "2026-09-11T19:51:52.458Z",
+    "updated_at": "2026-09-11T19:58:54.422Z",
+    "business_id": null,
+    "canceled_at": "2026-09-11T19:58:54.414Z",
+    "custom_data": {
+      "account_id": "0866b99b-b944-4943-b887-a8fc0108fe35",
+      "checkout_nonce": "n_dZWs5n0ERSfzfGDIbTwvenRBFVHe1taKHiTdM22Gc"
+    },
+    "customer_id": "ctm_01m290c83t9mkd7ajegve5nw7x",
+    "import_meta": null,
+    "billing_cycle": {
+      "interval": "month",
+      "frequency": 1
+    },
+    "currency_code": "USD",
+    "next_billed_at": null,
+    "billing_details": null,
+    "collection_mode": "automatic",
+    "first_billed_at": null,
+    "scheduled_change": null,
+    "consent_requirements": [],
+    "current_billing_period": null
+  },
+  "event_id": "evt_01m290tdmhpt6zhh427y7x02p9",
+  "event_type": "subscription.canceled",
+  "occurred_at": "2026-09-11T19:58:54.609392Z",
+  "notification_id": "ntf_01m290te1z8z6nk2dpp260d09j"
+}

@@ -63,3 +63,7 @@ Dockerfile* text eol=lf
 *.vsix      binary
 *.wheel     binary
 *.whl       binary
+
+# LOC classifier golden corpus — byte-exact fixtures (one of them is
+# deliberately CRLF); never normalize line endings here.
+internal/loc/testdata/** -text

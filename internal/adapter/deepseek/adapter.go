@@ -227,6 +227,10 @@ type parseState struct {
 	// remote is the normalized git remote, resolved alongside the
 	// project root (see projectRoot).
 	remote string
+	// identity is the Project Identity Resolver v2 bundle (2026-09-06,
+	// §3.1 / W1) resolved alongside branch/remote, stamped onto every
+	// ToolEvent by base() and onto the TokenEvent literal below.
+	identity git.Identity
 	// model is the most recent model id seen (from assistant/message),
 	// used to stamp tool events that carry no model of their own.
 	model string
@@ -270,30 +274,39 @@ func (st *parseState) projectRoot() string {
 	if root, ok := st.rootCache[cwd]; ok {
 		return root
 	}
-	info, err := git.Resolve(cwd)
+	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
 		st.rootCache[cwd] = cwd
 		return cwd
 	}
-	st.rootCache[cwd] = info.Root
+	st.rootCache[cwd] = id.Root
 	if st.branch == "" {
-		st.branch = info.Branch
-		st.remote = git.NormalizeRemote(info.Remote)
+		st.branch = id.Branch
+		// id.Remote is already NormalizeRemote'd by ResolveIdentity.
+		st.remote = id.Remote
+		st.identity = id
 	}
-	return info.Root
+	return id.Root
 }
 
 // base builds the fields every emitted ToolEvent shares.
 func (st *parseState) base(env *rawEnvelope) models.ToolEvent {
 	return models.ToolEvent{
-		SourceFile:  st.path,
-		SessionID:   st.sessionID,
-		ProjectRoot: st.projectRoot(),
-		Timestamp:   parseTimestamp(env.Time),
-		GitBranch:   st.branch,
-		GitRemote:   st.remote,
-		Tool:        models.ToolDeepSeek,
-		Success:     true,
+		SourceFile:         st.path,
+		SessionID:          st.sessionID,
+		ProjectRoot:        st.projectRoot(),
+		Timestamp:          parseTimestamp(env.Time),
+		GitBranch:          st.branch,
+		GitRemote:          st.remote,
+		GitUpstreamRemote:  st.identity.UpstreamRemote,
+		GitRemoteOwner:     st.identity.RemoteOwner,
+		GitUpstreamOwner:   st.identity.UpstreamOwner,
+		RootCommitSHA:      st.identity.RootCommitSHA,
+		ContentFingerprint: st.identity.ContentFingerprint,
+		Workspace:          st.identity.Workspace,
+		IsWorktree:         st.identity.IsWorktree,
+		Tool:               models.ToolDeepSeek,
+		Success:            true,
 	}
 }
 
@@ -457,18 +470,25 @@ func (st *parseState) emitTokens(env *rawEnvelope, u *assistantUsage, res *adapt
 		return
 	}
 	res.TokenEvents = append(res.TokenEvents, models.TokenEvent{
-		SourceFile:      st.path,
-		SourceEventID:   "tok:" + strconv.FormatInt(env.Seq, 10),
-		SessionID:       st.sessionID,
-		ProjectRoot:     st.projectRoot(),
-		GitBranch:       st.branch,
-		GitRemote:       st.remote,
-		Timestamp:       parseTimestamp(env.Time),
-		Tool:            models.ToolDeepSeek,
-		Model:           st.model,
-		InputTokens:     u.InputTokens,
-		OutputTokens:    u.OutputTokens,
-		CacheReadTokens: u.CacheReadTokens,
+		SourceFile:         st.path,
+		SourceEventID:      "tok:" + strconv.FormatInt(env.Seq, 10),
+		SessionID:          st.sessionID,
+		ProjectRoot:        st.projectRoot(),
+		GitBranch:          st.branch,
+		GitRemote:          st.remote,
+		GitUpstreamRemote:  st.identity.UpstreamRemote,
+		GitRemoteOwner:     st.identity.RemoteOwner,
+		GitUpstreamOwner:   st.identity.UpstreamOwner,
+		RootCommitSHA:      st.identity.RootCommitSHA,
+		ContentFingerprint: st.identity.ContentFingerprint,
+		Workspace:          st.identity.Workspace,
+		IsWorktree:         st.identity.IsWorktree,
+		Timestamp:          parseTimestamp(env.Time),
+		Tool:               models.ToolDeepSeek,
+		Model:              st.model,
+		InputTokens:        u.InputTokens,
+		OutputTokens:       u.OutputTokens,
+		CacheReadTokens:    u.CacheReadTokens,
 		// No EstimatedCostUSD: the cost engine resolves this from the
 		// model string against internal/intelligence/cost's existing
 		// deepseek/deepseek-v4-* OpenRouter-slug pricing entries.

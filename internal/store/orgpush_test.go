@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -237,5 +238,77 @@ func TestRecordPush_AndLastPushLog(t *testing.T) {
 	}
 	if last == nil || last.Status != "failed" || last.Error != "boom" {
 		t.Fatalf("LastPushLog = %+v, want failed/boom", last)
+	}
+}
+
+// TestPushBreaker_RoundTripAndExpiry pins the persisted oversized-batch circuit
+// (Task 7 H2). It exists because the daemon that OPENS the circuit is a
+// different process from the dashboard / `observer org push-status` that must
+// report it: in-memory state would leave a parked push loop invisible.
+func TestPushBreaker_RoundTripAndExpiry(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// No record → not paused.
+	got, err := s.LoadPushBreaker(ctx)
+	if err != nil || got != nil {
+		t.Fatalf("LoadPushBreaker on a fresh store = %+v, %v; want nil, nil", got, err)
+	}
+
+	until := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	if err := s.OpenPushBreaker(ctx, until, "serialized_bytes=250000000 limit_bytes=1048576"); err != nil {
+		t.Fatalf("OpenPushBreaker: %v", err)
+	}
+	got, err = s.LoadPushBreaker(ctx)
+	if err != nil {
+		t.Fatalf("LoadPushBreaker: %v", err)
+	}
+	if got == nil {
+		t.Fatal("open circuit reads back as nil — the pause would be invisible to the dashboard")
+	}
+	if !got.Until.Equal(until) {
+		t.Errorf("Until = %v, want %v", got.Until, until)
+	}
+	if !strings.Contains(got.Reason, "limit_bytes=1048576") {
+		t.Errorf("Reason = %q, want the serialized-vs-limit diagnostic", got.Reason)
+	}
+
+	// An ELAPSED park reads as closed: the retry is imminent, so reporting it
+	// as still-paused would be dishonest.
+	if err := s.OpenPushBreaker(ctx, time.Now().UTC().Add(-time.Minute), "old"); err != nil {
+		t.Fatalf("OpenPushBreaker (elapsed): %v", err)
+	}
+	got, err = s.LoadPushBreaker(ctx)
+	if err != nil || got != nil {
+		t.Fatalf("elapsed circuit = %+v, %v; want nil, nil", got, err)
+	}
+
+	// Clear is idempotent and really clears.
+	if err := s.OpenPushBreaker(ctx, until, "again"); err != nil {
+		t.Fatalf("OpenPushBreaker (again): %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.ClearPushBreaker(ctx); err != nil {
+			t.Fatalf("ClearPushBreaker[%d]: %v", i, err)
+		}
+	}
+	if got, err := s.LoadPushBreaker(ctx); err != nil || got != nil {
+		t.Fatalf("after clear = %+v, %v; want nil, nil", got, err)
+	}
+}
+
+// TestClearLastPushStateClearsPushBreaker pins that a re-enrol does not carry a
+// stale pause banner from the previous enrolment.
+func TestClearLastPushStateClearsPushBreaker(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	if err := s.OpenPushBreaker(ctx, time.Now().UTC().Add(time.Hour), "too large"); err != nil {
+		t.Fatalf("OpenPushBreaker: %v", err)
+	}
+	if err := s.ClearLastPushState(ctx); err != nil {
+		t.Fatalf("ClearLastPushState: %v", err)
+	}
+	if got, err := s.LoadPushBreaker(ctx); err != nil || got != nil {
+		t.Fatalf("push breaker survived a re-enrol reset: %+v, %v", got, err)
 	}
 }

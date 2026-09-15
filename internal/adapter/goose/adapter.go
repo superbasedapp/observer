@@ -115,20 +115,21 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 // CWD-prefix the observer's own repo onto the foreign string. Empty cwds
 // fall back to "[goose]". Returns (root, gitRemote); gitRemote is "" when
 // the working dir isn't inside a git repo (or isn't reachable at all).
-func (a *Adapter) resolveProjectRoot(workingDir string) (root, gitRemote string) {
+func (a *Adapter) resolveProjectRoot(workingDir string) (root, gitRemote string, id git.Identity) {
 	wd := strings.TrimSpace(workingDir)
 	if wd == "" {
-		return "[goose]", ""
+		return "[goose]", "", git.Identity{}
 	}
 	wd = crossmount.TranslateForeignPath(wd)
 	if _, err := os.Stat(wd); err != nil {
-		return wd, ""
+		return wd, "", git.Identity{}
 	}
-	info, err := git.Resolve(wd)
+	identity, err := git.ResolveIdentity(wd, git.IdentityOptions{})
 	if err != nil {
-		return wd, ""
+		return wd, "", git.Identity{}
 	}
-	return info.Root, git.NormalizeRemote(info.Remote)
+	// identity.Remote is already NormalizeRemote'd by ResolveIdentity.
+	return identity.Root, identity.Remote, identity
 }
 
 // scrub applies the plaintext scrubber, tolerating a nil scrubber.

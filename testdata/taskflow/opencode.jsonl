@@ -1,0 +1,2 @@
+{"tool":"opencode","raw_tool_name":"todowrite","raw_tool_input":"{\"todos\":[{\"content\":\"Draft the migration script\",\"priority\":\"high\",\"status\":\"in_progress\"},{\"content\":\"Add a rollback path\",\"priority\":\"medium\",\"status\":\"pending\"}]}","raw_tool_output":""}
+{"tool":"opencode","raw_tool_name":"todowrite","raw_tool_input":"{\"todos\":[{\"content\":\"Draft the migration script\",\"priority\":\"high\",\"status\":\"completed\"},{\"content\":\"Add a rollback path\",\"priority\":\"medium\",\"status\":\"completed\"}]}","raw_tool_output":""}

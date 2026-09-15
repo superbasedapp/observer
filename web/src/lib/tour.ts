@@ -32,7 +32,7 @@ export const TOUR_STEPS: TourStep[] = [
     // Centered card — no anchor.
     title: "Welcome to SuperBased",
     body:
-      "This is your local control plane for every AI coding session — cost, " +
+      "This is your local control plane for every AI coding session - cost, " +
       "tokens, activity, and guardrails, all captured on your machine. " +
       "Here's a 60-second tour of where things live.",
   },
@@ -41,7 +41,7 @@ export const TOUR_STEPS: TourStep[] = [
     target: '[data-tour="nav-overview"]',
     path: "/",
     placement: "right",
-    title: "Overview — your home base",
+    title: "Overview - your home base",
     body:
       "Spend, tokens, and activity at a glance across all your tools and " +
       "projects. Start here each day.",
@@ -53,7 +53,7 @@ export const TOUR_STEPS: TourStep[] = [
     placement: "right",
     title: "Live",
     body:
-      "Watch sessions as they happen — active agents, current tools, and " +
+      "Watch sessions as they happen - active agents, current tools, and " +
       "streaming activity in real time.",
   },
   {
@@ -63,7 +63,7 @@ export const TOUR_STEPS: TourStep[] = [
     placement: "right",
     title: "Sessions",
     body:
-      "Every AI coding session, searchable and filterable — open one to see " +
+      "Every AI coding session, searchable and filterable - open one to see " +
       "its full timeline, tokens, and cost.",
   },
   {
@@ -73,7 +73,7 @@ export const TOUR_STEPS: TourStep[] = [
     placement: "right",
     title: "Cost",
     body:
-      "Exact token spend broken down by model, tool, and project — plus " +
+      "Exact token spend broken down by model, tool, and project - plus " +
       "input/output and cache costs, with no estimates on proxied traffic.",
   },
   {
@@ -83,7 +83,7 @@ export const TOUR_STEPS: TourStep[] = [
     placement: "right",
     title: "Cache",
     body:
-      "Prompt-cache savings and keep-warm advice — see what your cache is " +
+      "Prompt-cache savings and keep-warm advice - see what your cache is " +
       "earning and when it's about to expire.",
   },
   {
@@ -104,7 +104,7 @@ export const TOUR_STEPS: TourStep[] = [
     placement: "right",
     title: "Security",
     body:
-      "Guardrails on your agents' own commands — dangerous-command policy, " +
+      "Guardrails on your agents' own commands - dangerous-command policy, " +
       "MCP pins, and taint tracking for your coding tools.",
   },
   {
@@ -115,7 +115,7 @@ export const TOUR_STEPS: TourStep[] = [
     title: "Connect your tools",
     body:
       "Point Claude Code, Codex, Cursor, and more at SuperBased, tune privacy " +
-      "and routing, and manage Teams sharing — all here in Settings.",
+      "and routing, and manage Teams sharing - all here in Settings.",
   },
   {
     id: "filter-and-help",
@@ -124,6 +124,6 @@ export const TOUR_STEPS: TourStep[] = [
     title: "One filter, and help anywhere",
     body:
       "The date range and window up here scope the whole dashboard. Press ? " +
-      "on any screen to open contextual help. That's the tour — explore away.",
+      "on any screen to open contextual help. That's the tour - explore away.",
   },
 ];

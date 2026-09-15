@@ -37,11 +37,40 @@ const (
 	// target. Unlike the CLI attach bypass it is a dashboard-initiated launch,
 	// so termsvc gates it through the SAME fresh-launch Policy allow-lists.
 	KindResume Kind = "resume"
+	// KindSSH — an outbound SSH remote-system shell
+	// (docs/plans/ssh-remote-profiles-plan-2026-08-27.md). The daemon spawns
+	// the OpenSSH client inside its own PTY harness, so the bytes on the
+	// terminal come from a shell on ANOTHER machine. It has no source session,
+	// no correlated target session (the trusted out-of-band control channel is
+	// an inherited fd, and file descriptors do not cross an SSH connection),
+	// and no local project root — all three record as honest zero values
+	// rather than as guesses.
+	//
+	// Distinct from the INBOUND [remote]/Tailscale feature, which exposes this
+	// node's own dashboard to a paired device. Same word, opposite direction.
+	KindSSH Kind = "ssh"
+	// KindGUI — a DETACHED IDE / desktop-app launch
+	// (docs/plans/ide-desktop-launch-plan-2026-09-03.md). The daemon spawns the
+	// app outside any PTY (Windows DETACHED_PROCESS, Unix setsid, darwin
+	// `open -a`) so it outlives the daemon and owns its own window; the run row
+	// exists to record WHAT was launched, with which pid, and whether the
+	// routing wrap actually reached it.
+	//
+	// Structurally unlike every other kind: there is NO PTY handle, so a GUI run
+	// never enters the handle maps, never appears in a terminal Snapshot, and is
+	// never joinable ("Jump in" is a PTY affordance). It has no source session
+	// and no correlation nonce — the child is a GUI, not an `observer <verb>`
+	// launcher, so there is no trusted out-of-band channel to echo one on.
+	//
+	// NOT remote-view sensitive: the remote-sensitivity table gates who may READ
+	// a daemon-owned PTY's bytes, and a GUI run has no bytes to read.
+	KindGUI Kind = "gui"
 )
 
 // Valid reports whether k is a known kind.
 func (k Kind) Valid() bool {
-	return k == KindHandoff || k == KindFresh || k == KindAttach || k == KindResume
+	return k == KindHandoff || k == KindFresh || k == KindAttach ||
+		k == KindResume || k == KindSSH || k == KindGUI
 }
 
 // remoteSensitiveKinds is the set of run kinds classified as remote-VIEW
@@ -59,6 +88,11 @@ func (k Kind) Valid() bool {
 var remoteSensitiveKinds = map[Kind]bool{
 	KindAttach: true,
 	KindResume: true,
+	// KindSSH — a live shell on another machine. The attach/resume rationale
+	// ("its TUI can echo API keys / customer data") applies at least as
+	// strongly to a root shell on a production box, so an SSH PTY joins the
+	// gated set rather than the fresh/handoff non-sensitive floor.
+	KindSSH: true,
 }
 
 // IsRemoteSensitiveKind reports whether a run kind is remote-VIEW sensitive: its
@@ -166,6 +200,19 @@ type Run struct {
 	EndedAt *time.Time
 	// ExitCode is the run's exit code; nil while running.
 	ExitCode *int
+	// PID is the DETACHED child's process id, known only for KindGUI and only
+	// AFTER the spawn returns (migration 095). A PTY run deliberately leaves it
+	// nil: the PTY handle is that run's identity and the child pid is the
+	// termsession manager's business, not the run row's. nil is the honest
+	// "no pid recorded", never a zero-value 0.
+	PID *int
+	// WrapApplied reports whether the GUI launch's routing wrap actually
+	// reached the child (internal/guilaunch). KindGUI only; false is the honest
+	// zero for every other kind, which carries no wrap concept at all.
+	WrapApplied bool
+	// WrapNote is the grounded reason a wrap did not apply, or the caveat that
+	// qualifies one that did (a cold-start-only app). KindGUI only.
+	WrapNote string
 }
 
 // Correlation is one scored link from a run to an observed agent session.

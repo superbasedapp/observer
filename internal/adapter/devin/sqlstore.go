@@ -41,8 +41,12 @@ func loadTouchedSessions(ctx context.Context, db *sql.DB, fromOffset int64) ([]s
 	if !tableExists(ctx, db, "sessions") || !tableExists(ctx, db, "message_nodes") {
 		return nil, nil
 	}
+	/* #nosec G202 -- hiddenExpr/metadataExpr return one of two compile-time
+	   constants each (the column reference or a literal default); no input
+	   reaches the SQL text, and fromOffset binds as a positional param. */
 	rows, err := db.QueryContext(ctx, `
-		SELECT s.id, COALESCE(s.working_directory, ''), COALESCE(s.model, ''), s.main_chain_id
+		SELECT s.id, COALESCE(s.working_directory, ''), COALESCE(s.model, ''), s.main_chain_id,
+		       `+hiddenExpr(ctx, db)+`, `+metadataExpr(ctx, db)+`
 		  FROM sessions s
 		 WHERE EXISTS (
 		       SELECT 1 FROM message_nodes m
@@ -56,12 +60,34 @@ func loadTouchedSessions(ctx context.Context, db *sql.DB, fromOffset int64) ([]s
 	var out []sessionRow
 	for rows.Next() {
 		var s sessionRow
-		if err := rows.Scan(&s.ID, &s.WorkingDir, &s.Model, &s.MainChainID); err != nil {
+		var hidden int64
+		if err := rows.Scan(&s.ID, &s.WorkingDir, &s.Model, &s.MainChainID, &hidden, &s.Metadata); err != nil {
 			return nil, err
 		}
+		s.Hidden = hidden != 0
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// hiddenExpr / metadataExpr degrade the two lane-attribution columns to
+// literals on stores predating the migrations that added them
+// (`hidden` = the store's own migration 15, `metadata` = 16). A store
+// written by an older Devin build must still parse — the surface /
+// lineage stamps simply have nothing to resolve, which is the honest
+// zero rather than a query error.
+func hiddenExpr(ctx context.Context, db *sql.DB) string {
+	if columnExists(ctx, db, "sessions", "hidden") {
+		return "COALESCE(s.hidden, 0)"
+	}
+	return "0"
+}
+
+func metadataExpr(ctx context.Context, db *sql.DB) string {
+	if columnExists(ctx, db, "sessions", "metadata") {
+		return "COALESCE(s.metadata, '')"
+	}
+	return "''"
 }
 
 // loadSessionMeta loads one session's chain-walk metadata by id. A
@@ -149,6 +175,16 @@ func loadActiveChain(ctx context.Context, db *sql.DB, s sessionRow) ([]node, []s
 		chain[len(reversed)-1-i] = n
 	}
 	return chain, warns
+}
+
+// columnExists reports whether a column is present on a table, so a
+// store written by an older Devin build (one whose refinery migration
+// history stops short of the column) degrades gracefully.
+func columnExists(ctx context.Context, db *sql.DB, table, column string) bool {
+	var n int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n)
+	return err == nil && n > 0
 }
 
 // tableExists reports whether a table is present in the store, so a

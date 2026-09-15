@@ -43,6 +43,11 @@ const MaxNoteLen = 500
 // (migration 080). 0 is the reserved "unrated" sentinel, not a score.
 const MaxRating = 10
 
+// MaxTitleLen bounds the developer's own session title (migration 116). It is
+// a single-line label, not a note — short enough to sit beside a session id
+// in a table row or a detail header.
+const MaxTitleLen = 200
+
 // ErrInvalidTag rejects a tag that does not normalize to 1..MaxTagLen
 // characters drawn from [a-z0-9._-] — notably any unicode letter, emoji, or
 // punctuation outside that set.
@@ -58,15 +63,28 @@ var ErrNoteTooLong = errors.New("store: session note exceeds the maximum length"
 // ErrInvalidRating rejects a rating outside 0..MaxRating (0 = clear/unrated).
 var ErrInvalidRating = errors.New("store: session rating must be 0 (unrated) or 1-10")
 
+// ErrTitleTooLong rejects a title longer than MaxTitleLen characters (after
+// TrimSpace).
+var ErrTitleTooLong = errors.New("store: session title exceeds the maximum length")
+
+// ErrInvalidTitle rejects a title containing a newline. The title is a
+// single-line label rendered inline (Sessions list row, detail header); a
+// multi-line title belongs in the note instead.
+var ErrInvalidTitle = errors.New("store: session title must not contain a newline")
+
 // Annotation is the per-session bookmark record: the favorite star, the
-// optional note explaining why, and the optional 1..MaxRating overall rating.
-// The zero value is the "unannotated" state — SetSessionAnnotation deletes the
-// row when a mutation lands back on it, so an absent row and a zero Annotation
-// mean the same thing everywhere. Rating 0 is the "unrated" sentinel.
+// optional note explaining why, the optional 1..MaxRating overall rating, and
+// the developer's own title (migration 116). The zero value is the
+// "unannotated" state — SetSessionAnnotation deletes the row when a mutation
+// lands back on it, so an absent row and a zero Annotation mean the same thing
+// everywhere. Rating 0 is the "unrated" sentinel; Title "" means no
+// developer-authored title (an AI-generated title, if any, lives elsewhere —
+// see cloud_results — and Title always wins over it when both exist).
 type Annotation struct {
 	Favorite  bool   `json:"favorite"`
 	Note      string `json:"note,omitempty"`
 	Rating    int    `json:"rating,omitempty"`
+	Title     string `json:"title,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
@@ -154,7 +172,7 @@ func normalizeTagSet(raw []string) ([]string, error) {
 // transaction. That residue is harmless: tags are written first, so an
 // ErrTooManyTags there aborts before the annotation write, leaving nothing
 // partially applied.
-func ValidateClassificationInput(add, remove []string, note *string, rating *int) error {
+func ValidateClassificationInput(add, remove []string, note *string, rating *int, title *string) error {
 	addTags, err := normalizeTagSet(add)
 	if err != nil {
 		return fmt.Errorf("store.ValidateClassificationInput: %w", err)
@@ -172,6 +190,9 @@ func ValidateClassificationInput(add, remove []string, note *string, rating *int
 	if err := validateRating(rating); err != nil {
 		return fmt.Errorf("store.ValidateClassificationInput: %w", err)
 	}
+	if err := validateTitle(title); err != nil {
+		return fmt.Errorf("store.ValidateClassificationInput: %w", err)
+	}
 	return nil
 }
 
@@ -184,6 +205,24 @@ func validateRating(rating *int) error {
 	}
 	if *rating < 0 || *rating > MaxRating {
 		return fmt.Errorf("%w (got %d)", ErrInvalidRating, *rating)
+	}
+	return nil
+}
+
+// validateTitle accepts nil ("leave unchanged") or a title that, after
+// TrimSpace, carries no newline and is at most MaxTitleLen characters. An
+// empty string (after trim) is valid — it clears the title. Shared by the
+// pre-flight and by SetSessionAnnotation's own defensive check.
+func validateTitle(title *string) error {
+	if title == nil {
+		return nil
+	}
+	t := strings.TrimSpace(*title)
+	if strings.ContainsAny(t, "\n\r") {
+		return ErrInvalidTitle
+	}
+	if len([]rune(t)) > MaxTitleLen {
+		return fmt.Errorf("%w (max %d characters)", ErrTitleTooLong, MaxTitleLen)
 	}
 	return nil
 }
@@ -273,14 +312,17 @@ func (s *Store) MutateSessionTags(ctx context.Context, sessionID string, add, re
 }
 
 // SetSessionAnnotation applies a PARTIAL update to a session's
-// favorite/note/rating annotation: a nil pointer leaves that field untouched,
-// so the star toggle, the note editor and the rating control can each write
-// independently.
+// favorite/note/rating/title annotation: a nil pointer leaves that field
+// untouched, so the star toggle, the note editor, the rating control and the
+// title editor can each write independently. A pointer to "" clears the
+// field (title included) — that is how a developer-authored title falls back
+// to the AI title on every rendering surface.
 //
 // The row is garbage-collected when the resulting state is the zero value
-// (favorite=false AND note="" AND rating=0): an unstarred, un-noted, unrated
-// session carries no row, so "absent" and "empty" never diverge.
-func (s *Store) SetSessionAnnotation(ctx context.Context, sessionID string, favorite *bool, note *string, rating *int) error {
+// (favorite=false AND note="" AND rating=0 AND title=""): an unstarred,
+// un-noted, unrated, untitled session carries no row, so "absent" and "empty"
+// never diverge.
+func (s *Store) SetSessionAnnotation(ctx context.Context, sessionID string, favorite *bool, note *string, rating *int, title *string) error {
 	if strings.TrimSpace(sessionID) == "" {
 		return fmt.Errorf("store.SetSessionAnnotation: empty session id")
 	}
@@ -288,6 +330,9 @@ func (s *Store) SetSessionAnnotation(ctx context.Context, sessionID string, favo
 		return fmt.Errorf("store.SetSessionAnnotation: %w (max %d characters)", ErrNoteTooLong, MaxNoteLen)
 	}
 	if err := validateRating(rating); err != nil {
+		return fmt.Errorf("store.SetSessionAnnotation: %w", err)
+	}
+	if err := validateTitle(title); err != nil {
 		return fmt.Errorf("store.SetSessionAnnotation: %w", err)
 	}
 
@@ -300,8 +345,8 @@ func (s *Store) SetSessionAnnotation(ctx context.Context, sessionID string, favo
 	var cur Annotation
 	var fav int
 	switch err := tx.QueryRowContext(ctx,
-		`SELECT favorite, note, rating FROM session_annotations WHERE session_id = ?`, sessionID).
-		Scan(&fav, &cur.Note, &cur.Rating); {
+		`SELECT favorite, note, rating, title FROM session_annotations WHERE session_id = ?`, sessionID).
+		Scan(&fav, &cur.Note, &cur.Rating, &cur.Title); {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
 		return fmt.Errorf("store.SetSessionAnnotation: %w", err)
@@ -317,8 +362,11 @@ func (s *Store) SetSessionAnnotation(ctx context.Context, sessionID string, favo
 	if rating != nil {
 		cur.Rating = *rating
 	}
+	if title != nil {
+		cur.Title = strings.TrimSpace(*title)
+	}
 
-	if !cur.Favorite && cur.Note == "" && cur.Rating == 0 {
+	if !cur.Favorite && cur.Note == "" && cur.Rating == 0 && cur.Title == "" {
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM session_annotations WHERE session_id = ?`, sessionID); err != nil {
 			return fmt.Errorf("store.SetSessionAnnotation: %w", err)
@@ -329,14 +377,15 @@ func (s *Store) SetSessionAnnotation(ctx context.Context, sessionID string, favo
 			favInt = 1
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO session_annotations (session_id, favorite, note, rating, updated_at)
-			 VALUES (?, ?, ?, ?, ?)
+			`INSERT INTO session_annotations (session_id, favorite, note, rating, title, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(session_id) DO UPDATE SET
 			   favorite   = excluded.favorite,
 			   note       = excluded.note,
 			   rating     = excluded.rating,
+			   title      = excluded.title,
 			   updated_at = excluded.updated_at`,
-			sessionID, favInt, cur.Note, cur.Rating, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			sessionID, favInt, cur.Note, cur.Rating, cur.Title, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return fmt.Errorf("store.SetSessionAnnotation: %w", err)
 		}
 	}
@@ -353,8 +402,8 @@ func (s *Store) GetSessionAnnotation(ctx context.Context, sessionID string) (Ann
 	var fav int
 	var updated sql.NullString
 	switch err := s.db.QueryRowContext(ctx,
-		`SELECT favorite, note, rating, updated_at FROM session_annotations WHERE session_id = ?`, sessionID).
-		Scan(&fav, &a.Note, &a.Rating, &updated); {
+		`SELECT favorite, note, rating, title, updated_at FROM session_annotations WHERE session_id = ?`, sessionID).
+		Scan(&fav, &a.Note, &a.Rating, &a.Title, &updated); {
 	case errors.Is(err, sql.ErrNoRows):
 		return Annotation{}, nil
 	case err != nil:
@@ -424,7 +473,7 @@ func (s *Store) ListAnnotations(ctx context.Context, sessionIDs []string) (map[s
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
 	rows, err := s.db.QueryContext(ctx,
 		//nolint:gosec // G202: only the ?-placeholder list is concatenated; every value is bound.
-		`SELECT session_id, favorite, note, rating, updated_at FROM session_annotations
+		`SELECT session_id, favorite, note, rating, title, updated_at FROM session_annotations
 		 WHERE session_id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store.ListAnnotations: %w", err)
@@ -435,7 +484,7 @@ func (s *Store) ListAnnotations(ctx context.Context, sessionIDs []string) (map[s
 		var fav int
 		var a Annotation
 		var updated sql.NullString
-		if err := rows.Scan(&id, &fav, &a.Note, &a.Rating, &updated); err != nil {
+		if err := rows.Scan(&id, &fav, &a.Note, &a.Rating, &a.Title, &updated); err != nil {
 			return nil, fmt.Errorf("store.ListAnnotations: %w", err)
 		}
 		a.Favorite = fav != 0

@@ -345,12 +345,12 @@ func TestEstablishOrgPolicyKeyPin_Table(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newPolicyResourceTestStore(t)
 			if tc.prePin != "" {
-				pinned, established, err := s.EstablishOrgPolicyKeyPin(ctx, pinPath, tc.prePin)
+				pinned, established, err := s.EstablishOrgPolicyKeyPin(ctx, pinPath, tc.prePin, "rail")
 				if err != nil || !established || pinned != tc.prePin {
 					t.Fatalf("pre-pin: pinned=%q established=%v err=%v", pinned, established, err)
 				}
 			}
-			pinned, established, err := s.EstablishOrgPolicyKeyPin(ctx, pinPath, tc.attempt)
+			pinned, established, err := s.EstablishOrgPolicyKeyPin(ctx, pinPath, tc.attempt, "rail")
 			if err != nil {
 				t.Fatalf("EstablishOrgPolicyKeyPin: %v", err)
 			}
@@ -385,10 +385,10 @@ func TestEstablishOrgPolicyKeyPin_NoPinYet(t *testing.T) {
 func TestEstablishOrgPolicyKeyPin_RejectsEmptyArgs(t *testing.T) {
 	ctx := context.Background()
 	s := newPolicyResourceTestStore(t)
-	if _, _, err := s.EstablishOrgPolicyKeyPin(ctx, "", "hash"); err == nil {
+	if _, _, err := s.EstablishOrgPolicyKeyPin(ctx, "", "hash", "rail"); err == nil {
 		t.Fatal("empty pinPath: err = nil, want error")
 	}
-	if _, _, err := s.EstablishOrgPolicyKeyPin(ctx, "p", ""); err == nil {
+	if _, _, err := s.EstablishOrgPolicyKeyPin(ctx, "p", "", "rail"); err == nil {
 		t.Fatal("empty keyHash: err = nil, want error")
 	}
 }
@@ -451,7 +451,7 @@ func TestEstablishOrgPolicyKeyPin_ConcurrentSingleWinner(t *testing.T) {
 		go func(i int, offered string) {
 			defer wg.Done()
 			<-start
-			pinned, established, err := s.EstablishOrgPolicyKeyPin(ctx, pinPath, offered)
+			pinned, established, err := s.EstablishOrgPolicyKeyPin(ctx, pinPath, offered, "rail")
 			out[i] = outcome{offered: offered, pinned: pinned, established: established, err: err}
 		}(i, offered)
 	}

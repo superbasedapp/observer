@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // TestRenderAdapterMatrixCoversEveryAdapter pins that the generated matrix
@@ -14,7 +15,7 @@ import (
 // representative tools — so the support grid stays generated, not hand-kept.
 func TestRenderAdapterMatrixCoversEveryAdapter(t *testing.T) {
 	var buf bytes.Buffer
-	renderAdapterMatrix(&buf, integration.Capabilities())
+	renderAdapterMatrix(&buf, integration.Capabilities(), nil)
 	out := buf.String()
 
 	for _, c := range integration.Capabilities() {
@@ -42,10 +43,73 @@ func TestRenderAdapterMatrixCoversEveryAdapter(t *testing.T) {
 		"full+doc-assisted",            // hermes DocAssisted launch
 		"VOCAB",                        // native-tool-vocabulary column header
 		"internal/tooltax",             // VOCAB legend names the taxonomy package
+		"PROMPT",                       // prompt-submit intervention lane column header
+		"hook",                         // PromptLaneHook + AutoWired render (claude-code, codex, cursor, gemini-cli, qwen-code, droid, qoder, poolside, command-code, devin, ...)
+		"hook (manual)",                // PromptLaneHook but Hook.AutoWired=false render (zcode, pending zai-org/feedback#32)
+		"proxy-only",                   // PromptLaneProxyOnly render (opencode, hermes, pi, grok, ...)
+		"probe",                        // PromptLaneProbeRequired render (kimi-code, kiro-cli, cline, ...)
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("matrix missing expected cell %q", want)
 		}
+	}
+}
+
+// TestPromptCellDistinguishesManualHookWiring pins promptCell's
+// autoWired branch: a PromptLaneHook row whose Hook.AutoWired is
+// false (a built, tested dialect with no registration writer in the
+// auto-register loop — today only zcode, pending its
+// zai-org/feedback#32 liveness probe) must render distinctly from a
+// fully auto-wired PromptLaneHook row like claude-code. Before this
+// fix both rendered the identical "hook" cell, which misleadingly
+// implied zcode gets auto-registered like every other row.
+func TestPromptCellDistinguishesManualHookWiring(t *testing.T) {
+	autoWired := promptCell(integration.PromptLaneHook, true)
+	manual := promptCell(integration.PromptLaneHook, false)
+	if autoWired == manual {
+		t.Fatalf("promptCell(PromptLaneHook, true)=%q must differ from promptCell(PromptLaneHook, false)=%q", autoWired, manual)
+	}
+	if autoWired != "hook" {
+		t.Errorf("promptCell(PromptLaneHook, true) = %q, want %q", autoWired, "hook")
+	}
+	if manual != "hook (manual)" {
+		t.Errorf("promptCell(PromptLaneHook, false) = %q, want %q", manual, "hook (manual)")
+	}
+
+	// Live-registry check: zcode's own row must actually carry
+	// AutoWired:false (the fact this fix depends on), and the rendered
+	// matrix must show zcode distinctly from an auto-wired PromptLaneHook
+	// row such as claude-code.
+	zcode, ok := integration.For("zcode")
+	if !ok {
+		t.Fatal("registry has no \"zcode\" row")
+	}
+	if zcode.PromptLane != integration.PromptLaneHook {
+		t.Fatalf("zcode.PromptLane = %q, want PromptLaneHook (test assumption stale — update this test)", zcode.PromptLane)
+	}
+	if zcode.Hook.AutoWired {
+		t.Fatal("zcode.Hook.AutoWired = true, want false (test assumption stale — the zai-org/feedback#32 gap this fix renders around no longer exists; update this test)")
+	}
+
+	claudeCode, ok := integration.For("claude-code")
+	if !ok {
+		t.Fatal("registry has no \"claude-code\" row")
+	}
+	if !claudeCode.Hook.AutoWired {
+		t.Fatal("claude-code.Hook.AutoWired = false, want true (test assumption stale)")
+	}
+
+	var buf bytes.Buffer
+	renderAdapterMatrix(&buf, integration.Capabilities(), nil)
+	out := buf.String()
+	if !strings.Contains(out, "hook (manual)") {
+		t.Error("rendered matrix missing the \"hook (manual)\" cell for zcode")
+	}
+
+	zcodeRow := promptCell(zcode.PromptLane, zcode.Hook.AutoWired)
+	claudeCodeRow := promptCell(claudeCode.PromptLane, claudeCode.Hook.AutoWired)
+	if zcodeRow == claudeCodeRow {
+		t.Errorf("zcode's PROMPT cell (%q) must render distinctly from claude-code's (%q)", zcodeRow, claudeCodeRow)
 	}
 }
 
@@ -179,7 +243,7 @@ func TestRenderAdapterMatrixVocabColumn(t *testing.T) {
 		{Tool: "vocab-zero-fixture", Vocabulary: integration.Vocabulary{Note: "no native tool vocabulary: chat turns only"}},
 	}
 	var buf bytes.Buffer
-	renderAdapterMatrix(&buf, caps)
+	renderAdapterMatrix(&buf, caps, nil)
 	lines := strings.Split(buf.String(), "\n")
 	if len(lines) == 0 {
 		t.Fatal("no output")
@@ -224,6 +288,50 @@ func TestRenderAdapterMatrixVocabColumn(t *testing.T) {
 	// The honest-zero row's grounded Note never leaks into the grid.
 	if strings.Contains(buf.String(), "chat turns only") {
 		t.Error("honest-zero Note should not be rendered in the matrix cell")
+	}
+}
+
+// TestRenderSurfaceSplit pins the observed capture-surface section
+// `observer adapters` appends when a local DB is reachable: one row per
+// (tool, surface, host), an explicit "(unstamped)" bucket for sessions
+// no adapter attributed, a dash for a missing host token, and the
+// empty-DB / nothing-stamped-yet notes.
+func TestRenderSurfaceSplit(t *testing.T) {
+	var buf bytes.Buffer
+	renderSurfaceSplit(&buf, []store.SurfaceCount{
+		{Tool: "claude-code", Surface: "ide", SurfaceHost: "vscode", Sessions: 3, CostUSD: 1.5},
+		{Tool: "codex", Surface: "cli", Sessions: 2, CostUSD: 0.25},
+		{Tool: "codex", Sessions: 7},
+	})
+	out := buf.String()
+	for _, want := range []string{
+		"SURFACE-KIND", "claude-code", "vscode", "1.50",
+		"(unstamped)", "—", "node-local and never pushed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("surface split missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "no session carries a capture surface yet") {
+		t.Errorf("stamped rows present but the nothing-stamped note fired:\n%s", out)
+	}
+
+	// Empty DB: one honest line, no table.
+	buf.Reset()
+	renderSurfaceSplit(&buf, nil)
+	if !strings.Contains(buf.String(), "no sessions in the local DB yet") {
+		t.Errorf("empty rollup = %q", buf.String())
+	}
+	if strings.Contains(buf.String(), "SURFACE-KIND") {
+		t.Errorf("empty rollup should not render a table header:\n%s", buf.String())
+	}
+
+	// Sessions exist but nothing is stamped: the table renders and the
+	// coverage note fires.
+	buf.Reset()
+	renderSurfaceSplit(&buf, []store.SurfaceCount{{Tool: "cursor", Sessions: 4}})
+	if !strings.Contains(buf.String(), "no session carries a capture surface yet") {
+		t.Errorf("unstamped-only rollup missing the coverage note:\n%s", buf.String())
 	}
 }
 

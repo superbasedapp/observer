@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/modelvalue"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -47,7 +47,7 @@ func newModelValueCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			facts.Price = routingPriceFn(cost.NewEngine(cfg.Intelligence))
+			facts.Price = routingPriceFn(acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default()))
 			rep := modelvalue.Build(facts, modelvalue.Options{MinSample: minSample})
 
 			if saveCalibration {

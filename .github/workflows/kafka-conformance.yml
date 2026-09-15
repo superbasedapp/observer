@@ -1,0 +1,145 @@
+# kafka-conformance.yml - run the Kafka telemetry-log adapter's live
+# conformance suite (internal/telemetrylog/kafkalog TestLive*) against a real
+# single-node KRaft broker, and FAIL the job if any of those live tests
+# silently skipped.
+#
+# WHY THIS EXISTS
+# Every TestLive* in internal/telemetrylog/kafkalog is gated on
+# OBSERVER_KAFKA_TEST_BROKERS (liveOptions t.Skip()s when it is unset). ci.yml
+# runs `go test ./...` with NO broker, so the entire Kafka adapter conformance
+# surface - durable cursor / ack-gap / restart-redelivery / group-failover /
+# retention-reset guards - skips silently on every PR. That is the SCA-5 gap in
+# docs/audits/stateless-collectors-architecture-review-2026-09-10.md: the Kafka
+# adapter had zero CI conformance coverage. This job closes it, following the
+# exact pattern org-postgres.yml uses for the live-Postgres suites: point the
+# gating env var at a real service and turn a live skip into a FAILURE, because
+# in this job a skipped live test is precisely the regression we guard against.
+#
+# Kafka is a built-not-deployed, optional adapter (the estate runs NATS). This
+# job proves the adapter's contract; it does NOT provision Kafka anywhere in the
+# deployment. Nothing under deploy/ or the estate scripts is touched.
+#
+# BROKER
+# apache/kafka:3.9.1 in KRaft mode (broker+controller in one process), the same
+# image + config internal/telemetrylog/kafkalog/test-kafka.sh proves locally.
+# It is run with host networking so the advertised PLAINTEXT listener
+# (127.0.0.1:9092) is reachable from the test binary on the runner host. The
+# tests create/delete their own per-test topic via the admin client
+# (KAFKA_AUTO_CREATE_TOPICS_ENABLE=false is fine - creation is explicit), need
+# cleanup.policy=delete + min.insync.replicas=1 + unclean.leader.election
+# disabled at the per-topic level, DeleteRecords (retention-reset test) and a
+# large message.max.bytes for the payload-cap conformance case.
+
+name: kafka-conformance
+
+on:
+  pull_request:
+    paths:
+      - 'internal/telemetrylog/**'
+      - '.github/workflows/kafka-conformance.yml'
+  push:
+    paths:
+      - 'internal/telemetrylog/**'
+      - '.github/workflows/kafka-conformance.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  kafka-live:
+    name: live-kafka conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # The gating var liveOptions reads. Unset => every TestLive* skips, which
+      # is the exact silent-skip gap this job exists to close.
+      OBSERVER_KAFKA_TEST_BROKERS: '127.0.0.1:9092'
+      # modernc.org/sqlite is pure Go and franz-go needs no CGO; match the repo
+      # standard and org-postgres.yml.
+      CGO_ENABLED: '0'
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: start single-node KRaft Kafka
+        # Host networking so the advertised 127.0.0.1:9092 listener resolves the
+        # same from inside the container and from the test binary on the host.
+        run: |
+          docker run -d --name sbo-kafka-ci --network host \
+            -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
+            -e "KAFKA_LISTENERS=PLAINTEXT://127.0.0.1:9092,CONTROLLER://127.0.0.1:9093" \
+            -e "KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://127.0.0.1:9092" \
+            -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+            -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+            -e "KAFKA_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:9093" \
+            -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 -e KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS=1 \
+            -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
+            -e KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0 -e KAFKA_AUTO_CREATE_TOPICS_ENABLE=false \
+            -e KAFKA_MESSAGE_MAX_BYTES=34078720 -e KAFKA_REPLICA_FETCH_MAX_BYTES=34078720 \
+            -e KAFKA_MIN_INSYNC_REPLICAS=1 -e KAFKA_UNCLEAN_LEADER_ELECTION_ENABLE=false \
+            -e KAFKA_HEAP_OPTS="-Xms256M -Xmx512M" apache/kafka:3.9.1
+
+      - name: wait for broker readiness
+        run: |
+          for attempt in $(seq 1 60); do
+            if docker logs sbo-kafka-ci 2>&1 | grep -q 'Kafka Server started'; then
+              echo "broker ready after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::kafka-conformance: broker did not start within 60s" >&2
+          docker logs sbo-kafka-ci 2>&1 | tail -50 >&2 || true
+          exit 1
+
+      - name: run Kafka live conformance (fail if any TestLive skipped)
+        run: |
+          set -uo pipefail
+          log="$(mktemp)"
+          # Same test invocation the local harness (test-kafka.sh) proves:
+          # -vet=off keeps this job focused on conformance (ci.yml's go job vets
+          # the whole tree); -count=1 defeats the test cache; -v so the guard can
+          # read per-test PASS/SKIP lines. The package's fast unit tests run too;
+          # the guard below only inspects the TestLive* markers.
+          test_status=0
+          go test -vet=off -count=1 -v -timeout 10m ./internal/telemetrylog/kafkalog 2>&1 \
+            | tee "${log}" || test_status="${PIPESTATUS[0]}"
+
+          # FAIL-IF-SKIPPED guard (org-postgres.yml's pattern). With the broker
+          # reachable, no TestLive* may skip: a live skip here means the env var
+          # did not reach the test (a wiring regression), which looks green and
+          # is worse than a failure.
+          skipped_live="$(grep -E '^[[:space:]]*--- SKIP' "${log}" | grep -E 'TestLive' || true)"
+          skip_count=0
+          if [ -n "${skipped_live}" ]; then
+            skip_count="$(printf '%s\n' "${skipped_live}" | grep -c .)"
+          fi
+          ran_live="$(grep -Ec '^[[:space:]]*--- (PASS|FAIL): TestLive' "${log}" || true)"
+          echo "kafka-conformance: live tests that ran (PASS+FAIL): ${ran_live}"
+          echo "kafka-conformance: live tests that SKIPPED:        ${skip_count}"
+
+          if [ "${skip_count}" -ne 0 ]; then
+            echo "::error::kafka-conformance: ${skip_count} TestLive test(s) SKIPPED - the broker env var did not reach them. A live skip in this job is a failure." >&2
+            printf '%s\n' "${skipped_live}" >&2
+            exit 1
+          fi
+          if [ "${ran_live}" -eq 0 ]; then
+            echo "::error::kafka-conformance: ZERO TestLive tests ran - the broker did not come up or the suite selection broke." >&2
+            exit 1
+          fi
+          if [ "${test_status}" -ne 0 ]; then
+            echo "::error::kafka-conformance: go test failed (exit ${test_status})." >&2
+            exit "${test_status}"
+          fi
+          echo "kafka-conformance: PASS - ${ran_live} live tests ran, 0 skipped."
+
+      - name: stop broker
+        if: always()
+        run: docker rm -f sbo-kafka-ci >/dev/null 2>&1 || true

@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  html { scroll-behavior:smooth; }
+  body { margin:0; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  [data-theme="dark"] {
+    --bg:#0B0B0C !important; --surface:#111112 !important; --surface-2:#161618 !important;
+    --ink:#E8E6E1 !important; --ink-2:rgba(232,230,225,.64) !important; --ink-3:rgba(232,230,225,.44) !important;
+    --line:rgba(232,230,225,.14) !important; --line-2:rgba(232,230,225,.26) !important;
+    --accent:#FFB000 !important; --accent-ink:#0B0B0C !important; --accent-soft:rgba(255,176,0,.10) !important;
+    --grid:rgba(232,230,225,.038) !important; --shadow:rgba(0,0,0,.5) !important;
+  }
+  @keyframes caretBlink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+  @keyframes bar { from { transform:scaleY(.34); } to { transform:scaleY(1); } }
+  @keyframes typeLine { 0% { width:0; } 26% { width:100%; } 92% { width:100%; } 100% { width:0; } }
+  @keyframes travel { 0% { left:0; opacity:0; } 12% { opacity:1; } 88% { opacity:1; } 100% { left:calc(100% - 9px); opacity:0; } }
+  @keyframes blocked { 0% { left:0; opacity:0; } 10% { opacity:1; } 62% { left:calc(100% - 16px); opacity:1; } 70% { left:calc(100% - 26px); } 78% { left:calc(100% - 22px); opacity:.45; } 100% { left:calc(100% - 22px); opacity:0; } }
+  @keyframes gateFlash { 0%,58% { opacity:.35; transform:scaleY(1); } 66% { opacity:1; transform:scaleY(1.5); } 100% { opacity:.35; transform:scaleY(1); } }
+  @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none !important; } }
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" style="--bg:#F2F4F7; --surface:#FFFFFF; --surface-2:#F7F8FA; --ink:#1A1D26; --ink-2:rgba(26,29,38,.64); --ink-3:rgba(26,29,38,.45); --line:rgba(26,29,38,.14); --line-2:rgba(26,29,38,.26); --accent:#2647E8; --accent-ink:#FFFFFF; --accent-soft:rgba(38,71,232,.07); --grid:rgba(26,29,38,.045); --shadow:rgba(26,29,38,.10); background:var(--bg); color:var(--ink); font-family:'JetBrains Mono', ui-monospace, monospace; min-height:100vh;">
+
+  <!-- HEADER -->
+  <div style="position:sticky; top:0; z-index:80; background:var(--bg); border-bottom:1px solid var(--line);">
+    <div style="max-width:1180px; margin:0 auto; padding:16px 40px; display:flex; align-items:center; gap:22px;">
+      <div style="display:flex; align-items:center; gap:11px;">
+        <div style="display:grid; grid-template-columns:8px 12px; grid-template-rows:9px 15px; gap:3px;">
+          <div style="width:8px; height:8px; background:var(--ink); align-self:end;"></div>
+          <div style="width:12px; height:12px; background:var(--ink);"></div>
+          <div style="width:15px; height:15px; background:var(--ink); grid-column:1/2;"></div>
+        </div>
+        <span style="font-size:19px; font-weight:500;">superbased</span>
+      </div>
+      <span style="font-size:11px; letter-spacing:.16em; color:var(--ink-3); border-left:1px solid var(--line); padding-left:18px;">DESIGN SYSTEM v1</span>
+      <div style="display:flex; gap:18px; margin-left:auto; align-items:center; font-size:12px; color:var(--ink-2);">
+        <a href="#foundations" style="color:inherit;">Foundations</a>
+        <a href="#type" style="color:inherit;">Type</a>
+        <a href="#components" style="color:inherit;">Components</a>
+        <a href="#motion" style="color:inherit;">Motion</a>
+        <a href="#rules" style="color:inherit;">Rules</a>
+        <button type="button" onClick="{{ toggleTheme }}" style="display:inline-flex; align-items:center; gap:7px; border:1px solid var(--line-2); background:transparent; color:var(--ink-2); font-family:inherit; font-size:11px; letter-spacing:.08em; padding:7px 11px; cursor:pointer;">
+          <span style="width:8px; height:8px; background:var(--accent);"></span>{{ themeLabel }}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- INTRO -->
+  <div style="border-bottom:1px solid var(--line); background-image:linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size:24px 24px;">
+    <div style="max-width:1180px; margin:0 auto; padding:72px 40px;">
+      <h1 style="font-family:'Space Grotesk',sans-serif; font-size:clamp(34px,4vw,54px); line-height:1.04; letter-spacing:-.035em; font-weight:700; margin:0; max-width:24ch;">Blueprint &amp; Phosphor.</h1>
+      <p style="font-family:'Space Grotesk',sans-serif; font-size:18px; line-height:1.5; color:var(--ink-2); margin:20px 0 0; max-width:60ch; text-wrap:pretty;">One system, two themes. <b style="color:var(--ink);">Blueprint</b> is the light default: cool grey, graph-paper grid, ink blue. <b style="color:var(--ink);">Phosphor</b> is the dark counterpart: true black, amber signal. Every token below is the same name in both — nothing swaps but its value.</p>
+      <div style="display:flex; gap:26px; margin-top:28px; font-size:12px; color:var(--ink-3); flex-wrap:wrap;">
+        <span>ONE ACCENT PER THEME</span><span>1PX LINES, NO RADII</span><span>HARD OFFSET SHADOWS</span><span>MONO FOR UI, GROTESK FOR VOICE</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- FOUNDATIONS -->
+  <div id="foundations" style="max-width:1180px; margin:0 auto; padding:80px 40px 0;">
+    <div style="display:flex; align-items:baseline; gap:14px;">
+      <span style="font-size:11px; letter-spacing:.16em; color:var(--accent);">01 / FOUNDATIONS</span>
+      <div style="flex:1; height:1px; background:var(--line);"></div>
+    </div>
+    <h2 style="font-family:'Space Grotesk',sans-serif; font-size:34px; letter-spacing:-.03em; font-weight:700; margin:22px 0 0;">Color tokens</h2>
+    <p style="font-family:'Space Grotesk',sans-serif; font-size:16px; color:var(--ink-2); margin:10px 0 0; max-width:56ch;">Use the token, never the hex. Toggle the theme above to see both columns resolve.</p>
+
+    <div style="margin-top:34px; border:1px solid var(--line);">
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; background:var(--surface-2); border-bottom:1px solid var(--line); font-size:10.5px; letter-spacing:.12em; color:var(--ink-3);">
+        <div style="padding:12px 14px;"></div>
+        <div style="padding:12px 14px;">TOKEN</div>
+        <div style="padding:12px 14px;">BLUEPRINT</div>
+        <div style="padding:12px 14px;">PHOSPHOR</div>
+        <div style="padding:12px 14px;">USE</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); box-shadow:inset 0 0 0 1px var(--line); background:var(--bg);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--bg</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#F2F4F7</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#0B0B0C</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">Page ground</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); box-shadow:inset 0 0 0 1px var(--line); background:var(--surface);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--surface</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#FFFFFF</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#111112</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">Panels, screenshot frames, nav bar</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); box-shadow:inset 0 0 0 1px var(--line); background:var(--surface-2);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--surface-2</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#F7F8FA</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#161618</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">Alternating section band, table head</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); background:var(--ink);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--ink</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#1A1D26</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#E8E6E1</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">Headlines, wordmark, emphasis</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); background:var(--ink-2);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--ink-2</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(ink,.64)</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(paper,.64)</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">Body copy, nav links</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); background:var(--ink-3);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--ink-3</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(ink,.45)</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(paper,.44)</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">Labels, captions, meta</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); background:var(--line);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--line</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(ink,.14)</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(paper,.14)</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">Section dividers, grid gaps</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); background:var(--line-2);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--line-2</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(ink,.26)</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(paper,.26)</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">Interactive edges, frames</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); background:var(--accent);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--accent</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#2647E8</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#FFB000</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">One per view: CTA, eyebrow, prompt</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); box-shadow:inset 0 0 0 1px var(--line-2); background:var(--accent-ink);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--accent-ink</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#FFFFFF</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">#0B0B0C</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">Text on accent fill</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); box-shadow:inset 0 0 0 1px var(--line); background:var(--accent-soft);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--accent-soft</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(blue,.07)</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(amber,.10)</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">Command glow, NEW tiles</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); background-image:linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size:8px 8px;"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--grid</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(ink,.045)</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(paper,.038)</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">24px graph-paper background</div>
+      </div>
+      <div style="display:grid; grid-template-columns:56px 1.1fr 1fr 1fr 1.5fr; border-bottom:1px solid var(--line); align-items:center; font-size:12.5px;">
+        <div style="padding:10px 14px;"><div style="width:26px; height:26px; border:1px solid var(--line-2); background:var(--shadow);"></div></div>
+        <div style="padding:10px 14px; color:var(--accent);">--shadow</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(ink,.10)</div>
+        <div style="padding:10px 14px; color:var(--ink-2);">rgba(0,0,0,.5)</div>
+        <div style="padding:10px 14px; color:var(--ink-3); font-size:12px;">Hard offset shadow, no blur</div>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:1px; margin-top:44px; background:var(--line); border:1px solid var(--line);">
+      <div style="background:var(--surface); padding:28px 26px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--ink-3);">SPACING — 4PX BASE</div>
+        <div style="display:flex; align-items:flex-end; gap:10px; margin-top:20px;">
+          <div style="width:4px; height:4px; background:var(--accent);"></div>
+          <div style="width:8px; height:8px; background:var(--accent);"></div>
+          <div style="width:12px; height:12px; background:var(--accent);"></div>
+          <div style="width:16px; height:16px; background:var(--accent);"></div>
+          <div style="width:24px; height:24px; background:var(--accent);"></div>
+          <div style="width:32px; height:32px; background:var(--accent);"></div>
+          <div style="width:48px; height:48px; background:var(--accent);"></div>
+        </div>
+        <div style="font-size:12px; color:var(--ink-2); margin-top:18px; line-height:1.7;">4 · 8 · 12 · 16 · 24 · 32 · 48 · 64 · 96<br><span style="color:var(--ink-3);">Section padding 96–112px. Grid gutter 32px. Max width 1240px.</span></div>
+      </div>
+      <div style="background:var(--surface); padding:28px 26px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--ink-3);">SURFACE &amp; EDGE</div>
+        <div style="display:flex; gap:16px; margin-top:20px; align-items:flex-start;">
+          <div style="border:1px solid var(--line); background:var(--surface-2); padding:18px 20px; font-size:12px;">1px --line</div>
+          <div style="border:1px solid var(--line-2); background:var(--surface); padding:18px 20px; font-size:12px; box-shadow:6px 6px 0 var(--shadow);">offset shadow</div>
+          <div style="border:1px solid var(--line-2); background:var(--accent-soft); padding:18px 20px; font-size:12px; box-shadow:5px 5px 0 var(--accent-soft);">accent-soft</div>
+        </div>
+        <div style="font-size:12px; color:var(--ink-2); margin-top:18px; line-height:1.7;">Radius is always <b style="color:var(--ink);">0</b>. Shadows are hard offsets (5/6/10/14px, no blur) — never soft drops.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TYPE -->
+  <div id="type" style="max-width:1180px; margin:0 auto; padding:80px 40px 0;">
+    <div style="display:flex; align-items:baseline; gap:14px;">
+      <span style="font-size:11px; letter-spacing:.16em; color:var(--accent);">02 / TYPE</span>
+      <div style="flex:1; height:1px; background:var(--line);"></div>
+    </div>
+    <h2 style="font-family:'Space Grotesk',sans-serif; font-size:34px; letter-spacing:-.03em; font-weight:700; margin:22px 0 0;">Two faces, split by job</h2>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:1px; margin-top:30px; background:var(--line); border:1px solid var(--line);">
+      <div style="background:var(--surface); padding:28px 26px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--accent);">SPACE GROTESK — VOICE</div>
+        <div style="font-family:'Space Grotesk',sans-serif; font-size:44px; letter-spacing:-.035em; font-weight:700; margin-top:14px; line-height:1;">Aa 700</div>
+        <div style="font-size:12px; color:var(--ink-2); margin-top:16px; line-height:1.7;">Headlines, section titles, lede paragraphs. Weights 400/600/700. Tracking −0.03em at display sizes.</div>
+      </div>
+      <div style="background:var(--surface); padding:28px 26px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--accent);">JETBRAINS MONO — MACHINE</div>
+        <div style="font-size:44px; font-weight:500; margin-top:14px; line-height:1;">Aa 500</div>
+        <div style="font-size:12px; color:var(--ink-2); margin-top:16px; line-height:1.7;">Nav, labels, eyebrows, numbers, commands, the wordmark. Weights 400/500/600. Eyebrows uppercase at 11px/0.16em.</div>
+      </div>
+    </div>
+
+    <div style="margin-top:1px; border:1px solid var(--line); border-top:0;">
+      <div style="display:grid; grid-template-columns:190px 1fr; border-bottom:1px solid var(--line); align-items:baseline; background:var(--surface);">
+        <div style="padding:16px 20px; font-size:11px; letter-spacing:.1em; color:var(--ink-3);">DISPLAY · 66/1.02 · −.035em</div>
+        <div style="padding:16px 20px; font-family:'Space Grotesk',sans-serif; font-size:52px; font-weight:700; letter-spacing:-.035em; line-height:1.02;">The control plane</div>
+      </div>
+      <div style="display:grid; grid-template-columns:190px 1fr; border-bottom:1px solid var(--line); align-items:baseline; background:var(--surface);">
+        <div style="padding:16px 20px; font-size:11px; letter-spacing:.1em; color:var(--ink-3);">H2 · 46/1.06 · −.03em</div>
+        <div style="padding:16px 20px; font-family:'Space Grotesk',sans-serif; font-size:38px; font-weight:700; letter-spacing:-.03em;">Three verbs. One binary.</div>
+      </div>
+      <div style="display:grid; grid-template-columns:190px 1fr; border-bottom:1px solid var(--line); align-items:baseline; background:var(--surface);">
+        <div style="padding:16px 20px; font-size:11px; letter-spacing:.1em; color:var(--ink-3);">H3 · 26/1.1 · −.02em</div>
+        <div style="padding:16px 20px; font-family:'Space Grotesk',sans-serif; font-size:26px; font-weight:700; letter-spacing:-.02em;">Right-size</div>
+      </div>
+      <div style="display:grid; grid-template-columns:190px 1fr; border-bottom:1px solid var(--line); align-items:baseline; background:var(--surface);">
+        <div style="padding:16px 20px; font-size:11px; letter-spacing:.1em; color:var(--ink-3);">LEDE · 20/1.5</div>
+        <div style="padding:16px 20px; font-family:'Space Grotesk',sans-serif; font-size:20px; line-height:1.5; color:var(--ink-2);">Every agent, every token, every dollar.</div>
+      </div>
+      <div style="display:grid; grid-template-columns:190px 1fr; border-bottom:1px solid var(--line); align-items:baseline; background:var(--surface);">
+        <div style="padding:16px 20px; font-size:11px; letter-spacing:.1em; color:var(--ink-3);">BODY · 16/1.5</div>
+        <div style="padding:16px 20px; font-family:'Space Grotesk',sans-serif; font-size:16px; line-height:1.5; color:var(--ink-2);">Provider-reported tokens and cost, across all 33 tools.</div>
+      </div>
+      <div style="display:grid; grid-template-columns:190px 1fr; border-bottom:1px solid var(--line); align-items:baseline; background:var(--surface);">
+        <div style="padding:16px 20px; font-size:11px; letter-spacing:.1em; color:var(--ink-3);">STAT · 34/600 · −.02em</div>
+        <div style="padding:16px 20px; font-size:34px; font-weight:600; letter-spacing:-.02em;">18,620</div>
+      </div>
+      <div style="display:grid; grid-template-columns:190px 1fr; border-bottom:1px solid var(--line); align-items:baseline; background:var(--surface);">
+        <div style="padding:16px 20px; font-size:11px; letter-spacing:.1em; color:var(--ink-3);">UI · 13/mono</div>
+        <div style="padding:16px 20px; font-size:13px; color:var(--ink-2);">Features · Docs · Pricing · Enterprise</div>
+      </div>
+      <div style="display:grid; grid-template-columns:190px 1fr; border-bottom:1px solid var(--line); align-items:baseline; background:var(--surface);">
+        <div style="padding:16px 20px; font-size:11px; letter-spacing:.1em; color:var(--ink-3);">EYEBROW · 11/.16em</div>
+        <div style="padding:16px 20px; font-size:11px; letter-spacing:.16em; color:var(--accent);">02 / THE DASHBOARD</div>
+      </div>
+      <div style="display:grid; grid-template-columns:190px 1fr; border-bottom:1px solid var(--line); align-items:baseline; background:var(--surface);">
+        <div style="padding:16px 20px; font-size:11px; letter-spacing:.1em; color:var(--ink-3);">CODE · 15/mono</div>
+        <div style="padding:16px 20px;"><code style="font-size:15px;">npx @superbased/observer</code></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- COMPONENTS -->
+  <div id="components" style="max-width:1180px; margin:0 auto; padding:80px 40px 0;">
+    <div style="display:flex; align-items:baseline; gap:14px;">
+      <span style="font-size:11px; letter-spacing:.16em; color:var(--accent);">03 / COMPONENTS</span>
+      <div style="flex:1; height:1px; background:var(--line);"></div>
+    </div>
+    <h2 style="font-family:'Space Grotesk',sans-serif; font-size:34px; letter-spacing:-.03em; font-weight:700; margin:22px 0 0;">The parts, as built</h2>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:1px; margin-top:30px; background:var(--line); border:1px solid var(--line);">
+      <div style="background:var(--surface); padding:30px 26px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--ink-3);">BUTTONS</div>
+        <div style="display:flex; flex-wrap:wrap; gap:14px; align-items:center; margin-top:20px;">
+          <span style="background:var(--accent); color:var(--accent-ink); padding:11px 20px; font-size:12.5px; font-weight:600;">Install free</span>
+          <span style="border:1px solid var(--line-2); padding:11px 20px; font-size:12.5px; color:var(--ink-2);">Secondary</span>
+          <span style="border-bottom:1px solid var(--accent); color:var(--accent); font-size:13px; padding-bottom:2px;">Read the docs</span>
+          <span style="border:1px solid var(--line-2); background:var(--accent-soft); padding:11px 20px; font-size:12.5px; color:var(--ink-3);">Disabled</span>
+        </div>
+        <div style="font-size:12px; color:var(--ink-3); margin-top:20px; line-height:1.7;">One solid accent button per view. Everything else is an outline or an underline. Hit target ≥44px on touch.</div>
+      </div>
+
+      <div style="background:var(--surface); padding:30px 26px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--ink-3);">COMMAND BLOCK</div>
+        <div style="display:flex; align-items:stretch; margin-top:20px; border:1px solid var(--line-2); background:var(--surface); box-shadow:5px 5px 0 var(--accent-soft);">
+          <span style="padding:0 13px; display:flex; align-items:center; color:var(--accent); font-size:14px;">$</span>
+          <code style="font-size:14px; padding:14px 0; flex:1; white-space:nowrap;">npx @superbased/observer</code>
+          <button type="button" onClick="{{ copyCmd }}" style="background:var(--accent); color:var(--accent-ink); border:0; font-family:inherit; font-size:11px; font-weight:600; letter-spacing:.07em; padding:14px 16px; cursor:pointer;">{{ copyLabel }}</button>
+        </div>
+        <div style="font-size:12px; color:var(--ink-3); margin-top:20px; line-height:1.7;">The prompt <b style="color:var(--accent);">$</b> is always accent. The command is never truncated at desktop. Copy label reverts after 1.6s.</div>
+      </div>
+
+      <div style="background:var(--surface); padding:30px 26px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--ink-3);">EYEBROW &amp; RULE</div>
+        <div style="display:flex; align-items:baseline; gap:14px; margin-top:22px;">
+          <span style="font-size:11px; letter-spacing:.16em; color:var(--accent);">01 / SECTION NAME</span>
+          <div style="flex:1; height:1px; background:var(--line);"></div>
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:9px; margin-top:22px;">
+          <span style="display:inline-flex; align-items:center; gap:8px; font-size:11px; letter-spacing:.12em; color:var(--ink-2); border:1px solid var(--line-2); padding:6px 12px;"><span style="width:6px; height:6px; background:var(--accent);"></span>LOCAL‑FIRST</span>
+          <span style="border:1px solid var(--line); background:var(--surface-2); padding:7px 13px; font-size:12.5px;">Tool tile</span>
+          <span style="border:1px solid var(--line-2); background:var(--accent-soft); padding:7px 13px; font-size:12.5px; display:inline-flex; gap:8px; align-items:center;">New tile <span style="font-size:9.5px; letter-spacing:.1em; color:var(--accent-ink); background:var(--accent); padding:2px 5px;">NEW</span></span>
+        </div>
+        <div style="font-size:12px; color:var(--ink-3); margin-top:20px; line-height:1.7;">Every section opens with a numbered eyebrow and a rule that draws to full width on scroll.</div>
+      </div>
+
+      <div style="background:var(--surface); padding:30px 26px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--ink-3);">STAT CELL &amp; WINDOW CHROME</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:1px; margin-top:20px; background:var(--line); border:1px solid var(--line);">
+          <div style="background:var(--surface-2); padding:20px;"><div style="font-size:30px; font-weight:600; letter-spacing:-.02em;">33</div><div style="font-size:10.5px; letter-spacing:.1em; color:var(--ink-3); margin-top:6px;">TOOLS WATCHED</div></div>
+          <div style="background:var(--surface-2); padding:20px;"><div style="font-size:30px; font-weight:600; letter-spacing:-.02em; color:var(--accent);">0</div><div style="font-size:10.5px; letter-spacing:.1em; color:var(--ink-3); margin-top:6px;">BYTES PHONED HOME</div></div>
+        </div>
+        <div style="display:flex; align-items:center; gap:7px; padding:11px 14px; border:1px solid var(--line-2); margin-top:16px;">
+          <span style="width:8px; height:8px; background:var(--accent);"></span>
+          <span style="width:8px; height:8px; background:var(--line-2);"></span>
+          <span style="width:8px; height:8px; background:var(--line-2);"></span>
+          <span style="font-size:11px; color:var(--ink-3); margin-left:7px;">observer · localhost:8081</span>
+        </div>
+        <div style="font-size:12px; color:var(--ink-3); margin-top:20px; line-height:1.7;">Screenshots always sit in this chrome, with a 10–14px hard offset shadow. Squares, not circles.</div>
+      </div>
+    </div>
+
+    <div style="border:1px solid var(--line); border-top:0; background:var(--surface); padding:30px 26px;">
+      <div style="font-size:11px; letter-spacing:.14em; color:var(--ink-3);">LOGO</div>
+      <div style="display:flex; gap:44px; align-items:flex-end; margin-top:24px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:14px;">
+          <div style="display:grid; grid-template-columns:11px 16px; grid-template-rows:12px 20px; gap:4px;">
+            <div style="width:11px; height:11px; background:var(--ink); align-self:end;"></div>
+            <div style="width:16px; height:16px; background:var(--ink);"></div>
+            <div style="width:20px; height:20px; background:var(--ink); grid-column:1/2;"></div>
+          </div>
+          <span style="font-size:26px; font-weight:500; letter-spacing:.01em;">superbased</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:11px;">
+          <div style="display:grid; grid-template-columns:8px 12px; grid-template-rows:9px 15px; gap:3px;">
+            <div style="width:8px; height:8px; background:var(--ink); align-self:end;"></div>
+            <div style="width:12px; height:12px; background:var(--ink);"></div>
+            <div style="width:15px; height:15px; background:var(--ink); grid-column:1/2;"></div>
+          </div>
+          <span style="font-size:19px; font-weight:500;">superbased</span>
+        </div>
+        <div style="display:grid; grid-template-columns:8px 12px; grid-template-rows:9px 15px; gap:3px;">
+          <div style="width:8px; height:8px; background:var(--accent); align-self:end;"></div>
+          <div style="width:12px; height:12px; background:var(--ink);"></div>
+          <div style="width:15px; height:15px; background:var(--ink); grid-column:1/2;"></div>
+        </div>
+      </div>
+      <div style="font-size:12px; color:var(--ink-3); margin-top:22px; line-height:1.7; max-width:70ch;">Mark is three squares on a 4px step (8/12/15 at nav size), gap 3px, always right-angled and never rotated. Wordmark is JetBrains Mono 500, lowercase, tracking +0.01em. Mark ink is <b style="color:var(--ink);">--ink</b>; the accent variant tints the small square only, and is reserved for favicon and loading states. Clear space equals the height of the large square on all sides.</div>
+    </div>
+  </div>
+
+  <!-- MOTION -->
+  <div id="motion" style="max-width:1180px; margin:0 auto; padding:80px 40px 0;">
+    <div style="display:flex; align-items:baseline; gap:14px;">
+      <span style="font-size:11px; letter-spacing:.16em; color:var(--accent);">04 / MOTION</span>
+      <div style="flex:1; height:1px; background:var(--line);"></div>
+    </div>
+    <h2 style="font-family:'Space Grotesk',sans-serif; font-size:34px; letter-spacing:-.03em; font-weight:700; margin:22px 0 0;">Scroll is the only trigger</h2>
+    <div style="border:1px solid var(--line); margin-top:28px;">
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Reveal</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">Blocks fade up as they enter the viewport</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">opacity 0→1, translateY 22→0 · 700ms · cubic-bezier(.22,.61,.36,1)</div>
+      </div>
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Stagger</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">Siblings in a row follow the first</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">+90ms per item, max 4 steps</div>
+      </div>
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Wipe</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">Section headings uncover left to right</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">clip-path inset(0 100% 0 0)→0 · 1000ms</div>
+      </div>
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Rule draw</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">The hairline beside an eyebrow extends</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">scaleX 0→1 from left · 1100ms</div>
+      </div>
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Drift</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">Hero screenshot rises and shrinks on scroll</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">translateY −6% of scrollY, scale to .964 · clamped at 900px</div>
+      </div>
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Marquee</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">Tool tiles scroll one full list width</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">translateX 0→−50% · 62s linear infinite · duplicated track</div>
+      </div>
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Caret</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">Terminal cursor in the closing CTA</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">opacity step blink · 1.1s infinite</div>
+      </div>
+    </div>
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Scrub</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">Scroll position drives a story stage frame by frame</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">300vh wrapper · 100vh sticky stage · p = −top / (height − vh), clamped 0–1</div>
+      </div>
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Beat</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">Each element owns a slice of the scrub, not a delay</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">seg(p, from, to) → 0–1 · written straight to style, no React state</div>
+      </div>
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Turn</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">One frame where the story flips: dim → accent, ??? → real</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">p &gt; .5 swaps headline, status, colour and totals together</div>
+      </div>
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Rail</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">The eyebrow hairline doubles as the stage's progress bar</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">width 0→100% of p · accent on --line</div>
+      </div>
+      <div style="display:grid; grid-template-columns:150px 1fr 340px; border-bottom:1px solid var(--line); background:var(--surface); font-size:12.5px; align-items:center;">
+        <div style="padding:15px 20px; color:var(--accent);">Live dot</div>
+        <div style="padding:15px 20px; color:var(--ink-2);">Panel headers breathe to read as live, not static</div>
+        <div style="padding:15px 20px; color:var(--ink-3); font-size:12px;">opacity 1→.25→1 · 1.6s ease-in-out infinite</div>
+      </div>
+    </div>
+
+    <div style="display:flex; align-items:baseline; gap:14px; margin-top:56px;">
+      <span style="font-size:11px; letter-spacing:.16em; color:var(--accent);">04b / STORY STAGES</span>
+      <div style="flex:1; height:1px; background:var(--line);"></div>
+    </div>
+    <p style="font-family:'Space Grotesk',sans-serif; font-size:16px; line-height:1.55; color:var(--ink-2); margin:18px 0 0; max-width:70ch; text-wrap:pretty;">Product screenshots are used <b style="color:var(--ink);">once</b>, in the hero. Every other claim is a <b style="color:var(--ink);">story stage</b>: a sticky panel whose frames are scrubbed by scroll position, so the visitor's scroll IS the passage of time. A stage earns its space only if it has a before, a turn, and an after — decorative loops don't qualify. Two per page, spaced far apart, never stacked.</p>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:1px; margin-top:26px; background:var(--line); border:1px solid var(--line);">
+      <div style="background:var(--surface); padding:26px 24px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--accent);">ACT 1 · THE MONTH YOU COULDN'T SEE</div>
+        <div style="display:flex; flex-direction:column; gap:11px; margin-top:18px; font-size:12.5px; line-height:1.6; color:var(--ink-2);">
+          <div><b style="color:var(--ink);">Before</b> — 30 days accrue in --ink-3, total reads $ ?,???.??</div>
+          <div><b style="color:var(--ink);">Turn</b> — at p .5 the command runs</div>
+          <div><b style="color:var(--ink);">After</b> — bars recolour, total counts to $1,482.40, per-tool breakdown fades in</div>
+        </div>
+        <div style="display:flex; align-items:flex-end; gap:4px; height:52px; margin-top:22px;">
+          <div style="flex:1; height:30%; background:var(--ink-3);"></div>
+          <div style="flex:1; height:44%; background:var(--ink-3);"></div>
+          <div style="flex:1; height:38%; background:var(--ink-3);"></div>
+          <div style="flex:1; height:62%; background:var(--ink-3);"></div>
+          <div style="flex:1; height:52%; background:var(--line-2);"></div>
+          <div style="flex:1; height:78%; background:var(--accent);"></div>
+          <div style="flex:1; height:66%; background:var(--line-2);"></div>
+          <div style="flex:1; height:92%; background:var(--accent);"></div>
+          <div style="flex:1; height:74%; background:var(--accent);"></div>
+        </div>
+        <div style="font-size:11px; color:var(--ink-3); margin-top:10px;">Left of the turn: unmeasured. Right: measured.</div>
+      </div>
+      <div style="background:var(--surface); padding:26px 24px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--accent);">ACT 2 · THE INTERVENTION</div>
+        <div style="display:flex; flex-direction:column; gap:11px; margin-top:18px; font-size:12.5px; line-height:1.6; color:var(--ink-2);">
+          <div><b style="color:var(--ink);">Before</b> — five agent steps walk in on the scrub</div>
+          <div><b style="color:var(--ink);">Turn</b> — the egress gate opens across the track at p .4</div>
+          <div><b style="color:var(--ink);">After</b> — two futures diverge and count: $41.20 ghosted vs $0.90 accent</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:0; margin-top:22px;">
+          <div style="width:9px; height:9px; background:var(--accent);"></div>
+          <div style="flex:1; height:1px; background:var(--line-2);"></div>
+          <div style="width:9px; height:9px; background:var(--accent);"></div>
+          <div style="flex:1; height:1px; background:var(--line-2);"></div>
+          <div style="width:9px; height:9px; background:var(--ink);"></div>
+          <div style="width:3px; height:30px; background:var(--accent); margin-left:12px;"></div>
+        </div>
+        <div style="display:flex; gap:18px; margin-top:16px; font-size:12.5px;">
+          <span style="color:var(--ink-3);">$41.20</span>
+          <span style="color:var(--accent); font-weight:600;">$0.90</span>
+        </div>
+        <div style="font-size:11px; color:var(--ink-3); margin-top:10px;">The ghost branch never gets full opacity — it didn't happen.</div>
+      </div>
+      <div style="background:var(--surface); padding:26px 24px; grid-column:1/-1;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--accent);">ACT 1b · EVERY AGENT GETS A WINDOW</div>
+        <div style="display:grid; grid-template-columns:1.1fr 1fr; gap:26px; margin-top:18px; align-items:start;">
+          <div style="display:flex; flex-direction:column; gap:11px; font-size:12.5px; line-height:1.6; color:var(--ink-2);">
+            <div><b style="color:var(--ink);">Before</b> — an empty 2×2 grid, counter reads 0 / 4 SESSIONS</div>
+            <div><b style="color:var(--ink);">Turn</b> — terminals pop in one per scroll beat, each with a live dot and its own typed lines</div>
+            <div><b style="color:var(--ink);">After</b> — four named sessions running side by side; headline switches from singular to plural</div>
+            <div style="color:var(--ink-3);">Pop: opacity 0→1, translateY 18→0, scale .97→1 across seg(p, .06, .62). A tile counts as live past k &gt; .5, which is what drives the counter.</div>
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+            <div style="border:1px solid var(--line-2); background:var(--surface-2); height:44px; display:flex; align-items:center; gap:6px; padding:0 10px;"><span style="width:6px; height:6px; background:var(--accent);"></span><span style="font-size:9.5px; letter-spacing:.08em; color:var(--ink-3);">claude-code</span></div>
+            <div style="border:1px solid var(--line-2); background:var(--surface-2); height:44px; display:flex; align-items:center; gap:6px; padding:0 10px;"><span style="width:6px; height:6px; background:var(--accent);"></span><span style="font-size:9.5px; letter-spacing:.08em; color:var(--ink-3);">cursor</span></div>
+            <div style="border:1px solid var(--line); background:var(--surface-2); height:44px; display:flex; align-items:center; gap:6px; padding:0 10px; opacity:.5;"><span style="width:6px; height:6px; background:var(--line-2);"></span><span style="font-size:9.5px; letter-spacing:.08em; color:var(--ink-3);">codex</span></div>
+            <div style="border:1px solid var(--line); background:var(--surface-2); height:44px; display:flex; align-items:center; gap:6px; padding:0 10px; opacity:.25;"><span style="width:6px; height:6px; background:var(--line-2);"></span><span style="font-size:9.5px; letter-spacing:.08em; color:var(--ink-3);">aider</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:14px; align-items:center; border:1px solid var(--line); background:var(--accent-soft); padding:18px 20px; margin-top:26px; font-size:12.5px; color:var(--ink-2);">
+      <span style="display:inline-block; width:.55em; height:1.05em; background:var(--accent); animation:caretBlink 1.1s steps(1) infinite;"></span>
+      Everything above is disabled under <b style="color:var(--ink);">prefers-reduced-motion</b>: content renders at rest, nothing is lost.
+    </div>
+  </div>
+
+  <!-- RULES -->
+  <div id="rules" style="max-width:1180px; margin:0 auto; padding:80px 40px 100px;">
+    <div style="display:flex; align-items:baseline; gap:14px;">
+      <span style="font-size:11px; letter-spacing:.16em; color:var(--accent);">05 / RULES</span>
+      <div style="flex:1; height:1px; background:var(--line);"></div>
+    </div>
+    <h2 style="font-family:'Space Grotesk',sans-serif; font-size:34px; letter-spacing:-.03em; font-weight:700; margin:22px 0 0;">Do / don't</h2>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:1px; margin-top:30px; background:var(--line); border:1px solid var(--line);">
+      <div style="background:var(--surface); padding:28px 26px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--accent);">DO</div>
+        <div style="display:flex; flex-direction:column; gap:12px; margin-top:18px; font-size:13px; line-height:1.6; color:var(--ink-2);">
+          <div>One accent per theme — blue in Blueprint, amber in Phosphor.</div>
+          <div>Headline plus one line. Let the screenshot carry the detail.</div>
+          <div>Separate with 1px lines and 1px grid gaps, not cards and radii.</div>
+          <div>Number every section eyebrow: 01 /, 02 /, 03 /.</div>
+          <div>Set numbers, labels and commands in mono; prose in Grotesk.</div>
+        </div>
+      </div>
+      <div style="background:var(--surface); padding:28px 26px;">
+        <div style="font-size:11px; letter-spacing:.14em; color:var(--ink-3);">DON'T</div>
+        <div style="display:flex; flex-direction:column; gap:12px; margin-top:18px; font-size:13px; line-height:1.6; color:var(--ink-2);">
+          <div>Don't run teal, gold and red together — that was the old drift.</div>
+          <div>No gradients as backgrounds, no blurred drop shadows, no rounded corners.</div>
+          <div>No seven-line grey paragraphs above the fold.</div>
+          <div>No emoji, no hand-drawn illustration, no stock iconography.</div>
+          <div>Don't state a claim twice in one viewport (license, tool count).</div>
+        </div>
+      </div>
+    </div>
+    <div style="border:1px solid var(--line); border-top:0; background:var(--surface-2); padding:26px; font-size:12.5px; color:var(--ink-3); line-height:1.8;">
+      Implementation note: tokens ship as CSS custom properties on the page root, light values inline and <b style="color:var(--ink);">[data-theme="dark"]</b> overriding them. This replaces the split between <b style="color:var(--ink);">assets/css/home.css</b> and <b style="color:var(--ink);">assets/css/site.css</b> — one token layer, both layouts.
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'light' | 'dark'&quot;,&quot;section&quot;:&quot;Theme&quot;}}">
+class Component extends DCLogic {
+  state = { theme: null, copied: false };
+
+  get theme() { return this.state.theme ?? (this.props.theme ?? 'light'); }
+
+  renderVals() {
+    const dark = this.theme === 'dark';
+    return {
+      theme: this.theme,
+      themeLabel: dark ? 'LIGHT' : 'DARK',
+      toggleTheme: () => this.setState({ theme: dark ? 'light' : 'dark' }),
+      copyLabel: this.state.copied ? 'COPIED' : 'COPY',
+      copyCmd: () => {
+        if (navigator.clipboard) navigator.clipboard.writeText('npx @superbased/observer');
+        this.setState({ copied: true });
+        setTimeout(() => this.setState({ copied: false }), 1600);
+      },
+    };
+  }
+}
+</script>
+</body>
+</html>

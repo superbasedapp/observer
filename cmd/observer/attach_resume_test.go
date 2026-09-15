@@ -1,3 +1,5 @@
+//go:build unix
+
 package main
 
 import (
@@ -1197,4 +1199,13 @@ func TestAttachHubOnCorrelateDeadCheckSurvivesSelfShed(t *testing.T) {
 	if !hub.sessionLive(sid) {
 		t.Fatal("a subsequent resume of the session must succeed after the self-shed race")
 	}
+}
+
+// launches returns the number of LaunchAttachable calls observed so far.
+// It lives in this unix-only file because it is the sole consumer; keeping it
+// in attach_test.go left it flagged unused by lint on a Windows build.
+func (f *fakeAttachLauncher) launches() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.launchCalls
 }

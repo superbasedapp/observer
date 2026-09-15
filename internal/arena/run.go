@@ -54,6 +54,11 @@ type Options struct {
 	ProxyURL string
 	// MaxParallel caps concurrent candidate drives (default 3, floor 1).
 	MaxParallel int
+	// Admission runs immediately before each candidate or judge process starts.
+	// Nil leaves Arena admission unchanged. The callback receives the tool name
+	// and configured Arena proxy URL so cmd can apply launch policy without
+	// coupling this package to guard or configuration internals.
+	Admission func(context.Context, string, string) error
 }
 
 // CandidateSpec names one harness slot in a run.
@@ -126,92 +131,166 @@ func (r *Runner) StartRunWithForce(ctx context.Context, spec RunSpec) (*Prepared
 	return r.startRun(ctx, spec, true)
 }
 
+// startRun runs the sequential validate -> base-resolve -> per-candidate
+// worktree/branch provisioning pipeline described on StartRun. Each phase is
+// its own helper so the rollback pairing in provisionCandidates (the part
+// that actually needs care) isn't buried under unrelated validation noise.
 func (r *Runner) startRun(ctx context.Context, spec RunSpec, allowDirty bool) (*PreparedRun, error) {
-	if spec.ID == "" || strings.TrimSpace(spec.ProjectRoot) == "" || strings.TrimSpace(spec.Prompt) == "" {
-		return nil, errors.New("arena.StartRun: id, project_root and prompt required")
+	if err := validateRunSpec(spec); err != nil {
+		return nil, err
 	}
-	if len(spec.ID) > maxRunIDBytes || !safeRunID.MatchString(spec.ID) {
-		return nil, fmt.Errorf("arena.StartRun: id must be 1-%d ASCII letters, digits, underscores or hyphens", maxRunIDBytes)
-	}
-	if len(spec.Prompt) > maxPromptBytes {
-		return nil, fmt.Errorf("arena.StartRun: prompt exceeds %d bytes", maxPromptBytes)
-	}
-	if len(spec.Candidates) == 0 {
-		return nil, errors.New("arena.StartRun: at least one candidate required")
-	}
-	if len(spec.Candidates) > maxCandidates {
-		return nil, fmt.Errorf("arena.StartRun: at most %d candidates are allowed", maxCandidates)
-	}
-	if len(spec.ContextFiles) > maxContextFiles {
-		return nil, fmt.Errorf("arena.StartRun: at most %d context files are allowed", maxContextFiles)
-	}
-	if spec.Timeout < 0 || spec.Timeout > MaxTimeout {
-		return nil, fmt.Errorf("arena.StartRun: timeout must be between 0 and %s", MaxTimeout)
-	}
-	projectRoot, err := filepath.Abs(spec.ProjectRoot)
+	projectRoot, err := resolveProjectRoot(spec.ProjectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("arena.StartRun: project root: %w", err)
+		return nil, err
 	}
-	projectRoot, err = filepath.EvalSymlinks(projectRoot)
-	if err != nil {
-		return nil, fmt.Errorf("arena.StartRun: project root: %w", err)
-	}
-	spec.ProjectRoot = filepath.Clean(projectRoot)
+	spec.ProjectRoot = projectRoot
 
-	seenTools := make(map[string]bool, len(spec.Candidates))
-	for _, c := range spec.Candidates {
-		if c.Tool == "" || seenTools[c.Tool] {
-			if c.Tool == "" {
-				return nil, errors.New("arena.StartRun: candidate tool required")
-			}
-			return nil, fmt.Errorf("arena.StartRun: duplicate candidate tool %q is not supported", c.Tool)
-		}
-		seenTools[c.Tool] = true
-		if len(c.Model) > maxModelValueBytes {
-			return nil, fmt.Errorf("arena.StartRun: model for %q exceeds %d bytes", c.Tool, maxModelValueBytes)
-		}
-		ic, ok := integration.For(c.Tool)
-		if !ok || ic.Headless == nil {
-			return nil, fmt.Errorf("arena.StartRun: tool %q has no grounded headless contract", c.Tool)
-		}
-		if _, err := driveBinaryFor(c.Tool); err != nil {
-			return nil, fmt.Errorf("arena.StartRun: candidate %q: %w", c.Tool, err)
-		}
+	if err := validateCandidates(spec.Candidates); err != nil {
+		return nil, err
 	}
-	judge, ok := integration.For(spec.JudgeTool)
-	if !ok || judge.Headless == nil {
-		return nil, fmt.Errorf("arena.StartRun: judge tool %q has no grounded headless contract", spec.JudgeTool)
-	}
-	if len(spec.JudgeModel) > maxModelValueBytes {
-		return nil, fmt.Errorf("arena.StartRun: judge model exceeds %d bytes", maxModelValueBytes)
-	}
-	if _, err := driveBinaryFor(spec.JudgeTool); err != nil {
-		return nil, fmt.Errorf("arena.StartRun: judge %q: %w", spec.JudgeTool, err)
+	if err := validateJudge(spec.JudgeTool, spec.JudgeModel); err != nil {
+		return nil, err
 	}
 	contextFiles, err := normalizeContextFiles(spec.ProjectRoot, spec.ContextFiles)
 	if err != nil {
 		return nil, fmt.Errorf("arena.StartRun: context files: %w", err)
 	}
 	spec.ContextFiles = contextFiles
-	dirty, err := git.IsDirty(ctx, spec.ProjectRoot)
+
+	baseSHA, baseBranch, err := resolveGitBase(ctx, spec.ProjectRoot, allowDirty)
 	if err != nil {
-		return nil, fmt.Errorf("arena.StartRun: %w", err)
-	}
-	if dirty && !allowDirty {
-		return nil, ErrDirtyTree
-	}
-	baseSHA, err := git.HeadSHA(ctx, spec.ProjectRoot)
-	if err != nil {
-		return nil, fmt.Errorf("arena.StartRun: %w", err)
-	}
-	baseBranch, err := git.CurrentBranch(ctx, spec.ProjectRoot)
-	if err != nil {
-		return nil, fmt.Errorf("arena.StartRun: %w", err)
-	}
-	if baseBranch == "" {
-		return nil, errors.New("arena.StartRun: detached HEAD is not supported; check out the branch that should receive a kept candidate")
+		return nil, err
 	}
 
+	prep, err := r.createRunWorkspace(ctx, spec, baseSHA, baseBranch)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.provisionCandidates(ctx, prep, baseSHA); err != nil {
+		return nil, err
+	}
+	return prep, nil
+}
+
+// validateRunSpec checks the run-level fields a candidate loop doesn't
+// touch: required strings, the run ID's path-safe shape, and the size/count
+// ceilings that keep a hand-written request from creating an effectively
+// unbounded run.
+func validateRunSpec(spec RunSpec) error {
+	if spec.ID == "" || strings.TrimSpace(spec.ProjectRoot) == "" || strings.TrimSpace(spec.Prompt) == "" {
+		return errors.New("arena.StartRun: id, project_root and prompt required")
+	}
+	if len(spec.ID) > maxRunIDBytes || !safeRunID.MatchString(spec.ID) {
+		return fmt.Errorf("arena.StartRun: id must be 1-%d ASCII letters, digits, underscores or hyphens", maxRunIDBytes)
+	}
+	if len(spec.Prompt) > maxPromptBytes {
+		return fmt.Errorf("arena.StartRun: prompt exceeds %d bytes", maxPromptBytes)
+	}
+	if len(spec.Candidates) == 0 {
+		return errors.New("arena.StartRun: at least one candidate required")
+	}
+	if len(spec.Candidates) > maxCandidates {
+		return fmt.Errorf("arena.StartRun: at most %d candidates are allowed", maxCandidates)
+	}
+	if len(spec.ContextFiles) > maxContextFiles {
+		return fmt.Errorf("arena.StartRun: at most %d context files are allowed", maxContextFiles)
+	}
+	if spec.Timeout < 0 || spec.Timeout > MaxTimeout {
+		return fmt.Errorf("arena.StartRun: timeout must be between 0 and %s", MaxTimeout)
+	}
+	return nil
+}
+
+// resolveProjectRoot returns the absolute, symlink-resolved, cleaned form of
+// a run's project root so every later path comparison (worktree dirs, git
+// invocations) works off one canonical path.
+func resolveProjectRoot(projectRoot string) (string, error) {
+	abs, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", fmt.Errorf("arena.StartRun: project root: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("arena.StartRun: project root: %w", err)
+	}
+	return filepath.Clean(resolved), nil
+}
+
+// validateCandidates checks each candidate's tool is present, unique, and
+// grounded (a live headless contract plus a resolvable binary) before any
+// worktree is created for it.
+func validateCandidates(candidates []CandidateSpec) error {
+	seenTools := make(map[string]bool, len(candidates))
+	for _, c := range candidates {
+		if c.Tool == "" || seenTools[c.Tool] {
+			if c.Tool == "" {
+				return errors.New("arena.StartRun: candidate tool required")
+			}
+			return fmt.Errorf("arena.StartRun: duplicate candidate tool %q is not supported", c.Tool)
+		}
+		seenTools[c.Tool] = true
+		if len(c.Model) > maxModelValueBytes {
+			return fmt.Errorf("arena.StartRun: model for %q exceeds %d bytes", c.Tool, maxModelValueBytes)
+		}
+		ic, ok := integration.For(c.Tool)
+		if !ok || ic.Headless == nil {
+			return fmt.Errorf("arena.StartRun: tool %q has no grounded headless contract", c.Tool)
+		}
+		if _, err := driveBinaryFor(c.Tool); err != nil {
+			return fmt.Errorf("arena.StartRun: candidate %q: %w", c.Tool, err)
+		}
+	}
+	return nil
+}
+
+// validateJudge checks the judge tool the same way a candidate is checked
+// (a live headless contract plus a resolvable binary) before any worktree
+// work starts.
+func validateJudge(tool, model string) error {
+	judge, ok := integration.For(tool)
+	if !ok || judge.Headless == nil {
+		return fmt.Errorf("arena.StartRun: judge tool %q has no grounded headless contract", tool)
+	}
+	if len(model) > maxModelValueBytes {
+		return fmt.Errorf("arena.StartRun: judge model exceeds %d bytes", maxModelValueBytes)
+	}
+	if _, err := driveBinaryFor(tool); err != nil {
+		return fmt.Errorf("arena.StartRun: judge %q: %w", tool, err)
+	}
+	return nil
+}
+
+// resolveGitBase checks the working tree is clean (unless the caller waived
+// it) and snapshots the commit + branch a run's candidates fork from.
+// Detached HEAD is rejected: Keep needs a branch to land a candidate's
+// squashed commit onto.
+func resolveGitBase(ctx context.Context, projectRoot string, allowDirty bool) (baseSHA, baseBranch string, err error) {
+	dirty, err := git.IsDirty(ctx, projectRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("arena.StartRun: %w", err)
+	}
+	if dirty && !allowDirty {
+		return "", "", ErrDirtyTree
+	}
+	baseSHA, err = git.HeadSHA(ctx, projectRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("arena.StartRun: %w", err)
+	}
+	baseBranch, err = git.CurrentBranch(ctx, projectRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("arena.StartRun: %w", err)
+	}
+	if baseBranch == "" {
+		return "", "", errors.New("arena.StartRun: detached HEAD is not supported; check out the branch that should receive a kept candidate")
+	}
+	return baseSHA, baseBranch, nil
+}
+
+// createRunWorkspace makes the run's workspace directory and inserts its
+// store row. On a row-insert failure the just-created directory is removed
+// so a failed StartRun leaves no debris — the same rollback discipline
+// provisionCandidates applies one level down, per candidate.
+func (r *Runner) createRunWorkspace(ctx context.Context, spec RunSpec, baseSHA, baseBranch string) (*PreparedRun, error) {
 	runDir := filepath.Join(r.opts.WorkspaceDir, spec.ID)
 	prep := &PreparedRun{Spec: spec, BaseSHA: baseSHA, BaseBranch: baseBranch, RunDir: runDir}
 	if err := os.MkdirAll(r.opts.WorkspaceDir, 0o700); err != nil {
@@ -235,17 +314,26 @@ func (r *Runner) startRun(ctx context.Context, spec RunSpec, allowDirty bool) (*
 		_ = os.Remove(runDir)
 		return nil, fmt.Errorf("arena.StartRun: %w", err)
 	}
+	return prep, nil
+}
 
-	for i, c := range spec.Candidates {
-		wtPath := filepath.Join(runDir, c.Tool)
-		branchName := fmt.Sprintf("arena/%s/%s", spec.ID, c.Tool)
-		if err := git.WorktreeAdd(ctx, spec.ProjectRoot, wtPath, branchName, baseSHA); err != nil {
+// provisionCandidates creates one worktree + branch + store row per
+// candidate, tearing down everything created so far the moment any step
+// fails via teardownPartial. The rollback count differs by exactly one
+// between the two failure sites (the worktree-add failure hasn't created
+// candidate i yet; the row-insert failure has) — that distinction is the
+// reason this loop stays one function instead of being split further.
+func (r *Runner) provisionCandidates(ctx context.Context, prep *PreparedRun, baseSHA string) error {
+	for i, c := range prep.Spec.Candidates {
+		wtPath := filepath.Join(prep.RunDir, c.Tool)
+		branchName := fmt.Sprintf("arena/%s/%s", prep.Spec.ID, c.Tool)
+		if err := git.WorktreeAdd(ctx, prep.Spec.ProjectRoot, wtPath, branchName, baseSHA); err != nil {
 			r.teardownPartial(ctx, prep, i, err)
-			return nil, fmt.Errorf("arena.StartRun: worktree %s: %w", c.Tool, err)
+			return fmt.Errorf("arena.StartRun: worktree %s: %w", c.Tool, err)
 		}
 		row := &models.ArenaCandidate{
-			ID:           fmt.Sprintf("%s-%s", spec.ID, c.Tool),
-			RunID:        spec.ID,
+			ID:           fmt.Sprintf("%s-%s", prep.Spec.ID, c.Tool),
+			RunID:        prep.Spec.ID,
 			Tool:         c.Tool,
 			Model:        c.Model,
 			Seq:          i,
@@ -256,10 +344,10 @@ func (r *Runner) startRun(ctx context.Context, spec RunSpec, allowDirty bool) (*
 		}
 		if err := r.opts.Store.InsertArenaCandidate(ctx, row); err != nil {
 			r.teardownPartial(ctx, prep, i+1, err)
-			return nil, fmt.Errorf("arena.StartRun: candidate row: %w", err)
+			return fmt.Errorf("arena.StartRun: candidate row: %w", err)
 		}
 	}
-	return prep, nil
+	return nil
 }
 
 // teardownPartial removes worktrees already created when a later step
@@ -392,6 +480,7 @@ func (r *Runner) driveOne(ctx context.Context, prep *PreparedRun, row models.Are
 		ConfigDir:    cfgDir,
 		OnStart:      onStart,
 		OnExit:       onExit,
+		Admission:    r.opts.Admission,
 	})
 	if err != nil {
 		row.Status = models.ArenaCandidateStatusFailed
@@ -406,12 +495,13 @@ func (r *Runner) driveOne(ctx context.Context, prep *PreparedRun, row models.Are
 	row.TimedOut = res.TimedOut
 	row.SessionIDs = appendDistinct(res.SessionIDs, arenaSessionID)
 	row.FinalAnswerExcerpt = truncateStr(stripANSI(res.FinalAnswer), 2000)
-	if res.TimedOut {
+	switch {
+	case res.TimedOut:
 		row.Status = models.ArenaCandidateStatusTimeout
-	} else if res.ExitCode != 0 {
+	case res.ExitCode != 0:
 		row.Status = models.ArenaCandidateStatusFailed
 		row.Error = "harness exit code " + itoa(res.ExitCode)
-	} else {
+	default:
 		row.Status = models.ArenaCandidateStatusDone
 	}
 
@@ -589,6 +679,7 @@ func (r *Runner) JudgeRun(ctx context.Context, prep *PreparedRun) error {
 			ProxyURL:  r.opts.ProxyURL,
 			Timeout:   DefaultTimeout,
 			ConfigDir: judgeCfg,
+			Admission: r.opts.Admission,
 		}, jcap.Headless)
 		if jerr != nil {
 			row.Verdict = "judge error: " + truncateStr(jerr.Error(), 300)

@@ -756,6 +756,25 @@ const (
 		`"sequence":7,"recorded_at":1785962820007000,"record_type":"event",` +
 		`"payload_type":"runtime.session","payload":{"run_id":"r1","event":{` +
 		`"kind":"terminal","terminal":"completed","reason":null,"turn_duration_ms":9157}}}`
+	// fixtureVoiceCaptureStringOutcome mirrors the real line 6 of a
+	// 2026-08-07 live session capture (session
+	// acd8fa06-acdc-431c-87bf-71edfe3ae016, anonymized to the fixture's
+	// standard synthetic uuid) that broke the adapter: `payload_type`
+	// "voice.capture.observed" is never dispatched by handle(), but
+	// `payload.record.outcome` is a bare STRING ("error") where
+	// metaRecord.Outcome expected the tool_batch.effect.terminal object
+	// shape `{"kind":"..."}`, so json.Unmarshal failed on the WHOLE line —
+	// "malformed JSON: json: cannot unmarshal string into Go struct field
+	// metaRecord.payload.record.outcome of type muse.effectOutcome".
+	fixtureVoiceCaptureStringOutcome = `{"schema_version":1,` +
+		`"id":"00000000-0000-0000-0000-000000000008",` +
+		`"stream":{"kind":"session","id":"11111111-2222-3333-4444-555555555555"},` +
+		`"sequence":6,"recorded_at":1786118148982274,"record_type":"event",` +
+		`"durability":"durable","causation_id":null,` +
+		`"payload_type":"voice.capture.observed","payload_schema_version":1,` +
+		`"payload":{"kind":"voice_capture_observed","record":{"audio_ms":0,` +
+		`"failure_class":"engine","mode":"record","outcome":"error",` +
+		`"schema_version":1,"session_id":"11111111-2222-3333-4444-555555555555"}}}`
 )
 
 // TestFailedToolOutcomeAndAbortedTurn covers the two negative paths the
@@ -855,5 +874,30 @@ func TestSubagentParentLookupRefusesSymlink(t *testing.T) {
 	}
 	if got := workspaceRootOf(""); got != "" {
 		t.Errorf("workspaceRootOf(\"\") = %q, want empty", got)
+	}
+}
+
+// TestVoiceCaptureObservedStringOutcomeDoesNotBreakParse is the regression
+// pin for the real 2026-08-07 parse failure: a `voice.capture.observed`
+// record whose `outcome` is a bare string must decode cleanly and be
+// skipped silently (it is not a payload_type this adapter dispatches),
+// producing zero warnings and no malformed-JSON report — even though the
+// STRUCT it decodes into (metaRecord.Outcome) is the same one
+// tool_batch.effect.terminal populates as an object.
+func TestVoiceCaptureObservedStringOutcomeDoesNotBreakParse(t *testing.T) {
+	root, logPath := writeLog(t, fixtureHeader, fixtureVoiceCaptureStringOutcome, fixtureCompletedTurn)
+	res, err := NewWithOptions(nil, root).ParseSessionFile(context.Background(), logPath, 0)
+	if err != nil {
+		t.Fatalf("ParseSessionFile: %v", err)
+	}
+	for _, w := range res.Warnings {
+		t.Errorf("unexpected warning: %s", w)
+	}
+	info, statErr := os.Stat(logPath)
+	if statErr != nil {
+		t.Fatalf("stat: %v", statErr)
+	}
+	if res.NewOffset != info.Size() {
+		t.Errorf("NewOffset = %d, want the full file size %d", res.NewOffset, info.Size())
 	}
 }

@@ -131,12 +131,12 @@ export function JumpInButton({
 
   const relaunch = relaunchCommand(tool);
   const disabledTitle = fetchError
-    ? "Couldn't check whether this session is attachable — the dashboard's attach endpoint didn't respond. This is NOT a verdict that the session can't be joined; retry, or confirm `observer start` is running."
+    ? "Couldn't check whether this session is attachable - the dashboard's attach endpoint didn't respond. This is NOT a verdict that the session can't be joined; retry, or confirm `observer start` is running."
     : loading
       ? "Checking whether this session is attachable…"
-      : `Jump in unavailable — no live daemon-owned terminal is bound to this session. A terminal just launched from the dashboard can take ~30s to link; if the session is running in your own terminal, launch it with \`${relaunch}\` to make it joinable.`;
+      : `Jump in unavailable - no live daemon-owned terminal is bound to this session. A terminal just launched from the dashboard can take ~30s to link; if the session is running in your own terminal, launch it with \`${relaunch}\` to make it joinable.`;
   const enabledTitle =
-    "Open this live session as a second seat in an embedded terminal — the same TUI, drivable from here.";
+    "Open this live session as a second seat in an embedded terminal - the same TUI, drivable from here.";
 
   async function jumpIn() {
     if (!match) return;
@@ -159,7 +159,7 @@ export function JumpInButton({
       launchSeat(live);
     } catch {
       pushToast(
-        "Couldn't reach the dashboard to jump in — check `observer start` is running.",
+        "Couldn't reach the dashboard to jump in - check `observer start` is running.",
         "danger",
       );
     }
@@ -212,9 +212,9 @@ export function JumpInButton({
       </div>
       <p className="mt-1 text-[10.5px] text-fg-3">
         {fetchError
-          ? "Couldn't check attachability — the attach endpoint didn't respond. Retry or confirm the daemon is running; this is not a verdict that the session can't be joined."
+          ? "Couldn't check attachability - the attach endpoint didn't respond. Retry or confirm the daemon is running; this is not a verdict that the session can't be joined."
           : enabled
-            ? "This session is running as an attachable terminal. Jump in to view and drive the same live TUI from the dashboard — a second seat on the running agent."
+            ? "This session is running as an attachable terminal. Jump in to view and drive the same live TUI from the dashboard - a second seat on the running agent."
             : `No live daemon-owned terminal is bound to this session right now. Any live terminal launched from the dashboard, or an \`${relaunch}\` session, can be joined once it's running.`}
       </p>
       {/* Read-only fallback for a bare BUT live session: you can't drive it,

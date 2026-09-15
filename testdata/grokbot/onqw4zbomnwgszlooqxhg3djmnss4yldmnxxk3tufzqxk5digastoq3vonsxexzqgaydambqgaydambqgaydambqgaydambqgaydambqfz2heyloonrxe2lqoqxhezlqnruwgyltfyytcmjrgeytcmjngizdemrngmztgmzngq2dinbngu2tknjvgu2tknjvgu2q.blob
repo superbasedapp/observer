@@ -1,0 +1,143 @@
+{
+ "schemaVersion": 1,
+ "value": {
+  "entries": [
+   {
+    "kind": "send-message",
+    "id": "tbs0",
+    "message": {
+     "type": "text",
+     "content": "Hey there. I'm Example Bot."
+    },
+    "timestampMs": 1780000000000,
+    "requestId": "00000000-0000-4000-8000-000000000001"
+   },
+   {
+    "kind": "message",
+    "id": "t0u",
+    "role": "user",
+    "content": "Summarize the release notes for me.",
+    "richText": "{\"type\":\"doc\",\"content\":[]}",
+    "isStreaming": false,
+    "timestampMs": 1780000001000,
+    "clientNonce": "00000000-0000-4000-8000-000000000002",
+    "requestId": "00000000-0000-4000-8000-000000000003"
+   },
+   {
+    "kind": "send-message",
+    "id": "t0s0",
+    "message": {
+     "type": "text",
+     "content": "On it. Reading the notes now."
+    },
+    "timestampMs": 1780000002000,
+    "requestId": "00000000-0000-4000-8000-000000000003"
+   },
+   {
+    "kind": "send-message",
+    "id": "t0s1",
+    "message": {
+     "type": "text",
+     "content": "I need you to finish signing in."
+    },
+    "boxInstruction": "Sign in to the example service in the browser",
+    "boxRequestId": "00000000-0000-4000-8000-000000000004",
+    "boxResolution": "handed_back",
+    "timestampMs": 1780000003000
+   },
+   {
+    "kind": "send-message",
+    "id": "t0s2",
+    "message": {
+     "type": "secret-request",
+     "secretRequest": {
+      "label": "EXAMPLE_SERVICE_TOKEN"
+     }
+    },
+    "timestampMs": 1780000004000
+   },
+   {
+    "kind": "tool-call",
+    "id": "t0s3",
+    "name": "WebSearchToolCall",
+    "status": "complete",
+    "summary": "searched the release notes",
+    "timestampMs": 1780000005000
+   },
+   {
+    "kind": "tool-call",
+    "id": "t0s4",
+    "name": "BrowserOpenToolCall",
+    "status": "failed",
+    "summary": "navigation timed out",
+    "timestampMs": 1780000006000
+   },
+   {
+    "kind": "event",
+    "id": "event-00000000-0000-4000-8000-000000000005",
+    "event": {
+     "type": "automation-changed",
+     "action": "created",
+     "automationId": "example-automation",
+     "automationName": "Example automation"
+    },
+    "timestampMs": 1780000007000
+   },
+   {
+    "kind": "notice",
+    "id": "t0s5",
+    "text": "The box was restarted.",
+    "timestampMs": 1780000008000
+   },
+   {
+    "kind": "user-attachment",
+    "id": "t0s6",
+    "file_path": "/home/box/sand-data/uploads/example.png",
+    "file_name": "example.png",
+    "timestampMs": 1780000009000
+   },
+   {
+    "kind": "message",
+    "id": "t1u",
+    "role": "user",
+    "content": "use this key sk-EXAMPLEEXAMPLEEXAMPLE0123456789 and ghp_EXAMPLEEXAMPLEEXAMPLE01234 for the call",
+    "isStreaming": false,
+    "timestampMs": 1780000010000,
+    "requestId": "00000000-0000-4000-8000-000000000006"
+   },
+   {
+    "kind": "message",
+    "id": "t1s0",
+    "role": "assistant",
+    "content": "I will not reuse that key.",
+    "isStreaming": false,
+    "timestampMs": 1780000011000
+   },
+   {
+    "kind": "feedback",
+    "id": "t1s1",
+    "requestId": "00000000-0000-4000-8000-000000000007",
+    "timestampMs": 1780000012000
+   },
+   {
+    "kind": "voice-call",
+    "id": "t1s2",
+    "call": {
+     "callId": "00000000-0000-4000-8000-000000000008"
+    },
+    "timestampMs": 1780000013000
+   },
+   {
+    "kind": "message",
+    "id": "t1s3",
+    "role": "assistant",
+    "content": "Still typ",
+    "isStreaming": true,
+    "timestampMs": 1780000014000
+   }
+  ],
+  "epochHint": "00000000-0000-4000-8000-0000000000ff",
+  "acceptedSequenceHint": 15,
+  "persistedAt": 1780000014000
+ }
+}

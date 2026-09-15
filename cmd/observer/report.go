@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -72,7 +73,7 @@ func newReportShareCmd() *cobra.Command {
 			}
 
 			p, _ := notifydigest.DuePeriod(freq, 0, time.Now().UTC())
-			engine := cost.NewEngine(cfg.Intelligence)
+			engine := acquireProcessCostEngine(cmd.Context(), cfg, db, slog.Default())
 			data, err := assembleShareData(cmd.Context(), engine, db, p, kind)
 			if err != nil {
 				return err

@@ -53,6 +53,19 @@ func emitOOBLaunchHello() func(exitCode int) {
 	if err != nil || fd < 3 {
 		return noop
 	}
+	// The OBSERVER_OOB_* env is inherited by EVERY descendant of the launcher
+	// (the tool itself, and every hook/subprocess the tool spawns — e.g. the
+	// `observer hook claude-code …` processes Claude Code runs), but the pipe
+	// itself is close-on-exec and reaches only the launcher. In a descendant,
+	// fd 3 is whatever that process happened to open first — for a Go binary
+	// that is usually the runtime's own epoll descriptor — so wrapping and
+	// closing it blindly crashed hooks with "epollwait on fd 3 failed with 9
+	// (EBADF)" and, because a PreToolUse hook exiting non-zero BLOCKS the tool
+	// call, randomly blocked ~1 in 4 shell commands (2026-09-02). Only treat the
+	// fd as the trusted channel when it really is a pipe or socket.
+	if !isPipeOrSocket(fd) {
+		return noop
+	}
 	// Prevent the untrusted tool child from inheriting the trusted channel.
 	syscall.CloseOnExec(fd)
 	f := os.NewFile(uintptr(fd), "observer-oob")
@@ -84,6 +97,22 @@ func emitOOBLaunchHello() func(exitCode int) {
 		oobChanMu.Unlock()
 		_ = f.Close()
 	}
+}
+
+// isPipeOrSocket reports whether fd is currently open and is a FIFO/pipe or a
+// socket — the only shapes the daemon ever hands a launcher as its OOB channel.
+// An unopened fd, a regular file, a tty, or an anonymous inode (epoll, eventfd)
+// is never the channel.
+func isPipeOrSocket(fd int) bool {
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil {
+		return false
+	}
+	switch st.Mode & syscall.S_IFMT {
+	case syscall.S_IFIFO, syscall.S_IFSOCK:
+		return true
+	}
+	return false
 }
 
 // announceOOBSession echoes a KNOWN child agent session id to the daemon on the

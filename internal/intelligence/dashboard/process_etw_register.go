@@ -140,9 +140,12 @@ func (s *Server) handleProcessETWRegister(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		writeErrStatus(w, errors.New("the in-dashboard terminal is not available on this platform, so the "+
-			"elevation prompt cannot be brokered from here — run the observer daemon under WSL/Linux, or run the "+
-			"elevated schtasks command shown on the card yourself"), http.StatusServiceUnavailable)
+		// Q16: the elevation-prompt PTY here is exactly as ConPTY-capable as
+		// the New Terminal launch path since 2026-07-04 — reuse
+		// errTerminalUnavailable (audit DI-16) instead of the stale
+		// "run under WSL/Linux" claim.
+		writeErrStatus(w, errors.New("the elevation prompt cannot be brokered from here: "+errTerminalUnavailable+
+			" — run the elevated schtasks command shown on the card yourself"), http.StatusServiceUnavailable)
 		return
 	}
 	if s.opts.ConfigPath == "" {

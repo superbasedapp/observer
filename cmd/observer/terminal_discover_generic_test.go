@@ -151,7 +151,7 @@ func TestScanNewGenericSessionFiles(t *testing.T) {
 	}
 }
 
-func TestFirstSessionIdentity(t *testing.T) {
+func TestUniqueSessionIdentity(t *testing.T) {
 	cases := []struct {
 		name           string
 		res            adapter.ParseResult
@@ -159,12 +159,12 @@ func TestFirstSessionIdentity(t *testing.T) {
 	}{
 		{"empty result", adapter.ParseResult{}, "", ""},
 		{
-			"tool event wins over token event",
+			"different tool and token session identities abstain",
 			adapter.ParseResult{
 				ToolEvents:  []models.ToolEvent{{SessionID: "t1", ProjectRoot: "/t"}},
 				TokenEvents: []models.TokenEvent{{SessionID: "k1", ProjectRoot: "/k"}},
 			},
-			"t1", "/t",
+			"", "",
 		},
 		{
 			"falls back to token event when no tool event carries an id",
@@ -181,12 +181,51 @@ func TestFirstSessionIdentity(t *testing.T) {
 			},
 			"t2", "/t2",
 		},
+		{
+			"two sessions in the same project abstain",
+			adapter.ParseResult{ToolEvents: []models.ToolEvent{{SessionID: "one", ProjectRoot: "/project"}, {SessionID: "two", ProjectRoot: "/project"}}},
+			"", "",
+		},
+		{
+			"consistent events fill missing root",
+			adapter.ParseResult{
+				ToolEvents:  []models.ToolEvent{{SessionID: "one"}, {SessionID: "one", ProjectRoot: "/project/"}},
+				TokenEvents: []models.TokenEvent{{SessionID: "one", ProjectRoot: "/project"}},
+			},
+			"one", "/project",
+		},
+		{
+			"conflicting project roots abstain",
+			adapter.ParseResult{ToolEvents: []models.ToolEvent{{SessionID: "one", ProjectRoot: "/a"}, {SessionID: "one", ProjectRoot: "/b"}}},
+			"", "",
+		},
+		{
+			"sidechain-only file abstains",
+			adapter.ParseResult{ToolEvents: []models.ToolEvent{{SessionID: "parent", IsSidechain: true}}},
+			"", "",
+		},
+		{
+			"subagent lineage abstains despite unflagged event",
+			adapter.ParseResult{
+				ToolEvents:      []models.ToolEvent{{SessionID: "child"}},
+				SessionLineages: []models.SessionLineage{{SessionID: "child", ParentThreadID: "parent", ThreadSource: "subagent"}},
+			},
+			"", "",
+		},
+		{
+			"user fork remains a primary session",
+			adapter.ParseResult{
+				TokenEvents:     []models.TokenEvent{{SessionID: "fork"}},
+				SessionLineages: []models.SessionLineage{{SessionID: "fork", ForkedFromID: "previous", ThreadSource: "user"}},
+			},
+			"fork", "",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			id, root := firstSessionIdentity(tc.res)
+			id, root := uniqueSessionIdentity(tc.res)
 			if id != tc.wantID || root != tc.wantRt {
-				t.Fatalf("firstSessionIdentity = (%q,%q), want (%q,%q)", id, root, tc.wantID, tc.wantRt)
+				t.Fatalf("uniqueSessionIdentity = (%q,%q), want (%q,%q)", id, root, tc.wantID, tc.wantRt)
 			}
 		})
 	}
@@ -196,7 +235,7 @@ func TestResolveGenericCandidate(t *testing.T) {
 	dir := t.TempDir()
 	watermarkPath := filepath.Join(dir, "store.watermark")
 	encryptedPath := filepath.Join(dir, "store.enc")
-	okPath := filepath.Join(dir, "sess.log")
+	okPath := writeGenericSessionFile(t, dir, "sess")
 	emptyIDPath := filepath.Join(dir, "empty.log")
 	errPath := filepath.Join(dir, "broken.log")
 
@@ -250,7 +289,7 @@ func TestResolveGenericCandidateDefaultsWithoutCursorSemantics(t *testing.T) {
 	// An adapter that does not implement CursorSemantics at all must keep the
 	// byte-offset (eligible) default for every path.
 	dir := t.TempDir()
-	okPath := filepath.Join(dir, "sess.log")
+	okPath := writeGenericSessionFile(t, dir, "sess")
 	a := &fakeAdapterBasic{
 		roots: []string{dir},
 		parse: func(string) (adapter.ParseResult, error) {
@@ -296,6 +335,7 @@ func TestSelectDiscoveredGenericSession(t *testing.T) {
 		wantCount int
 	}{
 		{"zero candidates", nil, cwd, "", 0},
+		{"duplicate artifacts for one session", []genericDiscoverCandidate{{path: "a", sessionID: "same"}, {path: "b", sessionID: "same"}}, cwd, "same", 1},
 		{"single, no cwd filter", []genericDiscoverCandidate{{sessionID: "a", projectRoot: cwd}}, "", "a", 1},
 		{"single, cwd match", []genericDiscoverCandidate{{sessionID: "a", projectRoot: cwd}}, cwd, "a", 1},
 		{
@@ -468,18 +508,81 @@ func TestResolveDiscoverableAdapter(t *testing.T) {
 	}
 }
 
-func TestMaybeStartGenericDiscoveryNoOOBChannel(t *testing.T) {
+func TestPrepareGenericDiscoveryNoOOBChannel(t *testing.T) {
 	// In a `go test` process nothing has authenticated the trusted OOB
 	// channel (that only happens when the daemon spawns an `observer <tool>`
 	// launcher and sets the OBSERVER_OOB_* env), so oobChannelActive() is
-	// false here — maybeStartGenericDiscovery must be a pure no-op regardless
+	// false here — prepareGenericDiscovery must be a pure no-op regardless
 	// of tool, matching every other best-effort OOB announce in this package.
-	if cancel := maybeStartGenericDiscovery(context.Background(), models.ToolClaudeCode, ""); cancel != nil {
-		cancel()
+	if plan := prepareGenericDiscovery(context.Background(), models.ToolClaudeCode, ""); plan != nil {
 		t.Fatal("must return nil when the OOB channel is not active")
 	}
-	if cancel := maybeStartGenericDiscovery(context.Background(), "", ""); cancel != nil {
-		cancel()
+	if plan := prepareGenericDiscovery(context.Background(), "", ""); plan != nil {
 		t.Fatal("must return nil for an empty tool")
+	}
+}
+
+func TestGenericDiscoverySnapshotPrecedesImmediateWrite(t *testing.T) {
+	dir := t.TempDir()
+	a := newFakeSessionAdapter(dir, nil)
+	writeGenericSessionFile(t, dir, "old")
+	plan := prepareAdapterDiscovery(context.Background(), a, dir)
+	// The child creates a transcript immediately during Start.
+	writeGenericSessionFile(t, dir, "immediate")
+	var got string
+	runGenericDiscovery(plan.ctx, plan.a, plan.preexisting, plan.startedAt, plan.cwd,
+		genericDiscoverConfig{window: time.Millisecond, poll: time.Millisecond}, func(id string) { got = id })
+	if got != "immediate" {
+		t.Fatalf("immediate write lost: %q", got)
+	}
+}
+
+func TestGenericDiscoveryRevalidatesBeforeAnnouncement(t *testing.T) {
+	for _, mutation := range []string{"session changed", "inode replaced", "deleted", "multi session"} {
+		t.Run(mutation, func(t *testing.T) {
+			dir := t.TempDir()
+			path := writeGenericSessionFile(t, dir, "main")
+			calls := 0
+			a := &fakeAdapterBasic{roots: []string{dir}, suffix: ".log", parse: func(string) (adapter.ParseResult, error) {
+				calls++
+				res := adapter.ParseResult{ToolEvents: []models.ToolEvent{{SessionID: "main"}}}
+				if calls > 1 {
+					switch mutation {
+					case "session changed":
+						res.ToolEvents[0].SessionID = "other"
+					case "multi session":
+						res.ToolEvents = append(res.ToolEvents, models.ToolEvent{SessionID: "other"})
+					case "deleted":
+						if err := os.Remove(path); err != nil {
+							t.Fatal(err)
+						}
+					case "inode replaced":
+						replacement := filepath.Join(dir, "replacement")
+						if err := os.WriteFile(replacement, []byte("new"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Rename(replacement, path); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				return res, nil
+			}}
+			announced := false
+			runGenericDiscovery(context.Background(), a, nil, time.Now(), dir,
+				genericDiscoverConfig{window: time.Millisecond, poll: time.Millisecond}, func(string) { announced = true })
+			if announced {
+				t.Fatal("announced a replaced identity")
+			}
+		})
+	}
+}
+
+func TestGenericDiscoveryExcludesTokenOnlyArtifact(t *testing.T) {
+	dir := t.TempDir()
+	path := writeGenericSessionFile(t, dir, "global-usage")
+	a := &fakeAdapterCursor{fakeAdapterBasic: newFakeSessionAdapter(dir, nil), kinds: map[string]adapter.CursorKind{path: adapter.CursorNoActions}}
+	if _, ok := resolveGenericCandidate(context.Background(), a, path); ok {
+		t.Fatal("usage-only file identified a terminal")
 	}
 }

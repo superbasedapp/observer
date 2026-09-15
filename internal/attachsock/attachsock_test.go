@@ -670,6 +670,7 @@ func TestSpawnBadVersion(t *testing.T) {
 // a 0600 socket.
 func TestListenSocketPerms(t *testing.T) {
 	t.Parallel()
+	skipUnlessUnixSocketTransport(t)
 	dir := t.TempDir()
 
 	// Refuse a non-socket file.
@@ -716,6 +717,7 @@ func TestListenSocketPerms(t *testing.T) {
 // A1: a pre-existing looser parent dir is tightened to 0700.
 func TestListenSocketTightensLooseDir(t *testing.T) {
 	t.Parallel()
+	skipUnlessUnixSocketTransport(t)
 	dir := t.TempDir()
 	attachDir := filepath.Join(dir, "attach")
 	if err := os.MkdirAll(attachDir, 0o755); err != nil {
@@ -736,6 +738,7 @@ func TestListenSocketTightensLooseDir(t *testing.T) {
 // and DOES rebind a stale socket left by a crashed daemon.
 func TestListenSocketRefusesLiveDaemon(t *testing.T) {
 	t.Parallel()
+	skipUnlessUnixSocketTransport(t)
 	sockPath := filepath.Join(t.TempDir(), "attach", "attach.sock")
 	ln1, err := ListenSocket(sockPath)
 	if err != nil {
@@ -1192,6 +1195,7 @@ func TestDialUnreachable(t *testing.T) {
 // Serve over a real unix socket end-to-end: spawn, exchange, exit.
 func TestServeOverUnixSocket(t *testing.T) {
 	t.Parallel()
+	skipUnlessUnixSocketTransport(t)
 	sockPath := filepath.Join(t.TempDir(), "attach.sock")
 	ln, err := ListenSocket(sockPath)
 	if err != nil {

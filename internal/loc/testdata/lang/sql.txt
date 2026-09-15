@@ -1,0 +1,7 @@
+-- A line comment
+SELECT 1;
+
+/* block
+   comment */
+SELECT '-- not a comment' AS s;
+SELECT * FROM t; -- trailing

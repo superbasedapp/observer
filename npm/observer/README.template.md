@@ -10,7 +10,7 @@
 **Claude Code cost tracking. Cursor token usage. Codex spend.
 AI coding agent observability — one local tool, proxy-accurate.**
 SuperBased captures, normalizes, and analyzes every AI
-coding tool call across **33 adapters** — Claude Code, Codex, Cursor,
+coding tool call across **40 adapters** — Claude Code, Codex, Cursor,
 Cline + Cline CLI, GitHub Copilot (VS Code) + Copilot CLI, Gemini CLI,
 OpenCode, Google Antigravity, Cowork, Nous Research's Hermes Agent,
 Kilo Code (legacy IDE extension + CLI), Aider, Goose, Devin, OpenClaw,
@@ -18,8 +18,8 @@ Pi, Factory Droid, Open Interpreter, Command Code, and more — in one
 local single-binary tool. An optional API proxy
 reconciles the *exact* tokens your provider billed (net input, cache
 5m/1h splits, reasoning tokens, long-context surcharges) instead of a
-JSONL-derived estimate. No telemetry, no cloud, no data leaves your
-machine.
+JSONL-derived estimate. No telemetry and no cloud by default - nothing
+leaves your machine unless you explicitly opt in to the sign-in beta.
 
 **One local binary.** SuperBased captures, normalizes, and analyzes
 every AI coding tool call on your machine: proxy-accurate cost,

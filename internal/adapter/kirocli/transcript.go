@@ -32,11 +32,15 @@ func (a *Adapter) ReadTranscript(ctx context.Context, sess models.Session, sourc
 	if path, ok := a.flatJSONLPath(sess.ID, sourceHints); ok {
 		return a.flatTranscript(path)
 	}
+	// Then a Kiro IDE session dir (`<bucket>/<id>/messages.jsonl`).
+	if path, ok := a.ideMessagesPath(sess.ID, sourceHints); ok {
+		return a.ideTranscript(path)
+	}
 	// Otherwise look for the conversation in a kiro-cli data.sqlite3.
 	if path, ok := a.stateDBPath(sourceHints); ok {
 		return a.sqliteTranscript(ctx, path, sess.ID)
 	}
-	return nil, fmt.Errorf("kirocli.ReadTranscript: no flat bundle or data.sqlite3 for session %s", sess.ID)
+	return nil, fmt.Errorf("kirocli.ReadTranscript: no flat bundle, IDE session dir or data.sqlite3 for session %s", sess.ID)
 }
 
 func (a *Adapter) flatJSONLPath(sessionID string, hints []string) (string, bool) {
@@ -53,15 +57,115 @@ func (a *Adapter) flatJSONLPath(sessionID string, hints []string) (string, bool)
 			}
 		}
 	}
+	// The default watch root is the PARENT `<home>/.kiro/sessions` and
+	// the flat bundles live in its `cli/` subdir; a root configured
+	// directly at `.../sessions/cli` (an explicit NewWithOptions root)
+	// is honoured too.
 	for _, root := range a.roots {
-		if strings.Contains(filepath.ToSlash(root), "/.kiro/sessions/cli") {
-			p := filepath.Join(root, name)
+		slashed := filepath.ToSlash(root)
+		switch {
+		case strings.HasSuffix(slashed, "/.kiro/sessions/cli"):
+			if p := filepath.Join(root, name); fileReadable(p) {
+				return p, true
+			}
+		case strings.HasSuffix(slashed, "/.kiro/sessions"):
+			if p := filepath.Join(root, "cli", name); fileReadable(p) {
+				return p, true
+			}
+		}
+	}
+	return "", false
+}
+
+// ideMessagesPath locates a Kiro IDE session's messages.jsonl: a
+// `.../<sessionId>/messages.jsonl` hint, else a scan of the workspace
+// buckets under every `<home>/.kiro/sessions` root. The `cli` bucket is
+// skipped — it is the flat-bundle dir, not an IDE workspace.
+func (a *Adapter) ideMessagesPath(sessionID string, hints []string) (string, bool) {
+	for _, h := range hints {
+		if filepath.Base(h) == "messages.jsonl" &&
+			filepath.Base(filepath.Dir(h)) == sessionID &&
+			fileReadable(h) {
+			return h, true
+		}
+	}
+	for _, root := range sessionRoots(a.roots) {
+		buckets, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, b := range buckets {
+			if !b.IsDir() || b.Name() == "cli" {
+				continue
+			}
+			p := filepath.Join(root, b.Name(), sessionID, "messages.jsonl")
 			if fileReadable(p) {
 				return p, true
 			}
 		}
 	}
 	return "", false
+}
+
+// sessionRoots filters the adapter's watch roots down to the
+// `<home>/.kiro/sessions` ones (excluding the kiro-cli SQLite dirs).
+func sessionRoots(roots []string) []string {
+	var out []string
+	for _, root := range roots {
+		if strings.HasSuffix(filepath.ToSlash(root), "/.kiro/sessions") {
+			out = append(out, root)
+		}
+	}
+	return out
+}
+
+// ideTranscript builds the normalized transcript from a Kiro IDE
+// session's messages.jsonl. Reasoning operations and the non-message
+// record types are skipped; tool calls fold into the owning assistant
+// exchange the same way the SQLite path does.
+func (a *Adapter) ideTranscript(messagesPath string) ([]models.TranscriptMessage, error) {
+	body, err := os.ReadFile(messagesPath) //nolint:gosec // path derives from watch root / validated hint
+	if err != nil {
+		return nil, fmt.Errorf("kirocli.ReadTranscript: %w", err)
+	}
+	b := transcriptutil.New()
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimRight(raw, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var rec ideRecord
+		if json.Unmarshal([]byte(line), &rec) != nil {
+			continue
+		}
+		appendIDETranscriptRecord(b, rec)
+	}
+	return b.Finish(), nil
+}
+
+// appendIDETranscriptRecord folds one IDE record into the transcript
+// builder.
+func appendIDETranscriptRecord(b *transcriptutil.Builder, rec ideRecord) {
+	ts := parseRFC3339(rec.Timestamp)
+	switch rec.Payload.Type {
+	case "user":
+		b.SetNextID(rec.ID)
+		b.User(rec.Payload.Content.Text, ts)
+	case "assistant":
+		if rec.Payload.OperationType == "Reasoning" {
+			return
+		}
+		b.SetNextID(rec.ID)
+		b.AssistantText(rec.Payload.Content.Text, "", ts)
+	case "tool_call":
+		if rec.Payload.ToolCallID != "" {
+			b.AssistantCall(rec.Payload.ToolCallID, rec.Payload.ToolName, string(rec.Payload.Args), "", ts)
+		}
+	case "tool_result":
+		if rec.Payload.ToolCallID != "" {
+			b.Resolve(rec.Payload.ToolCallID, rec.Payload.Content.Text, ts)
+		}
+	}
 }
 
 func (a *Adapter) stateDBPath(hints []string) (string, bool) {
@@ -82,9 +186,18 @@ func (a *Adapter) stateDBPath(hints []string) (string, bool) {
 }
 
 // flatTranscript builds the normalized transcript from a flat-bundle
-// `.jsonl` stream. The stream carries only Prompt / AssistantMessage
-// text records; tool uses in interactive sessions are not written to
-// the stream (they live in the SQLite store for non-interactive runs).
+// `.jsonl` stream, folding in only the Prompt / AssistantMessage TEXT.
+//
+// The older claim here — that interactive streams carry no tool uses —
+// was measured on a text-only session and is wrong: a real interactive
+// session carries `toolUse` blocks inside each AssistantMessage plus
+// sibling `ToolResults` records (grounded 2026-09-03,
+// testdata/kirocrew/kiro-cli/). parseFlatBundle emits those as action
+// rows. They are deliberately NOT folded into the transcript here: the
+// transcript is the handoff/injection surface, where the useful content
+// is the conversational prose, and the SQLite path's own
+// sqliteTranscript is the one that folds tool uses into their owning
+// exchange.
 func (a *Adapter) flatTranscript(jsonlPath string) ([]models.TranscriptMessage, error) {
 	body, err := os.ReadFile(jsonlPath) //nolint:gosec // path derives from watch root / validated hint
 	if err != nil {

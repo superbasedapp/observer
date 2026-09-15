@@ -200,10 +200,10 @@ export function MilestonesCard({ sessions }: { sessions: number | null }) {
   // shown on-screen; no compression %-savings framing).
   const shareText =
     visible === "saved10" && savedUSD != null
-      ? `SuperBased has saved me ${fmtUSD(savedUSD)} in AI coding costs so far — superbased.app`
+      ? `SuperBased has saved me ${fmtUSD(savedUSD)} in AI coding costs so far - superbased.app`
       : visible === "sessions100"
-        ? "100 AI coding sessions tracked with SuperBased — superbased.app"
-        : "One full week of AI coding sessions tracked with SuperBased — superbased.app";
+        ? "100 AI coding sessions tracked with SuperBased - superbased.app"
+        : "One full week of AI coding sessions tracked with SuperBased - superbased.app";
   const dismiss = () => {
     retire(visible);
     setVisible(null);

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -235,5 +236,78 @@ func TestSelectSessionNetworkEvents_CapsPerSessionMostRecent(t *testing.T) {
 	firstSeeded := timestamp(now.Add(-time.Duration(total) * time.Second))
 	if oldest == firstSeeded {
 		t.Fatalf("cap kept the oldest event (%q); want most-recent-first retention", firstSeeded)
+	}
+}
+
+func TestSelectSessionNetworkEventsBounded_CapsAcrossSessionsByBytes(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	sessionID, _ := mustProjectAndSession(t, s)
+	now := time.Now().UTC()
+
+	for i := 0; i < 3; i++ {
+		seedNetworkEvent(t, s, sessionID, "proxy:bounded", now.Add(time.Duration(i)*time.Second),
+			map[string]any{"capture_source": "proxy", "method": "POST"},
+			&processobs.NetworkBodyCapture{CaptureSource: "proxy", RequestBody: "request-body", ResponseBody: "response-body"})
+	}
+
+	all, err := s.SelectSessionNetworkEvents(ctx)
+	if err != nil {
+		t.Fatalf("SelectSessionNetworkEvents: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("unbounded rows = %d, want 3", len(all))
+	}
+
+	rows, err := s.SelectSessionNetworkEventsBounded(ctx, jsonSize(all[0]))
+	if err != nil {
+		t.Fatalf("SelectSessionNetworkEventsBounded: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("bounded rows = %d, want exactly 1", len(rows))
+	}
+}
+
+// Envelope-budget sentinel for the 2026-08-26 incident: the COMPOSED
+// SelectUnpushedSince batch — not just each slice — must respect maxBytes.
+// Before the bound, seven days of request/response bodies rode every push
+// tick in full (233 MB compressed against a 1 MiB limit), ballooning the
+// daemon heap and re-materialising on each auth-failure retry.
+func TestSelectUnpushedSince_NetworkEventsRespectEnvelopeBudget(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	sessionID, _ := mustProjectAndSession(t, s)
+	now := time.Now().UTC()
+
+	body := strings.Repeat("x", 64<<10)
+	for i := 0; i < 20; i++ {
+		seedNetworkEvent(t, s, sessionID, "proxy:budget", now.Add(time.Duration(i)*time.Second),
+			map[string]any{"capture_source": "proxy", "method": "POST"},
+			&processobs.NetworkBodyCapture{CaptureSource: "proxy", RequestBody: body, ResponseBody: body})
+	}
+
+	const maxBytes = 1 << 20
+	batch, err := s.SelectUnpushedSince(ctx, PushCursor{}, maxBytes, "o", "u",
+		ShareOptions{AdminManaged: true}, ScopeOptions{})
+	if err != nil {
+		t.Fatalf("SelectUnpushedSince: %v", err)
+	}
+	if n := len(batch.SessionNetworkEvents); n == 0 || n >= 20 {
+		t.Fatalf("network events = %d, want a truncated non-empty subset of 20", n)
+	}
+	if batch.EstBytes > maxBytes {
+		t.Fatalf("EstBytes = %d exceeds maxBytes = %d", batch.EstBytes, maxBytes)
+	}
+
+	// A roomy budget still carries the complete snapshot.
+	wide, err := s.SelectUnpushedSince(ctx, PushCursor{}, 64<<20, "o", "u",
+		ShareOptions{AdminManaged: true}, ScopeOptions{})
+	if err != nil {
+		t.Fatalf("SelectUnpushedSince (wide): %v", err)
+	}
+	if len(wide.SessionNetworkEvents) != 20 {
+		t.Fatalf("wide budget network events = %d, want 20", len(wide.SessionNetworkEvents))
 	}
 }

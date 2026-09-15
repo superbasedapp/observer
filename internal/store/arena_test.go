@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/pidbridge"
@@ -242,5 +243,140 @@ func TestArenaUpdatesRejectMissingRows(t *testing.T) {
 	}
 	if err := s.SetCandidateDiscarded(ctx, "missing"); err == nil {
 		t.Fatal("missing candidate discard succeeded")
+	}
+}
+
+// TestReconcileStaleArena_ParentTerminalClosesRunningCandidate pins the core
+// stale-state fix: a candidate left "running" under a run that has already
+// reached a terminal status is reconciled to failed on the next read, with no
+// age dependency (this is the headless-20260823-01 shape from the UI audit).
+func TestReconcileStaleArena_ParentTerminalClosesRunningCandidate(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	run := arenaFixtureRun("run-parent-terminal")
+	if err := s.InsertArenaRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateArenaRunStatus(ctx, run.ID, models.ArenaRunStatusComplete); err != nil {
+		t.Fatal(err)
+	}
+	cand := &models.ArenaCandidate{
+		ID: "cand-stuck", RunID: run.ID, Tool: "opencode", Seq: 0,
+		Status: models.ArenaCandidateStatusRunning,
+	}
+	if err := s.InsertArenaCandidate(ctx, cand); err != nil {
+		t.Fatal(err)
+	}
+
+	// now == insert time: no age has elapsed, yet the parent is terminal.
+	n, err := s.ReconcileStaleArena(ctx, time.Now().UTC(), nil)
+	if err != nil {
+		t.Fatalf("ReconcileStaleArena: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("reconciled %d rows, want 1", n)
+	}
+	got, err := s.ArenaCandidate(ctx, "cand-stuck")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != models.ArenaCandidateStatusFailed {
+		t.Errorf("candidate status = %q, want failed", got.Status)
+	}
+	if got.Error == "" {
+		t.Errorf("candidate error not stamped with a reconcile reason")
+	}
+
+	// Idempotent: a second pass changes nothing.
+	if n, err := s.ReconcileStaleArena(ctx, time.Now().UTC(), nil); err != nil || n != 0 {
+		t.Fatalf("second pass: n=%d err=%v, want 0/nil", n, err)
+	}
+}
+
+// TestReconcileStaleArena_AgeClosesCrashedRun pins the daemon-crash case: a run
+// (and its candidate) left in-flight far past any real drive is failed by age,
+// UNLESS the run is currently being driven by this process (liveRunIDs).
+func TestReconcileStaleArena_AgeClosesCrashedRun(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	run := arenaFixtureRun("run-crashed")
+	if err := s.InsertArenaRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateArenaRunStatus(ctx, run.ID, models.ArenaRunStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	cand := &models.ArenaCandidate{
+		ID: "cand-crashed", RunID: run.ID, Tool: "aider", Seq: 0,
+		Status: models.ArenaCandidateStatusRunning,
+	}
+	if err := s.InsertArenaCandidate(ctx, cand); err != nil {
+		t.Fatal(err)
+	}
+
+	// A live drive of this run must be left untouched even far in the future.
+	future := time.Now().UTC().Add(5 * time.Hour)
+	if n, err := s.ReconcileStaleArena(ctx, future, map[string]bool{run.ID: true}); err != nil || n != 0 {
+		t.Fatalf("live run reconciled: n=%d err=%v, want 0/nil", n, err)
+	}
+
+	// Not live: 5h past the last progress (> ArenaStaleAfter) closes both rows.
+	n, err := s.ReconcileStaleArena(ctx, future, nil)
+	if err != nil {
+		t.Fatalf("ReconcileStaleArena: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("reconciled %d rows, want 2 (run + candidate)", n)
+	}
+	gotRun, err := s.ArenaRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRun.Status != models.ArenaRunStatusFailed {
+		t.Errorf("run status = %q, want failed", gotRun.Status)
+	}
+}
+
+// TestArenaUsageBySessions_UnitIsSummedDollars pins the arena cost UNIT against
+// the F-ARENA3 "~30x per-token" misdiagnosis: the candidate cost is the direct
+// SUM of api_turns.cost_usd (already-priced dollars), NOT re-derived per token.
+// The seeded rows make the point concretely — cost is disproportionate to the
+// displayed input/output tokens precisely because cache tokens (billed, not in
+// the input/output columns) drive it, so any per-(input+output)-token check is
+// the wrong unit. This test would fail if the seam ever multiplied tokens by a
+// rate or divided by 1e3/1e6.
+func TestArenaUsageBySessions_UnitIsSummedDollars(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("exec: %v", err)
+		}
+	}
+	// Two turns of one candidate session: small displayed tokens, large
+	// pre-computed dollar cost driven by cache creation (not in in/out cols).
+	mustExec(`INSERT INTO api_turns (session_id, timestamp, provider, model, input_tokens, output_tokens, cache_creation_tokens, cost_usd)
+		VALUES (?, ?, 'anthropic', 'claude-fable-5', 3513, 81, 10530, 0.24978)`,
+		"sess-cc", "2026-08-22T00:00:00Z")
+	mustExec(`INSERT INTO api_turns (session_id, timestamp, provider, model, input_tokens, output_tokens, cache_read_tokens, cost_usd)
+		VALUES (?, ?, 'anthropic', 'claude-fable-5', 6, 560, 10530, 0.15903)`,
+		"sess-cc", "2026-08-22T00:01:00Z")
+
+	inTok, outTok, cost, err := s.ArenaUsageBySessions(ctx, []string{"sess-cc"})
+	if err != nil {
+		t.Fatalf("ArenaUsageBySessions: %v", err)
+	}
+	if inTok != 3519 || outTok != 641 {
+		t.Fatalf("tokens = %d/%d, want 3519/641 (displayed in/out only)", inTok, outTok)
+	}
+	// The unit is dollars, summed straight from cost_usd. 0.24978 + 0.15903.
+	if want := 0.40881; cost < want-1e-9 || cost > want+1e-9 {
+		t.Fatalf("cost = %.8f, want %.5f (direct SUM of cost_usd, no per-token re-pricing)", cost, want)
 	}
 }

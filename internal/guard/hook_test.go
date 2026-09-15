@@ -109,6 +109,30 @@ func TestMaybeAlert(t *testing.T) {
 	if len(n.titles) != 0 {
 		t.Errorf("alerts fired with desktop=false: %v", n.titles)
 	}
+
+	// FIX-3 (phase-2 review): SuppressAlert silences a toast even at
+	// Critical severity — the prompt-submit hook lane's own
+	// "already shown in-band" case (a routine ask-once secret
+	// interrupt, R-172 = SeverityCritical on the rule row itself,
+	// independent of severity threshold).
+	g, n = mk(true, "high")
+	suppressed := verdict(policy.SeverityCritical, "R-172")
+	suppressed.SuppressAlert = true
+	g.MaybeAlert(suppressed)
+	if len(n.titles) != 0 {
+		t.Errorf("SuppressAlert did not silence a Critical-severity toast: %v", n.titles)
+	}
+
+	// ... but SuppressAlert never silences a genuine GuardError, same
+	// as the severity-threshold gate above.
+	g, n = mk(true, "critical")
+	geSuppressed := verdict(policy.SeverityHigh, GuardErrorRuleID)
+	geSuppressed.GuardError = true
+	geSuppressed.SuppressAlert = true
+	g.MaybeAlert(geSuppressed)
+	if len(n.titles) != 1 {
+		t.Errorf("SuppressAlert silenced a guard_error alert: %v", n.titles)
+	}
 }
 
 // TestEvaluateHook covers the pre-execution seam: verdict shaping (no

@@ -37,6 +37,8 @@ build/
 !internal/intelligence/dashboard/webapp/dist/**
 !web2/dist
 !web2/dist/**
+!webcloud/dist
+!webcloud/dist/**
 !internal/orgserver/dashboard/webapp/dist
 !internal/orgserver/dashboard/webapp/dist/**
 
@@ -47,6 +49,9 @@ web/*.log
 web2/node_modules/
 web2/.vite/
 web2/*.log
+webcloud/node_modules/
+webcloud/.vite/
+webcloud/*.log
 
 # Arcade verification harness — Playwright + headless Chromium; dev-only.
 # website/tools/{shoot.mjs, package.json, README.md, test/*.mjs} are
@@ -148,6 +153,14 @@ website/keys/
 # Python bytecode + regenerable scrape cache under model-pricing scripts
 **/__pycache__/
 model-pricing/scripts/extract-cache/
+
+# npm workspace root (design-system arc)
+/node_modules/
+/shared/node_modules/
+
+# Per-session working artifacts (deploy logs, probes, review notes). Written by
+# sessions into the repo root; never part of a release and never committed.
+/scratchpad/
 
 # Internal docs — kept locally on the private repo for development
 # context, untracked from the public repo. The dashboard's runtime

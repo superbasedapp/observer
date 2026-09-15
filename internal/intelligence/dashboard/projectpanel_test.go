@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
@@ -15,7 +16,7 @@ import (
 
 // newProjectPanelServer builds a dashboard Server with the given token→root
 // resolver and optional remote controller (for the allow_terminal_view gate).
-func newProjectPanelServer(t *testing.T, resolver func(string) (string, bool), remote RemoteController) *Server {
+func newProjectPanelServer(t *testing.T, resolver func(string) (TerminalRoot, bool), remote RemoteController) *Server {
 	t.Helper()
 	database, err := openTestDB(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "d.db")})
 	if err != nil {
@@ -58,26 +59,33 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 	return body.Error
 }
 
+// fixedResolver builds a token→TerminalRoot seam from a literal map. `root` is
+// the browsable path ("" = nothing to browse → 409) and `authorized` is its
+// provenance: true for an operator allow-listed launch root, false for the
+// run's own working directory (the default-cwd shape the 2026-08-28 operator
+// ruling made browsable).
 func fixedResolver(m map[string]struct {
-	root  string
-	known bool
+	root       string
+	known      bool
+	authorized bool
 },
-) func(string) (string, bool) {
-	return func(token string) (string, bool) {
+) func(string) (TerminalRoot, bool) {
+	return func(token string) (TerminalRoot, bool) {
 		if v, ok := m[token]; ok {
-			return v.root, v.known
+			return TerminalRoot{Path: v.root, Authorized: v.authorized}, v.known
 		}
-		return "", false
+		return TerminalRoot{}, false
 	}
 }
 
 func TestProjectPanelTokenGates(t *testing.T) {
 	dir := t.TempDir()
 	resolver := fixedResolver(map[string]struct {
-		root  string
-		known bool
+		root       string
+		known      bool
+		authorized bool
 	}{
-		"LIVE":   {root: dir, known: true},
+		"LIVE":   {root: dir, known: true, authorized: true},
 		"NOROOT": {root: "", known: true},
 	})
 	s := newProjectPanelServer(t, resolver, nil)
@@ -123,11 +131,12 @@ func TestProjectPanelNilResolverDisabled(t *testing.T) {
 func TestProjectPanelRemoteGate(t *testing.T) {
 	dir := t.TempDir()
 	resolver := fixedResolver(map[string]struct {
-		root  string
-		known bool
+		root       string
+		known      bool
+		authorized bool
 	}{
-		"LIVE":   {root: dir, known: true}, // rooted
-		"NOROOT": {root: "", known: true},  // rootless
+		"LIVE":   {root: dir, known: true, authorized: true}, // rooted
+		"NOROOT": {root: "", known: true},                    // rootless
 		// "GHOST" is absent → unknown.
 	})
 
@@ -166,9 +175,10 @@ func TestProjectPanelFilesAndFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolver := fixedResolver(map[string]struct {
-		root  string
-		known bool
-	}{"LIVE": {root: dir, known: true}})
+		root       string
+		known      bool
+		authorized bool
+	}{"LIVE": {root: dir, known: true, authorized: true}})
 	s := newProjectPanelServer(t, resolver, nil)
 
 	t.Run("list happy path", func(t *testing.T) {
@@ -259,9 +269,10 @@ func TestProjectPanelMetaAndGit(t *testing.T) {
 	git("commit", "-q", "--allow-empty", "-m", "first")
 
 	resolver := fixedResolver(map[string]struct {
-		root  string
-		known bool
-	}{"GIT": {root: dir, known: true}})
+		root       string
+		known      bool
+		authorized bool
+	}{"GIT": {root: dir, known: true, authorized: true}})
 	s := newProjectPanelServer(t, resolver, nil)
 
 	t.Run("meta", func(t *testing.T) {
@@ -281,6 +292,11 @@ func TestProjectPanelMetaAndGit(t *testing.T) {
 		}
 		if resp.Branch != "main" {
 			t.Fatalf("branch = %q, want main", resp.Branch)
+		}
+		// An allow-listed launch root is labelled as a project, unchanged by the
+		// 2026-08-28 widening.
+		if resp.RootKind != terminalRootKindProject {
+			t.Fatalf("root_kind = %q, want %q for an authorized launch root", resp.RootKind, terminalRootKindProject)
 		}
 	})
 
@@ -313,6 +329,151 @@ func TestProjectPanelMetaAndGit(t *testing.T) {
 			t.Fatalf("unexpected git payload: %+v", info)
 		}
 	})
+}
+
+// TestProjectPanelServesWorkingDirRoot pins the OPERATOR RULING of 2026-08-28:
+// a run whose browsable directory is its own working directory (a default-cwd
+// launch, Authorized=false) is fully browsable, and the meta payload says so.
+//
+// The two halves are inseparable on purpose. If the handler ever goes back to
+// requiring an authorized root the browse assertions fail; if it serves the
+// working directory while still calling it a project, the root_kind assertion
+// fails.
+func TestProjectPanelServesWorkingDirRoot(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "notes.txt"), []byte("in the daemon cwd\n"))
+	resolver := fixedResolver(map[string]struct {
+		root       string
+		known      bool
+		authorized bool
+	}{
+		// The devbox shape: no allowed_project_roots configured, so the launch
+		// carried no root and the child ran in the daemon's own cwd.
+		"DEFAULTCWD": {root: dir, known: true, authorized: false},
+	})
+	s := newProjectPanelServer(t, resolver, nil)
+
+	t.Run("meta labels the path as a working directory", func(t *testing.T) {
+		rec := doGet(t, s, "/api/terminal/project/DEFAULTCWD", false)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 (the ruling enables Files/Git for a default-cwd launch); body=%s",
+				rec.Code, rec.Body.String())
+		}
+		var resp projectMetaResp
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Root != dir {
+			t.Fatalf("root = %q, want the spawn dir %q", resp.Root, dir)
+		}
+		if resp.RootKind != terminalRootKindWorking {
+			t.Fatalf("root_kind = %q, want %q — the panel must not call a default-cwd launch a project",
+				resp.RootKind, terminalRootKindWorking)
+		}
+	})
+
+	t.Run("files and file are served from the working directory", func(t *testing.T) {
+		rec := doGet(t, s, "/api/terminal/project/DEFAULTCWD/files?path=", false)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("files code = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		var list projectFilesResp
+		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+			t.Fatal(err)
+		}
+		if len(list.Entries) != 1 || list.Entries[0].Name != "notes.txt" {
+			t.Fatalf("listing = %+v, want notes.txt from the working directory", list.Entries)
+		}
+		rec = doGet(t, s, "/api/terminal/project/DEFAULTCWD/file?path=notes.txt", false)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("file code = %d, want 200", rec.Code)
+		}
+		var file projectFileResp
+		if err := json.Unmarshal(rec.Body.Bytes(), &file); err != nil {
+			t.Fatal(err)
+		}
+		if file.Content != "in the daemon cwd\n" {
+			t.Fatalf("content = %q", file.Content)
+		}
+	})
+
+	t.Run("git is served from the working directory", func(t *testing.T) {
+		rec := doGet(t, s, "/api/terminal/project/DEFAULTCWD/git", false)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("git code = %d, want 200 (a non-repo dir still answers is_git:false)", rec.Code)
+		}
+	})
+
+	// The dock's button-enablement seam must agree with the endpoint: one
+	// decision, two consumers.
+	if !s.hasProjectRoot("DEFAULTCWD") {
+		t.Fatal("hasProjectRoot = false for a default-cwd launch; the Files/Git buttons would be disabled while the endpoint serves 200")
+	}
+	if s.hasProjectRoot("GHOST") {
+		t.Fatal("hasProjectRoot = true for an unknown token")
+	}
+}
+
+// TestProjectPanelWorkingDirRootKeepsContainmentGuards pins that the ruling
+// widened WHICH root is browsable, not what may be reached from it: every
+// per-request containment guard (traversal, absolute paths, symlinks escaping
+// the root, non-regular files) still enforces on a working-directory root, and
+// the remote allow_terminal_view gate still runs before the token resolves.
+func TestProjectPanelWorkingDirRootKeepsContainmentGuards(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "inside.txt"), []byte("ok\n"))
+
+	// A secret OUTSIDE the working directory, reachable only if containment
+	// broke — via traversal, via an absolute path, or via an in-root symlink.
+	outside := t.TempDir()
+	secretPath := filepath.Join(outside, "secret.txt")
+	mustWrite(t, secretPath, []byte("must never be served\n"))
+	if err := os.Symlink(outside, filepath.Join(dir, "escape")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	resolver := fixedResolver(map[string]struct {
+		root       string
+		known      bool
+		authorized bool
+	}{"DEFAULTCWD": {root: dir, known: true, authorized: false}})
+	s := newProjectPanelServer(t, resolver, nil)
+
+	// Sanity: the root itself IS browsable, so a refusal below is the guard
+	// firing and not the panel being disabled.
+	if rec := doGet(t, s, "/api/terminal/project/DEFAULTCWD/file?path=inside.txt", false); rec.Code != http.StatusOK {
+		t.Fatalf("in-root read code = %d, want 200", rec.Code)
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"traversal out of the working dir", "/file?path=../" + filepath.Base(outside) + "/secret.txt"},
+		{"absolute path", "/file?path=" + secretPath},
+		{"symlinked dir is not listable", "/files?path=escape"},
+		{"read through an escaping symlink", "/file?path=escape/secret.txt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doGet(t, s, "/api/terminal/project/DEFAULTCWD"+tc.path, false)
+			if rec.Code == http.StatusOK {
+				t.Fatalf("guard did not fire on a working-dir root: code=200 body=%s", rec.Body.String())
+			}
+			if body := rec.Body.String(); strings.Contains(body, "must never be served") {
+				t.Fatalf("served content from outside the root: %s", body)
+			}
+		})
+	}
+
+	// The remote read gate is unchanged by the widening.
+	sOff := newProjectPanelServer(t, resolver, NewRemoteController(RemoteOptions{AllowTerminalView: false}))
+	rec := doGet(t, sOff, "/api/terminal/project/DEFAULTCWD/files?path=", true)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("remote view-off on a working-dir root: code = %d, want 403", rec.Code)
+	}
+	if got := errorCode(t, rec); got != "remote_view_disabled" {
+		t.Fatalf("remote view-off error = %q, want remote_view_disabled", got)
+	}
 }
 
 func mustWrite(t *testing.T, path string, data []byte) {

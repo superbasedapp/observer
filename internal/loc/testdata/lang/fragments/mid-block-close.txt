@@ -1,0 +1,3 @@
+ * a fragment that starts inside a block comment
+ */
+func g() int { return 2 }

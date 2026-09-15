@@ -58,7 +58,7 @@ export function OnboardingCard({ sessions }: { sessions: number | null }) {
             Welcome. Let's get your first session on the board.
           </h2>
           <p className="mt-1 text-[12px] text-fg-3">
-            SuperBased captures what your AI coding tools actually do — once a
+            SuperBased captures what your AI coding tools actually do - once a
             tool is wired, sessions, costs, and cache behavior appear here on
             their own.
           </p>
@@ -72,7 +72,7 @@ export function OnboardingCard({ sessions }: { sessions: number | null }) {
                 >
                   Check your connected tools
                 </Link>{" "}
-                — see what's detected on this machine and run the per-tool
+                - see what's detected on this machine and run the per-tool
                 setup wizard (every write previews first).
               </span>
             </li>
@@ -85,14 +85,14 @@ export function OnboardingCard({ sessions }: { sessions: number | null }) {
                 >
                   Route Claude Code / Codex through the proxy
                 </Link>{" "}
-                — one click, durable, unlocks exact token accounting and
+                - one click, durable, unlocks exact token accounting and
                 compression. Optional but worth it.
               </span>
             </li>
             <li className="flex items-baseline gap-2">
               <span className="font-mono text-[10.5px] text-fg-4">3</span>
               <span>
-                Use your AI tool like you normally would — the first session
+                Use your AI tool like you normally would - the first session
                 shows up here the moment it lands.
               </span>
             </li>
@@ -119,7 +119,7 @@ export function OnboardingCard({ sessions }: { sessions: number | null }) {
               >
                 {seeding ? "seeding…" : "Explore with demo data"}
               </button>{" "}
-              — a seeded sample in a temporary database. Your real data stays
+              - a seeded sample in a temporary database. Your real data stays
               untouched; one click clears it.
             </p>
           )}

@@ -49,21 +49,51 @@ var expectedClassification = map[string]string{
 	"/api/analysis/trend":               "V",
 	// Admin-authored banner copy, identical for every viewer of this
 	// dashboard — no install state, nothing sensitive.
-	"/api/announcements":            "V",
-	"/api/attach/sessions":          "V",
-	"/api/backfill/jobs":            "V",
-	"/api/backfill/jobs/":           "V",
-	"/api/backfill/run":             "L",
-	"/api/backfill/status":          "V",
-	"/api/benchmarks":               "V",
-	"/api/benchmarks/":              "V",
-	"/api/budget":                   "V",
-	"/api/cache/entry-states":       "V",
-	"/api/cache/events":             "V",
-	"/api/cache/health":             "V",
-	"/api/cache/overview":           "V",
-	"/api/cache/status":             "V",
-	"/api/cache/timeseries":         "V",
+	"/api/announcements":      "V",
+	"/api/attach/sessions":    "V",
+	"/api/backfill/jobs":      "V",
+	"/api/backfill/jobs/":     "V",
+	"/api/backfill/run":       "L",
+	"/api/backfill/status":    "V",
+	"/api/benchmarks":         "V",
+	"/api/benchmarks/":        "V",
+	"/api/budget":             "V",
+	"/api/cache/entry-states": "V",
+	"/api/cache/events":       "V",
+	"/api/cache/health":       "V",
+	"/api/cache/overview":     "V",
+	"/api/cache/status":       "V",
+	"/api/cache/timeseries":   "V",
+	"/api/cloud/login":        "L",
+	"/api/cloud/login/state":  "L",
+	"/api/cloud/logout":       "L",
+	// Cloud Intelligence actions (dashboard parity, 2026-09-14): every one
+	// spawns the consent-gated `observer cloud …` CLI on THIS machine or reads
+	// consent receipts — owner-loopback only, never remotely reachable.
+	"/api/cloud/consent":        "L",
+	"/api/cloud/consent/grant":  "L",
+	"/api/cloud/consent/grants": "L",
+	"/api/cloud/consent/revoke": "L",
+	"/api/cloud/delete-account": "L",
+	"/api/cloud/preview":        "L",
+	"/api/cloud/sync":           "L",
+	"/api/cloud/sync/state":     "L",
+	"/api/cloud/session/":       "V",
+	"/api/cloud/status":         "V",
+	// Cloud Intelligence value-upgrade (2026-09-15): the standing Turn on /
+	// Turn off actions are the same owner-loopback CLI-runner shape as the
+	// other cloud actions above; the ledger is a pure store read like
+	// /api/cloud/session/ and /api/cloud/status.
+	"/api/cloud/enable":  "L",
+	"/api/cloud/disable": "L",
+	"/api/cloud/ledger":  "V",
+	// Cloud Intelligence value-upgrade W3 (2026-09-15): the Sessions-page
+	// toast/banner poll is a pure store read, same class as /api/cloud/status.
+	"/api/cloud/events": "V",
+	// Cloud Intelligence value-upgrade W5 (2026-09-15): the weekly project
+	// digests `observer cloud sync` pulled back are a pure store read, same
+	// class as /api/cloud/status.
+	"/api/cloud/digests":            "V",
 	"/api/codex/support":            "V",
 	"/api/compaction/events":        "V",
 	"/api/compression/by-model":     "V",
@@ -73,6 +103,8 @@ var expectedClassification = map[string]string{
 	"/api/compression/timeseries":   "V",
 	"/api/config":                   "V",
 	"/api/config/backup":            "L",
+	"/api/config/keys":              "L", // generic batched dotted-key config write (dashboard-config-management plan §2.2)
+	"/api/config/schema":            "L", // the owner-local settings schema that drives /keys
 	"/api/config/pricing":           "L",
 	"/api/config/pricing/defaults":  "V",
 	"/api/config/profiles":          "L",
@@ -113,20 +145,39 @@ var expectedClassification = map[string]string{
 	"/api/guard/policy":            "L",
 	"/api/guard/policy/backup":     "L",
 	"/api/guard/policy/lint":       "V",
+	"/api/guard/prompt/allow/":     "L",
+	"/api/guard/prompt/clear":      "L",
+	"/api/guard/prompt/detectors":  "V",
+	"/api/guard/prompt/events":     "V",
+	"/api/guard/prompt/probe":      "L",
+	"/api/guard/prompt/status":     "V",
 	"/api/guard/rules":             "V",
 	"/api/guard/simulate":          "V",
 	"/api/guard/summary":           "V",
 	"/api/health/doctor":           "V",
 	"/api/health/failures":         "V",
 	"/api/health/watcher":          "V",
-	"/api/launch/":                 "V",
-	"/api/live":                    "V",
-	"/api/mcp/value":               "V",
-	"/api/models":                  "V",
-	"/api/patterns":                "V",
-	"/api/patterns/timeseries":     "V",
-	"/api/privacy/scrub-test":      "V",
-	"/api/process/enable-capture":  "L",
+	// Instance switcher — same class and the same reasoning as
+	// /api/terminal/ssh below: GET discloses the operator's configured remote
+	// hostnames, and POST .../connect spawns an `ssh -N -L` child to a
+	// THIRD-PARTY machine whose forward then answers on this machine's
+	// loopback. Letting a paired phone drive that is a pivot, not a view.
+	"/api/instances":  "L",
+	"/api/instances/": "L",
+	"/api/launch/":    "V",
+	"/api/live":       "V",
+	// Lines-of-code authorship. The summary READ is View like every other
+	// reporting surface; the editor-change INGEST is owner-Local, because
+	// a remote viewer must never be able to write authorship counts into
+	// someone else's node.
+	"/api/loc/summary":            "V",
+	"/api/loc/editor-change":      "L",
+	"/api/mcp/value":              "V",
+	"/api/models":                 "V",
+	"/api/patterns":               "V",
+	"/api/patterns/timeseries":    "V",
+	"/api/privacy/scrub-test":     "V",
+	"/api/process/enable-capture": "L",
 	// Detection only: reads config, runs the read-only `schtasks /Query`
 	// probe, reads the daemon's own published health record. Registers
 	// nothing, spawns nothing — the elevation broker is a separate route.
@@ -185,8 +236,11 @@ var expectedClassification = map[string]string{
 	// pure read; MANAGING the vocabulary (rename/delete across every session) is
 	// a whole-route Execute mutation — user-authored review metadata a paired
 	// remote owner legitimately drives, never machine-reaching config.
-	"/api/sessions/tags":                  "V",
-	"/api/sessions/tags/manage":           "X",
+	"/api/sessions/tags":        "V",
+	"/api/sessions/tags/manage": "X",
+	// Custom tag definitions: GET reads the glossary (View); POST upserts one
+	// (Execute-escalated on the same route, like /api/session/<id>/tags).
+	"/api/tags/definitions":               "V",
 	"/api/setup/claude":                   "L",
 	"/api/setup/codex":                    "L",
 	"/api/setup/codex-hooks":              "V",
@@ -202,12 +256,14 @@ var expectedClassification = map[string]string{
 	"/api/suggest/write":                  "L",
 	"/api/suggestions":                    "V",
 	"/api/suggestions/state":              "L",
+	"/api/tasks":                          "V", // Phase-2 task-tracking project/tool/window rollup — read-side aggregate over already-captured actions/token_usage rows, same posture as /api/cache/status
 	"/api/terminal/":                      "V",
 	"/api/terminal/install":               "L", // spawns the registry-constant install command in a local-only setup PTY — owner-local only
 	"/api/terminal/launch":                "X",
 	"/api/terminal/launch/preflight":      "L", // runs a $SHELL -lc login-shell PATH capture + reveals binary paths/home layout — owner-local only (reclassified V→L, 2026-07-23 review)
 	"/api/terminal/launch/models":         "V", // reads token_usage model history + registry Known list only — same posture as /api/models (B5 model picker)
 	"/api/terminal/sandbox":               "V", // B9 fail-soft sandbox probe — reads the daemon's cached bwrap probe result + [terminal.sandbox] config only, same posture as /api/terminal/launch/models
+	"/api/terminal/ssh":                   "L", // SSH remote-system terminals — GET discloses the operator's internal hostnames (the sessions.git_branch privacy class) and POST opens an interactive shell on a THIRD-PARTY machine; both stay owner-local until remote-driven SSH gets its own threat model (ssh-remote-profiles plan §6.2 / D1)
 	"/api/terminal/sandbox/config":        "L", // owner-local editor for [terminal.sandbox], including remote-clone / extra-rw-bind authority expansion
 	"/api/terminal/limits":                "L",
 	"/api/terminal/policy":                "L",
@@ -228,9 +284,17 @@ var expectedClassification = map[string]string{
 	"/api/tools/breakdown":                "V",
 	"/api/tools/launch":                   "L",
 	"/api/tools/status":                   "V",
-	"/api/verbosity/aggregate":            "V",
-	"/ws/launch/":                         "V",
-	"/ws/terminal/status":                 "V",
+	"/api/update/apply":                   "L",
+	// W5 (enterprise update management). The STATUS read is View: it
+	// discloses this node's own version and update state to a viewer who can
+	// already see /api/status. The extension-version REPORT is Local: it is a
+	// loopback report from an editor sharing this machine, exactly like
+	// /api/loc/editor-change above, and never something a remote caller writes.
+	"/api/update/extension-version": "L",
+	"/api/update/status":            "V",
+	"/api/verbosity/aggregate":      "V",
+	"/ws/launch/":                   "V",
+	"/ws/terminal/status":           "V",
 }
 
 // TestFullRegistryClassification is the codex-finding-2 backstop (plan §9): the
@@ -269,6 +333,7 @@ var mutationRoutes = []string{
 	"/api/admin/restart",
 	"/api/backfill/run",
 	"/api/config/backup",
+	"/api/config/keys",
 	"/api/config/pricing",
 	"/api/config/profiles",
 	"/api/config/profiles/",
@@ -286,6 +351,9 @@ var mutationRoutes = []string{
 	"/api/guard/mcp/approve",
 	"/api/guard/policy",
 	"/api/guard/policy/backup",
+	"/api/guard/prompt/allow/",
+	"/api/guard/prompt/clear",
+	"/api/guard/prompt/probe",
 	"/api/process/enable-capture",
 	// Spawns a privileged PTY that asks Windows for elevation — the same
 	// class as the tailscale setup POSTs below.
@@ -326,6 +394,11 @@ var mutationRoutes = []string{
 	"/api/terminal/launch",
 	"/api/terminal/limits",
 	"/api/terminal/policy",
+	"/api/update/apply",
+	// W5: the extension's self-report mutates daemon state (the posture it
+	// republishes), so it belongs in the mutation set. The sibling
+	// /api/update/status is a pure read and deliberately is not.
+	"/api/update/extension-version",
 }
 
 // TestNoConfigMutationRouteIsPlainView pins the §2A / §9.2 invariant: no route
@@ -494,5 +567,43 @@ func TestSessionSubRouteCapabilities(t *testing.T) {
 		if cap != CapabilityExecute {
 			t.Errorf("/api/session/…%s is %s — mutating session sub-routes are Execute (a Local sub-route needs a dedicated pattern)", suffix, cap)
 		}
+	}
+}
+
+// TestConfigAndSSHRoutesAreLocal is the dashboard-config-management plan's
+// §4.4 assertion (P0-10): every /api/config/* pattern and every
+// /api/terminal/ssh* pattern is CapabilityLocal, so a future refactor cannot
+// quietly demote a config mutation to View. The two enumerated read-only
+// exceptions are the only /api/config/* routes a paired remote viewer may
+// use: the config READ itself (§2A, redacted) and the baked-in pricing
+// defaults (no install state).
+func TestConfigAndSSHRoutesAreLocal(t *testing.T) {
+	s := newRemoteTestServer(t, Options{})
+	_, capMap, _ := s.registerRoutes(nil)
+	viewAllowed := map[string]bool{
+		"/api/config":                  true,
+		"/api/config/pricing/defaults": true,
+	}
+	var seenKeys, seenSchema, seenSSH bool
+	for pattern, cap := range capMap {
+		switch {
+		case strings.HasPrefix(pattern, "/api/config"):
+			if viewAllowed[pattern] {
+				continue
+			}
+			if cap != CapabilityLocal {
+				t.Errorf("%s is %s — every /api/config/* route must be Local", pattern, cap)
+			}
+			seenKeys = seenKeys || pattern == "/api/config/keys"
+			seenSchema = seenSchema || pattern == "/api/config/schema"
+		case strings.HasPrefix(pattern, "/api/terminal/ssh"):
+			if cap != CapabilityLocal {
+				t.Errorf("%s is %s — every /api/terminal/ssh* route must be Local", pattern, cap)
+			}
+			seenSSH = true
+		}
+	}
+	if !seenKeys || !seenSchema || !seenSSH {
+		t.Errorf("expected /api/config/keys, /api/config/schema and /api/terminal/ssh to be registered (keys=%v schema=%v ssh=%v)", seenKeys, seenSchema, seenSSH)
 	}
 }

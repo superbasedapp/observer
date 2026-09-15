@@ -221,7 +221,18 @@ func (a *Adapter) parseProcessLog(_ context.Context, path string, fromOffset int
 	// TokenEvents for a session it hasn't seen in the same batch, so
 	// without this the log-parser-only path silently drops every
 	// upserted token row (Tier 1 then never lands in DB).
-	projectRoot, branch, remote := resolveProjectFromSibling(path, st.sessionID)
+	ws := resolveProjectFromSibling(path, st.sessionID)
+	projectRoot, branch, remote, identity := ws.ProjectRoot, ws.Branch, ws.Remote, ws.Identity
+
+	// Capture surface — the same workspace.yaml read also carries the
+	// client that drove the session (see surface.go). Stamped from the
+	// log lane too, not only from events.jsonl: a process log can be
+	// the first (or only) file the watcher reaches for a session, and
+	// SetSessionSurface is first-wins-unless-empty, so a duplicate
+	// stamp from the other lane is a no-op.
+	if surf, ok := surfaceForClientName(st.sessionID, ws.ClientName); ok {
+		out.SessionSurfaces = append(out.SessionSurfaces, surf)
+	}
 
 	// Some process logs never emit `[INFO] Using default model: …` and carry
 	// no response-body model either. Fall back to the sibling
@@ -249,6 +260,7 @@ func (a *Adapter) parseProcessLog(_ context.Context, path string, fromOffset int
 			out.TokenEvents[i].GitRemote = remote
 		}
 	}
+	adapter.ApplyProjectIdentity(&out, identity)
 
 	// Recover the real Request-ID for modern Copilot CLI (1.0.60+) Tier-1
 	// rows. The modern process log emits `[DEBUG] response (Request-ID null)`,
@@ -276,14 +288,36 @@ func (a *Adapter) parseProcessLog(_ context.Context, path string, fromOffset int
 	return out, nil
 }
 
+// workspaceMeta is the decoded subset of a session's workspace.yaml
+// this adapter consumes. Every field is optional — the zero value is
+// the honest "the file was missing or said nothing", never a guess.
+type workspaceMeta struct {
+	// ProjectRoot is the git-resolved repo root (or the stated
+	// git_root/cwd when git.Resolve found nothing).
+	ProjectRoot string
+	// Branch is the stated `branch`, or the one git.Resolve found.
+	Branch string
+	// Remote is the normalized "origin" remote, "" when unknown.
+	Remote string
+	// ClientName is the verbatim `client_name` line — the capture-
+	// surface discriminator resolved by surfaceForClientName (see
+	// surface.go). Absent on older Copilot CLI builds.
+	ClientName string
+	// Identity is the Project Identity Resolver v2 bundle for the
+	// git-resolved root (zero value when no repo was found).
+	Identity git.Identity
+}
+
 // resolveProjectFromSibling reads the sibling workspace.yaml for a
-// log file and returns (projectRoot, branch).
+// log file and returns the decoded workspaceMeta (project root, branch,
+// remote, client_name capture-surface discriminator, and the Project
+// Identity Resolver v2 bundle).
 //
 // The log file lives at `<home>/.copilot/logs/process-*.log`; the
 // session-state dir is at `<home>/.copilot/session-state/<sessionID>/`.
-func resolveProjectFromSibling(logPath, sessionID string) (string, string, string) {
+func resolveProjectFromSibling(logPath, sessionID string) workspaceMeta {
 	if sessionID == "" {
-		return "", "", ""
+		return workspaceMeta{}
 	}
 	// <home>/.copilot/logs/...log → <home>/.copilot
 	copilotRoot := filepath.Dir(filepath.Dir(logPath))
@@ -291,29 +325,38 @@ func resolveProjectFromSibling(logPath, sessionID string) (string, string, strin
 	return resolveProjectFromWorkspaceYAML(yamlPath)
 }
 
-// resolveProjectFromWorkspaceYAML reads a Copilot CLI workspace.yaml
-// at the given path and returns (projectRoot, branch, remote). Returns
-// ("", "", "") when the file is missing or carries no usable
-// git_root/cwd. Path candidates are translated through
-// crossmount.TranslateForeignPath for WSL2 ↔ Windows session capture,
-// then resolved through git.Resolve to find the actual repo root; remote
-// is the normalized "origin" remote when git.Resolve found one, and ""
-// otherwise (honest gap, not fabricated).
+// resolveProjectFromWorkspaceYAML reads a Copilot CLI workspace.yaml at
+// the given path. Returns the zero workspaceMeta when the file is
+// missing; ProjectRoot stays "" when it carries no usable git_root/cwd,
+// independently of whether ClientName was stated. Path candidates are
+// translated through crossmount.TranslateForeignPath for WSL2 <-> Windows
+// session capture, then resolved through git.ResolveIdentity to find the
+// actual repo root; Remote is the normalized "origin" remote when a repo
+// was found, and "" otherwise (honest gap, not fabricated). Identity is
+// the Project Identity Resolver v2 bundle for that same resolution (zero
+// value when no repo was found); the root-commit exec is left nil,
+// matching every other adapter call site.
 //
-// workspace.yaml carries `cwd`, `git_root`, `branch` as simple
-// `key: value` lines — flat enough to parse without a YAML lib.
+// workspace.yaml carries `cwd`, `git_root`, `branch`, `client_name` as
+// simple `key: value` lines — flat enough to parse without a YAML lib.
+// (`name` is the session's first prompt and can be a multi-line quoted
+// scalar; it is deliberately not decoded, and its continuation lines
+// carry no `key:` shape this parser would mistake for one.)
 //
-// Used by both parseProcessLog and parseEventsJSONL: the events.jsonl
-// path needs this because some Copilot CLI sessions log a drive-root
-// cwd (e.g. "E:\\") in session.start.context, while workspace.yaml
-// carries the actual repo root.
-func resolveProjectFromWorkspaceYAML(yamlPath string) (string, string, string) {
+// This is the ONE reader of workspace.yaml. Both parseProcessLog and
+// parseEventsJSONL go through it: the events.jsonl path needs the
+// project root because some Copilot CLI sessions log a drive-root cwd
+// (e.g. "E:\\") in session.start.context while workspace.yaml carries
+// the actual repo root, and both paths need `client_name` for the
+// capture-surface stamp.
+func resolveProjectFromWorkspaceYAML(yamlPath string) workspaceMeta {
 	f, err := os.Open(yamlPath)
 	if err != nil {
-		return "", "", ""
+		return workspaceMeta{}
 	}
 	defer f.Close()
-	var cwd, gitRoot, branch string
+	var cwd, gitRoot string
+	var out workspaceMeta
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := sc.Text()
@@ -327,7 +370,9 @@ func resolveProjectFromWorkspaceYAML(yamlPath string) (string, string, string) {
 		case "git_root":
 			gitRoot = v
 		case "branch":
-			branch = v
+			out.Branch = v
+		case "client_name":
+			out.ClientName = v
 		}
 	}
 	candidate := gitRoot
@@ -335,20 +380,37 @@ func resolveProjectFromWorkspaceYAML(yamlPath string) (string, string, string) {
 		candidate = cwd
 	}
 	if candidate == "" {
-		return "", branch, ""
+		return out
 	}
 	translated := crossmount.TranslateForeignPath(candidate)
 	if translated == "" {
 		translated = candidate
 	}
-	info, err := git.Resolve(translated)
-	if err == nil && info.Root != "" {
-		if info.Branch != "" && branch == "" {
-			branch = info.Branch
-		}
-		return info.Root, branch, git.NormalizeRemote(info.Remote)
+	// STAT-GATE before git.ResolveIdentity (the goose / crush / freebuff
+	// precedent): a (possibly cross-OS-translated) path that isn't locally
+	// reachable falls through to the STATED path verbatim, not the /mnt
+	// form. git.ResolveIdentity returns a non-existent path as its own
+	// "root" with no error, so without this gate a Windows-side git_root
+	// captured on a WSL host would persist as its /mnt/c translation
+	// instead of the session's own canonical root. Identity stays zero
+	// (populated only on a real git hit below).
+	if _, err := os.Stat(translated); err != nil {
+		out.ProjectRoot = candidate
+		return out
 	}
-	return translated, branch, ""
+	info, err := git.ResolveIdentity(translated, git.IdentityOptions{})
+	if err == nil && info.Root != "" {
+		if info.Branch != "" && out.Branch == "" {
+			out.Branch = info.Branch
+		}
+		out.ProjectRoot = info.Root
+		// info.Remote is already NormalizeRemote'd by ResolveIdentity.
+		out.Remote = info.Remote
+		out.Identity = info
+		return out
+	}
+	out.ProjectRoot = candidate
+	return out
 }
 
 func splitYAMLLine(line string) (key, value string, ok bool) {

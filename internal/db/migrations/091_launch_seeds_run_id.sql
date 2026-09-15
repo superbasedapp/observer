@@ -1,0 +1,53 @@
+-- 091_launch_seeds_run_id.sql — bind a dashboard-launched child DIRECTLY to
+-- its terminal run, retiring the cwd/tool heuristic for that path.
+--
+-- THE RESIDUAL GAP (task 9f, docs/plans/post-incident-task-queue-2026-08-26.md).
+-- Migration 086 gave every `observer <tool>` launch a pending {pid → future
+-- session} seed, and processobs.MatchLaunchSeeds pairs it to a session by
+-- EXACT tool equality + project-root equality + a bounded start window. That
+-- rule is an INFERENCE, and 9b showed what it costs: a fresh dashboard launch
+-- seeded an EMPTY cwd (a wildcard that pairs with a same-tool session in ANY
+-- project), roots were compared verbatim so two spellings of one directory
+-- never matched, and ~16% of correlated dashboard runs since 08-01 ended up
+-- with zero process rows. 9b fixed the inputs to the inference. It could not
+-- fix that it IS an inference — two concurrent same-tool launches in one
+-- project remain indistinguishable to it.
+--
+-- For a DASHBOARD launch, though, the answer is not inferable at all: it is
+-- already known. The daemon mints a terminal_run id BEFORE it spawns, hands it
+-- to the launcher in the child environment, and later records the run's
+-- observed session in terminal_run_session. Carrying that run id on the seed
+-- turns "which session probably belongs to this pid" into a JOIN:
+--
+--   launch_seeds.run_id → terminal_run_session.run_id → session_id
+--
+-- HETEROGENEOUS BY DESIGN. run_id is '' for every launch the daemon did not
+-- spawn — a bare `observer codex` in the operator's own shell has no run, and
+-- inventing one would be a fabricated capability. Those seeds keep the 086
+-- heuristic unchanged, so this migration ADDS a deterministic path for the
+-- launches that can have one and removes nothing for the launches that cannot.
+-- The matcher runs the deterministic pass FIRST so a run-bound seed claims its
+-- session before any heuristic candidate can take it.
+--
+-- The join's right-hand side is CONFIDENCE-GATED at read time, not here: only
+-- a correlation at or above termrun.MinLinkConfidence is usable, which is the
+-- same bar every other link attachment already clears. A weak (heuristic-
+-- sourced) terminal correlation is the same class of guess as the seed's own
+-- rule, and promoting one guess over another would only relabel it — the
+-- bridge row this produces is HIGH-confidence identity that every pidbridge
+-- reader trusts.
+--
+-- NODE-LOCAL, no wire change, no paired server migration. launch_seeds feeds
+-- only session_pid_bridge, and terminal_run/terminal_run_session are
+-- themselves pinned out of the org-push wire in tests/invariant/privacy_test.go
+-- (orgpush.go names an explicit table allow-list; none of the three is in it).
+-- A column-only ALTER: the db_test table set is unchanged, only the version
+-- moves.
+
+ALTER TABLE launch_seeds ADD COLUMN run_id TEXT NOT NULL DEFAULT '';
+
+-- The sweep reads seeds by age and then joins the non-empty run ids. Partial
+-- (WHERE run_id != '') so the index holds only the dashboard-launched rows and
+-- costs nothing on the bare-shell launches that will never use it.
+CREATE INDEX IF NOT EXISTS idx_launch_seeds_run_id
+    ON launch_seeds(run_id) WHERE run_id != '';

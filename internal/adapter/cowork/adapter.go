@@ -71,16 +71,38 @@ func (*Adapter) Name() string { return models.ToolCowork }
 // `Claude_<hash>` package id is a publisher-derived stable string but
 // can rotate across signing-key changes, so we match `Claude_*`
 // rather than hardcoding the current hash.
+//
+// IDENTITY DEDUP: on a Windows MSIX install the first two layouts are
+// the SAME directory — `%APPDATA%\Claude` is a reparse point onto
+// `…\Packages\Claude_<hash>\LocalCache\Roaming\Claude`. Both spellings
+// are still enumerated (the MSIX one is the only spelling a WSL daemon
+// can traverse over DrvFs; the Roaming one is the only one a non-MSIX
+// install has), then collapsed by adapter.DedupRootsByIdentity —
+// otherwise the watcher walks one tree twice and every audit.jsonl is
+// ingested under two distinct source_file values, doubling every
+// action and token row (audit finding IDE-01). Deduping HERE as well
+// as in the watcher keeps this adapter's own IsSessionFile root set
+// equal to the set the watcher walks.
+//
+// The explicit watchRoots override (tests / fixtures) is returned
+// verbatim — it is an injected, already-canonical list, not discovery
+// output.
 func (a *Adapter) WatchPaths() []string {
 	if len(a.watchRoots) > 0 {
 		return a.watchRoots
 	}
 	var roots []string
-	for _, h := range crossmount.AllHomes() {
+	for _, h := range allHomesFunc() {
 		roots = append(roots, candidateRoots(h)...)
 	}
-	return roots
+	return adapter.DedupRootsByIdentity(roots)
 }
+
+// allHomesFunc is the test seam over crossmount.AllHomes — tests swap
+// in a synthetic home set so root discovery is assertable without
+// depending on the host's filesystem layout. Same shape as
+// clinecli.allHomesFunc / aider.allHomesFunc.
+var allHomesFunc = crossmount.AllHomes
 
 func candidateRoots(h crossmount.HomeRoot) []string {
 	switch h.OS {
@@ -353,19 +375,19 @@ func loadSidecar(auditPath string) (sidecar, error) {
 	return s, nil
 }
 
-// ProjectAttribution returns the (Observer session ID, project root)
-// pair that ParseSessionFile would attribute to a given audit.jsonl
-// path, without actually parsing the file. Used by the
-// --cowork-project-root backfill to re-attribute rows ingested before
-// a project-resolution bug fix.
+// ProjectAttribution returns the (Observer session ID, project root,
+// normalized git remote) triple that ParseSessionFile would attribute
+// to a given audit.jsonl path, without actually parsing the file. Used
+// by the --cowork-project-root backfill to re-attribute rows ingested
+// before a project-resolution bug fix.
 //
 // Returns ok=false when the path doesn't follow the local_<uuid>/
 // layout (in which case the file shouldn't have been ingested by the
 // adapter in the first place).
-func ProjectAttribution(auditPath string) (sessionID, projectRoot string, ok bool) {
+func ProjectAttribution(auditPath string) (sessionID, projectRoot, remote string, ok bool) {
 	sessionID = instanceSessionID(auditPath)
 	if sessionID == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	sc, err := loadSidecar(auditPath)
 	if err != nil {
@@ -374,8 +396,8 @@ func ProjectAttribution(auditPath string) (sessionID, projectRoot string, ok boo
 		// the backfill should converge on the same behavior.
 		sc = sidecar{}
 	}
-	projectRoot, _ = resolveProjectRoot(sc, map[string]projectGitInfo{})
-	return sessionID, projectRoot, true
+	projectRoot, remote, _ = resolveProjectRoot(sc, map[string]projectGitInfo{})
+	return sessionID, projectRoot, remote, true
 }
 
 // instanceSessionID extracts the local-instance UUID from an audit.jsonl
@@ -421,14 +443,21 @@ func instanceSessionID(auditPath string) string {
 type projectGitInfo struct {
 	Root   string
 	Remote string
+	// Identity is the Project Identity Resolver v2 bundle (2026-09-06,
+	// §3.1 / W1) resolved alongside Root/Remote, zero-valued on every
+	// branch that doesn't run git.ResolveIdentity (an honest gap, never
+	// a fabricated value). Applied to every event in the ParseResult via
+	// adapter.ApplyProjectIdentity — cowork resolves at most one identity
+	// per ParseSessionFile call.
+	Identity git.Identity
 }
 
-// resolveProjectRoot returns (root, remote). remote is only populated
-// when git.Resolve actually ran and found a repo (the reachable-path
-// branch below); the sandbox-synthesis and unreachable-path branches
-// never call git.Resolve, so remote is "" there — an honest gap, not a
-// fabricated value.
-func resolveProjectRoot(s sidecar, cache map[string]projectGitInfo) (string, string) {
+// resolveProjectRoot returns (root, remote, identity). remote/identity
+// are only populated when git.ResolveIdentity actually ran and found a
+// repo (the reachable-path branch below); the sandbox-synthesis and
+// unreachable-path branches never call it, so both are zero there — an
+// honest gap, not a fabricated value.
+func resolveProjectRoot(s sidecar, cache map[string]projectGitInfo) (string, string, git.Identity) {
 	candidate := ""
 	if len(s.UserSelectedFolders) > 0 && s.UserSelectedFolders[0] != "" {
 		candidate = s.UserSelectedFolders[0]
@@ -436,7 +465,7 @@ func resolveProjectRoot(s sidecar, cache map[string]projectGitInfo) (string, str
 		candidate = s.Cwd
 	}
 	if candidate == "" {
-		return "", ""
+		return "", "", git.Identity{}
 	}
 
 	// Cowork-internal cwd (the session's own .../local_<id>/outputs
@@ -459,12 +488,12 @@ func resolveProjectRoot(s sidecar, cache map[string]projectGitInfo) (string, str
 			name = s.SessionID
 		}
 		if name != "" {
-			return "/sessions/" + name, ""
+			return "/sessions/" + name, "", git.Identity{}
 		}
 	}
 
 	if r, ok := cache[candidate]; ok {
-		return r.Root, r.Remote
+		return r.Root, r.Remote, r.Identity
 	}
 
 	// Translate Windows-style paths to /mnt/<drive>/ on WSL2
@@ -473,15 +502,16 @@ func resolveProjectRoot(s sidecar, cache map[string]projectGitInfo) (string, str
 	translated := crossmount.TranslateForeignPath(candidate)
 
 	if _, err := os.Stat(translated); err == nil {
-		if info, err := git.Resolve(translated); err == nil && info.IsGit {
-			remote := git.NormalizeRemote(info.Remote)
-			cache[candidate] = projectGitInfo{Root: info.Root, Remote: remote}
-			return info.Root, remote
+		if id, err := git.ResolveIdentity(translated, git.IdentityOptions{}); err == nil && id.IsGit {
+			// id.Remote is already NormalizeRemote'd by ResolveIdentity;
+			// no separate NormalizeRemote call needed.
+			cache[candidate] = projectGitInfo{Root: id.Root, Remote: id.Remote, Identity: id}
+			return id.Root, id.Remote, id
 		}
 		// Path exists but isn't a git repo — return the reachable
 		// form rather than the foreign-OS string the sidecar emitted.
 		cache[candidate] = projectGitInfo{Root: translated}
-		return translated, ""
+		return translated, "", git.Identity{}
 	}
 	// Translated path isn't reachable from this host (sandbox paths
 	// like "/sessions/<adj-adj-name>" hit this; so do Windows paths
@@ -490,7 +520,7 @@ func resolveProjectRoot(s sidecar, cache map[string]projectGitInfo) (string, str
 	// to the observer's CWD and mis-attribute the session to the
 	// observer's own repo (v1.4.54 regression).
 	cache[candidate] = projectGitInfo{Root: candidate}
-	return candidate, ""
+	return candidate, "", git.Identity{}
 }
 
 // ParseSessionFile implements adapter.Adapter. Streams audit.jsonl
@@ -517,9 +547,27 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 
 	sessionID := instanceSessionID(path)
 	rootCache := map[string]projectGitInfo{}
-	projectRoot, projectRemote := resolveProjectRoot(sc, rootCache)
+	projectRoot, projectRemote, projectIdentity := resolveProjectRoot(sc, rootCache)
 
 	res := adapter.ParseResult{NewOffset: fromOffset}
+	// Part E: capture-surface attribution (IDE-15 provenance half).
+	// Cowork audit.jsonl is ALWAYS the Claude Desktop agent-mode
+	// runtime — there is no other host this format is written from —
+	// so every parse of a local-instance's audit.jsonl stamps the
+	// session desktop/claude-desktop unconditionally, no discriminator
+	// table needed. Re-stamping the same value on every chunk is
+	// harmless (Store.SetSessionSurface is first-wins-unless-empty). See
+	// docs/claude-cowork.md "Surface attribution" for why the Claude
+	// Code tab embedded inside Claude Desktop is a SEPARATE session
+	// captured by the claudecode adapter (entrypoint="claude-desktop"),
+	// not this one.
+	if sessionID != "" {
+		res.SessionSurfaces = append(res.SessionSurfaces, models.SessionSurface{
+			SessionID:   sessionID,
+			Surface:     models.SurfaceDesktop,
+			SurfaceHost: "claude-desktop",
+		})
+	}
 	pending := map[string]int{}            // tool_use_id → index in res.ToolEvents (PRUNED on tool_result pair)
 	allToolUseIdx := map[string]int{}      // tool_use_id → index in res.ToolEvents (NEVER pruned, for tool_use_summary join)
 	pendingPermissions := map[string]int{} // permission_request UUID → index, patched on the matching permission_response
@@ -559,10 +607,12 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	lineNum := 0
 	for {
 		if ctx.Err() != nil {
+			adapter.ApplyProjectIdentity(&res, projectIdentity)
 			return res, ctx.Err()
 		}
 		line, readErr := reader.ReadString('\n')
 		if readErr != nil && readErr != io.EOF {
+			adapter.ApplyProjectIdentity(&res, projectIdentity)
 			return res, fmt.Errorf("cowork.ParseSessionFile: read: %w", readErr)
 		}
 		// ReadString includes the terminating '\n' when present. When
@@ -626,6 +676,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			break
 		}
 	}
+	adapter.ApplyProjectIdentity(&res, projectIdentity)
 	return res, nil
 }
 

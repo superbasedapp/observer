@@ -200,6 +200,12 @@ const (
 	// ReasonBudgetExhausted: a budget scope hit 100% and its configured
 	// exhaustion behavior fired (§R14).
 	ReasonBudgetExhausted ReasonCode = "budget_exhausted"
+	// ReasonBudgetHardStop: the exhausted scope's configured behavior is
+	// hard_stop (§R14). Recorded alongside ReasonBudgetExhausted so decision
+	// rows distinguish hard_stop from degrade_all (gap register G1-HARDSTOP);
+	// the engine itself still never breaks a turn (G7) — the boundary channel
+	// decides what a stop means (see Decision.HardStop).
+	ReasonBudgetHardStop ReasonCode = "budget_hard_stop"
 	// ReasonCalibrationDemoted: the calibration job graded this rule's
 	// downshift as regressing (§R18.3 auto_demote) — the decision is
 	// logged but never applied until evidence clears.
@@ -572,6 +578,16 @@ type Decision struct {
 	// enforce mode (entitlement holds §R11.3, budget advise_only
 	// exhaustion §R14).
 	AdviseOnly bool
+	// HardStop is the §R14 hard_stop exhaustion signal, threaded from the
+	// budget modifier (G1-HARDSTOP fix — previously set on the modifier but
+	// never copied here, so hard_stop and degrade_all were identical). The
+	// engine applies the same degrade_all cap and NEVER blocks (G7, fail-open
+	// outside enforce mode is unchanged); it is the boundary channel's
+	// signal: the proxy channel may refuse the request in enforce mode once
+	// its RouterVerdict grows a deny outcome (spec'd in docs/plans/arc1-
+	// stream-d-enforcement-notes-2026-09-02.md), the routing-apply channel
+	// surfaces it, and the decision row carries ReasonBudgetHardStop.
+	HardStop bool
 	// FallbackModels is the ordered same-shape §R12.1 fallback chain
 	// for this turn — consumed by the proxy's retry layer on
 	// 429/5xx/timeout. Empty = no chain configured.

@@ -101,7 +101,7 @@ func (r *Runner) Keep(ctx context.Context, row *models.ArenaCandidate, projectRo
 		// still exactly our clean landed commit; otherwise preserve the user's
 		// newer state and report the manual recovery requirement.
 		if rbErr := rollbackExactCleanHead(ctx, projectRoot, sha, baseHead); rbErr != nil {
-			return "", fmt.Errorf("arena.Keep: land %s succeeded but store finalization failed (%v); automatic rollback also failed: %w", sha, err, rbErr)
+			return "", fmt.Errorf("arena.Keep: land %s succeeded but store finalization failed (%w); automatic rollback also failed: %w", sha, err, rbErr)
 		}
 		return "", fmt.Errorf("arena.Keep: store finalization failed; landed commit was rolled back: %w", err)
 	}
@@ -133,7 +133,7 @@ func (r *Runner) squashKeep(ctx context.Context, row *models.ArenaCandidate, pro
 	if err != nil {
 		return "", fmt.Errorf("arena.squashKeep: %w", err)
 	}
-	merge := exec.CommandContext(ctx, "git", "-C", projectRoot, "merge", "--squash", row.BranchName)
+	merge := exec.CommandContext(ctx, "git", "-C", projectRoot, "merge", "--squash", row.BranchName) //nolint:gosec // G204: fixed git argv; projectRoot is a validated arena project root and the branch name is arena's own generated ref, not request input
 	out, err := merge.CombinedOutput()
 	if err != nil {
 		// The request context may have expired while git was resolving the
@@ -148,14 +148,14 @@ func (r *Runner) squashKeep(ctx context.Context, row *models.ArenaCandidate, pro
 			return "", ErrMergeConflict
 		}
 		if rbErr != nil {
-			return "", fmt.Errorf("arena.squashKeep: merge failed (%v: %s); rollback failed: %w", err, truncateStr(string(out), 400), rbErr)
+			return "", fmt.Errorf("arena.squashKeep: merge failed (%w: %s); rollback failed: %w", err, truncateStr(string(out), 400), rbErr)
 		}
 		return "", fmt.Errorf("arena.squashKeep: merge: %w: %s", err, truncateStr(string(out), 400))
 	}
 	sha, err := git.CommitAll(ctx, projectRoot, provenanceMessage(row))
 	if err != nil {
 		if rbErr := git.ResetHard(context.WithoutCancel(ctx), projectRoot, baseHead); rbErr != nil {
-			return "", fmt.Errorf("arena.squashKeep: commit failed (%v); rollback failed: %w", err, rbErr)
+			return "", fmt.Errorf("arena.squashKeep: commit failed (%w); rollback failed: %w", err, rbErr)
 		}
 		return "", fmt.Errorf("arena.squashKeep: commit failed and merge was rolled back: %w", err)
 	}
@@ -202,6 +202,7 @@ func (r *Runner) judgeMergeKeep(ctx context.Context, row *models.ArenaCandidate,
 		ProxyURL:     r.opts.ProxyURL,
 		ConfigDir:    cfgDir,
 		Timeout:      DefaultTimeout,
+		Admission:    r.opts.Admission,
 	})
 	if res.TimedOut {
 		return "", fmt.Errorf("arena.judgeMergeKeep: judge drive timed out after %s", DefaultTimeout)
@@ -233,7 +234,7 @@ func (r *Runner) judgeMergeKeep(ctx context.Context, row *models.ArenaCandidate,
 
 	switch {
 	case derr != nil && newHead == baseHead:
-		return "", fmt.Errorf("arena.judgeMergeKeep: judge drive failed before landing (%v)", derr)
+		return "", fmt.Errorf("arena.judgeMergeKeep: judge drive failed before landing (%w)", derr)
 	case newHead == baseHead && stillDirty:
 		return "", errors.New("arena.judgeMergeKeep: judge left conflicts unresolved and landed nothing — resolve or reset manually")
 	case newHead == baseHead:
@@ -258,7 +259,7 @@ func (r *Runner) judgeMergeKeep(ctx context.Context, row *models.ArenaCandidate,
 	msg, merr := git.CommitMessage(ctx, projectRoot, newHead)
 	if merr != nil {
 		if rbErr := rollbackExactCleanHead(ctx, projectRoot, newHead, baseHead); rbErr != nil {
-			return "", fmt.Errorf("arena.judgeMergeKeep: read landed provenance (%v); rollback failed: %w", merr, rbErr)
+			return "", fmt.Errorf("arena.judgeMergeKeep: read landed provenance (%w); rollback failed: %w", merr, rbErr)
 		}
 		return "", fmt.Errorf("arena.judgeMergeKeep: read landed provenance; commit rolled back: %w", merr)
 	}
@@ -267,7 +268,7 @@ func (r *Runner) judgeMergeKeep(ctx context.Context, row *models.ArenaCandidate,
 			strings.TrimRight(msg, "\n")+"\n\n"+provenanceFooter(row))
 		if aerr != nil {
 			if rbErr := rollbackExactCleanHead(ctx, projectRoot, newHead, baseHead); rbErr != nil {
-				return "", fmt.Errorf("arena.judgeMergeKeep: provenance amend failed (%v); rollback failed: %w", aerr, rbErr)
+				return "", fmt.Errorf("arena.judgeMergeKeep: provenance amend failed (%w); rollback failed: %w", aerr, rbErr)
 			}
 			return "", fmt.Errorf("arena.judgeMergeKeep: provenance amend failed; commit rolled back: %w", aerr)
 		}

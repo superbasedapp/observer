@@ -98,6 +98,13 @@ export function MessagesTab({
         onPage={raw.onPage}
       />
 
+      {messages.data?.account_summary && (
+        <div className="rounded border border-stroke px-3 py-2 text-xs text-fg-3" aria-label="Session account coverage">
+          <span className="font-medium text-fg-2">Observed accounts: </span>
+          {messages.data.account_summary.accounts.map(a => a.email || a.name || a.account_id).join(", ") || "None captured"}
+          <span className="block mt-1">{messages.data.account_summary.observed} messages with login evidence · {messages.data.account_summary.unknown} unknown · {messages.data.account_summary.conflicts} conflicting. Login snapshots do not confirm billing identity.</span>
+        </div>
+      )}
       <section className="space-y-2">
         {/* flex-wrap on both rails: the header now carries up to three
             controls, and on a sub-lg screen they must stack rather than push
@@ -112,12 +119,12 @@ export function MessagesTab({
                 <span className="relative h-1.5 w-1.5 rounded-full bg-success">
                   <span className="absolute inset-0 animate-ping rounded-full bg-success/50" />
                 </span>
-                Watching live — read-only
+                Watching live - read-only
                 <button
                   type="button"
                   onClick={onStopWatch}
                   className="ml-1 text-fg-3 underline hover:text-fg-1 focus:outline-none"
-                  title="Stop watching — return to normal 8s refresh and free navigation."
+                  title="Stop watching - return to normal 8s refresh and free navigation."
                 >
                   stop
                 </button>
@@ -132,7 +139,7 @@ export function MessagesTab({
                 msg_xxx — so the toggle is a no-op and stays hidden. */}
             {tool === "codex" && (
               <>
-                <Tooltip content="Group token rows by model inference (default for codex — one row per token_count event) or by user-turn (sums each turn's inferences). Tool calls always stay grouped at the turn level. Tok/s is more accurate in Turn view: a single inference has no measured duration, so per-inference rows show “—”, while a turn spans its inferences' timestamps.">
+                <Tooltip content="Group token rows by model inference (default for codex - one row per token_count event) or by user-turn (sums each turn's inferences). Tool calls always stay grouped at the turn level. Tok/s is more accurate in Turn view: a single inference has no measured duration, so per-inference rows show “-”, while a turn spans its inferences' timestamps.">
                   <span>
                     <SegmentedControl
                       size="sm"
@@ -173,7 +180,7 @@ export function MessagesTab({
                   column is always shown, whatever the preset.
                   {MESSAGE_PRESETS.map((p) => (
                     <span key={p.id} className="mt-1 block">
-                      <b>{p.label}</b> — {p.hint}
+                      <b>{p.label}</b> - {p.hint}
                     </span>
                   ))}
                 </span>
@@ -339,10 +346,10 @@ function RawEventsPanel({
                             </div>
                           </td>
                           <td className="max-w-[160px] truncate px-2 py-2 font-mono text-[11px] text-fg-2">
-                            {row.event_id || "—"}
+                            {row.event_id || "-"}
                           </td>
                           <td className="px-2 py-2 font-mono text-[11px] text-fg-3">
-                            {row.timestamp || "—"}
+                            {row.timestamp || "-"}
                           </td>
                           <td className="px-2 py-2">
                             <CopyOnClick value={row.excerpt} className="block">

@@ -20,6 +20,7 @@ var allKnownAuthorityTokens = []string{
 	AuthorityEnforceRouting,
 	AuthorityEnforceAdmission,
 	AuthorityEnforceEgress,
+	AuthorityEnforceBudget,
 	AuthorityExtractManaged,
 	AuthorityExtractCodeintel,
 	AuthorityExtractProcess,

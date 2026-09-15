@@ -1,0 +1,4 @@
+{"timestamp":"2026-09-03T11:06:47.196Z","ordinal":0,"type":"session_meta","payload":{"session_id":"surface-jb-001","id":"surface-jb-001","timestamp":"2026-09-03T11:06:46.744Z","cwd":"/tmp/superbased-fixture-codex-jetbrains","originator":"JetBrains.IntelliJ IDEA","cli_version":"0.152.1","source":"vscode","model_provider":"custom-gateway","history_mode":"default","context_window":272000,"base_instructions":{"text":"You are Codex, an agent based on GPT-5.\n[truncated for fixture]"}}}
+{"timestamp":"2026-09-03T11:06:47.400Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-jb-A","model_context_window":272000}}
+{"timestamp":"2026-09-03T11:06:48.000Z","type":"event_msg","payload":{"type":"user_message","message":"hello from IntelliJ IDEA's AI Assistant"}}
+{"timestamp":"2026-09-03T11:06:49.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-jb-A","last_agent_message":"done","completed_at":1788434809,"duration_ms":1200}}

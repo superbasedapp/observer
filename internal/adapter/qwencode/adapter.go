@@ -54,8 +54,9 @@ func (a *Adapter) WatchPaths() []string { return a.roots }
 
 // IsSessionFile implements adapter.Adapter. A path qualifies only when it
 // is BOTH under one of this adapter's watch roots AND matches the qwen
-// transcript shape `.qwen/projects/<slug>/chats/<uuid>.jsonl` (the
-// companion `<uuid>.runtime.json` and any other file are rejected).
+// transcript shape `<qwen-home>/projects/<slug>/chats/<uuid>.jsonl` (the
+// companion `<uuid>.runtime.json`, the top-level `journal.jsonl`, and any
+// other file are rejected).
 func (a *Adapter) IsSessionFile(path string) bool {
 	if !matchesShape(path) {
 		return false
@@ -67,9 +68,18 @@ func (a *Adapter) IsSessionFile(path string) bool {
 // independent of watch roots. Comparison is on a slash-normalized,
 // lower-cased copy so Windows separators and case-insensitive mounts
 // match too.
+//
+// The shape deliberately does NOT hardcode the `.qwen` home segment: with
+// $QWEN_HOME set, the very same transcript tree lives under an operator-
+// chosen directory (`$QWEN_HOME/projects/<slug>/chats/`). The install root
+// is enforced separately by IsSessionFile's UnderAnyWatchRoot gate (the
+// same division of labour the kimicode adapter uses), so the shape need
+// only distinguish a chat transcript from the other files under the root —
+// notably the top-level `journal.jsonl`, which sits outside any `chats/`
+// directory and is not a session log.
 func matchesShape(path string) bool {
 	lower := strings.ReplaceAll(strings.ToLower(path), `\`, "/")
-	if !strings.Contains(lower, "/.qwen/projects/") {
+	if !strings.Contains(lower, "/projects/") {
 		return false
 	}
 	if !strings.Contains(lower, "/chats/") {
@@ -87,10 +97,41 @@ func matchesShape(path string) bool {
 // defaultRoots returns ~/.qwen/projects under every cross-mount-resolved
 // $HOME so a WSL2 observer picks up Windows-side sessions on
 // /mnt/c/Users/<u>/.qwen and vice versa.
+//
+// $QWEN_HOME wins on the native side when set: the Qwen Code bundle
+// resolves its own storage root from QWEN_HOME before falling back to
+// os.homedir()/.qwen, so an operator who relocated the home sees their
+// sessions under $QWEN_HOME/projects and nowhere else. Like clinecli's
+// CLINE_DIR handling, the env var is only meaningful for THIS process's
+// environment, so it is not re-resolved per cross-mount home — the
+// per-home defaults below still contribute their own `.qwen/projects`
+// paths. The value is absolutized before use (see adapter.AbsEnvRoot) so a
+// relative QWEN_HOME can never become a relative watch root. Empty/
+// duplicate candidates are dropped so WatchPaths never carries the same
+// directory twice.
 func defaultRoots() []string {
 	var roots []string
+	seen := map[string]struct{}{}
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		p = filepath.Clean(p)
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		roots = append(roots, p)
+	}
+
+	if home := adapter.AbsEnvRoot("QWEN_HOME"); home != "" {
+		add(filepath.Join(home, "projects"))
+	}
 	for _, h := range crossmount.AllHomes() {
-		roots = append(roots, filepath.Join(h.Path, ".qwen", "projects"))
+		if h.Path == "" {
+			continue
+		}
+		add(filepath.Join(h.Path, ".qwen", "projects"))
 	}
 	return roots
 }
@@ -124,13 +165,14 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		res.SessionProcessSeeds = runtimeSeeds(path)
 	}
 	st := &parseState{
-		adapter:     a,
-		path:        path,
-		rootCache:   map[string]string{},
-		remoteCache: map[string]string{},
-		pendingCall: map[string]int{},
-		byName:      map[string][]int{},
-		firstOffset: fromOffset,
+		adapter:       a,
+		path:          path,
+		rootCache:     map[string]string{},
+		remoteCache:   map[string]string{},
+		identityCache: map[string]git.Identity{},
+		pendingCall:   map[string]int{},
+		byName:        map[string][]int{},
+		firstOffset:   fromOffset,
 	}
 
 	// bufio.Reader.ReadString (not Scanner) so the byte cursor advances by
@@ -141,10 +183,12 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	lineNum := 0
 	for {
 		if ctx.Err() != nil {
+			st.applyIdentities(&res)
 			return res, ctx.Err()
 		}
 		lineStr, readErr := reader.ReadString('\n')
 		if readErr != nil && readErr != io.EOF {
+			st.applyIdentities(&res)
 			return res, fmt.Errorf("qwencode.ParseSessionFile: read: %w", readErr)
 		}
 		hasNewline := strings.HasSuffix(lineStr, "\n")
@@ -180,6 +224,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		}
 	}
 	st.flagPendingOutcomes(&res)
+	st.applyIdentities(&res)
 	return res, nil
 }
 
@@ -193,6 +238,20 @@ func (st *parseState) flagPendingOutcomes(res *adapter.ParseResult) {
 			res.ToolEvents[idx].OutcomePending = true
 		}
 	}
+}
+
+// applyIdentities backfills the Project Identity Resolver v2 bundle onto
+// every event in res, keyed by resolved project root (a qwen-code
+// transcript can carry more than one distinct cwd/root — see
+// identityCache).
+func (st *parseState) applyIdentities(res *adapter.ParseResult) {
+	byRoot := make(map[string]git.Identity, len(st.identityCache))
+	for cwd, root := range st.rootCache {
+		if root != "" {
+			byRoot[root] = st.identityCache[cwd]
+		}
+	}
+	adapter.ApplyProjectIdentityByRoot(res, byRoot)
 }
 
 // runtimeSidecar is the shape of the `<uuid>.runtime.json` file qwen
@@ -280,6 +339,11 @@ type parseState struct {
 	// Unlike lastBranch, the record never states its own remote, so this
 	// comes ONLY from git.Resolve.
 	remoteCache map[string]string
+	// identityCache memoizes cwd → the Project Identity Resolver v2
+	// bundle (2026-09-06, §3.1 / W1) resolved alongside
+	// rootCache/remoteCache. Applied at the end of ParseSessionFile via
+	// adapter.ApplyProjectIdentityByRoot, keyed by resolved root.
+	identityCache map[string]git.Identity
 }
 
 // handle dispatches one record onto the appropriate emit path.
@@ -314,14 +378,16 @@ func (st *parseState) projectRoot() (root, remote string) {
 	if root, ok := st.rootCache[cwd]; ok {
 		return root, st.remoteCache[cwd]
 	}
-	info, err := git.Resolve(cwd)
+	id, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
 		st.rootCache[cwd] = cwd
 		return cwd, ""
 	}
-	st.rootCache[cwd] = info.Root
-	st.remoteCache[cwd] = git.NormalizeRemote(info.Remote)
-	return info.Root, st.remoteCache[cwd]
+	st.rootCache[cwd] = id.Root
+	// id.Remote is already NormalizeRemote'd by ResolveIdentity.
+	st.remoteCache[cwd] = id.Remote
+	st.identityCache[cwd] = id
+	return id.Root, st.remoteCache[cwd]
 }
 
 // emitUserPrompt records a user prompt, and (only when parsing from the

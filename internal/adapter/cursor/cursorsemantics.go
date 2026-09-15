@@ -17,6 +17,9 @@ func (a *Adapter) CursorSemanticsFor(path string) adapter.FileCursorSemantics {
 	if !a.IsSessionFile(path) {
 		return adapter.FileCursorSemantics{}
 	}
+	if matchesCLIUsageLog(path) {
+		return adapter.FileCursorSemantics{Kind: adapter.CursorNoActions, Detail: "Cursor CLI structured log carries reported token usage, not actions"}
+	}
 	switch filepath.Base(path) {
 	case "state.vscdb":
 		return adapter.FileCursorSemantics{

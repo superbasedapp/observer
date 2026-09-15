@@ -9,9 +9,23 @@
 // the UI can render an honest state per case (unknown_token / no_project_root
 // / remote_view_disabled / bad_path / not_found / git_unavailable).
 
+/**
+ * What the served root IS. "project_root" = an operator allow-listed launch
+ * root; "working_dir" = the terminal's own working directory (a launch that
+ * requested no root, so the agent runs in the daemon's cwd). The panel labels
+ * the path differently per kind rather than always calling it a project.
+ */
+export type ProjectRootKind = "project_root" | "working_dir";
+
 /** meta payload — GET /api/terminal/project/<token> */
 export type ProjectMeta = {
   root: string;
+  /**
+   * Additive/optional: absent when talking to a daemon built before the
+   * 2026-08-28 ruling widened browsing to the run's working directory. Absence
+   * is read as "project_root", which is what every browsable root was then.
+   */
+  root_kind?: ProjectRootKind;
   git_available: boolean;
   is_git: boolean;
   branch: string;

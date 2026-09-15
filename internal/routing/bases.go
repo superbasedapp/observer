@@ -201,12 +201,13 @@ func (qualityMaxBasis) Key(c ModelCandidate, _ BasisInput) float64 {
 //   - advise_only — the cap stays and the decision is logged without
 //     acting (Decision.AdviseOnly).
 //   - degrade_all — the cap extends to every turn-kind.
-//   - hard_stop   — recorded on the modifier (and decision rows) as
-//     HardStop + the degrade_all cap. Actual request blocking is
-//     DELIBERATELY not implemented in P1: routing must never break a
-//     turn (G7); the operator sees budget_exhausted rows and the
-//     dashboard burn-down instead. Revisit with an explicit consent
-//     surface if demand shows.
+//   - hard_stop   — the degrade_all cap PLUS Modifier.HardStop, which the
+//     engine threads onto Decision.HardStop and records on the decision
+//     row as ReasonBudgetHardStop (G1-HARDSTOP). The engine itself never
+//     blocks a turn (G7): blocking is a boundary-channel decision made
+//     only in enforce mode by a channel that has a deny outcome. Outside
+//     enforce mode hard_stop degrades exactly like degrade_all and the
+//     operator sees budget_hard_stop rows and the dashboard burn-down.
 type budgetBasis struct{}
 
 func (budgetBasis) Name() string      { return BasisBudget }
@@ -265,6 +266,7 @@ func (budgetBasis) Modify(bin BasisInput) Modifier {
 		case BudgetHardStop:
 			mod.TierCapAllKinds = true
 			mod.HardStop = true
+			mod.Reasons = append(mod.Reasons, ReasonBudgetHardStop)
 		default: // advise_only (and the compile-time default)
 			mod.AdviseOnly = true
 		}

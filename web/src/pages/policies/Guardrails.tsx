@@ -49,9 +49,9 @@ import {
 //     config-section PUT + a restart-pending banner) — the honest truth.
 
 const CRITERION_TYPES: { value: CriterionType; label: string; hint: string }[] = [
-  { value: "valid_use_case", label: "Valid use case", hint: "LLM-judged — allow only requests that fit the app's purpose (needs a definition)." },
-  { value: "denied_topics", label: "Denied topics", hint: "Deterministic — match against a topic list." },
-  { value: "jailbreak", label: "Jailbreak", hint: "Deterministic — detect prompt-injection / jailbreak attempts." },
+  { value: "valid_use_case", label: "Valid use case", hint: "LLM-judged - allow only requests that fit the app's purpose (needs a definition)." },
+  { value: "denied_topics", label: "Denied topics", hint: "Deterministic - match against a topic list." },
+  { value: "jailbreak", label: "Jailbreak", hint: "Deterministic - detect prompt-injection / jailbreak attempts." },
   { value: "custom", label: "Custom (judged)", hint: "LLM-judged against a free-form definition you write." },
 ];
 const DECISIONS: Decision[] = ["allow", "flag", "ask", "deny"];
@@ -128,8 +128,8 @@ function PolicyEditor({
       const { status, data } = await postPolicy("/api/obs/admission/policy", draft, persist);
       setIssues(data.issues ?? []);
       if (status === 422 || !data.applied) {
-        setErr(data.error || "Policy rejected — fix the issues below.");
-        pushToast("Policy not applied — see issues", "danger");
+        setErr(data.error || "Policy rejected - fix the issues below.");
+        pushToast("Policy not applied - see issues", "danger");
         return;
       }
       if (persist && !data.persisted) {
@@ -206,7 +206,7 @@ function PolicyEditor({
         <button type="button" onClick={addCriterion} className={btnGhost}>+ Add criterion</button>
       </div>
       <div className="mt-2 space-y-3">
-        {draft.criteria.length === 0 && <Muted>No criteria — the policy allows everything. Add one, or apply a Template.</Muted>}
+        {draft.criteria.length === 0 && <Muted>No criteria - the policy allows everything. Add one, or apply a Template.</Muted>}
         {draft.criteria.map((c, idx) => (
           <CriterionRow
             key={idx}
@@ -281,9 +281,9 @@ function CriterionRow({
           options={CRITERION_TYPES.map((t) => ({ value: t.value, label: t.label }))}
         />
         {judged ? (
-          <Pill variant="info" title="Calls the LLM judge — adds latency + judge tokens per request.">LLM-judged</Pill>
+          <Pill variant="info" title="Calls the LLM judge - adds latency + judge tokens per request.">LLM-judged</Pill>
         ) : (
-          <Pill variant="neutral" title="Deterministic — runs offline, no judge call.">deterministic</Pill>
+          <Pill variant="neutral" title="Deterministic - runs offline, no judge call.">deterministic</Pill>
         )}
         <input
           value={c.name}
@@ -369,7 +369,7 @@ function JudgeEditor({ configApi }: { configApi: ReturnType<typeof useApi<Config
   return (
     <Card
       title={<span className="inline-flex items-center gap-2">Judge <Pill variant="info">{hosting}</Pill></span>}
-      sub="The LLM that evaluates judged criteria. Hosting is derived from the base URL — a loopback URL keeps requests local with no key egress. Read at daemon start, so this always needs a restart."
+      sub="The LLM that evaluates judged criteria. Hosting is derived from the base URL - a loopback URL keeps requests local with no key egress. Read at daemon start, so this always needs a restart."
     >
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Labeled label="Model" stacked>
@@ -389,7 +389,7 @@ function JudgeEditor({ configApi }: { configApi: ReturnType<typeof useApi<Config
       </div>
       {hosting !== "local" && hosting !== "none" && (
         <div className="mt-3 rounded-2 border border-warn/30 bg-warn-soft px-3 py-2 text-[11px] text-warn">
-          This judge is remote — requests egress off-box (secret-scrubbed first). The API key comes from the named env var, never stored here.
+          This judge is remote - requests egress off-box (secret-scrubbed first). The API key comes from the named env var, never stored here.
         </div>
       )}
       {err && <div className="mt-3 rounded-2 border border-danger/30 bg-danger-soft px-3 py-2 text-[11.5px] text-danger">{err}</div>}

@@ -177,7 +177,8 @@ type rawLine struct {
 	// gets this flag set true. Used to segment cross-thread
 	// redundancy on the Discovery tab and surface sub-agent volume
 	// on the Sessions tab.
-	IsSidechain bool `json:"isSidechain"`
+	IsSidechain bool   `json:"isSidechain"`
+	AgentID     string `json:"agentId"`
 	// V7d / audit B4 fields — populated for the four metadata line
 	// types Claude Code emits that the adapter previously dropped
 	// silently. ParentUuid links system events back to the assistant
@@ -207,6 +208,15 @@ type rawLine struct {
 	// Empirically the field carries values like "plan", "acceptEdits",
 	// "default" — Claude Code's permission-mode toggle states.
 	PermissionMode string `json:"permissionMode"`
+	// Entrypoint is present on every JSONL line (100% of a 60-file
+	// sample, 2026-09-02) and identifies the client surface that wrote
+	// the transcript: "cli", "claude-vscode", "claude-desktop",
+	// "sdk-*" (Agent SDK embeddings), possibly "claude-jetbrains"
+	// (unverified spelling). Resolved into the normalized
+	// models.Surface* vocabulary by resolveClaudeSurface (surface.go)
+	// — see docs/plans/ide-surface-capture-remediation-plan-2026-09-02.md
+	// §0/§3 (Part E).
+	Entrypoint string `json:"entrypoint"`
 }
 
 type rawMessage struct {
@@ -347,6 +357,8 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	}
 
 	res := adapter.ParseResult{NewOffset: fromOffset}
+	_, fileAgent := subagentFileIdentity(path)
+	agentIdentityValid := true
 	// Tier-2 cache observation accumulator (spec §9 / C7). Walks
 	// the running message-block list across this parse call; emits
 	// one CacheTurnObservation per assistant-with-usage turn.
@@ -375,6 +387,13 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	var lastTs time.Time
 	lastCwd := ""
 	lastBranch := ""
+	// surfaceStamped gates Part E capture-surface attribution: stamp
+	// at most once per ParseSessionFile call, from the first line in
+	// THIS parse pass that carries a non-empty entrypoint + sessionId.
+	// A later chunk (watcher resume) re-stamps the same value on its
+	// own first entrypoint-bearing line — harmless, the store write is
+	// first-wins-unless-empty (models.SessionSurface doc).
+	surfaceStamped := false
 	// Per-file dedup for noisy state-assertion lines:
 	//   • agent-name re-emits the same persona name per assistant turn
 	//   • permission-mode re-emits the same mode per user prompt
@@ -403,10 +422,12 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	lineNum := 0
 	for {
 		if ctx.Err() != nil {
+			adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 			return res, ctx.Err()
 		}
 		lineStr, readErr := reader.ReadString('\n')
 		if readErr != nil && readErr != io.EOF {
+			adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 			return res, fmt.Errorf("claudecode.ParseSessionFile: read: %w", readErr)
 		}
 		// ReadString includes the terminating '\n' when present. When
@@ -468,6 +489,9 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 				// if some future helper change weakens that guarantee.
 				continue
 			}
+			if fileAgent != "" && line.AgentID != "" && fileAgent != line.AgentID {
+				agentIdentityValid = false
+			}
 			// NewOffset already committed for the underlying physical line
 			// above; the inner loop processes recovered sub-records that
 			// share that same line.
@@ -506,6 +530,20 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			}
 			if line.GitBranch != "" {
 				lastBranch = line.GitBranch
+			}
+
+			// Part E: capture-surface attribution (IDE-15 provenance
+			// half) — stamp once per parse from the first line that
+			// carries both an entrypoint and a session id.
+			if !surfaceStamped && line.Entrypoint != "" && line.SessionID != "" {
+				if kind, host, ok := resolveClaudeSurface(line.Entrypoint); ok {
+					res.SessionSurfaces = append(res.SessionSurfaces, models.SessionSurface{
+						SessionID:   line.SessionID,
+						Surface:     kind,
+						SurfaceHost: host,
+					})
+				}
+				surfaceStamped = true
 			}
 
 			// compact_boundary — `system / compact_boundary` lines carry
@@ -949,7 +987,11 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	// just-inserted action row in the same transaction as the sidecar
 	// upsert. Either path lands the same final state.
 	a.stampEffortFromSidecar(ctx, &res)
+	if agentIdentityValid {
+		a.attributeSubagent(path, &res)
+	}
 
+	adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
 	return res, nil
 }
 
@@ -1443,17 +1485,19 @@ func (a *Adapter) extractTarget(toolName string, rawInput []byte, projectRoot st
 
 // projectGitInfo is the per-cwd cache entry for resolveProjectRoot /
 // resolveProjectRemote: the resolved project root and its normalized
-// "origin" remote, captured together from a single git.Resolve call so
-// the two never drift and the filesystem walk never happens twice for
-// the same cwd.
+// "origin" remote, captured together from a single git.ResolveIdentity
+// call so the two never drift and the filesystem walk never happens
+// twice for the same cwd. Identity carries the fuller Project Identity
+// Resolver v2 bundle from the same call.
 type projectGitInfo struct {
-	Root   string
-	Remote string
+	Root     string
+	Remote   string
+	Identity git.Identity
 }
 
-// resolveProjectRoot is cached per cwd because git.Resolve walks the
-// filesystem — Claude Code sessions often contain hundreds of events sharing
-// one cwd.
+// resolveProjectRoot is cached per cwd because git.ResolveIdentity
+// walks the filesystem — Claude Code sessions often contain hundreds
+// of events sharing one cwd.
 func (a *Adapter) resolveProjectRoot(cwd string, cache map[string]projectGitInfo) string {
 	if cwd == "" {
 		return ""
@@ -1475,12 +1519,16 @@ func (a *Adapter) resolveProjectRoot(cwd string, cache map[string]projectGitInfo
 	if entry, ok := cache[cwd]; ok {
 		return entry.Root
 	}
-	info, err := git.Resolve(cwd)
+	// RootCommit is left nil: the lazy, cached root-commit exec belongs
+	// only in the store-side path (Store.maybeRunLazyRootCommit), never
+	// on a per-line adapter hot path.
+	info, err := git.ResolveIdentity(cwd, git.IdentityOptions{})
 	if err != nil {
 		cache[cwd] = projectGitInfo{Root: cwd}
 		return cwd
 	}
-	cache[cwd] = projectGitInfo{Root: info.Root, Remote: git.NormalizeRemote(info.Remote)}
+	// info.Remote is already NormalizeRemote'd by ResolveIdentity.
+	cache[cwd] = projectGitInfo{Root: info.Root, Remote: info.Remote, Identity: info}
 	return info.Root
 }
 
@@ -1497,6 +1545,22 @@ func (a *Adapter) resolveProjectRemote(cwd string, cache map[string]projectGitIn
 	}
 	cwd = crossmount.TranslateForeignPath(cwd)
 	return cache[cwd].Remote
+}
+
+// identitiesByRoot flattens a per-cwd projectGitInfo cache into a
+// per-root git.Identity map suitable for
+// adapter.ApplyProjectIdentityByRoot. Multiple cwds resolving to the
+// same repo root collapse to one entry (they carry identical
+// identity, since ResolveIdentity is keyed off the discovered root).
+func identitiesByRoot(cache map[string]projectGitInfo) map[string]git.Identity {
+	out := make(map[string]git.Identity, len(cache))
+	for _, entry := range cache {
+		if entry.Root == "" {
+			continue
+		}
+		out[entry.Root] = entry.Identity
+	}
+	return out
 }
 
 // buildAPIErrorEvent decodes a Claude Code system/api_error JSONL

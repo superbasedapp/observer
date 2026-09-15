@@ -36,7 +36,7 @@ export function NotFoundPage() {
           >
             B
           </button>
-          to go back — or head to the{" "}
+          to go back - or head to the{" "}
           <Link to="/" className="font-medium text-accent hover:underline">
             Overview
           </Link>

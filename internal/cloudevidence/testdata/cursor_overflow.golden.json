@@ -1,0 +1,1596 @@
+{
+  "schema_version": "session-evidence.v1-candidate",
+  "cloud_session_id": "cs-cur-777",
+  "cloud_project_id": "cp-cur-888",
+  "tool": "cursor",
+  "model_family": "gpt",
+  "started_at_bucket": "2026-08-27T10:00:00Z",
+  "duration_seconds": 600,
+  "metrics": {
+    "tokens_in": 500,
+    "tokens_out": 300,
+    "cache_read_tokens": 100,
+    "cost_usd": 0.01,
+    "deterministic_score": 75,
+    "redundancy_ratio": 0.1,
+    "error_rate": 0,
+    "exploration_efficiency": 0.7,
+    "continuity_score": 0.85
+  },
+  "actions": [
+    {
+      "ref": "a0",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a2",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a4",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a7",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a9",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a11",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a14",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a16",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a18",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a21",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a23",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a25",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a28",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a30",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a32",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a35",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a37",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a40",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a42",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a44",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a47",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a49",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a51",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a54",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a56",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a58",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a61",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a63",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a65",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a68",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a70",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a72",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a75",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a77",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a80",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a82",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a84",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a87",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a89",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a91",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a94",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a96",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a98",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a101",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a103",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a105",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a108",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a110",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a112",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a115",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a117",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a120",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a122",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a124",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a127",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a129",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a131",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a134",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a136",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a138",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a141",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a143",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a145",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a148",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a150",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a152",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a155",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a157",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a160",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a162",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a164",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a167",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a169",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a171",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a174",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a176",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a178",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a181",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a183",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a185",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a188",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a190",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a192",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a195",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a197",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a200",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a202",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a204",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a207",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a209",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a211",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a214",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a216",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a218",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a221",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a223",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a225",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a228",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a230",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a232",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a235",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a237",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a240",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a242",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a244",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a247",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a249",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a251",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a254",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a256",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a258",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a261",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a263",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a265",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a268",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a270",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a272",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a275",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a277",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a280",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a282",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a284",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a287",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a289",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a291",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a294",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a296",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a298",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a301",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a303",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a305",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a308",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a310",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a312",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a315",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a317",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a320",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a322",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a324",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a327",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a329",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a331",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a334",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a336",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a338",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a341",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a343",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a345",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a348",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a350",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a352",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a355",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a357",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a360",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a362",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a364",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a367",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a369",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a371",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a374",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a376",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a378",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a381",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a383",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a385",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a388",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a390",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a392",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a395",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a397",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a400",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a402",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a404",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a407",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a409",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a411",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a414",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a416",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a418",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a421",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a423",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a425",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a428",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a430",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a432",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a435",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a437",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a440",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a442",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a444",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a447",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a449",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a451",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a454",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a456",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a458",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a461",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a463",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a465",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a468",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a470",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a472",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a475",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a477",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a480",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a482",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a484",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a487",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a489",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a491",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a494",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a496",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a498",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a501",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a503",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a505",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a508",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a510",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a512",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a515",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a517",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a520",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a522",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a524",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a527",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a529",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a531",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a534",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a536",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a538",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a541",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a543",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a545",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a548",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a550",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a552",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a555",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a557",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a560",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a562",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a564",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a567",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a569",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a571",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a574",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a576",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a578",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a581",
+      "kind": "read_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a583",
+      "kind": "edit_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a585",
+      "kind": "edit_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a588",
+      "kind": "edit_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a590",
+      "kind": "edit_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a592",
+      "kind": "edit_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a595",
+      "kind": "edit_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a597",
+      "kind": "edit_file",
+      "category": "ts",
+      "status": "ok"
+    },
+    {
+      "ref": "a600",
+      "kind": "unclassified",
+      "category": "ts",
+      "status": "ok"
+    }
+  ],
+  "milestones": [
+    {
+      "ref": "m1",
+      "kind": "first_edit",
+      "elapsed_seconds": 90
+    }
+  ],
+  "outcomes": {
+    "tests_run": 3,
+    "tests_passed": 3,
+    "build": "passed"
+  },
+  "activity_mix": [
+    {
+      "key": "edit_file",
+      "count": 19
+    },
+    {
+      "key": "read_file",
+      "count": 582
+    },
+    {
+      "key": "unclassified",
+      "count": 3
+    }
+  ],
+  "overflow": {
+    "actions_omitted": 345
+  },
+  "disclosure_purposes": [
+    "structural_activity_insights"
+  ],
+  "scrubber_version": "scrub-v1",
+  "authority": {
+    "Authority": "personal",
+    "Version": 1
+  },
+  "evidence_content_digest": "sha256:8f022b437731a3b3484f54020d048aeaddea590d971d462cfe1d326371310ab0"
+}

@@ -16,6 +16,13 @@ const obsImportPrefix = "github.com/marmutapp/superbased-observer/internal/obs"
 // (plan §2.3/§11). Any other importer fails this test.
 var allowedObsImporters = map[string]bool{
 	"../../cmd/observer/obs_wire.go": true,
+	// 2026-09-02 (G1-JUDGED-ADM, design §4.6 "sharing the admission engine as
+	// a library"): the two AI-Gateway BINARIES adapt internal/obs/admission.
+	// Evaluate to internal/orgserver/planebadmit's injected Evaluator seam.
+	// Still cmd-layer wiring only — no internal/orgserver package imports
+	// obs, so the node daemon's separability is untouched.
+	"../../cmd/observer-org/planeb_admission_wire.go":       true,
+	"../../cmd/observer-aigateway/planeb_admission_wire.go": true,
 }
 
 // TestObsReverseImportBoundary enforces the separability spine (plan §2.3/§11,

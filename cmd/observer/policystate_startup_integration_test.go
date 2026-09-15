@@ -135,6 +135,10 @@ func TestStartupEmitsFullSnapshot(t *testing.T) {
 	// Drive the real `observer start` under a cancelable context.
 	ctx, cancel := context.WithCancel(context.Background())
 	startCmd := newStartCmd()
+	// newStartCmd records its --config process-wide (setDaemonConfigPath) so
+	// dashboard children inherit it; reset so the value cannot leak into
+	// later tests in this package.
+	t.Cleanup(func() { setDaemonConfigPath("") })
 	startCmd.SetArgs([]string{"--no-dashboard", "--no-open", "--config", cfgPath})
 	startCmd.SetOut(io.Discard)
 	startCmd.SetErr(io.Discard)

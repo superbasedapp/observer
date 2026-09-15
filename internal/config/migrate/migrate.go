@@ -44,6 +44,16 @@ var steps = []step{
 			{from: k("org_client", "share", "obs_eval_summary"), to: k("org_client", "share", "obs", "eval_summary"), note: "renamed to org_client.share.obs.eval_summary"},
 		},
 	},
+	{
+		version: 3, // codeintel.index.disk_budget_mb removed (corpus-archival P4)
+		renames: []rename{
+			// No target: the knob was never implemented, and the age-based
+			// [codeintel].retention_days + [archive] pair replaces the job it
+			// claimed to do. See migrateRemovedCodeIntelKeys for the reasoning
+			// and docs/codeintel/configuration.md for the operator-facing note.
+			{from: k("codeintel", "index", "disk_budget_mb"), to: nil, note: "removed (never implemented; use codeintel.retention_days + [archive])"},
+		},
+	},
 }
 
 func k(segs ...string) []string { return segs }

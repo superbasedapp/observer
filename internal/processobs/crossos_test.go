@@ -2,6 +2,7 @@ package processobs
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -435,6 +436,102 @@ func TestRefreshLauncherExcludesGenericInterpreters(t *testing.T) {
 	for _, base := range []string{"node", "node.exe", "python", "python.exe", "python3", "bun", "bun.exe"} {
 		if IsAIToolLauncher(base) {
 			t.Errorf("IsAIToolLauncher(%q) = true, want false (generic interpreter must never be a refresh launcher)", base)
+		}
+	}
+}
+
+// TestIsAIToolLauncherMatching is the table over BOTH matching rules — the
+// exact map and the version-stamped prefix list added for muse (task 9e).
+// Every row is grounded on a live install (2026-08-27), including the negative
+// ones: a tool absent here is absent because its launcher is a script whose
+// exec'd basename is an interpreter, not because nobody looked.
+func TestIsAIToolLauncherMatching(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		exe  string
+		want bool
+		why  string
+	}{
+		// --- exact map, unchanged semantics -----------------------------
+		{"branded binary", "/usr/bin/claude", true, "exact map hit"},
+		{"windows form", `C:\tools\codex.exe`, true, "exact map hit, .exe variant"},
+		{"case folded", "/usr/bin/CLAUDE", true, "matched case-insensitively"},
+		{
+			"open-interpreter's real basename", "/home/u/.local/bin/interpreter", true,
+			"grounded: the installed ELF is `interpreter`; there is no `open-interpreter` binary in PATH",
+		},
+		{"open-interpreter windows form", "interpreter.exe", true, "the .exe variant of the same"},
+		{"droid native binary", "/home/u/.local/bin/droid", true, "grounded: Factory AI ships a native ELF named `droid`"},
+
+		// --- prefix rule, the only thing this change adds ----------------
+		{
+			"muse versioned binary", "/home/u/.local/bin/muse-bin-0.2.1-R1215.1", true,
+			"grounded: muse's real binary is version-stamped, so no exact name survives an upgrade",
+		},
+		{"muse a future version", "muse-bin-9.9.9-R0001.0", true, "the prefix is what is stable, not the tail"},
+		{"muse windows form", `C:\muse\muse-bin-0.2.1.exe`, true, "prefix matches before the extension"},
+
+		// --- the prefix must stay narrow --------------------------------
+		{
+			"muse wrapper script's interpreter", "/bin/bash", false,
+			"~/.local/bin/muse is a bash script; matching bash would anchor every shell on the box",
+		},
+		{
+			"a bare muse name is not the prefix", "muse", false,
+			"the wrapper, not the binary — and `muse` alone is too generic to match on name",
+		},
+		{"an unrelated binary sharing a stem", "musexyz", false, "the prefix requires the -bin- separator"},
+		{
+			"prefix must anchor at the start", "/opt/x/not-muse-bin-1.0", false,
+			"HasPrefix, never Contains — a substring rule would match arbitrary paths",
+		},
+
+		// --- the script-wrapper tools stay unrepresentable ---------------
+		{
+			"hermes wrapper", "/home/u/.local/bin/hermes", false,
+			"grounded: a bash script; the worker execs as python (documented limitation)",
+		},
+		{"vibe wrapper", "/home/u/.local/bin/vibe", false, "grounded: a python script (mistral-code)"},
+		{"zcode wrapper", "/home/u/.nvm/versions/node/v22.16.0/bin/zcode", false, "grounded: a node script"},
+		{"freebuff wrapper", "/home/u/.nvm/versions/node/v22.16.0/bin/freebuff", false, "grounded: a node script"},
+
+		// --- the daemon's own wrapper stays out -------------------------
+		{
+			"the observer wrapper itself", "/usr/local/bin/observer", false,
+			"collides with ExcludeOwnBasenames; the launch_seeds.run_id binding (9f) is the principled fix",
+		},
+
+		{"empty path", "", false, "no basename, no claim"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := IsAIToolLauncher(tc.exe); got != tc.want {
+				t.Errorf("IsAIToolLauncher(%q) = %v, want %v (%s)", tc.exe, got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// TestRefreshLauncherPrefixesAreNarrow guards the prefix list itself. A short
+// or generic prefix would match far more than its tool and flood the cross-OS
+// wire — the exact failure the exact-match design was chosen to avoid — so the
+// bar for adding one is pinned here rather than left to review.
+func TestRefreshLauncherPrefixesAreNarrow(t *testing.T) {
+	t.Parallel()
+	for _, p := range DefaultRefreshLauncherPrefixes {
+		if p != strings.ToLower(p) {
+			t.Errorf("prefix %q must be lowercase or it can never match", p)
+		}
+		if len(p) < 6 {
+			t.Errorf("prefix %q is too short to be distinctive without a cwd guard", p)
+		}
+		// Every generic interpreter must stay unmatched by every prefix.
+		for _, generic := range []string{"node", "python", "python3", "bun", "bash", "sh", "observer"} {
+			if strings.HasPrefix(generic, p) || strings.HasPrefix(p, generic) {
+				t.Errorf("prefix %q overlaps the generic name %q — it would anchor unrelated processes", p, generic)
+			}
 		}
 	}
 }

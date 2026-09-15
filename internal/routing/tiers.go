@@ -327,14 +327,20 @@ var seedTiers = map[string]Tier{
 	// so an explicit minor here is a statement of prominence, not a
 	// correctness fix — claude-opus-5 (2026-07-25) is the current
 	// flagship for complex agentic coding, hence the pin.
-	"claude-opus-5":     TierOpusClass,
-	"claude-opus-4-8":   TierOpusClass,
-	"claude-opus-4":     TierOpusClass,
-	"claude-opus-4-1":   TierOpusClass,
-	"claude-opus":       TierOpusClass,
-	"claude-3-opus":     TierOpusClass,
-	"claude-fable-5":    TierOpusClass,
-	"claude-fable":      TierOpusClass,
+	"claude-opus-5":    TierOpusClass,
+	"claude-opus-4-8":  TierOpusClass,
+	"claude-opus-4":    TierOpusClass,
+	"claude-opus-4-1":  TierOpusClass,
+	"claude-opus":      TierOpusClass,
+	"claude-3-opus":    TierOpusClass,
+	"claude-fable-5":   TierOpusClass,
+	"claude-fable-5-1": TierOpusClass, // current Fable flagship (2026-09-01); prominence pin — the claude-fable-5 prefix already classifies it
+	"claude-fable":     TierOpusClass,
+	// claude-mythos-5-1 has no bare "claude-mythos" (or "claude-mythos-5")
+	// family row in this seed table today, so without this explicit entry
+	// it falls through to TierUnclassified — same tier as its Fable 5.1
+	// twin (identical rate card, see pricing.go).
+	"claude-mythos-5-1": TierOpusClass,
 	"claude-sonnet-4-6": TierSonnetClass,
 	"claude-sonnet-4":   TierSonnetClass,
 	"claude-sonnet":     TierSonnetClass,
@@ -346,9 +352,12 @@ var seedTiers = map[string]Tier{
 	"claude-3-5-haiku":  TierHaikuClass,
 	"claude-3-haiku":    TierHaikuClass,
 
-	// OpenAI. gpt-5.5 is the frontier line; gpt-5.4 and earlier 5.x are
-	// the mid line; minis are the small class; the $0 nano is free. Pro
-	// variants are flagship-priced regardless of minor.
+	// OpenAI. gpt-6-astra (released 2026-09-03) is the current flagship,
+	// gpt-5.5 the prior frontier line; gpt-5.4 and earlier 5.x are the mid
+	// line; minis are the small class; the $0 nano is free. Pro variants
+	// are flagship-priced regardless of minor.
+	"gpt-6-astra":  TierOpusClass,
+	"gpt-6":        TierOpusClass, // family prefix → Astra (flagship)
 	"gpt-5.5":      TierOpusClass,
 	"gpt-5.5-pro":  TierOpusClass,
 	"gpt-5.4-pro":  TierOpusClass,
@@ -399,6 +408,7 @@ var seedTiers = map[string]Tier{
 	// below (TierHaikuClass) is unaffected either way.
 	"gemini-3.6-flash": TierHaikuClass,
 	"gemini-3.7-flash": TierHaikuClass,
+	"gemini-3.8-flash": TierHaikuClass, // same family-shadow reasoning as 3.6/3.7 above
 	"gemini-3-flash":   TierHaikuClass,
 	"gemini-3":         TierOpusClass, // Pro-representative, mirroring cost
 	"gemini-2.5-pro":   TierSonnetClass,
@@ -422,11 +432,22 @@ var seedTiers = map[string]Tier{
 	"mistral-large":    TierSonnetClass,
 	"mistral-small":    TierHaikuClass,
 	"mistral":          TierSonnetClass,
-	"minimax":          TierSonnetClass,
-	"composer":         TierSonnetClass, // Cursor's own coding line
-	"kilo-auto/free":   TierFree,
-	"kilo-auto/small":  TierHaikuClass, // Kilo's title-generation slot
-	"ollama":           TierLocal,
+	// Ministral 3 — Mistral's small/edge line (pricing.go: ministral-3b/
+	// 8b/14b, $0.10-$0.20 per MTok). "mistral" is NOT a prefix of
+	// "ministral-*" (the extra leading "mi" breaks the match), so these
+	// cannot inherit the bare "mistral" row above and need their own
+	// entries or they'd fall through to TierUnclassified. Cheap tier,
+	// same class as mistral-small.
+	"ministral-3b":      TierHaikuClass,
+	"ministral-8b":      TierHaikuClass,
+	"ministral-14b":     TierHaikuClass,
+	"minimax":           TierSonnetClass,
+	"composer":          TierSonnetClass, // Cursor's own coding line
+	"cursor-grok":       TierSonnetClass, // Cursor's Grok routing (cursor-grok-4.x-<effort>) → mirrors the `grok` family placement
+	"codex-auto-review": TierSonnetClass, // Codex cloud auto-review alias → Codex-codex line, Sonnet-class
+	"kilo-auto/free":    TierFree,
+	"kilo-auto/small":   TierHaikuClass, // Kilo's title-generation slot
+	"ollama":            TierLocal,
 
 	// 2026-08 sweep additions. deepseek-v4-pro / grok-4.5 / grok-4.6 /
 	// qwen3.7-max / qwen3.7-plus / qwen3.8-max / kimi-k3 / minimax-m3 /

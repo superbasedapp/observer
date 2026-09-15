@@ -88,6 +88,68 @@ WSL, `cwd = /home/marmutapp/needlehaystack`)
   message×2, todo_state, message×2, todo_state, message×4,
   agent_turn_outcome`.
 
+### `sessions/windows-desktop-C-Users-operator-workspace-antigravity/`
+
+Live-captured 2026-09-03 from **Factory Desktop** (the Electron GUI,
+`app-0.168.0`), gathered for the T3 batch-3 adapter ticket (see
+`docs/droid-adapter.md` "Factory Desktop"). Factory Desktop bundles its
+own `droid.exe` and writes the **identical** transcript/sidecar shape
+the standalone CLI does, into the same `~/.factory/sessions/` tree — so
+this fixture set exists to test the Desktop-vs-CLI capture-surface
+discriminator and two capture improvements (the auto-model resolution
+ladder and fork lineage), not a new storage shape.
+
+- **`a51ce7d2-3f68-4e91-9a2c-7bd410f3e88a.{jsonl,settings.json,settings.json.bak}`**
+  — the forked child session (24 JSONL lines). Its `session_start`
+  carries `parent`/`forkedAtMessageId` pointing at the session below.
+  Nine of its real user-typed messages carry
+  `message.userMessageSource:"desktop"` — the grounded capture-surface
+  discriminator (see the adapter doc). `model:"custom:superbased-0"`
+  (a BYOK alias, tier 1 of the model-resolution ladder — no routing
+  needed).
+
+- **`f2083b6a-1a4d-47c2-8e55-2c9761aa5b40.{jsonl,settings.json,settings.json.bak}`**
+  — the fork's PARENT session (5 JSONL lines): the original "please
+  give me a one-paragraph summary…" prompt, cut short by a
+  `model_usage_exhausted` turn outcome. Its sidecar has
+  `model:"auto"` **plus** a routed
+  `effectiveFactoryRouterModel.modelId:"claude-opus-5"` — tier 2 of the
+  model-resolution ladder. One `userMessageSource:"desktop"` marker on
+  its single real prompt.
+
+- **`6c9d4a17-5e2b-4f80-b731-0a8e3d5c9f14.{jsonl,settings.json,settings.json.bak}`**
+  — an empty Factory Desktop "New Session" (1 JSONL line: `session_start`
+  only). `model:"auto"` with **no** `effectiveFactoryRouterModel` at
+  all — tier 3 of the model-resolution ladder (the literal `"auto"`
+  sentinel, since no turn was ever routed). Zero `userMessageSource`
+  markers either way, since no message was ever sent — pins the
+  honest-negative case (a session with no data point is never assumed
+  to be either lane).
+
+A fourth session from the same capture — a session started fresh via
+the CLI and continued with `droid --resume <id>` — was inspected
+(all 14 of its real prompts omit `userMessageSource` entirely, unlike
+every Desktop-composed prompt above) but is **not** copied here: it
+adds no new fixture shape beyond what the pre-existing
+`linux-…`/`windows-…` CLI fixtures already cover, and the ticket's
+fixture ask was scoped to the Desktop side.
+
+Anonymization for this fixture set (mechanical string substitution
+across the full file bodies, not just the structured fields, since the
+real cwd's path components recur inside many tool-call inputs/outputs):
+`owner`/the operator's Windows username → `operator`; the throwaway
+workspace folder → `workspace`; the real `organizationId` → a fake
+20-character token; `hostId` → a fake UUID; all three session UUIDs →
+fake UUIDs; the shared `forkedAtMessageId`/message-id UUID → a fake
+UUID. Every other id (tool-call ids, other message ids, timestamps) is
+left verbatim, matching the pre-existing fixtures' precedent — they are
+droid's own opaque generated tokens, not PII. Verified after
+substitution: every `.jsonl` line still parses as valid JSON, every
+`.settings.json`/`.settings.json.bak` still parses as a valid JSON
+object, and a grep for the pre-anonymization strings (the real
+username, workspace folder, org id and host id) across the written
+fixtures returns zero hits.
+
 ### `settings.json.example`
 A **hand-reconstructed, redacted** version of the top-level
 `~/.factory/settings.json` (global, one per install — distinct from

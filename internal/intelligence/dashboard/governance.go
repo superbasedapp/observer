@@ -146,6 +146,19 @@ func (s *Server) governanceGuard(mux *http.ServeMux, sections map[string]Section
 				return
 			}
 		}
+		// The generic batched write (PUT /api/config/keys) has no <id> in its
+		// path and would sail straight past the rule above — the plan's §4.5
+		// bypass. Its BODY names the keys; every key's section is resolved
+		// from the schema and the whole batch is refused if any is hidden or
+		// read-only, failing closed on a key the schema cannot map.
+		if r.URL.Path == configKeysPath && isUnsafeMethod(strings.ToUpper(r.Method)) {
+			refused := governanceConfigKeys(w, r, eff, func(w http.ResponseWriter, status int, code, section, msg string) {
+				writeGovernanceRefusal(w, status, code, section, eff, msg)
+			})
+			if refused {
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -214,7 +227,54 @@ func (s *Server) handleGovernance(w http.ResponseWriter, r *http.Request) {
 		// identical to a governed build's ungranted answer.
 		eff = govern.Resolve(govern.Delivered{}, nil, govern.LiveIdentity{}, time.Now())
 	}
-	writeJSON(w, governanceResponse{Effective: eff, Share: s.resolveShareBlock(eff)})
+	writeJSON(w, governanceResponse{
+		Effective: eff,
+		Share:     s.resolveShareBlock(eff),
+		Pricing:   s.resolvePricingBlock(r.Context()),
+	})
+}
+
+// resolvePricingBlock reports WHICH PRICE TABLE this node is applying
+// (enterprise-pricing plan §3.3, node surfaces).
+//
+// It belongs on the governance endpoint rather than on a new one because it
+// answers the same question every other row here answers: what did my
+// organisation decide for this machine, and how do I know? An org that
+// distributes negotiated rates is changing every dollar figure this developer
+// sees, and before this arc there was no surface anywhere that said so.
+//
+// It is read from the ENGINE, not from the config or the stored document, so
+// it cannot drift from the rates the proxy will actually stamp onto the next
+// turn. A nil engine yields a nil block and the card renders nothing — an
+// absence, never a claim.
+func (s *Server) resolvePricingBlock(ctx context.Context) *governancePricing {
+	e := s.opts.CostEngine
+	if e == nil {
+		return nil
+	}
+	out := &governancePricing{
+		OrgVersion:       e.OrgPricingVersion(),
+		OrgAuthoritative: e.OrgPricingAuthoritative(),
+		HasOrgPricing:    e.HasOrgPricing(),
+		Warnings:         e.PricingWarnings(),
+	}
+	// A STANDALONE node composes the public feed through the same org-rows input
+	// (§G), so a composed "org" rate there IS the feed. Relabel honestly rather
+	// than claim an org this node is not enrolled with supplied the rate.
+	feed := s.feedPosture(ctx)
+	switch {
+	case out.HasOrgPricing && feed.Active:
+		out.Source = "feed"
+		out.FeedVersion = feed.Version
+		out.FeedFetchedAt = feed.FetchedAt
+	case out.HasOrgPricing && out.OrgAuthoritative:
+		out.Source = "org_authoritative"
+	case out.HasOrgPricing:
+		out.Source = "org"
+	default:
+		out.Source = "local"
+	}
+	return out
 }
 
 // governanceResponse is the wire shape of GET /api/governance: the resolved
@@ -234,6 +294,38 @@ func (s *Server) handleGovernance(w http.ResponseWriter, r *http.Request) {
 type governanceResponse struct {
 	govern.Effective
 	Share map[string]governanceShareKey `json:"share,omitempty"`
+	// Pricing is the node's own price-table posture. Omitted entirely when
+	// this dashboard was assembled without a cost engine, so the SPA renders
+	// an absence rather than a fabricated "seed".
+	Pricing *governancePricing `json:"pricing,omitempty"`
+}
+
+// governancePricing is what the Privacy page's governance card says about
+// rates: whose table is in force, which document version, and anything the
+// engine refused.
+type governancePricing struct {
+	// Source is local (this machine's own seed + overrides), org (the org's
+	// signed rates, under any local override), or org_authoritative (the org's
+	// rates ABOVE this machine's own, on a managed node holding
+	// enforce.budget).
+	Source string `json:"source"`
+	// OrgVersion is the org_pricing_version this node has applied, 0 for none.
+	OrgVersion int64 `json:"org_version,omitempty"`
+	// OrgAuthoritative and HasOrgPricing are carried separately from Source so
+	// a future surface can render the two facts independently without
+	// re-parsing an enum.
+	OrgAuthoritative bool `json:"org_authoritative,omitempty"`
+	HasOrgPricing    bool `json:"has_org_pricing,omitempty"`
+	// Warnings are org rows the engine REFUSED. An admin who typed a rate and
+	// saw nothing change deserves to find out why on the machine where it did
+	// not apply.
+	Warnings []string `json:"warnings,omitempty"`
+	// FeedVersion / FeedFetchedAt are set only when Source == "feed" — the
+	// standalone public-feed case (§G). They name the applied feed version and
+	// when it was pulled, so the Privacy card can say "market list prices from
+	// the Tokenomics feed vN (fetched T)".
+	FeedVersion   int64  `json:"feed_version,omitempty"`
+	FeedFetchedAt string `json:"feed_fetched_at,omitempty"`
 }
 
 // governanceShareKey is one row of the `share` block: what is in force, what
@@ -258,25 +350,33 @@ type governanceShareKey struct {
 // this surface would silently mis-report.
 //
 // Values are `any` because the vocabulary is mixed-kind: bool for every tier,
-// []string for target_action_allowlist.
-var shareLocalTable = map[string]func(config.OrgClientShareConfig) any{
-	"full_content":            func(c config.OrgClientShareConfig) any { return c.FullContent },
-	"full_tool_bodies":        func(c config.OrgClientShareConfig) any { return c.FullToolBodies },
-	"routing_summary":         func(c config.OrgClientShareConfig) any { return c.RoutingSummary },
-	"cache_detail":            func(c config.OrgClientShareConfig) any { return c.CacheDetail },
-	"routing_detail":          func(c config.OrgClientShareConfig) any { return c.RoutingDetail },
-	"limit_gauge":             func(c config.OrgClientShareConfig) any { return c.LimitGauge },
-	"codeintel_detail":        func(c config.OrgClientShareConfig) any { return c.CodeintelDetail },
-	"process_detail":          func(c config.OrgClientShareConfig) any { return c.ProcessDetail },
-	"terminal_detail":         func(c config.OrgClientShareConfig) any { return c.TerminalDetail },
-	"policy_state":            func(c config.OrgClientShareConfig) any { return c.PolicyState },
-	"target_action_allowlist": func(c config.OrgClientShareConfig) any { return c.TargetActionAllowlist },
-	"obs.summary":             func(c config.OrgClientShareConfig) any { return c.Obs.Summary },
-	"obs.traces":              func(c config.OrgClientShareConfig) any { return c.Obs.Traces },
-	"obs.content":             func(c config.OrgClientShareConfig) any { return c.Obs.Content },
-	"obs.eval_summary":        func(c config.OrgClientShareConfig) any { return c.Obs.EvalSummary },
-	"obs.admission":           func(c config.OrgClientShareConfig) any { return c.Obs.Admission },
-	"obs.eval_items":          func(c config.OrgClientShareConfig) any { return c.Obs.EvalItems },
+// []string for target_action_allowlist. The getter takes the whole config
+// because not every org-directable key roots under [org_client.share]
+// (intelligence.org_enrichment lives under [intelligence]).
+var shareLocalTable = map[string]func(config.Config) any{
+	"full_content":        func(c config.Config) any { return c.OrgClient.Share.FullContent },
+	"full_tool_bodies":    func(c config.Config) any { return c.OrgClient.Share.FullToolBodies },
+	"routing_summary":     func(c config.Config) any { return c.OrgClient.Share.RoutingSummary },
+	"cache_detail":        func(c config.Config) any { return c.OrgClient.Share.CacheDetail },
+	"routing_detail":      func(c config.Config) any { return c.OrgClient.Share.RoutingDetail },
+	"limit_gauge":         func(c config.Config) any { return c.OrgClient.Share.LimitGauge },
+	"codeintel_detail":    func(c config.Config) any { return c.OrgClient.Share.CodeintelDetail },
+	"process_detail":      func(c config.Config) any { return c.OrgClient.Share.ProcessDetail },
+	"terminal_detail":     func(c config.Config) any { return c.OrgClient.Share.TerminalDetail },
+	"task_detail":         func(c config.Config) any { return c.OrgClient.Share.TaskDetail },
+	"tool_account_detail": func(c config.Config) any { return c.OrgClient.Share.ToolAccountDetail },
+	"policy_state":        func(c config.Config) any { return c.OrgClient.Share.PolicyState },
+	// intelligence.org_enrichment roots under [intelligence], not
+	// [org_client.share] - the reason the getter takes the whole config.
+	"intelligence.org_enrichment": func(c config.Config) any { return c.Intelligence.OrgEnrichment },
+	"target_action_allowlist":     func(c config.Config) any { return c.OrgClient.Share.TargetActionAllowlist },
+	"obs.summary":                 func(c config.Config) any { return c.OrgClient.Share.Obs.Summary },
+	"obs.traces":                  func(c config.Config) any { return c.OrgClient.Share.Obs.Traces },
+	"obs.content":                 func(c config.Config) any { return c.OrgClient.Share.Obs.Content },
+	"obs.eval_summary":            func(c config.Config) any { return c.OrgClient.Share.Obs.EvalSummary },
+	"obs.admission":               func(c config.Config) any { return c.OrgClient.Share.Obs.Admission },
+	"obs.eval_items":              func(c config.Config) any { return c.OrgClient.Share.Obs.EvalItems },
+	"obs.egress":                  func(c config.Config) any { return c.OrgClient.Share.Obs.Egress },
 }
 
 // resolveShareBlock resolves the org's delivered share directives against this
@@ -294,9 +394,9 @@ func (s *Server) resolveShareBlock(eff govern.Effective) map[string]governanceSh
 	if len(eff.Share) == 0 {
 		return nil
 	}
-	var local config.OrgClientShareConfig
+	var local config.Config
 	if cfg, err := loadConfigForDashboard(s.opts.ConfigPath); err == nil {
-		local = cfg.OrgClient.Share
+		local = cfg
 	} else if s.opts.Logger != nil {
 		// A config this process cannot parse is a real condition, not a
 		// reason to drop the block: the org's directives are still in force
