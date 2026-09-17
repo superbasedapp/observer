@@ -11,10 +11,12 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudcontract"
 	"github.com/marmutapp/superbased-observer/internal/cloudcred"
@@ -49,6 +51,11 @@ var (
 	// too. The only recovery is a new sign-in. Every later authenticated call
 	// on this Client fails fast with the same error (no retry storm).
 	ErrSignInExpired = errors.New("cloudclient: sign-in expired — run `observer cloud login`")
+	// ErrInvalidID means a caller-supplied id cannot be used as a URL path
+	// segment: empty, a dot-segment ("." / ".."), or containing a character
+	// ("/", "?", "#", "%", or whitespace) that could reshape the request path
+	// or be misread as query/fragment syntax. See pathSegment.
+	ErrInvalidID = errors.New("cloudclient: invalid id")
 )
 
 // tokenRejectedCode is the server's error `code` for a bearer it will not
@@ -611,7 +618,11 @@ var ErrJobNotFound = errors.New("cloudclient: job not found")
 // ErrJobNotFound so callers can classify it with errors.Is without inspecting
 // the raw APIError status code.
 func (c *Client) Job(ctx context.Context, id string) (JobStatus, error) {
-	path := "/v1/jobs/" + urlQueryEscape(id)
+	seg, err := pathSegment(id)
+	if err != nil {
+		return JobStatus{}, fmt.Errorf("cloudclient.Job: %w", err)
+	}
+	path := "/v1/jobs/" + seg
 	raw, err := c.sendAuthed(ctx, nil, nil, func(int) (*http.Request, error) {
 		return c.buildAuthed(ctx, http.MethodGet, path, nil, nil)
 	})
@@ -962,8 +973,11 @@ func defaultBackoff(attempt int) time.Duration {
 	return time.Duration(rand.Int64N(int64(base) + 1)) //nolint:gosec // backoff jitter, not a security context — math/rand/v2 is correct here
 }
 
-// urlQueryEscape percent-encodes a query value without importing net/url at the
-// call site (keeps the escaping explicit and minimal for opaque cursors).
+// urlQueryEscape percent-encodes a QUERY value (e.g. the opaque `after`
+// cursor appended to "?after="). It is deliberately minimal and must never be
+// used to build a URL PATH SEGMENT: it passes "." and ".." through unescaped,
+// which is harmless in a query value but path-traversal-shaped in a path — use
+// pathSegment for anything that becomes part of the path.
 func urlQueryEscape(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
@@ -979,4 +993,30 @@ func urlQueryEscape(s string) string {
 		b.WriteByte(hexd[ch&0x0f])
 	}
 	return b.String()
+}
+
+// pathSegment validates and percent-encodes id for use as a single URL PATH
+// SEGMENT (e.g. the job id in "/v1/jobs/{id}") — never a query value, where
+// urlQueryEscape's looser rules apply instead. Unlike a bare escaper, it
+// refuses an id that could reshape the request path or be misread as
+// query/fragment syntax rather than silently encoding it: empty, a
+// dot-segment ("." or ".."), or any id containing "/", "?", "#", "%", or
+// whitespace. Anything that passes is encoded with url.PathEscape, whose
+// unreserved set already covers the id shapes this client mints and receives
+// (UUIDs, "job_<hex>"). The server rejects a traversal-shaped path today, so
+// this is a defense-in-depth hardening rather than a fix for a live bug —
+// but a path segment should never be built with a query-escaper.
+func pathSegment(id string) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("%w: empty", ErrInvalidID)
+	}
+	if id == "." || id == ".." {
+		return "", fmt.Errorf("%w: %q", ErrInvalidID, id)
+	}
+	for _, r := range id {
+		if r == '/' || r == '?' || r == '#' || r == '%' || unicode.IsSpace(r) {
+			return "", fmt.Errorf("%w: %q contains %q", ErrInvalidID, id, string(r))
+		}
+	}
+	return url.PathEscape(id), nil
 }

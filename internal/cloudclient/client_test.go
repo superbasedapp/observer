@@ -1319,3 +1319,83 @@ func TestJobAuthedTokenSelfHeal(t *testing.T) {
 		t.Errorf("stored API token = %q, want tok-1 (the re-exchanged token)", tok)
 	}
 }
+
+// TestPathSegment pins pathSegment's refusal/escaping table: valid ids
+// (including the two live shapes — hosted UUIDs and the local "job_<hex>"
+// prefix, even though Job() never actually receives the latter, cmd/observer
+// refuses it first) round-trip through url.PathEscape unchanged, and anything
+// that could reshape a request path or be misread as query/fragment syntax is
+// refused rather than silently encoded.
+func TestPathSegment(t *testing.T) {
+	tests := []struct {
+		name    string
+		id      string
+		want    string
+		wantErr bool
+	}{
+		{name: "uuid", id: "a7d332d1-fedf-49ef-8b99-39fbfdbad4d2", want: "a7d332d1-fedf-49ef-8b99-39fbfdbad4d2"},
+		{name: "local outbox shape", id: "job_1a2b3c4d", want: "job_1a2b3c4d"},
+		{name: "mixed alnum with dot not a dot-segment", id: "job.v2.3", want: "job.v2.3"},
+		{name: "tilde and underscore unreserved", id: "a~b_c-d.e", want: "a~b_c-d.e"},
+		{name: "empty", id: "", wantErr: true},
+		{name: "single dot", id: ".", wantErr: true},
+		{name: "double dot traversal", id: "..", wantErr: true},
+		{name: "embedded slash", id: "a/b", wantErr: true},
+		{name: "embedded slash traversal", id: "../etc/passwd", wantErr: true},
+		{name: "query char", id: "a?b", wantErr: true},
+		{name: "fragment char", id: "a#b", wantErr: true},
+		{name: "percent", id: "a%2fb", wantErr: true},
+		{name: "space", id: "a b", wantErr: true},
+		{name: "tab", id: "a\tb", wantErr: true},
+		{name: "newline", id: "a\nb", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := pathSegment(tt.id)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("pathSegment(%q) = %q, nil; want an error", tt.id, got)
+				}
+				if !errors.Is(err, ErrInvalidID) {
+					t.Fatalf("pathSegment(%q) error = %v; want errors.Is(ErrInvalidID)", tt.id, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("pathSegment(%q) unexpected error: %v", tt.id, err)
+			}
+			if got != tt.want {
+				t.Fatalf("pathSegment(%q) = %q, want %q", tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestJobRefusesTraversalShapedID pins that Job() validates id BEFORE
+// building the request path: a ".."-shaped id is refused locally (as
+// ErrInvalidID) rather than sent to the server as
+// "GET /v1/jobs/.." — closing the path-traversal-shaped-URL residual left by
+// the old bare urlQueryEscape call. No server round trip happens at all: the
+// mux below would fail the test if the request ever reached it.
+func TestJobRefusesTraversalShapedID(t *testing.T) {
+	fs := newFakeServer(t)
+	mux := http.NewServeMux()
+	mux.Handle("/v1/auth/", fs.handler())
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected request reached the server: %s %s", r.Method, r.URL.String())
+	})
+	srv := startServer(t, mux)
+	c, _ := newTestClient(t, srv.URL, "workos-access-tok")
+	ctx := context.Background()
+	if err := c.Exchange(ctx); err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+
+	_, err := c.Job(ctx, "..")
+	if err == nil {
+		t.Fatalf("Job: want an error for a traversal-shaped id, got nil")
+	}
+	if !errors.Is(err, ErrInvalidID) {
+		t.Fatalf("Job: want errors.Is(ErrInvalidID), got %v", err)
+	}
+}

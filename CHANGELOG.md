@@ -4,6 +4,21 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.34.0-rc.2] — 2026-09-18
+
+Pre-release on the `edge` channel; rc.1 plus four release-pipeline fixes found by
+running rc.1 (the first pre-release tag the pipeline has ever cut):
+
+- The two image jobs no longer upload the buildx build record, whose artifact broke every
+  "download all artifacts" step (npm, PyPI, provenance) on rc.1.
+- Update-artifact names with a pre-release version (`observer-v1.34.0-rc.1-linux-x64.tar.gz`)
+  parse correctly, so the public release and the `edge` update manifest are produced for
+  pre-release tags.
+- The VS Code Marketplace publish is skipped on pre-release tags (the Marketplace rejects
+  pre-release semver); the VSIXes are still packaged.
+- The air-gap kit carries one compressed OCI layout per image (with its signature) instead of
+  every image twice; rc.1's 1.8 GB kit aborted the private release's asset upload.
+
 ## [1.34.0-rc.1] — 2026-09-17
 
 Pre-release on the `edge` channel. Its purpose is the first real publish to the private
