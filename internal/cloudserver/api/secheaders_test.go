@@ -22,11 +22,11 @@ var wantSecurityHeaders = map[string]string{
 	"X-Frame-Options":        "DENY",
 	"Permissions-Policy":     `camera=(), microphone=(), geolocation=(), payment=(self "https://*.paddle.com")`,
 	"Content-Security-Policy": "default-src 'self'; " +
-		"script-src 'self' https://cdn.paddle.com; " +
-		"frame-src https://buy.paddle.com https://sandbox-buy.paddle.com; " +
-		"connect-src 'self' https://*.paddle.com; " +
+		"script-src 'self' https://cdn.paddle.com https://public.profitwell.com; " +
+		"frame-src https://buy.paddle.com https://sandbox-buy.paddle.com https://*.paddle.com; " +
+		"connect-src 'self' https://*.paddle.com https://*.profitwell.com; " +
 		"img-src 'self' data: https://*.paddle.com; " +
-		"style-src 'self' 'unsafe-inline'; " +
+		"style-src 'self' 'unsafe-inline' https://cdn.paddle.com; " +
 		"font-src 'self' data:; " +
 		"frame-ancestors 'none'; " +
 		"base-uri 'self'; " +
@@ -208,30 +208,46 @@ func TestSecurityHeadersCSPHasNoDuplicateDirectives(t *testing.T) {
 	}
 }
 
-// TestSecurityHeadersCSPFrameSrcTightenedToDocumentedHosts pins the
-// 2026-09-12 tightening: frame-src carries exactly the two documented Paddle
-// hosted-checkout hosts (production buy.paddle.com, sandbox
-// sandbox-buy.paddle.com) and no longer the broader https://*.paddle.com
-// hedge, while script-src keeps loading Paddle.js from cdn.paddle.com.
-func TestSecurityHeadersCSPFrameSrcTightenedToDocumentedHosts(t *testing.T) {
-	var frameSrc, scriptSrc string
+// TestSecurityHeadersCSPFrameSrcWidenedForPaddleOverlay pins the 2026-09-17
+// reversal of the 2026-09-12 frame-src tightening: a live production run
+// showed Paddle's overlay ("Contact support") navigating the checkout iframe
+// to a Paddle host other than buy.paddle.com/sandbox-buy.paddle.com, so
+// frame-src carries the https://*.paddle.com hedge again (the two documented
+// hosts stay too, for documentation value). It also pins the two other
+// 2026-09-17 additions Paddle.js itself pulled in: script-src gains
+// public.profitwell.com (ProfitWell Retain) and style-src gains
+// cdn.paddle.com (Paddle.js's own injected stylesheet).
+func TestSecurityHeadersCSPFrameSrcWidenedForPaddleOverlay(t *testing.T) {
+	var frameSrc, scriptSrc, styleSrc, connectSrc string
 	for _, d := range cspDirectives {
 		switch d.name {
 		case "frame-src":
 			frameSrc = d.value
 		case "script-src":
 			scriptSrc = d.value
+		case "style-src":
+			styleSrc = d.value
+		case "connect-src":
+			connectSrc = d.value
 		}
 	}
 
-	const wantFrameSrc = "https://buy.paddle.com https://sandbox-buy.paddle.com"
-	if frameSrc != wantFrameSrc {
-		t.Errorf("frame-src = %q, want %q", frameSrc, wantFrameSrc)
+	if !strings.Contains(frameSrc, "https://*.paddle.com") {
+		t.Errorf("frame-src missing the *.paddle.com wildcard: %q", frameSrc)
 	}
-	if strings.Contains(frameSrc, "*.paddle.com") {
-		t.Errorf("frame-src still contains the *.paddle.com wildcard: %q", frameSrc)
+	if !strings.Contains(frameSrc, "https://buy.paddle.com") || !strings.Contains(frameSrc, "https://sandbox-buy.paddle.com") {
+		t.Errorf("frame-src no longer contains the two documented hosts: %q", frameSrc)
 	}
-	if !strings.Contains(scriptSrc, "cdn.paddle.com") {
+	if !strings.Contains(scriptSrc, "https://cdn.paddle.com") {
 		t.Errorf("script-src no longer contains cdn.paddle.com: %q", scriptSrc)
+	}
+	if !strings.Contains(scriptSrc, "https://public.profitwell.com") {
+		t.Errorf("script-src missing public.profitwell.com (ProfitWell Retain): %q", scriptSrc)
+	}
+	if !strings.Contains(styleSrc, "https://cdn.paddle.com") {
+		t.Errorf("style-src missing cdn.paddle.com (Paddle.js's injected stylesheet): %q", styleSrc)
+	}
+	if !strings.Contains(connectSrc, "https://*.profitwell.com") {
+		t.Errorf("connect-src missing *.profitwell.com (ProfitWell reporting): %q", connectSrc)
 	}
 }

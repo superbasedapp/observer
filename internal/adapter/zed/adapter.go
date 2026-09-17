@@ -69,6 +69,13 @@ func pathBase(path string) string {
 	return p
 }
 
+// maxDecodedBytes caps ONE thread blob's zstd-decoded size. The
+// klauspost/compress default is 64 GiB, which for a watcher reading
+// files it does not control is effectively unbounded; a Zed thread is a
+// single editor conversation, so 128 MiB is generous headroom while
+// keeping a decompression bomb bounded to one skipped thread.
+const maxDecodedBytes = 128 << 20
+
 // ParseSessionFile implements adapter.Adapter. threads.db is a
 // watermark store (see doc.go): NewOffset is the latest UnixNano
 // `updated_at` seen across every row, and every thread whose
@@ -92,7 +99,14 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		return res, nil
 	}
 
-	dec, err := zstd.NewReader(nil)
+	// The library default decoded-size ceiling is 64 GiB, which is no
+	// ceiling at all for a watcher: a corrupt or hostile `threads` blob
+	// could drive DecodeAll into an allocation that outlives the daemon.
+	// A Zed thread is one editor conversation, so maxDecodedBytes is
+	// orders of magnitude of headroom over any real row while keeping a
+	// decompression bomb bounded to a single failed thread (it surfaces
+	// on the same retry path as a mid-write truncated frame).
+	dec, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxDecodedBytes))
 	if err != nil {
 		return adapter.ParseResult{}, fmt.Errorf("zed.ParseSessionFile: new zstd reader: %w", err)
 	}

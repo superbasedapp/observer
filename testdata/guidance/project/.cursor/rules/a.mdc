@@ -1,0 +1,8 @@
+---
+description: Go style rules.
+globs:
+  - "**/*.go"
+alwaysApply: false
+---
+
+Use table-driven tests.

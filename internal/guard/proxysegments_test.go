@@ -276,6 +276,9 @@ func TestExtractLatestUserPromptText_LatencyRegression(t *testing.T) {
 	if testing.Short() {
 		t.Skip("wall-clock latency assertion skipped under -short")
 	}
+	if raceDetectorOn {
+		t.Skip("wall-clock latency ceiling is not measurable under the race detector; ci.yml's static go job runs this without -race")
+	}
 	body := oneMiBPromptBody()
 	const iterations = 5
 	ceiling := extractLatencyBudget * extractLatencyTestHeadroom * raceLatencyMultiplier

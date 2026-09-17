@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/pricingfeedgate"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -25,7 +26,7 @@ func TestPricingAutoSyncOnce_RePricesTheLiveEngine(t *testing.T) {
 	keys, priv := feedTestKeys(t)
 
 	dbPath := filepath.Join(t.TempDir(), "observer.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestPricingAutoSyncOnce_EnrolledRefusesAndDoesNotReprice(t *testing.T) {
 	keys, priv := feedTestKeys(t)
 
 	dbPath := filepath.Join(t.TempDir(), "observer.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

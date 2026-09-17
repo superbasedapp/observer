@@ -82,6 +82,16 @@ var ErrNotEnrolled = errors.New("orgclient: not enrolled")
 // settles to a slow cadence instead of spamming the server.
 var ErrAuthFailed = errors.New("orgclient: authentication failed")
 
+// ErrMemberNotActive is returned by Enroll when the server holds a GOOD,
+// UNBURNED enrolment token but the account behind it is not active yet (the
+// combined "add a developer" flow can mint a token against a member who
+// still has to redeem their dashboard sign-in invite and set a password).
+// Unlike ErrAuthFailed this is never a reason to mint a new token: the same
+// compound token is still good and will exchange successfully once the
+// account is active, so the caller should say "try again after signing in",
+// never "ask your admin for a new one".
+var ErrMemberNotActive = errors.New("orgclient: organisation account not active yet")
+
 // ErrBatchTooLarge reports that the complete serialized push envelope exceeds
 // either the node's configured maximum or the org server's accepted body size.
 // It is not a transient network failure and therefore uses a circuit-breaker
@@ -301,6 +311,20 @@ type Client struct {
 	// intelNotSupportedLogged silences the 404 "pre-feature server" WARN to
 	// once per daemon lifetime (the pricing rail's not-supported posture).
 	intelNotSupportedLogged bool
+	// intelRejects counts CONSECUTIVE cycles in which one result row could not
+	// be persisted, keyed by the (session, job) pair that is also the cache's
+	// UNIQUE key. It is the bounded dead-letter's only state: a row that keeps
+	// being rejected (schema drift, or a narrative item the node-side SafeText
+	// gate refuses) would otherwise hold the cursor back forever and FREEZE the
+	// rail, because the same page would be re-fetched and re-rejected every
+	// cycle. A successful persist deletes the key, so the count really is
+	// consecutive, and a dead-lettered row deletes it too — so the map only
+	// ever holds rows currently failing, bounded by one page.
+	// LOOP-OWNED like intelSince: touched only by FetchIntelResults on the
+	// single push-loop goroutine, so it needs no lock. NOT persisted — a
+	// restart re-pages from the start and re-attempts every row from zero,
+	// which is the fail-open behaviour we want.
+	intelRejects map[intelRowKey]int
 }
 
 // SetShareProvider installs the hot share-posture resolver (§2.4). Passing
@@ -529,7 +553,31 @@ func (c *Client) Enroll(ctx context.Context, orgURL, token string) (*store.Enrol
 	case http.StatusOK:
 		// fall through
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return nil, nil, fmt.Errorf("orgclient.Enroll: %w: invalid or expired enrolment token", ErrAuthFailed)
+		// The server's pending-member path (handlers.go EnrollAgent) answers
+		// 403 with {"error":"member_not_active", ...} and deliberately does
+		// NOT burn the token: the account behind it just is not active yet,
+		// and the same compound token will exchange successfully once it is.
+		// That is a materially different outcome from "invalid or expired" —
+		// telling the developer to go ask their admin for a NEW token here
+		// would send them back for a replacement that fails the exact same
+		// way, when running the exact same command again (after signing in)
+		// is what actually works.
+		var eb struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(resp.Body, &eb)
+		if resp.StatusCode() == http.StatusForbidden && eb.Error == "member_not_active" {
+			msg := eb.Message
+			if msg == "" {
+				msg = "your organisation account is not active yet"
+			}
+			return nil, nil, fmt.Errorf("orgclient.Enroll: %w: %s"+
+				" (your enrolment token is still valid; run the same command again after you have signed in)",
+				ErrMemberNotActive, msg)
+		}
+		return nil, nil, fmt.Errorf("orgclient.Enroll: %w: invalid or expired enrolment token"+
+			" (the link may have expired or already been used; ask your admin for a new one, or use --idp)", ErrAuthFailed)
 	default:
 		return nil, nil, fmt.Errorf("orgclient.Enroll: server returned %d: %s", resp.StatusCode(), strings.TrimSpace(string(resp.Body)))
 	}
@@ -548,7 +596,7 @@ func (c *Client) Enroll(ctx context.Context, orgURL, token string) (*store.Enrol
 	}
 	// Wipe any prior-run last-push state so `observer org status` after
 	// a re-enroll reports "(none yet)" instead of a stale timestamp.
-	// N5 in docs/teams-test-regression-2026-06-03.md.
+	// N5 in docs/audits/teams-test-regression-2026-06-03.md.
 	if err := c.store.ClearLastPushState(ctx); err != nil {
 		return nil, nil, fmt.Errorf("orgclient.Enroll: clear last-push state: %w", err)
 	}
@@ -1457,6 +1505,11 @@ func (c *Client) PushLoop(ctx context.Context) error {
 		// failure is FAIL-OPEN: the sink is poked with the typed state and the
 		// guard keeps the node's own [guard.budget] numbers.
 		budgetOutcome, berr := c.FetchBudgetPolicy(ctx)
+		// The cadence this loop is actually ticking at rides with every
+		// outcome (bundle BUD-N): the composition boundary derives the
+		// cross-machine baseline's staleness window from it, and the loop is
+		// the one place that resolves it.
+		budgetOutcome.PushInterval = c.pushInterval()
 		if c.budgetSink != nil && !errors.Is(berr, context.Canceled) {
 			c.budgetSink(budgetOutcome)
 		}

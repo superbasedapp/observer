@@ -51,7 +51,14 @@ func writeBytesAtomic(path string, data []byte) error {
 		return fmt.Errorf("ensure config dir: %w", err)
 	}
 	if existing, err := os.ReadFile(path); err == nil {
-		if err := os.WriteFile(path+".bak", existing, 0o644); err != nil { //nolint:gosec // G306: backup of the non-secret config.toml; mirrors the original's readable perms.
+		// 0o600, NOT 0o644 (MHC-2, codebase audit 2026-09-16). The live
+		// config.toml is written 0o600 (os.CreateTemp's own mode, preserved by
+		// the rename below) and the schema marks several of its keys secret —
+		// routing.key_pool, email.password, browser.listener.token. A backup is
+		// a byte-for-byte copy of that file, so it must carry the same
+		// owner-only mode; a world-readable .bak beside an owner-only original
+		// is a credential disclosure to every local account.
+		if err := os.WriteFile(path+".bak", existing, 0o600); err != nil {
 			return fmt.Errorf("write .bak: %w", err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {

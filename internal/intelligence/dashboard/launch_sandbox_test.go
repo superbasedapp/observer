@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
@@ -356,5 +357,107 @@ func TestTerminalSandboxProbeRejectsNonGet(t *testing.T) {
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestTerminalSandboxProbeVerdictTable is the one table over the closed
+// verdict vocabulary the probe endpoint + the fail-closed launch gate share
+// (sandbox.go's Verdict* constants plus the platform verdicts
+// internal/sandbox owns). One row per verdict, each asserting BOTH halves of
+// the contract at once: the GET is always a fail-SOFT 200 carrying the
+// verdict verbatim, and the POST is fail-CLOSED with the status
+// sandboxVerdictStatus maps that verdict to — never a launch.
+//
+// The two rows that matter most to this arc are disabled_by_config and
+// runtime_init_failed. They used to be ONE string: an enabled-but-broken
+// sandbox reported "disabled by config", which sent the operator to flip a
+// switch that was already on. They are now distinct verdicts with distinct
+// copy, and runtime_init_failed — being unknown to sandboxVerdictStatus —
+// lands on that table's fail-closed 501 floor rather than on a permissive
+// default.
+func TestTerminalSandboxProbeVerdictTable(t *testing.T) {
+	cases := []struct {
+		name       string
+		avail      SandboxAvailability
+		wantStatus int // the POST /api/terminal/launch refusal status
+	}{
+		{
+			name: "disabled_by_config",
+			avail: SandboxAvailability{
+				Verdict: VerdictDisabledByConfig,
+				Reason:  "[terminal.sandbox].enabled is false on this daemon",
+			},
+			// An operator refusal, not a capability gap.
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name: "runtime_init_failed",
+			avail: SandboxAvailability{
+				Verdict: VerdictRuntimeInitFailed,
+				Reason:  `newSandboxRuntime: create workspaces dir: mkdir /nope: permission denied`,
+			},
+			// Unknown to sandboxVerdictStatus -> the fail-closed 501 floor.
+			wantStatus: http.StatusNotImplemented,
+		},
+		{
+			name:       "backend_missing",
+			avail:      SandboxAvailability{Verdict: "backend_missing", Reason: "bwrap not found on PATH"},
+			wantStatus: http.StatusNotImplemented,
+		},
+		{
+			name:       "backend_too_old",
+			avail:      SandboxAvailability{Verdict: "backend_too_old", Reason: "bwrap 0.3.3 is older than the 0.4.0 floor"},
+			wantStatus: http.StatusNotImplemented,
+		},
+		{
+			name:       "userns_denied",
+			avail:      SandboxAvailability{Verdict: "userns_denied", Reason: "kernel.unprivileged_userns_clone is 0"},
+			wantStatus: http.StatusNotImplemented,
+		},
+		{
+			name:       "unsupported_platform",
+			avail:      SandboxAvailability{Verdict: "unsupported_platform", Reason: "bwrap sandboxing is Linux-only"},
+			wantStatus: http.StatusNotImplemented,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lm := &countingLaunchManager{fakeLaunchManager: &fakeLaunchManager{}}
+			s := newLaunchTestServerWithSandbox(t, lm, &fakeSandboxProber{avail: tc.avail})
+
+			// Half 1: the probe endpoint is fail-SOFT and verbatim.
+			rec := getTerminalSandboxProbe(t, s.Handler())
+			if rec.Code != http.StatusOK {
+				t.Fatalf("probe status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+			}
+			var out SandboxAvailability
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("decode probe: %v (body=%s)", err, rec.Body.String())
+			}
+			if out.Available {
+				t.Errorf("available = true, want false for verdict %q", tc.avail.Verdict)
+			}
+			if out.Verdict != tc.avail.Verdict {
+				t.Errorf("verdict = %q, want %q", out.Verdict, tc.avail.Verdict)
+			}
+			if out.Reason != tc.avail.Reason {
+				t.Errorf("reason = %q, want the seam's reason %q verbatim", out.Reason, tc.avail.Reason)
+			}
+
+			// Half 2: the launch gate is fail-CLOSED, with no CreateFresh.
+			post := postTerminalLaunchSandbox(t, s.Handler(), terminalLaunchRequest{
+				Tool: "claude-code", ProjectRoot: "/repo", Sandbox: true,
+			})
+			if post.Code != tc.wantStatus {
+				t.Errorf("launch status = %d, want %d (body=%s)", post.Code, tc.wantStatus, post.Body.String())
+			}
+			if !strings.Contains(post.Body.String(), tc.avail.Verdict) {
+				t.Errorf("launch refusal %q does not name the verdict %q", post.Body.String(), tc.avail.Verdict)
+			}
+			if lm.createFreshCalls != 0 {
+				t.Errorf("createFreshCalls = %d, want 0", lm.createFreshCalls)
+			}
+		})
 	}
 }

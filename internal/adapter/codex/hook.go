@@ -157,7 +157,9 @@ func BuildHookEvent(eventName string, body []byte, sc *scrub.Scrubber) (models.T
 		base.ActionType = models.ActionUnknown
 		base.RawToolName = raw.ToolName
 		if len(raw.ToolInput) > 0 {
-			base.RawToolInput = scrubText(sc, string(raw.ToolInput))
+			// tool_input is JSON — scrubJSON (not scrubText/String)
+			// so redaction can't corrupt the stored blob (MHC-4).
+			base.RawToolInput = scrubJSON(sc, raw.ToolInput)
 		}
 		base.Target = "permission_request:" + raw.ToolName
 		base.Success = true
@@ -202,6 +204,19 @@ func scrubText(sc *scrub.Scrubber, s string) string {
 		return s
 	}
 	return sc.String(s)
+}
+
+// scrubJSON is scrubText's counterpart for a JSON-shaped payload (e.g.
+// tool_input): it scrubs each string value in isolation and
+// re-marshals via [scrub.Scrubber.RawJSON], which — unlike
+// [scrub.Scrubber.String]'s line-oriented regexes — can never corrupt
+// the JSON structure of what gets stored (MHC-4, docs/audits/
+// codebase-audit-2026-09-16.md).
+func scrubJSON(sc *scrub.Scrubber, raw []byte) string {
+	if sc == nil || len(raw) == 0 {
+		return string(raw)
+	}
+	return sc.RawJSON(raw)
 }
 
 func previewLine(s string, max int) string {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/policystate"
@@ -106,7 +107,7 @@ func TestStartupEmitsFullSnapshot(t *testing.T) {
 	// via OpenBearerStore mirrors exactly what the daemon's buildOrgClient
 	// reads back — same keychain service id + same DB directory.
 	seedCtx := context.Background()
-	database, err := db.Open(seedCtx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(seedCtx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open seed: %v", err)
 	}

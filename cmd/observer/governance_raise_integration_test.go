@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
@@ -48,7 +49,7 @@ func raiseChainGrant(now time.Time, tenancy string) *govern.Grant {
 // batch can be searched for whether the bodies actually shipped.
 func raiseChainStore(ctx context.Context, t *testing.T) *store.Store {
 	t.Helper()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/handoffsvc"
@@ -46,16 +47,29 @@ func TestGetSessionMessage_ByID(t *testing.T) {
 	if out["found"] != true || out["full_bodies"] != true || out["id"] != "uuid-42" {
 		t.Errorf("out = %+v", out)
 	}
-	if out["text"] != "here is the file" {
+	// MHC-1: recalled message content comes back wrapped as untrusted,
+	// historical data — the raw body must still survive inside the
+	// wrapper (never truncated or dropped), and the sentinel must be
+	// present so the calling model can tell reported history from an
+	// instruction.
+	text, _ := out["text"].(string)
+	if !strings.Contains(text, "here is the file") {
 		t.Errorf("text = %v", out["text"])
+	}
+	if !strings.Contains(text, "<untrusted_recalled_output") {
+		t.Errorf("text missing untrusted-content sentinel: %v", out["text"])
 	}
 	calls, ok := out["tool_calls"].([]any)
 	if !ok || len(calls) != 1 {
 		t.Fatalf("tool_calls = %v", out["tool_calls"])
 	}
 	c := calls[0].(map[string]any)
-	if c["result"] != "FULL BODY" {
+	result, _ := c["result"].(string)
+	if !strings.Contains(result, "FULL BODY") {
 		t.Errorf("full un-excerpted result must survive: %v", c["result"])
+	}
+	if !strings.Contains(result, "<untrusted_recalled_output") {
+		t.Errorf("result missing untrusted-content sentinel: %v", c["result"])
 	}
 }
 

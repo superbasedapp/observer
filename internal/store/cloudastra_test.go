@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // cloudastra_test.go holds the store-side regressions for the 2026-09
@@ -143,7 +144,7 @@ func TestCloudEvidenceBundleReadsTextsInsideTheSnapshot(t *testing.T) {
 
 	// A genuinely SEPARATE connection to the same file, so the write is not
 	// simply invisible for want of a second writer.
-	writer, err := db.Open(context.Background(), db.Options{Path: cloudTestDBPath(t, database)})
+	writer, err := dbtemplate.Open(context.Background(), db.Options{Path: cloudTestDBPath(t, database)})
 	if err != nil {
 		t.Fatalf("open writer: %v", err)
 	}

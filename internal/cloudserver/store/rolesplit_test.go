@@ -37,6 +37,23 @@ func columnPriv(t *testing.T, pool *pgxpool.Pool, role, table, column, priv stri
 	return ok
 }
 
+// tableLevelPriv reports whether role holds priv at TABLE level, ignoring any
+// column-level grant. has_table_privilege alone is not enough for that
+// distinction on every privilege, so this reads the catalog view that lists
+// table-level grants only — used to pin that sbci_worker's accounts UPDATE
+// (migration 0040, CLOUD-RBAC-1) stayed COLUMN-level.
+func tableLevelPriv(t *testing.T, pool *pgxpool.Pool, role, table, priv string) bool {
+	t.Helper()
+	var ok bool
+	if err := pool.QueryRow(context.Background(),
+		`SELECT coalesce(bool_or(privilege_type = $3), false)
+		   FROM information_schema.table_privileges
+		  WHERE grantee = $1 AND table_name = $2`, role, table, priv).Scan(&ok); err != nil {
+		t.Fatalf("table_privileges(%s,%s,%s): %v", role, table, priv, err)
+	}
+	return ok
+}
+
 // funcPriv reports whether role holds EXECUTE on the function identified by its
 // signature (e.g. "sbci_lease_next_job(text, timestamptz, text[], int)").
 func funcPriv(t *testing.T, pool *pgxpool.Pool, role, signature string) bool {
@@ -106,6 +123,17 @@ func TestRoleSplitDeployedGrants(t *testing.T) {
 		{"evidence_blobs", "DELETE"},
 		{"provider_attestations", "INSERT"},
 		{"dialect_verification_records", "SELECT"},
+		// 0040 (CLOUD-RBAC-1): the digest COMPLETION path's ensureProjectTx
+		// (store/evidence.go) does INSERT ... ON CONFLICT DO UPDATE ...
+		// RETURNING id on cloud_projects under the worker role. RLS-confined
+		// (cloud_projects is in 0004's tenant_tables array).
+		{"cloud_projects", "SELECT"},
+		{"cloud_projects", "INSERT"},
+		{"cloud_projects", "UPDATE"},
+		// 0040: the digest SUBMIT path's read side.
+		{"cloud_sessions", "SELECT"},
+		{"account_plans", "SELECT"},
+		{"plans", "SELECT"},
 	}
 	for _, c := range workerHas {
 		if !tablePriv(t, pool, "sbci_worker", c.table, c.priv) {
@@ -122,6 +150,14 @@ func TestRoleSplitDeployedGrants(t *testing.T) {
 	}
 	if !columnPriv(t, pool, "sbci_worker", "analysis_results", "superseded_by", "UPDATE") {
 		t.Error("sbci_worker MISSING UPDATE on analysis_results.superseded_by (regeneration supersede path)")
+	}
+	// 0040 (CLOUD-RBAC-1): SubmitDigestJob's FE4 deletion fence takes a
+	// `SELECT status FROM accounts ... FOR UPDATE` row lock, and PostgreSQL
+	// requires UPDATE on at least one column to take that lock. accounts has
+	// NO RLS, so the grant is deliberately column-level on updated_at only —
+	// the negative half of this pin is in TestRoleSplitLeastPrivilege.
+	if !columnPriv(t, pool, "sbci_worker", "accounts", "updated_at", "UPDATE") {
+		t.Error("sbci_worker MISSING UPDATE on accounts.updated_at (0040: the FE4 FOR UPDATE row lock)")
 	}
 
 	// Both application roles must EXECUTE sbci_current_account (the RLS helper) —
@@ -178,6 +214,34 @@ func TestRoleSplitLeastPrivilege(t *testing.T) {
 	if tablePriv(t, pool, "sbci_worker", "result_revisions", "INSERT") ||
 		tablePriv(t, pool, "sbci_worker", "result_revisions", "SELECT") {
 		t.Error("sbci_worker holds a grant on result_revisions; user corrections are an api-plane path")
+	}
+
+	// 0040 (CLOUD-RBAC-1): the worker's accounts UPDATE must stay COLUMN-level
+	// on updated_at. accounts is a SYSTEM table with NO row-level security
+	// (0004_rls_grants.sql lists it under "System (non-RLS) control-plane
+	// tables"), so a table-level UPDATE grant here would be an unrestricted
+	// all-column, ALL-ROWS write grant for the worker plane — the one grant in
+	// the split-role matrix no tenant policy would confine.
+	if tableLevelPriv(t, pool, "sbci_worker", "accounts", "UPDATE") {
+		t.Error("sbci_worker holds TABLE-level UPDATE on accounts; 0040 grants only the " +
+			"updated_at column because accounts has no RLS (CLOUD-RBAC-1)")
+	}
+	if tableLevelPriv(t, pool, "sbci_worker", "accounts", "INSERT") ||
+		tableLevelPriv(t, pool, "sbci_worker", "accounts", "DELETE") {
+		t.Error("sbci_worker holds INSERT/DELETE on accounts; account lifecycle is an api/app path")
+	}
+	// And accounts must STAY non-RLS-but-narrowly-granted rather than quietly
+	// becoming RLS-enabled, which would change what the reasoning above is
+	// based on. If a future migration enables RLS on accounts, revisit the
+	// CLOUD-RBAC-1 ledger row and this comment together.
+	var accountsRLS bool
+	if err := pool.QueryRow(context.Background(),
+		`SELECT relrowsecurity FROM pg_class WHERE relname = 'accounts'`).Scan(&accountsRLS); err != nil {
+		t.Fatalf("read pg_class.relrowsecurity for accounts: %v", err)
+	}
+	if accountsRLS {
+		t.Error("accounts now has ROW LEVEL SECURITY enabled — CLOUD-RBAC-1's reasoning " +
+			"(and 0040's header comment) assume it does NOT; revisit both")
 	}
 
 	// worker must NOT run the auth-bootstrap introspect lookups.

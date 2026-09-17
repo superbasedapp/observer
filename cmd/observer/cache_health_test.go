@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/cachetrack"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // openCacheHealthTestDB opens a fresh observer DB so the cache
@@ -16,7 +17,7 @@ import (
 func openCacheHealthTestDB(t *testing.T) (*sql.DB, func()) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "ch.db")
-	database, err := db.Open(context.Background(), db.Options{Path: path})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

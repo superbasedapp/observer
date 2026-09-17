@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intervention"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -27,7 +28,7 @@ func TestNodeInterventionReportsCannotOutliveControllerOrEnrollment(t *testing.T
 	ctx := context.Background()
 	_, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
 	rewriteBudgetLaunchEnrolment(t, dbPath, func(e *store.Enrolment) { e.UserID = "fixture-member" })
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

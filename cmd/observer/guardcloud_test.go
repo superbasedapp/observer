@@ -16,6 +16,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -50,7 +51,7 @@ func (d *cloudStubDoer) snapshot() ([]string, [][]byte) {
 
 func newCloudTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	database, err := db.Open(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "observer.db")})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "observer.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

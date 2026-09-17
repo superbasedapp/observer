@@ -321,6 +321,22 @@ func claudeCodeRows() []Translation {
 			Note: "whether the organization's budget ever verified is daemon state; the refusal is the proxy's (org-budget ruling R2)",
 		},
 		{
+			RuleID: "B-626", Fidelity: FidelityNone,
+			Note: "per-tool budget caps are ORGANIZATION policy evaluated against runtime spend; no native dialect can express them and the enforcement is the proxy's and the process controller's (bundle BUD-N)",
+		},
+		{
+			RuleID: "B-627", Fidelity: FidelityNone,
+			Note: "per-tool budget caps are ORGANIZATION policy evaluated against runtime spend; no native dialect can express them and the enforcement is the proxy's and the process controller's (bundle BUD-N)",
+		},
+		{
+			RuleID: "B-628", Fidelity: FidelityNone,
+			Note: "per-model budget caps are ORGANIZATION policy evaluated against runtime spend; no native dialect can express them and the enforcement is the proxy's and the process controller's (bundle BUD-N)",
+		},
+		{
+			RuleID: "B-629", Fidelity: FidelityNone,
+			Note: "per-model budget caps are ORGANIZATION policy evaluated against runtime spend; no native dialect can express them and the enforcement is the proxy's and the process controller's (bundle BUD-N)",
+		},
+		{
 			RuleID: "B-610", Fidelity: FidelityNone,
 			Note: "5h usage-window utilization is runtime state; limit enforcement is the proxy's (§12.1)",
 		},

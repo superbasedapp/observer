@@ -38,8 +38,18 @@ type OrgIntelResult struct {
 	Description   string
 	Confidence    string
 	Limitations   []string
-	SchemaVersion string
-	FetchedAt     time.Time
+	// The five NARRATIVE lists the org rail derives (agent migration 124): what
+	// the session did, whether the stated plans landed, what issues were found,
+	// what failed, what to do next. Stored one JSON array per NULLABLE column;
+	// an empty list is stored as NULL, so a row cached before 124 and a result
+	// that carried no narrative read back the same way — as absence.
+	WorkDone         []string
+	PlansImplemented []string
+	IssuesFound      []string
+	Failures         []string
+	NextSteps        []string
+	SchemaVersion    string
+	FetchedAt        time.Time
 }
 
 // ErrOrgIntelResultUnsafe is returned by UpsertOrgIntelResult when a text field
@@ -100,6 +110,23 @@ func validateIntelResult(r OrgIntelResult) error {
 	if err := validateIntelList("limitations", r.Limitations, cloudcontract.MaxLimitationBytes); err != nil {
 		return err
 	}
+	// The five narrative lists follow the SAME rule as every other prose field:
+	// each item through NormalizeText at the narrative byte cap, and the whole
+	// ROW rejected on the first violation rather than truncated (INV-6).
+	for _, n := range []struct {
+		field string
+		list  []string
+	}{
+		{"work_done", r.WorkDone},
+		{"plans_implemented", r.PlansImplemented},
+		{"issues_found", r.IssuesFound},
+		{"failures", r.Failures},
+		{"next_steps", r.NextSteps},
+	} {
+		if err := validateIntelList(n.field, n.list, cloudcontract.MaxNarrativeItemBytes); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -136,23 +163,52 @@ func (s *Store) UpsertOrgIntelResult(ctx context.Context, r OrgIntelResult) erro
 	if err != nil {
 		return fmt.Errorf("store.UpsertOrgIntelResult: limitations: %w", err)
 	}
+	// The five narrative columns are NULLABLE and store NULL for an empty list
+	// (agent migration 124), so a row the org sent with no narrative and a row
+	// cached before 124 are indistinguishable — both are absence.
+	narrative := make([]any, 0, 5)
+	for _, n := range []struct {
+		field string
+		list  []string
+	}{
+		{"work_done", r.WorkDone},
+		{"plans_implemented", r.PlansImplemented},
+		{"issues_found", r.IssuesFound},
+		{"failures", r.Failures},
+		{"next_steps", r.NextSteps},
+	} {
+		v, merr := marshalIntelNarrative(n.list)
+		if merr != nil {
+			return fmt.Errorf("store.UpsertOrgIntelResult: %s: %w", n.field, merr)
+		}
+		narrative = append(narrative, v)
+	}
+	args := []any{
+		r.OrgID, r.SessionID, r.JobID, r.Title, taxonomy, suggested, r.Description,
+		r.Confidence, limitations, r.SchemaVersion, cloudFormatTime(r.FetchedAt),
+	}
+	args = append(args, narrative...)
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO org_intel_cache
 		  (org_id, session_id, job_id, title, taxonomy_tags, suggested_tags, description,
-		   confidence, limitations, schema_version, fetched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   confidence, limitations, schema_version, fetched_at,
+		   work_done, plans_implemented, issues_found, failures, next_steps)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_id, job_id) DO UPDATE SET
-		  org_id         = excluded.org_id,
-		  title          = excluded.title,
-		  taxonomy_tags  = excluded.taxonomy_tags,
-		  suggested_tags = excluded.suggested_tags,
-		  description    = excluded.description,
-		  confidence     = excluded.confidence,
-		  limitations    = excluded.limitations,
-		  schema_version = excluded.schema_version,
-		  fetched_at     = excluded.fetched_at`,
-		r.OrgID, r.SessionID, r.JobID, r.Title, taxonomy, suggested, r.Description,
-		r.Confidence, limitations, r.SchemaVersion, cloudFormatTime(r.FetchedAt))
+		  org_id            = excluded.org_id,
+		  title             = excluded.title,
+		  taxonomy_tags     = excluded.taxonomy_tags,
+		  suggested_tags    = excluded.suggested_tags,
+		  description       = excluded.description,
+		  confidence        = excluded.confidence,
+		  limitations       = excluded.limitations,
+		  schema_version    = excluded.schema_version,
+		  fetched_at        = excluded.fetched_at,
+		  work_done         = excluded.work_done,
+		  plans_implemented = excluded.plans_implemented,
+		  issues_found      = excluded.issues_found,
+		  failures          = excluded.failures,
+		  next_steps        = excluded.next_steps`, args...)
 	if err != nil {
 		return fmt.Errorf("store.UpsertOrgIntelResult: %w", err)
 	}
@@ -173,9 +229,14 @@ func (s *Store) UpsertOrgIntelResult(ctx context.Context, r OrgIntelResult) erro
 // rows anyway (DeleteEnrolment clears the table), so "not enrolled" never
 // discloses a departed org's intel.
 func (s *Store) OrgIntelResultsForSession(ctx context.Context, sessionID string) ([]OrgIntelResult, error) {
+	// The five narrative columns are NULLABLE (agent migration 124); COALESCE
+	// resolves a pre-124 row to the canonical empty array at the boundary so
+	// nothing below branches on NULL.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT session_id, job_id, title, taxonomy_tags, suggested_tags, description,
-		       confidence, limitations, schema_version, fetched_at
+		       confidence, limitations, schema_version, fetched_at,
+		       COALESCE(work_done,'[]'), COALESCE(plans_implemented,'[]'),
+		       COALESCE(issues_found,'[]'), COALESCE(failures,'[]'), COALESCE(next_steps,'[]')
 		  FROM org_intel_cache
 		 WHERE session_id = ?
 		   AND org_id = COALESCE((SELECT org_id FROM org_enrolment WHERE id = 1), org_id)
@@ -190,16 +251,24 @@ func (s *Store) OrgIntelResultsForSession(ctx context.Context, sessionID string)
 		var (
 			taxonomy, suggested, limitations string
 			fetched                          string
+			workDone, plans, issues          string
+			failures, nextSteps              string
 		)
 		res := OrgIntelResult{}
 		if err := rows.Scan(&res.SessionID, &res.JobID, &res.Title, &taxonomy,
 			&suggested, &res.Description, &res.Confidence, &limitations,
-			&res.SchemaVersion, &fetched); err != nil {
+			&res.SchemaVersion, &fetched,
+			&workDone, &plans, &issues, &failures, &nextSteps); err != nil {
 			return nil, fmt.Errorf("store.OrgIntelResultsForSession: scan: %w", err)
 		}
 		res.TaxonomyTags = unmarshalIntelList(taxonomy)
 		res.SuggestedTags = unmarshalIntelList(suggested)
 		res.Limitations = unmarshalIntelList(limitations)
+		res.WorkDone = unmarshalIntelList(workDone)
+		res.PlansImplemented = unmarshalIntelList(plans)
+		res.IssuesFound = unmarshalIntelList(issues)
+		res.Failures = unmarshalIntelList(failures)
+		res.NextSteps = unmarshalIntelList(nextSteps)
 		if t, perr := time.Parse(time.RFC3339Nano, fetched); perr == nil {
 			res.FetchedAt = t
 		}
@@ -280,6 +349,21 @@ func marshalIntelList(v []string) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return "", err
+	}
+	return string(b), nil
+}
+
+// marshalIntelNarrative encodes one narrative list for its NULLABLE column
+// (agent migration 124). An empty or nil list stores SQL NULL — returned as an
+// untyped nil — rather than the "[]" the four older list columns use, so a row
+// with no narrative and a row cached before 124 have the same representation.
+func marshalIntelNarrative(v []string) (any, error) {
+	if len(v) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
 	}
 	return string(b), nil
 }

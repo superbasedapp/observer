@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/modelvalue"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -75,7 +76,7 @@ func TestModelValue_SaveCalibration(t *testing.T) {
 		t.Fatalf("config.Load: %v", err)
 	}
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: cfg.Observer.DBPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: cfg.Observer.DBPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

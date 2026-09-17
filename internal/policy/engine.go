@@ -44,6 +44,19 @@ type BudgetProtection struct {
 	DailyTokens   bool
 	WeeklyTokens  bool
 	MonthlyTokens bool
+
+	// ToolUSD / ToolTokens / ModelUSD / ModelTokens are the SUBJECT rows'
+	// provenance (bundle BUD-N): true when a managed organization authored at
+	// least one HARD cap of that kind and unit. They are per kind+unit rather
+	// than per subject because they answer the question protection is asked —
+	// "may a node-side process intervention act on this rule row?" — and a
+	// rule row is per kind+unit. Which SUBJECT actually crossed is decided by
+	// the matcher against Config.BudgetSubjectCaps, where each cap carries its
+	// own Hard flag.
+	ToolUSD     bool
+	ToolTokens  bool
+	ModelUSD    bool
+	ModelTokens bool
 }
 
 // ProtectsRule reports whether the managed organization authored the hard
@@ -51,6 +64,14 @@ type BudgetProtection struct {
 // Config.BudgetRequired because it represents a missing required document.
 func (p BudgetProtection) ProtectsRule(ruleID string) bool {
 	switch ruleID {
+	case "B-626":
+		return p.ToolUSD
+	case "B-627":
+		return p.ToolTokens
+	case "B-628":
+		return p.ModelUSD
+	case "B-629":
+		return p.ModelTokens
 	case "B-601":
 		return p.SessionUSD
 	case "B-602":
@@ -169,6 +190,16 @@ type Config struct {
 	BudgetDailyTokens   int64
 	BudgetWeeklyTokens  int64
 	BudgetMonthlyTokens int64
+	// BudgetSubjectCaps are the organization's PER-TOOL and PER-MODEL caps,
+	// already resolved per window at the composition boundary (bundle BUD-N).
+	// The B-626..B-629 rows walk this table; an empty table leaves all four
+	// rows inert, which is every node the org authored no subject cap for.
+	//
+	// It is a TABLE rather than four more scalar ceilings because the number
+	// of subjects is the org's to choose, not this struct's — a fleet may cap
+	// two tools or twenty, and the rule rows are the same either way
+	// (CLAUDE.md #5).
+	BudgetSubjectCaps []BudgetSubjectCap
 	// LimitUtil* are the [guard.budget.window] utilization thresholds
 	// (0..1) the B-610..B-613 provider-usage-window rows compare
 	// against. warn flags, deny blocks; 0 disables the threshold.
@@ -263,7 +294,16 @@ func New(cfg Config) (*Engine, error) {
 	// overrides can still tune the result; observe stays flag (D2).
 	if cfg.BudgetHard {
 		for i := range rules {
-			if rules[i].Category == CategoryBudget {
+			// SUBJECT rows are exempt, and deliberately so (bundle BUD-N).
+			// [guard.budget].hard is the node's posture about the node's OWN
+			// window ceilings; a per-tool / per-model cap carries the
+			// organization's own per-cap enforcement, and the pair of rows
+			// each subject ID ships (a deny row that matches only hard caps
+			// and a flag row that matches only soft ones — approved deviation
+			// 3) already encodes it. Sweeping them up here would deny a
+			// subject cap the admin authored as `soft`, which is exactly the
+			// cross-period fold MEDIUM-3 removed for windows.
+			if rules[i].Category == CategoryBudget && !subjectBudgetRuleID(rules[i].ID) {
 				rules[i].Enforce = DecisionDeny
 			}
 		}
@@ -272,9 +312,9 @@ func New(cfg Config) (*Engine, error) {
 	if len(cfg.Disabled) > 0 {
 		off := setOf(cfg.Disabled...)
 		kept := rules[:0]
-		for _, r := range rules {
-			if !off[r.ID] || protectedBudgetRuleID(cfg, r.ID) {
-				kept = append(kept, r)
+		for i := range rules {
+			if !off[rules[i].ID] || protectedBudgetRule(cfg, &rules[i]) {
+				kept = append(kept, rules[i])
 			}
 		}
 		rules = kept
@@ -292,7 +332,7 @@ func New(cfg Config) (*Engine, error) {
 			}
 			matched = true
 			if ov.Decision != nil && ov.Source != SourceOrgBudget &&
-				protectedBudgetRuleID(cfg, rules[i].ID) &&
+				protectedBudgetRule(cfg, &rules[i]) &&
 				*ov.Decision < rules[i].Enforce {
 				// A local/user/project override cannot weaken an
 				// organization-authoritative hard budget. The internal
@@ -338,6 +378,7 @@ func builtinRules() []Rule {
 	rules = append(rules, taintRules()...)
 	rules = append(rules, budgetRules()...)
 	rules = append(rules, tokenBudgetRules()...)
+	rules = append(rules, subjectBudgetRules()...)
 	rules = append(rules, requiredBudgetRules()...)
 	rules = append(rules, limitRules()...)
 	return append(rules, anomalyRules()...)
@@ -356,11 +397,14 @@ func (e *Engine) RuleCount() int { return len(e.rules) }
 // B-625 is protected whenever armed. Soft organization windows finish at flag
 // and therefore report false, preserving their advisory behavior.
 func (e *Engine) BudgetRuleProtected(ruleID string) bool {
-	if e == nil || !protectedBudgetRuleID(e.cfg, ruleID) {
+	if e == nil {
 		return false
 	}
 	for i := range e.rules {
-		if e.rules[i].ID == ruleID && e.rules[i].Enforce >= DecisionDeny {
+		if e.rules[i].ID != ruleID || e.rules[i].Enforce < DecisionDeny {
+			continue
+		}
+		if protectedBudgetRule(e.cfg, &e.rules[i]) {
 			return true
 		}
 	}
@@ -372,14 +416,49 @@ func (e *Engine) BudgetRuleProtected(ruleID string) bool {
 // the guard parser.
 const SourceOrgBudget = "org_budget"
 
-func protectedBudgetRuleID(cfg Config, id string) bool {
-	if id == "B-625" {
+// protectedBudgetRule reports whether THIS ROW is an organization-authorized
+// blocking budget row: one a local [guard.rules].disable may not remove, a
+// local override may not weaken, and the managed process-control pass may act
+// on.
+//
+// IT TAKES A ROW, NOT AN ID (adversarial review of BUD-N, P2-5). Each subject
+// ID ships TWO rows — a deny row that matches only caps the org authored HARD
+// and a flag row that matches only SOFT ones — while BudgetProtection is per
+// kind+unit. Asking by ID alone therefore protected the FLAG row of a soft cap
+// as well, so an operator's `[guard.rules] disable = ["B-626"]` was silently
+// ignored for a per-tool cap the admin had written as a nudge. Protection is
+// the org's authority over a DENY, and a row that cannot deny carries none.
+//
+// HARDNESS IS READ OFF THE ROW'S OWN ENFORCE DECISION rather than a marker
+// field, because that IS the distinction: subjectBudgetRules builds the hard
+// half with Enforce=deny and the soft half with Enforce=flag, and no subject
+// row is ever swept up by the [guard.budget].hard blanket upgrade (New exempts
+// them for the same reason this function exists).
+func protectedBudgetRule(cfg Config, r *Rule) bool {
+	if r == nil {
+		return false
+	}
+	if r.ID == "B-625" {
 		return cfg.BudgetRequired
+	}
+	if subjectBudgetRuleID(r.ID) {
+		// A SUBJECT row's hardness is the ORGANIZATION's, per cap — the same
+		// reason it is exempt from the [guard.budget].hard blanket upgrade in
+		// New. Gating its protection on the node's own hard flag would let a
+		// developer un-protect a cap the org authored hard by clearing one
+		// local key, which is exactly the shape B-625 already refuses.
+		// BudgetProtection is set only for an ORG-AUTHORITATIVE hard cap
+		// (internal/orgbudget.SubjectProtection), so a lowering-only node's own
+		// tightening still authorizes nothing.
+		if r.Enforce < DecisionDeny {
+			return false
+		}
+		return cfg.BudgetProtection.ProtectsRule(r.ID)
 	}
 	if !cfg.BudgetHard {
 		return false
 	}
-	return cfg.BudgetProtection.ProtectsRule(id)
+	return cfg.BudgetProtection.ProtectsRule(r.ID)
 }
 
 // Evaluate is THE evaluation seam (spec §17.2): one Event in, one
@@ -443,7 +522,7 @@ func (e *Engine) evaluate(ev Event, budgetOnly, managedOnly bool) Verdict {
 		if budgetOnly && !budgetAdmissionRuleID(r.ID) {
 			continue
 		}
-		if managedOnly && !protectedBudgetRuleID(e.cfg, r.ID) {
+		if managedOnly && !protectedBudgetRule(e.cfg, r) {
 			continue
 		}
 		if !r.appliesTo(ev.Kind) {
@@ -477,7 +556,7 @@ func (e *Engine) ManagedBudgetRequired() bool {
 	ctx := e.buildContext(&ev)
 	for i := range e.rules {
 		r := &e.rules[i]
-		if protectedBudgetRuleID(e.cfg, r.ID) && r.Enforce >= DecisionDeny {
+		if protectedBudgetRule(e.cfg, r) && r.Enforce >= DecisionDeny {
 			if hit, _ := applyRule(r, ctx); hit {
 				return true
 			}
@@ -496,7 +575,7 @@ func (e *Engine) BudgetAdmissionRequiresFresh() bool {
 	}
 	for i := range e.rules {
 		r := &e.rules[i]
-		if !protectedBudgetRuleID(e.cfg, r.ID) {
+		if !protectedBudgetRule(e.cfg, r) {
 			continue
 		}
 		d := r.Observe
@@ -514,7 +593,12 @@ func budgetAdmissionRuleID(id string) bool {
 	switch id {
 	case "B-601", "B-602", "B-603", "B-604",
 		"B-610", "B-611", "B-612", "B-613",
-		"B-621", "B-622", "B-623", "B-624", "B-625":
+		"B-621", "B-622", "B-623", "B-624", "B-625",
+		// The per-tool / per-model subject caps (bundle BUD-N). They are
+		// admission rows for the same reason their node-wide siblings are:
+		// the proxy request path is the one channel that can refuse, and a
+		// cap the org authored for one tool must bite there.
+		"B-626", "B-627", "B-628", "B-629":
 		return true
 	default:
 		return false

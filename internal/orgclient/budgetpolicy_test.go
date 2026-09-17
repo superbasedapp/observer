@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/orgbudget"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // budgetBody is a one-period signed-body payload for the tests below.
@@ -36,6 +38,10 @@ type budgetServer struct {
 	etag   atomic.Value // string
 	status atomic.Int32 // 0 = serve the doc
 	gotINM atomic.Value // string
+	// gotMachine records the NON-AUTHORITATIVE X-SBO-Machine disambiguation
+	// header, so a test can pin that this node says which of its machines is
+	// polling — the server cannot infer it from a bearer that names a member.
+	gotMachine atomic.Value // string
 }
 
 func newBudgetServer(t *testing.T) *budgetServer {
@@ -43,12 +49,14 @@ func newBudgetServer(t *testing.T) *budgetServer {
 	bs := &budgetServer{}
 	bs.etag.Store("")
 	bs.gotINM.Store("")
+	bs.gotMachine.Store("")
 	bs.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/agent/budget" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		bs.gotINM.Store(r.Header.Get("If-None-Match"))
+		bs.gotMachine.Store(r.Header.Get(orgcontract.HeaderMachineIdentity))
 		if st := bs.status.Load(); st != 0 {
 			w.WriteHeader(int(st))
 			return
@@ -696,5 +704,208 @@ func TestBudgetPolicyETagIgnoresIssuedAt(t *testing.T) {
 	dc, _ := orgcontract.BudgetPolicyDigest(cDoc)
 	if dc == da {
 		t.Fatal("the ETag did not move for a changed cap")
+	}
+}
+
+// TestFetchBudgetPolicySendsTheMachineHeader pins the node half of the
+// disambiguation rail.
+//
+// GET /api/agent/budget identifies its caller by the bearer alone, and a
+// bearer names a MEMBER — so a developer running a laptop and a devbox under
+// one member gave the server no way to know whose spend rows to subtract from
+// the cross-machine baseline, and it therefore sent none. The node closes that
+// by naming its own machine.
+//
+// Two properties are asserted and both matter. The value must be the SAME one
+// PushEnvelope.MachineIdentity carries (the server matches the header against
+// the identities its ingest recorded from those very pushes, so a second
+// derivation would drift into never matching), and an UNMANAGED enrolment —
+// which has no machine identity at all — must omit the header rather than send
+// an empty one.
+func TestFetchBudgetPolicySendsTheMachineHeader(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	sign := func(t *testing.T, bs *budgetServer) {
+		t.Helper()
+		doc, err := orgcontract.SignBudgetPolicy(priv, "org-1", "scim-42", budgetBody(7, 1_000))
+		if err != nil {
+			t.Fatalf("SignBudgetPolicy: %v", err)
+		}
+		bs.doc.Store(&doc)
+	}
+
+	t.Run("a managed node names its own machine", func(t *testing.T) {
+		bs := newBudgetServer(t)
+		c, s, _ := enrolledClient(t, bs.srv.URL)
+		promoteToManaged(t, s, bs.srv.URL)
+		pinRoutingKey(t, s, encodeStdKey(pub))
+		sign(t, bs)
+
+		want := c.ManagedMachineIdentity(context.Background())
+		if want == "" {
+			t.Skip("this host resolves no machine identity, so there is nothing to disambiguate with")
+		}
+		if _, err := c.FetchBudgetPolicy(context.Background()); err != nil {
+			t.Fatalf("FetchBudgetPolicy: %v", err)
+		}
+		got, _ := bs.gotMachine.Load().(string)
+		if got != want {
+			t.Errorf("%s = %q, want the push envelope's own machine identity %q",
+				orgcontract.HeaderMachineIdentity, got, want)
+		}
+	})
+
+	t.Run("an individual enrolment omits the header", func(t *testing.T) {
+		bs := newBudgetServer(t)
+		c, s, _ := enrolledClient(t, bs.srv.URL)
+		pinRoutingKey(t, s, encodeStdKey(pub))
+		sign(t, bs)
+
+		if _, err := c.FetchBudgetPolicy(context.Background()); err != nil {
+			t.Fatalf("FetchBudgetPolicy: %v", err)
+		}
+		if got, _ := bs.gotMachine.Load().(string); got != "" {
+			t.Errorf("%s = %q, want it omitted — an unmanaged node has no machine identity to name",
+				orgcontract.HeaderMachineIdentity, got)
+		}
+	})
+}
+
+// promoteToManaged rewrites the singleton enrolment row as MANAGED tenancy,
+// which is the only class that resolves a machine identity (the same rule
+// PushEnvelope.MachineIdentity follows).
+func promoteToManaged(t *testing.T, s *store.Store, srvURL string) {
+	t.Helper()
+	if err := s.WriteEnrolment(context.Background(), store.Enrolment{
+		OrgID: "org-1", OrgName: "Acme", OrgServerURL: srvURL,
+		UserID: "scim-42", UserEmail: "dev@acme.example",
+		EnrolledAt: time.Now().UTC().Format(time.RFC3339), BearerKeyID: "test",
+		Tenancy: orgcontract.TenancyManaged,
+	}); err != nil {
+		t.Fatalf("WriteEnrolment (managed): %v", err)
+	}
+}
+
+// TestFetchBudgetPolicyReMeasuredBaselineReachesTheNode is the end-to-end
+// regression for the ETag P1 (adversarial review of the cross-machine
+// baseline).
+//
+// THE SCENARIO. Laptop plus an idle devbox on one org cap. The devbox spent
+// $12.34 and stopped. The server re-measures that same $12.34 on every poll and
+// re-stamps the measurement time; the node must keep RECEIVING that stamp,
+// because internal/orgbudget stops applying a baseline older than
+// BaselineMaxAge (two cadences plus a minute) and a dropped baseline composes to
+// ZERO — the node would then enforce the org's cap against its local spend alone
+// and silently allow $12.34 more than the org can see.
+//
+// While orgcontract.BudgetPolicyDigest blanked SpentAsOf, the re-stamped body
+// digested identically, the server answered 304, and the node kept poll #1's
+// stamp forever. This test drives the REAL server rule — measure, sign, digest,
+// then compare If-None-Match — so it fails if that exclusion ever comes back.
+//
+// It also pins the other half: within one measurement minute the 304 fast path
+// still works, so the fix costs a small 200 per cadence and nothing more.
+func TestFetchBudgetPolicyReMeasuredBaselineReachesTheNode(t *testing.T) {
+	const (
+		pushInterval = 120 * time.Second
+		idleSpend    = 12.34
+	)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	start := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	maxAge := orgbudget.BaselineMaxAge(pushInterval)
+
+	// asOf is what the server's NEXT measurement will stamp; the test moves it
+	// the way a real clock would.
+	var asOf atomic.Value
+	asOf.Store(start)
+	var served, notModified atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent/budget" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// The real handler's order: measure, stamp (minute-truncated), sign,
+		// digest, and only THEN consider the conditional request.
+		at, _ := asOf.Load().(time.Time)
+		body := budgetBody(9, 40_000_000)
+		body.Caps[0].SpentUSD = idleSpend
+		body.Caps[0].SpentExcludesMachine = true
+		body.Caps[0].SpentAsOf = at.UTC().Truncate(time.Minute).Format(time.RFC3339)
+		body.IssuedAt = time.Now().UTC().Format(time.RFC3339)
+		doc, err := orgcontract.SignBudgetPolicy(priv, "org-1", "scim-42", body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		digest, err := orgcontract.BudgetPolicyDigest(doc)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		etag := `"bp-` + digest + `"`
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			notModified.Add(1)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		served.Add(1)
+		writeTestJSON(w, http.StatusOK, doc)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, s, _ := enrolledClient(t, srv.URL)
+	pinRoutingKey(t, s, encodeStdKey(pub))
+
+	first, err := c.FetchBudgetPolicy(context.Background())
+	if err != nil || !first.HaveBody {
+		t.Fatalf("first fetch: %+v err=%v", first, err)
+	}
+
+	// Same measurement minute: the fast path must still be a 304 and the body
+	// must survive it unchanged.
+	if _, err := c.FetchBudgetPolicy(context.Background()); err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if notModified.Load() != 1 {
+		t.Fatalf("a poll inside one measurement minute did not 304 (304s=%d, 200s=%d) — the fast path is gone",
+			notModified.Load(), served.Load())
+	}
+
+	// Now the clock runs PAST the staleness window while the devbox stays idle:
+	// identical amounts, a later measurement.
+	later := start.Add(maxAge).Add(pushInterval)
+	asOf.Store(later)
+	out, err := c.FetchBudgetPolicy(context.Background())
+	if err != nil || !out.HaveBody {
+		t.Fatalf("third fetch: %+v err=%v", out, err)
+	}
+	wantStamp := later.UTC().Truncate(time.Minute).Format(time.RFC3339)
+	if got := out.Body.Caps[0].SpentAsOf; got != wantStamp {
+		t.Fatalf("SpentAsOf = %q, want the re-measured %q — a 304 froze the stamp and the baseline will age out",
+			got, wantStamp)
+	}
+	if out.Body.Caps[0].SpentUSD != idleSpend {
+		t.Fatalf("SpentUSD = %v, want the unchanged %v", out.Body.Caps[0].SpentUSD, idleSpend)
+	}
+
+	// The whole point, asserted where it bites: at that later instant the cap is
+	// still APPLIED and the other machine's spend is still composing.
+	eff, posture := orgbudget.Compose(orgbudget.Thresholds{}, out.Body, orgbudget.Capabilities{
+		FromOrg: true, HaveBody: true, FetchState: orgcontract.BudgetFetchOK,
+		GuardMode: "enforce", Now: later, BaselineMaxAge: maxAge,
+	})
+	if posture.OrgBaseline != orgcontract.BudgetBaselineApplied {
+		t.Fatalf("OrgBaseline = %q, want applied — the node stopped counting the other machine's spend",
+			posture.OrgBaseline)
+	}
+	if eff.Baseline.MonthlyUSD != idleSpend {
+		t.Fatalf("composed baseline = %v, want %v", eff.Baseline.MonthlyUSD, idleSpend)
 	}
 }

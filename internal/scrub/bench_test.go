@@ -92,14 +92,22 @@ func piiDenseBody(n int) string {
 	return s
 }
 
-// BenchmarkDetectPII measures DetectSecrets (which still runs the full
-// detection table internally — including every PII row — before
-// filtering PII out of the returned findings, so this exercises the
-// same PII-suppression code path a real egress scan pays for) over the
-// two shapes the contract calls out: a clean 128 KB body, and a 128 KB
-// PII-dense body (the real worst case for the suppression path, not
-// the vacuous digitDenseBody this replaced). Both must stay inside
-// piiLatencyBudget.
+// BenchmarkDetectPII measures DetectSecrets over the two shapes the contract
+// calls out: a clean 128 KB body, and a 128 KB PII-dense body (the real worst
+// case for the suppression path, not the vacuous digitDenseBody this
+// replaced). Both must stay inside piiLatencyBudget.
+//
+// MHC-3 (codebase audit 2026-09-16) changed what the PII-dense case measures.
+// DetectSecrets USED TO run the full detection table — every PII row, the
+// numeric pre-pass, the validators, the suppression walk — and then filter the
+// PII findings out of its result, so this benchmark exercised the whole
+// PII-suppression path a real egress scan paid for, at ~11.6 ms/op on the
+// reference box, PAST this 8 ms budget. It now scans with the secret-only
+// ActiveDetectors set (secretOnlyDetectors), so the PII rows are not scanned
+// at all: measured ~2.0 ms/op on the same box and body. The PII-suppression
+// path is still covered — by the uncapped sub-benchmark below and by
+// DetectPromptFindings' own callers — it is just no longer on the egress hot
+// path this budget is about.
 //
 // Round-2 review B4 measured the OLD detectorMatch/inCodeContext
 // (per-candidate O(n) rescan-from-zero) against this SAME piiDenseBody

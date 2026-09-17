@@ -1078,6 +1078,10 @@ func TestReceiver_HTTPGzipBoundedRead(t *testing.T) {
 			spy := &countingReader{r: bytes.NewReader(compressed)}
 			req := httptest.NewRequest(http.MethodPost, path, spy)
 			req.Header.Set("Content-Encoding", "gzip")
+			// httptest.NewRequest defaults Host to "example.com", which the
+			// NODE-OTLP-1 loopback Host guard now refuses. This test is about
+			// the decompressed cap, so give it a Host the guard admits.
+			req.Host = "127.0.0.1:4318"
 			rw := httptest.NewRecorder()
 			r.httpServer.Handler.ServeHTTP(rw, req)
 			if rw.Code != http.StatusRequestEntityTooLarge {
@@ -1090,24 +1094,28 @@ func TestReceiver_HTTPGzipBoundedRead(t *testing.T) {
 	}
 }
 
-// TestReceiver_HTTPGzipUnboundedWhenCapUnset pins Finding-1's node regression: a
-// receiver with NO MaxDecompressedBytes (the node shape) leaves the gunzip stream
-// UNBOUNDED — a gzip body that inflates well past the edge's 256 MiB default is
-// NOT 413'd; it proceeds to proto-decode (which 400s on the non-proto zero
-// stream, so the terminal reason is NOT ReasonGzip). Mutation: apply the
-// decompressed cap by default (or treat cap==0 as the 256 MiB default) → the body
-// is 413'd with ReasonGzip and this FAILS. Driven directly (no listener) to keep
-// the ~300 MiB inflate off the socket.
-func TestReceiver_HTTPGzipUnboundedWhenCapUnset(t *testing.T) {
-	// 300 MiB of zeros — past the 256 MiB edge default — compresses to a few KiB.
-	// ONE payload reused across all three sub-cases so three inflates stay
-	// affordable.
+// TestReceiver_HTTPGzipBoundedByDefaultWhenCapUnset is the INVERSION of the old
+// TestReceiver_HTTPGzipUnboundedWhenCapUnset, which pinned the very behavior
+// NODE-OTLP-1 (codebase audit 2026-09-16) found to be the defect: a receiver
+// with NO MaxDecompressedBytes — the NODE shape, the only shape `observer
+// start` ever builds — used to io.ReadAll the gunzip stream unbounded, so a
+// few-KiB hostile body could inflate without limit and OOM the daemon.
+//
+// An unset cap now resolves to DefaultMaxDecompressedBytes, so a gzip body that
+// inflates past 256 MiB IS 413'd with ReasonGzip on every signal. Mutation:
+// restore `cap == 0 ⇒ unbounded` → the body proto-decode-fails with
+// ReasonMalformed instead and this FAILS. Driven directly (no listener) to keep
+// the inflate off the socket.
+func TestReceiver_HTTPGzipBoundedByDefaultWhenCapUnset(t *testing.T) {
+	// 300 MiB of zeros — past the 256 MiB default — compresses to a few KiB.
+	// ONE payload reused across all three sub-cases.
 	compressed := gzipOf(t, make([]byte, 300<<20))
 
-	// A node-shaped receiver serving all three signals with NO MaxDecompressedBytes
-	// (⇒ 0 ⇒ unbounded). Driven per-signal directly (no socket), so a mutation
-	// bounding/defaulting decompression in ANY ONE of the three handlers is caught
-	// — the logs-only version let a traces/metrics regression survive.
+	// A node-shaped receiver serving all three signals with NO
+	// MaxDecompressedBytes. Driven per-signal directly (no socket), so a
+	// mutation un-bounding decompression in ANY ONE of the three handlers is
+	// caught — a logs-only version would let a traces/metrics regression
+	// survive.
 	newR := func(rec *outcomeRec) *Receiver {
 		return &Receiver{opts: Options{
 			OnOutcome:     rec.hook,
@@ -1134,20 +1142,139 @@ func TestReceiver_HTTPGzipUnboundedWhenCapUnset(t *testing.T) {
 			rw := httptest.NewRecorder()
 			handle(rw, req)
 
-			// The all-zero stream fails proto-decode ⇒ ReasonMalformed (400), the
-			// expected non-413 outcome: the point is the decompressed bound did NOT
-			// fire (no 413, no ReasonGzip) because the node leaves the cap unset.
-			if rw.Code == http.StatusRequestEntityTooLarge {
-				t.Fatalf("%s: node (no cap) 413'd a 300-MiB inflate — the decompressed cap must be edge-only (0 ⇒ unbounded)", path)
+			if rw.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("%s: status = %d, want 413 — an unset cap must resolve to DefaultMaxDecompressedBytes, not to unbounded", path, rw.Code)
 			}
 			ev := rec.snapshot()
 			if len(ev) != 1 {
 				t.Fatalf("%s: want exactly one outcome event, got %d", path, len(ev))
 			}
-			if ev[0].reason == ReasonGzip {
-				t.Fatalf("%s: node path rejected with ReasonGzip (%+v) — the decompressed bound fired when it must be unbounded", path, ev[0])
+			if ev[0].reason != ReasonGzip {
+				t.Fatalf("%s: reason = %q, want %q — the decompressed bound must be what rejected this", path, ev[0].reason, ReasonGzip)
 			}
 		})
+	}
+}
+
+// TestReceiver_MaxDecompressedCapResolution is the cheap table pin for the
+// three-way cap resolution the test above exercises end-to-end once: unset ⇒
+// the default (NODE-OTLP-1), positive ⇒ that value, negative ⇒ the explicit
+// "no bound" escape hatch. One case per branch.
+func TestReceiver_MaxDecompressedCapResolution(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  int
+		want int64
+	}{
+		{"unset defaults to the finite bound", 0, DefaultMaxDecompressedBytes},
+		{"positive is honored", 64, 64},
+		{"negative is the explicit no-bound escape hatch", -1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Receiver{opts: Options{MaxDecompressedBytes: tc.set}}
+			if got := r.maxDecompressedCap(); got != tc.want {
+				t.Errorf("maxDecompressedCap() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReceiver_HTTPHostGuard is the NODE-OTLP-1 rebinding pin. A loopback-bound
+// receiver is a SAME-MACHINE channel, so a request whose Host header names any
+// other host — what a DNS-rebinding page sends — must be refused 403 with
+// ReasonHost, before any body read. A loopback Host (with or without a port,
+// by name or by IP, or absent entirely) passes through. A receiver the operator
+// deliberately opened with AllowNonLoopback keeps serving remote exporters,
+// whose Host header is a real name; that deployment's answer is the token gate,
+// and `observer doctor` warns when neither is in force.
+func TestReceiver_HTTPHostGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		allowNonLoopback bool
+		host             string
+		wantStatus       int
+		wantReason       string
+	}{
+		{"rebinding domain refused", false, "evil.example", http.StatusForbidden, ReasonHost},
+		{"rebinding domain with port refused", false, "evil.example:4318", http.StatusForbidden, ReasonHost},
+		{"public IP refused", false, "203.0.113.7:4318", http.StatusForbidden, ReasonHost},
+		{"loopback IP allowed", false, "127.0.0.1:4318", http.StatusOK, ""},
+		{"localhost allowed", false, "localhost:4318", http.StatusOK, ""},
+		{"ipv6 loopback allowed", false, "[::1]:4318", http.StatusOK, ""},
+		{"non-loopback bind serves any host", true, "collector.internal", http.StatusOK, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &outcomeRec{}
+			r, err := New(Options{
+				HTTPAddr:         "127.0.0.1:0",
+				AllowNonLoopback: tc.allowNonLoopback,
+				OnOutcome:        rec.hook,
+				Handler:          func(context.Context, *collogspb.ExportLogsServiceRequest) error { return nil },
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() { _ = r.Shutdown(context.Background()) }()
+
+			body, err := proto.Marshal(&collogspb.ExportLogsServiceRequest{})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			spy := &readCountingBody{data: body}
+			req := httptest.NewRequest(http.MethodPost, "/v1/logs", spy)
+			req.Host = tc.host
+			rw := httptest.NewRecorder()
+			r.httpServer.Handler.ServeHTTP(rw, req)
+
+			if rw.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rw.Code, tc.wantStatus)
+			}
+			ev := rec.snapshot()
+			if len(ev) != 1 {
+				t.Fatalf("want exactly one outcome event, got %d (%+v)", len(ev), ev)
+			}
+			if tc.wantReason == "" {
+				if ev[0].outcome != OutcomeAccepted {
+					t.Fatalf("outcome = %+v, want accepted", ev[0])
+				}
+				return
+			}
+			if ev[0].reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", ev[0].reason, tc.wantReason)
+			}
+			// The guard must run PRE-READ: a rejected request costs no body
+			// read, no gunzip, no proto.Unmarshal.
+			if spy.reads != 0 {
+				t.Fatalf("host guard read the body %d times before rejecting, want 0", spy.reads)
+			}
+		})
+	}
+}
+
+// TestReceiver_HTTPHostGuardPrecedesTokenGate pins the order of the two ingress
+// checks: a rebinding request that ALSO carries no token reports ReasonHost,
+// not ReasonAuth. The host is the cheaper, more specific fact and the one an
+// operator needs to see ("a page tried to reach my receiver"), so it is checked
+// first and its reason wins.
+func TestReceiver_HTTPHostGuardPrecedesTokenGate(t *testing.T) {
+	rec := &outcomeRec{}
+	r := &Receiver{opts: Options{
+		OnOutcome:     rec.hook,
+		RequireToken:  true,
+		ReceiverToken: edgeSecret,
+		Handler:       func(context.Context, *collogspb.ExportLogsServiceRequest) error { return nil },
+	}}
+	gated := r.withIngressGuards(sigLogs, r.handleHTTPLogs)
+	req := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewReader(nil))
+	req.Host = "evil.example"
+	rw := httptest.NewRecorder()
+	gated(rw, req)
+	if rw.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rw.Code)
+	}
+	ev := rec.snapshot()
+	if len(ev) != 1 || ev[0].reason != ReasonHost {
+		t.Fatalf("events = %+v, want exactly one %q reject", ev, ReasonHost)
 	}
 }
 
@@ -1253,10 +1380,14 @@ func TestReceiver_HTTPTokenGateRejectsBeforeBodyRead(t *testing.T) {
 		RequireToken:  true,
 		ReceiverToken: edgeSecret,
 	}}
-	gated := r.withTokenGate(sigLogs, r.handleHTTPLogs)
+	gated := r.withIngressGuards(sigLogs, r.handleHTTPLogs)
 	body := &readCountingBody{data: gzipOf(t, make([]byte, 4096))}
 	req := httptest.NewRequest(http.MethodPost, "/v1/logs", body)
 	req.Header.Set("Content-Encoding", "gzip")
+	// Loopback Host so the TOKEN gate is what rejects, not the sibling
+	// NODE-OTLP-1 host guard (ordering is pinned separately by
+	// TestReceiver_HTTPHostGuardPrecedesTokenGate).
+	req.Host = "127.0.0.1:4318"
 	// No token header set.
 	rw := httptest.NewRecorder()
 	gated(rw, req)
@@ -1271,7 +1402,7 @@ func TestReceiver_HTTPTokenGateRejectsBeforeBodyRead(t *testing.T) {
 // TestReceiver_HTTPTokenGateRejectsBeforeBodyReadViaMux pins, across ALL THREE
 // signal paths and through the receiver's REAL mux (not the bare handler), that
 // the receiver-token gate rejects an untokened request with 401 and ZERO body
-// reads. This proves BOTH that every endpoint IS wrapped with withTokenGate (a
+// reads. This proves BOTH that every endpoint IS wrapped with withIngressGuards (a
 // mutation dropping the wrapper on the traces/metrics mux registration is caught)
 // AND the pre-read ordering per endpoint. Built with all three handlers +
 // RequireToken + a non-empty ReceiverToken.
@@ -1294,6 +1425,8 @@ func TestReceiver_HTTPTokenGateRejectsBeforeBodyReadViaMux(t *testing.T) {
 			body := &readCountingBody{data: gzipOf(t, make([]byte, 4096))}
 			req := httptest.NewRequest(http.MethodPost, path, body)
 			req.Header.Set("Content-Encoding", "gzip")
+			// Loopback Host so the TOKEN gate is what rejects (see above).
+			req.Host = "127.0.0.1:4318"
 			// No token header set.
 			rw := httptest.NewRecorder()
 			r.httpServer.Handler.ServeHTTP(rw, req)
@@ -1351,5 +1484,114 @@ func TestTokenAuthorized_EmptyMetadataValue(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(metadataEdgeTokenKey, ""))
 	if tokenAuthorized(ctx, edgeSecret) {
 		t.Fatal("tokenAuthorized returned true for an explicitly-empty metadata token value, want false")
+	}
+}
+
+// TestReceiver_HostGuardModeTriState pins the P2-3 fix: the Host-header guard
+// is a TRI-STATE, not a bool derived from the bind, because the edge needs a
+// third answer that AUTO cannot express.
+//
+// The regression this prevents: the edge passes AllowNonLoopback from its own
+// config (default FALSE), so a sidecar edge bound 127.0.0.1:4318 is
+// loopback-bound — and under AUTO the guard switches ON. An exporter in the
+// same pod pointed at a service alias ("otel-collector:4318", an /etc/hosts or
+// cluster-DNS name resolving to 127.0.0.1) then sends that alias as its Host
+// and is refused 403. HostGuardOff is what the edge sets to keep serving it;
+// its ingress trust is the receiver token instead.
+//
+// One row per (mode × bind) combination, asserted at the predicate so the
+// matrix stays readable, then the two that matter re-checked end-to-end below.
+func TestReceiver_HostGuardModeTriState(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		mode             HostGuardMode
+		allowNonLoopback bool
+		want             bool
+	}{
+		{"auto + loopback bind guards (the NODE)", HostGuardAuto, false, true},
+		{"auto + opened bind does not guard", HostGuardAuto, true, false},
+		{"on + loopback bind guards", HostGuardOn, false, true},
+		{"on + opened bind still guards", HostGuardOn, true, true},
+		{"off + loopback bind does not guard (the EDGE)", HostGuardOff, false, false},
+		{"off + opened bind does not guard", HostGuardOff, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Receiver{opts: Options{HostGuard: tc.mode, AllowNonLoopback: tc.allowNonLoopback}}
+			if got := r.hostGuardEnabled(); got != tc.want {
+				t.Errorf("hostGuardEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// The zero value must be AUTO: a caller that never heard of this field
+	// still gets the defense. If HostGuardOff ever became the zero value the
+	// node would silently lose the guard.
+	var zero Options
+	if zero.HostGuard != HostGuardAuto {
+		t.Error("the zero HostGuardMode is not HostGuardAuto — an unset option must guard, not skip")
+	}
+}
+
+// TestReceiver_EdgeShapeServesServiceAliasHost is the end-to-end half of P2-3,
+// through the REAL mux: a loopback-bound receiver configured the way the edge
+// configures itself (HostGuardOff + RequireToken) must ACCEPT a request whose
+// Host is a service alias, while still rejecting one with a bad token. The
+// node-shaped receiver in TestReceiver_HTTPHostGuard refuses the same Host —
+// that contrast is the point of the tri-state.
+func TestReceiver_EdgeShapeServesServiceAliasHost(t *testing.T) {
+	body, err := proto.Marshal(&collogspb.ExportLogsServiceRequest{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, tc := range []struct {
+		name       string
+		token      string
+		wantStatus int
+		wantReason string
+	}{
+		{"correct token", edgeSecret, http.StatusOK, ""},
+		{"bad token", "nope", http.StatusUnauthorized, ReasonAuth},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &outcomeRec{}
+			r, err := New(Options{
+				HTTPAddr: "127.0.0.1:0", // loopback bind, exactly like a sidecar edge
+				// AllowNonLoopback deliberately FALSE — this is the shape that
+				// regressed: AUTO would guard and 403 the alias below.
+				HostGuard:     HostGuardOff,
+				RequireToken:  true,
+				ReceiverToken: edgeSecret,
+				OnOutcome:     rec.hook,
+				Handler:       func(context.Context, *collogspb.ExportLogsServiceRequest) error { return nil },
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() { _ = r.Shutdown(context.Background()) }()
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewReader(body))
+			req.Host = "otel-collector:4318" // /etc/hosts alias for 127.0.0.1
+			req.Header.Set(HeaderEdgeToken, tc.token)
+			rw := httptest.NewRecorder()
+			r.httpServer.Handler.ServeHTTP(rw, req)
+
+			if rw.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d — a loopback-bound EDGE must serve its exporters' service-alias Host", rw.Code, tc.wantStatus)
+			}
+			ev := rec.snapshot()
+			if len(ev) != 1 {
+				t.Fatalf("want exactly one outcome event, got %d (%+v)", len(ev), ev)
+			}
+			if ev[0].reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", ev[0].reason, tc.wantReason)
+			}
+			if tc.wantReason == "" && ev[0].outcome != OutcomeAccepted {
+				t.Fatalf("outcome = %+v, want accepted", ev[0])
+			}
+			// Whatever happened, it must never be the HOST guard on this shape.
+			if ev[0].reason == ReasonHost {
+				t.Fatal("the edge shape rejected on ReasonHost — HostGuardOff was not honored")
+			}
+		})
 	}
 }

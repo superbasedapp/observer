@@ -215,6 +215,43 @@ type BudgetPostureRow struct {
 	// resolved one), and the server falls back to its own default horizon —
 	// so the compat invariant holds in both directions.
 	PushIntervalSeconds int `json:"push_interval_seconds,omitempty"`
+	// ORG BASELINE (bundle BUD-N / P1-9). A cap is enforced against
+	// `org baseline + local spend`, and this closed enum says which of those
+	// two the node is actually comparing. It is the same honesty axis as
+	// Coverage: a developer running two machines whose node applied no
+	// baseline is enforcing a fleet cap against one machine's rows, and
+	// nothing else on this row would say so.
+	//
+	// The vocabulary is the BudgetBaseline* set below, and "" means the node
+	// predates the field — never "applied".
+	OrgBaseline string `json:"org_baseline,omitempty"`
+	// OrgBaselineUnattributed reports that the applied baseline counted rows
+	// the server could not attribute to any machine identity, so it may
+	// overlap this node's own local spend. A bool about the SHAPE of what was
+	// applied, never the number: the same rule Capped follows.
+	OrgBaselineUnattributed bool `json:"org_baseline_unattributed,omitempty"`
+	// OrgSubjectUnmatched reports that at least one PER-TOOL / PER-MODEL cap
+	// the org authored for this caller has an id that never appeared in this
+	// node's own accounting keys over a full accounting pass — the cap is in
+	// force and is biting nothing here.
+	//
+	// It exists because a subject cap is the one ceiling that can be perfectly
+	// applied and completely inert: the org types a tool or model id, the node
+	// captures its own, and the two must meet on one spelling. They are folded
+	// onto one identity at both ends (the pricing alias ladder for models, the
+	// trim+lowercase rule for tools), but a model the node's price table has
+	// never seen, or a tool id the admin spelled differently, still resolves to
+	// itself on each side and the cap silently governs nothing. Without this
+	// bool the org's Budgets page cannot tell "this developer stayed under the
+	// Codex cap" from "that cap never matched a single row on that machine".
+	//
+	// A BOOL ABOUT SHAPE, never a name: it does not say WHICH cap missed, and
+	// deliberately so — the subject id is the org's own authored value, so
+	// echoing it back would add nothing the server does not already know while
+	// widening what a compromised node can assert. false is also the honest
+	// value when the node composed no subject caps at all and when no
+	// accounting pass has run yet; absence is never a claim of a match.
+	OrgSubjectUnmatched bool `json:"org_subject_unmatched,omitempty"`
 }
 
 // Budget posture vocabulary. Closed enums; a value outside these sets is a bug
@@ -346,6 +383,59 @@ const (
 	// counts as $0, so the cap under-reads until an org price exists. Fallback-
 	// priced rows may coexist and are reported on their own list.
 	PricingCoveragePartial = "partial"
+
+	// ORG BASELINE vocabulary (bundle BUD-N / P1-9). It answers "is this cap
+	// being measured across the developer's machines, or only against this
+	// one?", and the empty value is NOT a member: "" means a node that
+	// predates the field.
+	//
+	// BudgetBaselineApplied — the org's cross-machine spend was fresh, was
+	// measured with this machine EXCLUDED, and is being added to local spend
+	// before every comparison. The cap bites on the fleet-wide number.
+	BudgetBaselineApplied = "org_baseline_applied"
+	// BudgetBaselineAppliedFlagOnly — the baseline was fresh and was measured
+	// with this machine excluded, but the server ALSO counted rows it could
+	// not attribute to any machine identity (BudgetPolicyCap.
+	// SpentIncludesUnattributed). Those rows may be this node's own, so the
+	// composed number may double-count some of the local spend it is about to
+	// be added to.
+	//
+	// WHAT THE NODE DOES WITH IT, and why this is a fifth state rather than a
+	// footnote on `applied`. A baseline that MIGHT overlap local spend is good
+	// enough to raise a warning and wrong to stop a developer with: the same
+	// arithmetic that flags at 75% can, one rung up, deny a proxied request and
+	// TERM a running process, and a process stopped on a number that may have
+	// counted the same requests twice is the failure this rail cannot afford
+	// (the 2026-09-15 "$0.26 of $2" class). So in this state the baseline
+	// participates in FLAG rows — soft caps and warning thresholds — and is
+	// EXCLUDED from every row that can deny, and from the process-control pass,
+	// which compare local spend alone.
+	//
+	// It ranks WORSE than `applied` and better than `stale`: the cap really is
+	// being measured fleet-wide for the purpose of warning, which `stale` and
+	// `unverified` are not, but an admin reading "over budget" must be able to
+	// see that the number that denies is this machine's own.
+	// OrgBaselineUnattributed still rides alongside, unchanged, so a node that
+	// only understands the old bool loses nothing.
+	BudgetBaselineAppliedFlagOnly = "org_baseline_applied_flag_only"
+	// BudgetBaselineStale — a baseline arrived but its measurement time is
+	// outside the node's staleness window (or is missing/unparsable), so the
+	// node enforces on LOCAL spend only. Never a refusal to run: an old
+	// number is worse evidence than the node's own rows, not a reason to stop
+	// the developer.
+	BudgetBaselineStale = "org_baseline_stale"
+	// BudgetBaselineAbsent — the applicable caps carry no baseline at all: an
+	// org server that predates the field, or one that measured nothing for
+	// this caller. Local spend only, and the admin can see that the
+	// cross-machine half of the cap is simply not being reported.
+	BudgetBaselineAbsent = "org_baseline_absent"
+	// BudgetBaselineUnverified — a baseline arrived that the node cannot
+	// compose: the server did not exclude this machine from it, so adding
+	// local spend would double-count the same requests. Refused, local spend
+	// only. Distinct from stale because the fix is different — stale is a
+	// rail that fell behind, unverified is a server that cannot attribute
+	// machines.
+	BudgetBaselineUnverified = "org_baseline_unverified"
 
 	// PricingSourceNoPricing — the org SIGNED an empty document: it has
 	// negotiated nothing and the fleet prices at seed. An explicit none,

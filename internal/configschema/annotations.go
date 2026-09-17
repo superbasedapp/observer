@@ -106,6 +106,11 @@ var rules = []rule{
 	{prefix: "observer.retention", section: "retention"},
 	{prefix: "observer.retention.wal_alert_mb", exact: true, prominence: ProminenceAdvanced},
 	{prefix: "observer.retention.wal_watch_minutes", exact: true, prominence: ProminenceAdvanced},
+	// Per-table event horizons (internal/retention/events.go). Advanced, not
+	// plain: they only matter to an operator who has looked at a per-table
+	// storage breakdown and wants to trade history for disk.
+	{prefix: "observer.retention.compaction_events_days", exact: true, prominence: ProminenceAdvanced},
+	{prefix: "observer.retention.compression_events_days", exact: true, prominence: ProminenceAdvanced},
 	{prefix: "observer.hooks", section: "hooks"},
 	{prefix: "observer.antigravity", section: "antigravity"},
 	{prefix: "observer.antigravity.dump_shape_mismatches_dir", exact: true, prominence: ProminenceExpert},
@@ -214,6 +219,13 @@ var rules = []rule{
 	// ----------------------------------------------------------------- predict
 	{prefix: "predict", tier: TierPlain, restart: RestartRequired, section: "intelligence", prominence: ProminenceAdvanced},
 	{prefix: "predict.enabled", exact: true, prominence: ProminencePrimary},
+
+	// ---------------------------------------------------------------- guidance
+	// Agent-guidance-file inventory. Plain: the block holds only scan
+	// bounds — no credential, no egress, no authority. Restart-required
+	// because the scan loop is composed once at daemon start.
+	{prefix: "guidance", tier: TierPlain, restart: RestartRequired, section: "intelligence", prominence: ProminenceAdvanced},
+	{prefix: "guidance.enabled", exact: true, prominence: ProminencePrimary},
 
 	// ------------------------------------------------------------ pricing feed
 	// Standalone-node pricing feed client (docs/plans/pricing-sync-tokenomics-

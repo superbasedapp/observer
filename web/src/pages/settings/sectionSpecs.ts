@@ -34,6 +34,12 @@ export type FieldDef = {
   // `effective_mode`. Used by the ten "prompt-detectors" section
   // fields below.
   showEffectiveMode?: boolean;
+  // Renders the control inert. For a key the config still carries but no
+  // Go consumer reads — a live-looking switch that changes nothing is a
+  // lie, so the renderer disables it and prints `note` underneath
+  // (honest-disabled-copy convention). `note` names the exact reason.
+  disabled?: boolean;
+  note?: string;
 };
 
 export type SectionSpec = {
@@ -681,9 +687,11 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
           },
           {
             id: "Embeddings",
-            label: "Embeddings (experimental - not yet wired)",
+            label: "Embeddings (reserved)",
             kind: "bool",
-            help: "Reserved for semantic embeddings on indexed excerpts. No Go consumer reads this flag today; toggling has no effect. Kept for forward-compat with the indexing pipeline.",
+            disabled: true,
+            note: "Not wired yet - this switch does nothing.",
+            help: "Reserved for semantic embeddings on indexed excerpts. No Go consumer reads this flag today, so the switch is inert rather than live. Kept for forward-compat with the indexing pipeline.",
           },
         ],
       },

@@ -856,6 +856,11 @@ func parseTranscriptTurns(path string) ([]transcriptTurn, error) {
 	return turns, nil
 }
 
+// BuildTranscriptToolEvents emits the assistant-text and tool_use rows
+// for one transcript turn. Every content-bearing field (Target,
+// RawToolInput, PrecedingReasoning, ToolOutput) is scrubbed; a nil sc
+// is replaced with a default [scrub.New] scrubber rather than skipping
+// the pass, so no caller can land raw transcript text in the DB.
 func BuildTranscriptToolEvents(
 	turn transcriptTurn,
 	sessionID, projectRoot, generationID, sourceFile string,
@@ -871,6 +876,13 @@ func buildTranscriptToolEvents(
 	ts time.Time,
 	sc *scrub.Scrubber,
 ) []models.ToolEvent {
+	// Scrubbing is mandatory on every content-bearing field: a nil
+	// scrubber is treated as "caller forgot", never as "opt out", so no
+	// call site (live hook or backfill) can land transcript text in the
+	// DB unredacted.
+	if sc == nil {
+		sc = scrub.New()
+	}
 	var out []models.ToolEvent
 	var todoStoreChecked, todoStoreExists bool
 	for _, line := range turn.Assistant {
@@ -880,24 +892,21 @@ func buildTranscriptToolEvents(
 			case "text":
 				txt := strings.TrimSpace(part.Text)
 				if txt != "" {
-					reasoning = txt
+					// The carried reasoning is scrubbed prose: it is
+					// copied into the NEXT tool row's
+					// PrecedingReasoning, so it must never hold the
+					// raw text.
+					reasoning = sc.String(txt)
 					// Emit a standalone cursor.assistant_text row matching the
 					// cross-adapter convention. The body is sourced from the
 					// transcript JSONL the stop-hook handler walks, not from
 					// the per-delta `afterAgentResponse` hook (which fires
 					// per-token and is intentionally not registered).
-					preview := txt
-					if sc != nil {
-						preview = sc.String(txt)
-					}
+					preview := reasoning
 					if len(preview) > 200 {
 						preview = preview[:200]
 					}
-					body := txt
-					if sc != nil {
-						body = sc.String(txt)
-					}
-					body = contentcap.Cap(body, contentcap.DefaultMaxBytes)
+					body := contentcap.Cap(reasoning, contentcap.DefaultMaxBytes)
 					out = append(out, models.ToolEvent{
 						SourceFile:         sourceFile,
 						SourceEventID:      fmt.Sprintf("%s:transcript:L%d:P%d:asst:%s", generationID, line.LineNumber, partIdx, shortHash(txt)),
@@ -924,10 +933,7 @@ func buildTranscriptToolEvents(
 						continue
 					}
 				}
-				rawInput := string(part.Input)
-				if sc != nil {
-					rawInput = sc.RawJSON(part.Input)
-				}
+				rawInput := sc.RawJSON(part.Input)
 				out = append(out, models.ToolEvent{
 					SourceFile:         sourceFile,
 					SourceEventID:      fmt.Sprintf("%s:transcript:L%d:P%d:%s", generationID, line.LineNumber, partIdx, shortHash(part.Name+":"+string(part.Input))),
@@ -937,7 +943,7 @@ func buildTranscriptToolEvents(
 					Timestamp:          ts,
 					Tool:               models.ToolCursor,
 					ActionType:         cursorTranscriptActionType(part.Name),
-					Target:             cursorTranscriptTarget(part.Name, part.Input),
+					Target:             sc.String(cursorTranscriptTarget(part.Name, part.Input)),
 					Success:            true,
 					PrecedingReasoning: reasoning,
 					RawToolName:        part.Name,
@@ -960,24 +966,30 @@ func buildTranscriptToolEvents(
 // from token_usage rows in the backfill path); MessageID on the row
 // becomes "user:" + generationID, matching the live hook path's
 // MessageID convention so dashboard joins land cleanly.
+//
+// Both Target and RawToolInput carry the SCRUBBED prompt; a nil sc is
+// replaced with a default [scrub.New] scrubber rather than skipping
+// the pass.
 func BuildTranscriptUserPromptEvent(
 	turn transcriptTurn,
 	sessionID, projectRoot, generationID, sourceFile string,
 	ts time.Time,
 	sc *scrub.Scrubber,
 ) (models.ToolEvent, bool) {
+	// A nil scrubber means the caller forgot, never "ship raw": user
+	// prompts are the single most secret-dense field Cursor gives us.
+	if sc == nil {
+		sc = scrub.New()
+	}
 	stripped := stripUserQueryWrapper(turn.User.Text)
 	stripped = strings.TrimSpace(stripped)
 	if stripped == "" {
 		return models.ToolEvent{}, false
 	}
-	preview := stripped
+	rawInput := sc.String(stripped)
+	preview := rawInput
 	if len(preview) > 200 {
 		preview = preview[:200]
-	}
-	rawInput := stripped
-	if sc != nil {
-		rawInput = sc.String(stripped)
 	}
 	return models.ToolEvent{
 		SourceFile:         sourceFile,

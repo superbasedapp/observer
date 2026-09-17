@@ -17,6 +17,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
@@ -281,7 +282,7 @@ func TestEnforceBudgetControlledLaunchReturnsStateReadErrors(t *testing.T) {
 	}
 
 	cfgPath, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
-	database, openErr := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, openErr := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if openErr != nil {
 		t.Fatalf("reopen DB: %v", openErr)
 	}
@@ -389,7 +390,7 @@ func TestRunSeedOnlyLaunchSeededAllowsMuseMaintenanceUnderManagedHardBudget(t *t
 func TestWireGuardProxyKeepsBudgetScannerWhenOtherScansOff(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "observer.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -431,7 +432,7 @@ func writeManagedBudgetLaunchFixture(t *testing.T, withBudget bool, guardMode st
 	ctx := context.Background()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "observer.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -518,7 +519,7 @@ func writeManagedBudgetLaunchFixture(t *testing.T, withBudget bool, guardMode st
 func exhaustManagedBudgetLaunchBudget(t *testing.T, dbPath, tool string) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open budget launch fixture DB: %v", err)
 	}
@@ -537,7 +538,7 @@ func exhaustManagedBudgetLaunchBudget(t *testing.T, dbPath, tool string) {
 func rewriteBudgetLaunchGrant(t *testing.T, dbPath string, mutate func(*store.EnrolmentGrant)) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open budget launch fixture DB: %v", err)
 	}
@@ -561,7 +562,7 @@ func rewriteBudgetLaunchGrant(t *testing.T, dbPath string, mutate func(*store.En
 func rewriteBudgetLaunchEnrolment(t *testing.T, dbPath string, mutate func(*store.Enrolment)) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open budget launch fixture DB: %v", err)
 	}

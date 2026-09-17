@@ -294,9 +294,20 @@ func TestWireEncodingGolden(t *testing.T) {
 			Description:   "Diagnosed and fixed a blind cursor save that replayed pre-enrol history.",
 			Confidence:    "high",
 			Limitations:   []string{"no test run observed"},
-			SchemaVersion: "session_enrichment.v2-candidate",
-			GeneratedAt:   "2026-09-11T10:00:00Z",
+			// The five NARRATIVE lists (server migration 156 / agent 124). They
+			// are the prose half a developer reads; evidence_refs stay OFF this
+			// wire because they are the server's own grounding tokens.
+			WorkDone:         []string{"Traced the blind cursor save to the re-enrol path."},
+			PlansImplemented: []string{"The cursor CAS landed; the backfill sweep was left."},
+			IssuesFound:      []string{"A cached page could be attributed to the wrong enrolment."},
+			Failures:         []string{"The regression test for the re-enrol race was not run."},
+			NextSteps:        []string{"Run the enrolment race suite before the next roll."},
+			SchemaVersion:    "session_enrichment.v2-candidate",
+			GeneratedAt:      "2026-09-11T10:00:00Z",
 		},
+		// The response fixture deliberately carries NO narrative lists: it pins
+		// the other half of the contract, that all five are `omitempty` and a
+		// pre-156 server's row serializes exactly as it did before this wave.
 		"intel_results_response": IntelResultsResponse{
 			Results: []IntelResultRow{{
 				SessionID: "sess-abc123", JobID: "ij-0001",

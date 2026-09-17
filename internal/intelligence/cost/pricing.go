@@ -359,6 +359,60 @@ func (t *Table) LookupWithSourceAt(model string, at time.Time) (Pricing, Pricing
 	return Pricing{}, PricingSourceMiss, false
 }
 
+// ResolveModelKey returns the TABLE KEY `model` prices against, and whether the
+// ladder matched anything at all.
+//
+// It is LookupWithSourceAt's resolution ladder with the rate thrown away and
+// the key kept: exact, then the `:free` suffix, then the date-stripped id, then
+// the longest family prefix, then the last-resort router/provider-prefix
+// normalisation retried against both. Same order, same precedence, so a key
+// this returns is the key that priced the row.
+//
+// WHY A KEY IS USEFUL ON ITS OWN. It is the product's only answer to "are these
+// two model strings the same model?" — which is a question the per-tool /
+// per-model BUDGET caps must ask (internal/orgbudget, internal/guard): an org
+// authoring a cap on `claude-sonnet-5` and a node capturing
+// `claude-sonnet-5-20260501` were two subjects under a trim-and-lowercase
+// comparison, so the cap silently governed nothing. Folding both sides through
+// this ladder makes them one subject. It is deliberately a pure lookup that
+// mutates nothing and never invents a key: ok=false means the caller keeps
+// whatever identity it already had.
+func (t *Table) ResolveModelKey(model string) (string, bool) {
+	if t == nil || t.exact == nil || model == "" {
+		return "", false
+	}
+	if _, ok := t.exact[model]; ok {
+		return model, true
+	}
+	lower := strings.ToLower(model)
+	if strings.HasSuffix(lower, ":free") {
+		// Every free tier is one $0 subject, exactly as it is one $0 rate.
+		return lower, true
+	}
+	if stripped := stripDateSuffix(model); stripped != model {
+		if _, ok := t.exact[stripped]; ok {
+			return stripped, true
+		}
+	}
+	for _, family := range familyKeys(t.exact) {
+		if strings.HasPrefix(lower, family) {
+			return family, true
+		}
+	}
+	if norm := normalizeUnpricedModel(model); norm != "" {
+		if _, ok := t.exact[norm]; ok {
+			return norm, true
+		}
+		lnorm := strings.ToLower(norm)
+		for _, family := range familyKeys(t.exact) {
+			if strings.HasPrefix(lnorm, family) {
+				return family, true
+			}
+		}
+	}
+	return "", false
+}
+
 // sourceFor reports the provenance of a resolved key: PricingSourceOrg when
 // the org's signed document owns it, otherwise the resolution rung the caller
 // arrived on. One helper rather than five inline conditionals so the rule has

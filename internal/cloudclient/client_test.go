@@ -903,6 +903,7 @@ func (h *healServer) handler() http.Handler {
 	}
 	mux.HandleFunc("/v1/results", authed)
 	mux.HandleFunc("/v1/structural-insights", authed)
+	mux.HandleFunc("/v1/jobs/", authed)
 	return mux
 }
 
@@ -931,6 +932,10 @@ func respondResultsOK(w http.ResponseWriter) {
 
 func respondStructuralOK(w http.ResponseWriter) {
 	writeJSON(w, StructuralUploadResponse{SnapshotID: "snap-1", Status: "stored"})
+}
+
+func respondJobOK(w http.ResponseWriter) {
+	writeJSON(w, JobStatus{ID: "job-heal-1", State: "succeeded", Feature: "session_enrichment"})
 }
 
 // newHealClient wires a client whose stored API token is the EXPIRED one
@@ -1178,5 +1183,139 @@ func TestTokenRejectedClassifier(t *testing.T) {
 				t.Errorf("tokenRejected = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestJobDecodesStatus is the plain 200 path (GET /v1/jobs/{id}): the response
+// body — the server's store.Job row verbatim, per handleGetJob — decodes into
+// JobStatus field-for-field, request id included (path is authenticated PoP
+// exactly like Results/Usage).
+func TestJobDecodesStatus(t *testing.T) {
+	fs := newFakeServer(t)
+	mux := http.NewServeMux()
+	mux.Handle("/v1/auth/", fs.handler())
+	var gotID string
+	mux.HandleFunc("GET /v1/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		gotID = r.PathValue("id")
+		verifyProof(t, r, fs.thumbprint, fs.apiToken, nil)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"a7d332d1-fedf-49ef-8b99-39fbfdbad4d2","state":"succeeded",` +
+			`"feature":"session_enrichment","attempts":2,` +
+			`"created_at":"2026-09-17T10:00:00Z","updated_at":"2026-09-17T10:05:00Z"}`))
+	})
+	srv := startServer(t, mux)
+	c, _ := newTestClient(t, srv.URL, "workos-access-tok")
+	ctx := context.Background()
+	if err := c.Exchange(ctx); err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+
+	got, err := c.Job(ctx, "a7d332d1-fedf-49ef-8b99-39fbfdbad4d2")
+	if err != nil {
+		t.Fatalf("Job: %v", err)
+	}
+	if gotID != "a7d332d1-fedf-49ef-8b99-39fbfdbad4d2" {
+		t.Fatalf("server saw path id = %q", gotID)
+	}
+	if got.ID != "a7d332d1-fedf-49ef-8b99-39fbfdbad4d2" || got.State != "succeeded" || got.Feature != "session_enrichment" {
+		t.Fatalf("job = %+v", got)
+	}
+	if got.Attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", got.Attempts)
+	}
+	if got.TerminalReason != "" {
+		t.Fatalf("terminal_reason = %q, want empty (older/non-terminal server response omits it)", got.TerminalReason)
+	}
+	wantCreated := time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)
+	wantUpdated := time.Date(2026, 9, 17, 10, 5, 0, 0, time.UTC)
+	if !got.CreatedAt.Equal(wantCreated) || !got.UpdatedAt.Equal(wantUpdated) {
+		t.Fatalf("timestamps = created %v updated %v", got.CreatedAt, got.UpdatedAt)
+	}
+
+	// A terminal (parked) job additionally carries terminal_reason.
+	mux2 := http.NewServeMux()
+	mux2.Handle("/v1/auth/", fs.handler())
+	mux2.HandleFunc("GET /v1/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		verifyProof(t, r, fs.thumbprint, fs.apiToken, nil)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"job-2","state":"parked","terminal_reason":"provider_error",` +
+			`"feature":"session_enrichment","attempts":3,` +
+			`"created_at":"2026-09-17T10:00:00Z","updated_at":"2026-09-17T10:05:00Z"}`))
+	})
+	srv2 := startServer(t, mux2)
+	c2, _ := newTestClient(t, srv2.URL, "workos-access-tok")
+	if err := c2.Exchange(ctx); err != nil {
+		t.Fatalf("Exchange (2): %v", err)
+	}
+	got2, err := c2.Job(ctx, "job-2")
+	if err != nil {
+		t.Fatalf("Job (parked): %v", err)
+	}
+	if got2.State != "parked" || got2.TerminalReason != "provider_error" {
+		t.Fatalf("parked job = %+v", got2)
+	}
+}
+
+// TestJobNotFoundMapped is the 404 path: the server's tenant-scoped "not
+// found" (unknown id, or a different account's job — indistinguishable by
+// design) surfaces as the typed ErrJobNotFound sentinel, not a bare APIError,
+// so a caller can classify it with errors.Is without inspecting status codes.
+func TestJobNotFoundMapped(t *testing.T) {
+	fs := newFakeServer(t)
+	mux := http.NewServeMux()
+	mux.Handle("/v1/auth/", fs.handler())
+	mux.HandleFunc("GET /v1/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		verifyProof(t, r, fs.thumbprint, fs.apiToken, nil)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"not_found","error":"job not found"}`))
+	})
+	srv := startServer(t, mux)
+	c, _ := newTestClient(t, srv.URL, "workos-access-tok")
+	ctx := context.Background()
+	if err := c.Exchange(ctx); err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+
+	_, err := c.Job(ctx, "does-not-exist")
+	if err == nil {
+		t.Fatalf("Job: want an error for a 404, got nil")
+	}
+	if !errors.Is(err, ErrJobNotFound) {
+		t.Fatalf("Job: want errors.Is(ErrJobNotFound), got %v", err)
+	}
+	// The raw APIError must NOT still be reachable through this error — the
+	// 404 is fully classified into the sentinel, not merely annotated.
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		t.Fatalf("Job: APIError still reachable via errors.As; want it replaced by ErrJobNotFound, got %v", apiErr)
+	}
+}
+
+// TestJobAuthedTokenSelfHeal pins that Job goes through the SAME one-shot
+// token self-heal as every other authenticated read (Results/Usage): a 401
+// whose body carries the token-rejected code re-exchanges once through the
+// broker and retries once, transparently to the caller.
+func TestJobAuthedTokenSelfHeal(t *testing.T) {
+	hs := &healServer{t: t, script: []func(http.ResponseWriter){respondTokenRejected, respondJobOK}}
+	srv := startServer(t, hs.handler())
+	c, cred := newHealClient(t, srv.URL, &StubBroker{Token: "workos"})
+
+	got, err := c.Job(context.Background(), "job-heal-1")
+	if err != nil {
+		t.Fatalf("Job: %v", err)
+	}
+	if got.ID != "job-heal-1" || got.State != "succeeded" {
+		t.Fatalf("job = %+v", got)
+	}
+	_, exchanges, authed := hs.counts()
+	if exchanges != 1 {
+		t.Errorf("exchanges = %d, want 1", exchanges)
+	}
+	if authed != 2 {
+		t.Errorf("authenticated calls = %d, want 2 (rejected + retry)", authed)
+	}
+	if tok, _ := cred.LoadAPIToken(); tok != "tok-1" {
+		t.Errorf("stored API token = %q, want tok-1 (the re-exchanged token)", tok)
 	}
 }

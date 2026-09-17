@@ -153,6 +153,10 @@ var claudeCodeExpect = map[string]rowExpect{
 	"B-621": {}, "B-622": {}, "B-623": {}, "B-624": {},
 	// The fail-closed row (org-budget ruling R2): daemon state, same reason.
 	"B-625": {},
+	// The organization's per-tool / per-model caps (bundle BUD-N): policy the
+	// org authored, compared against runtime spend. A native config file has
+	// neither number.
+	"B-626": {}, "B-627": {}, "B-628": {}, "B-629": {},
 	"T-501": {}, "T-502": {}, "T-503": {}, "T-504": {}, "T-505": {},
 	"B-601": {}, "B-602": {}, "A-610": {},
 }
@@ -174,6 +178,10 @@ var openCodeExpect = map[string]rowExpect{
 	"B-621": {}, "B-622": {}, "B-623": {}, "B-624": {},
 	// The fail-closed row (org-budget ruling R2): daemon state, same reason.
 	"B-625": {},
+	// The organization's per-tool / per-model caps (bundle BUD-N): policy the
+	// org authored, compared against runtime spend. A native config file has
+	// neither number.
+	"B-626": {}, "B-627": {}, "B-628": {}, "B-629": {},
 }
 
 // TestCompile_PerRow runs the full built-in catalog through each

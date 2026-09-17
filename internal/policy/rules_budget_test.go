@@ -252,6 +252,17 @@ func TestBudgetRules_HardMode(t *testing.T) {
 	}
 	eng, _ := New(Config{Mode: ModeEnforce, BudgetSessionUSD: 5, BudgetHard: true})
 	for _, info := range eng.RuleInfos() {
+		if subjectBudgetRuleID(info.ID) {
+			// SUBJECT rows are exempt from the node-wide hard upgrade, by
+			// design (bundle BUD-N). [guard.budget].hard is the node's posture
+			// about the node's OWN ceilings; a per-tool / per-model cap carries
+			// the ORGANIZATION's per-cap enforcement, which each subject id's
+			// row PAIR already encodes — a deny row matching only hard caps and
+			// a flag row matching only soft ones. Sweeping them up here would
+			// deny a cap the admin authored as a nudge, which is the
+			// cross-period fold MEDIUM-3 removed for windows.
+			continue
+		}
 		if info.Category == CategoryBudget && info.Enforce != DecisionDeny {
 			t.Errorf("hard mode: %s effective enforce = %s, want deny", info.ID, info.Enforce)
 		}

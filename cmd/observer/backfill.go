@@ -4929,6 +4929,9 @@ type CursorUserPromptsBackfill struct {
 func backfillCursorUserPrompts(ctx context.Context, db *sql.DB, projectsDir string, fileLimit int) (CursorUserPromptsBackfill, error) {
 	res := CursorUserPromptsBackfill{}
 	st := store.New(db)
+	// Backfill reads the same transcripts the live hook path does, so it
+	// must scrub the same way: store.Ingest has no scrub backstop.
+	sc := scrub.New()
 
 	type turnRef struct {
 		MessageID string
@@ -4997,7 +5000,7 @@ func backfillCursorUserPrompts(ctx context.Context, db *sql.DB, projectsDir stri
 		var events []models.ToolEvent
 		for i := 0; i < n; i++ {
 			ts, _ := time.Parse(time.RFC3339Nano, refs[i].Timestamp)
-			ev, ok := cursor.BuildTranscriptUserPromptEvent(turns[i], sessionID, projectRoot, refs[i].MessageID, path, ts, nil)
+			ev, ok := cursor.BuildTranscriptUserPromptEvent(turns[i], sessionID, projectRoot, refs[i].MessageID, path, ts, sc)
 			if !ok {
 				continue
 			}
@@ -5045,6 +5048,9 @@ type CursorSubagentsBackfill struct {
 func backfillCursorSubagents(ctx context.Context, db *sql.DB, projectsDir string, fileLimit int) (CursorSubagentsBackfill, error) {
 	res := CursorSubagentsBackfill{}
 	st := store.New(db)
+	// Backfill reads the same transcripts the live hook path does, so it
+	// must scrub the same way: store.Ingest has no scrub backstop.
+	sc := scrub.New()
 
 	walkErr := filepath.WalkDir(projectsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -5092,11 +5098,11 @@ func backfillCursorSubagents(ctx context.Context, db *sql.DB, projectsDir string
 		var events []models.ToolEvent
 		for i, turn := range turns {
 			generationID := fmt.Sprintf("sub:%s:turn%d", subUUID, i)
-			if ev, ok := cursor.BuildTranscriptUserPromptEvent(turn, parentUUID, projectRoot, generationID, path, ts, nil); ok {
+			if ev, ok := cursor.BuildTranscriptUserPromptEvent(turn, parentUUID, projectRoot, generationID, path, ts, sc); ok {
 				ev.IsSidechain = true
 				events = append(events, ev)
 			}
-			toolEvs := cursor.BuildTranscriptToolEvents(turn, parentUUID, projectRoot, generationID, path, ts, nil)
+			toolEvs := cursor.BuildTranscriptToolEvents(turn, parentUUID, projectRoot, generationID, path, ts, sc)
 			for _, te := range toolEvs {
 				te.IsSidechain = true
 				events = append(events, te)
@@ -5122,6 +5128,9 @@ func backfillCursorSubagents(ctx context.Context, db *sql.DB, projectsDir string
 func backfillCursorTranscriptActions(ctx context.Context, db *sql.DB, projectsDir string, fileLimit int) (MessageIDBackfill, error) {
 	res := MessageIDBackfill{}
 	st := store.New(db)
+	// Backfill reads the same transcripts the live hook path does, so it
+	// must scrub the same way: store.Ingest has no scrub backstop.
+	sc := scrub.New()
 
 	type turnRef struct {
 		MessageID string
@@ -5189,7 +5198,7 @@ func backfillCursorTranscriptActions(ctx context.Context, db *sql.DB, projectsDi
 		}
 		for i := 0; i < n; i++ {
 			ts, _ := time.Parse(time.RFC3339Nano, refs[i].Timestamp)
-			events := cursor.BuildTranscriptToolEvents(turns[i], sessionID, projectRoot, refs[i].MessageID, path, ts, nil)
+			events := cursor.BuildTranscriptToolEvents(turns[i], sessionID, projectRoot, refs[i].MessageID, path, ts, sc)
 			res.LinesExamined += len(events)
 			ingestRes, err := st.Ingest(ctx, events, nil, store.IngestOptions{})
 			if err != nil {

@@ -27,8 +27,12 @@ package mistralcode
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -49,7 +53,62 @@ const (
 	metaName        = "meta.json"
 	maxTargetLen    = 500
 	maxReasoningLen = 2000
+
+	// maxLineBytes caps one transcript line, matching openclaw/pi. A
+	// line past it is SKIPPED (see skipOverlongLine), not silently
+	// wedging the cursor: vibe flattens a whole tool result into
+	// `content`, so a single pathological line must not cost the rest
+	// of the session.
+	maxLineBytes = 16 * 1024 * 1024
 )
+
+// splitLinesKeepTerminator is bufio.ScanLines except the token RETAINS
+// its line terminator, so the caller can advance a byte cursor by
+// exactly the bytes consumed (CRLF included) instead of assuming one
+// byte per line, and can tell a COMPLETE line from an unterminated
+// trailing one by whether the token ends in '\n'.
+func splitLinesKeepTerminator(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[:i+1], nil
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+// skipOverlongLine returns the offset just past the newline that
+// terminates the single line starting at off — the line bufio.Scanner
+// refused as too long. It streams through a small fixed buffer, so the
+// line's size never enters the heap.
+//
+// When the line has no terminator yet (it is still being appended), off
+// is returned unchanged so the caller defers it like any trailing
+// partial line.
+func skipOverlongLine(f *os.File, off int64) (int64, error) {
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return off, fmt.Errorf("mistralcode.skipOverlongLine: seek: %w", err)
+	}
+	r := bufio.NewReaderSize(f, 64*1024)
+	var skipped int64
+	for {
+		chunk, err := r.ReadSlice('\n')
+		skipped += int64(len(chunk))
+		switch {
+		case err == nil:
+			return off + skipped, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			return off, nil
+		default:
+			return off, fmt.Errorf("mistralcode.skipOverlongLine: read: %w", err)
+		}
+	}
+}
 
 // Adapter parses Mistral Code (`vibe`) session directories.
 type Adapter struct {
@@ -261,22 +320,85 @@ func (a *Adapter) parseVibeSession(ctx context.Context, path string, fromOffset 
 	res.NewOffset = fromOffset
 	consumed := fromOffset
 
-	// Collect complete lines (a trailing partial line is deferred).
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	// Collect complete lines; a trailing partial line is DEFERRED, never
+	// consumed.
+	//
+	// The split function keeps each line's terminator so the cursor
+	// advances by the exact bytes read. `len(line)+1` was wrong twice:
+	// bufio.ScanLines also strips a `\r`, so a CRLF transcript
+	// undercounted by one byte per line and the cursor could never reach
+	// EOF; and ScanLines returns an UNTERMINATED trailing line as a
+	// normal token, so a half-written record was counted into the cursor,
+	// failed json.Unmarshal, hit the `continue`, and was lost forever
+	// once the writer completed it.
+	//
+	// The outer loop exists for the over-long-line case only: a scanner
+	// error leaves `consumed` at the START of the offending line, and
+	// leaving sc.Err() unchecked (as this parser did) meant the loop
+	// ended quietly and the cursor was persisted there forever — one
+	// >16 MiB line (vibe flattens a whole tool result into `content`)
+	// wedged the session permanently, every later append invisible. We
+	// skip that line, re-seek past it and keep reading, so one
+	// pathological record costs one record and not the session. Each
+	// pass strictly advances `consumed`, so the loop terminates.
 	var recs []vibeRecord
-	for sc.Scan() {
-		line := sc.Bytes()
-		consumed += int64(len(line)) + 1 // +1 for the newline scanner stripped
-		trimmed := strings.TrimSpace(string(line))
-		if trimmed == "" {
-			continue
+	for {
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 1024*1024), maxLineBytes)
+		sc.Split(splitLinesKeepTerminator)
+		partial := false
+		for sc.Scan() {
+			raw := sc.Bytes()
+			if !bytes.HasSuffix(raw, []byte("\n")) {
+				// Only ever the final token: the writer is mid-record.
+				// Leave the cursor before it so the next pass re-reads
+				// the completed line.
+				partial = true
+				break
+			}
+			consumed += int64(len(raw))
+			trimmed := strings.TrimSpace(string(raw))
+			if trimmed == "" {
+				continue
+			}
+			var rec vibeRecord
+			if err := json.Unmarshal([]byte(trimmed), &rec); err != nil {
+				continue // skip malformed, keep advancing
+			}
+			recs = append(recs, rec)
 		}
-		var rec vibeRecord
-		if err := json.Unmarshal([]byte(trimmed), &rec); err != nil {
-			continue // skip malformed, keep advancing
+		if partial {
+			break
 		}
-		recs = append(recs, rec)
+		scanErr := sc.Err()
+		if scanErr == nil {
+			break
+		}
+		if !errors.Is(scanErr, bufio.ErrTooLong) {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("offset %d: scan: %v", consumed, scanErr))
+			break
+		}
+		next, skipErr := skipOverlongLine(f, consumed)
+		if skipErr != nil {
+			res.Warnings = append(res.Warnings, fmt.Sprintf(
+				"offset %d: line exceeds the %d MiB cap and could not be skipped: %v",
+				consumed, maxLineBytes/(1024*1024), skipErr))
+			break
+		}
+		if next == consumed {
+			// No terminating newline yet — the line is still being
+			// written. Defer it like any trailing partial line.
+			res.RetrySuggested = true
+			break
+		}
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"offset %d: skipped a %d-byte line over the %d MiB cap",
+			consumed, next-consumed, maxLineBytes/(1024*1024)))
+		consumed = next
+		if _, err := f.Seek(consumed, io.SeekStart); err != nil {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("offset %d: seek: %v", consumed, err))
+			break
+		}
 	}
 	res.NewOffset = consumed
 

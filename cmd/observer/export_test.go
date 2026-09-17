@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -18,7 +19,7 @@ import (
 func seedExport(t *testing.T) string {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "exp.db")
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +45,7 @@ func seedExport(t *testing.T) string {
 
 func TestExport_ActionsJSONL(t *testing.T) {
 	dbPath := seedExport(t)
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func TestExport_ActionsJSONL(t *testing.T) {
 
 func TestExport_ActionsCSV(t *testing.T) {
 	dbPath := seedExport(t)
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +102,7 @@ func TestExport_ActionsCSV(t *testing.T) {
 
 func TestExport_UnknownTable(t *testing.T) {
 	dbPath := seedExport(t)
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestExport_UnknownTable(t *testing.T) {
 
 func TestExport_SessionsJSONL(t *testing.T) {
 	dbPath := seedExport(t)
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

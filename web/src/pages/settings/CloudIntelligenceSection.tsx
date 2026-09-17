@@ -1,6 +1,17 @@
 import CloudEvidenceSettingsEditor, { DEFAULT_EVIDENCE_SETTINGS, effectiveEvidenceSettings, evidenceSettingsError } from "./CloudEvidenceSettingsEditor";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChartShell, Pill, StatCard, Toggle, Tooltip } from "@/components/primitives";
+import {
+  Button,
+  ChartShell,
+  ConfirmButton,
+  Input,
+  JsonPreview,
+  Pill,
+  StatCard,
+  Table,
+  Toggle,
+  Tooltip,
+} from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { CloudEnrichmentSummary } from "@/components/CloudEnrichmentSummary";
 import { pushToast } from "@/components/Toast";
@@ -386,55 +397,48 @@ function CloudAccountCard({
         <div className="flex shrink-0 flex-col items-end gap-2">
           <div className="flex items-center gap-2">
             {phase !== "signed_in" && (
-              <button
-                type="button"
+              <Button
+                variant="primary"
                 onClick={() => void startLogin()}
                 disabled={!canSignIn}
                 title={signInDisabledTitle}
-                className="rounded-2 border border-accent/60 bg-accent px-3.5 py-1.5 text-[12px] font-semibold text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {phase === "signing_in" ? "Signing in…" : busy === "login" ? "Starting…" : "Sign in"}
-              </button>
+              </Button>
             )}
             {phase === "signed_in" && (
               <>
-                <button
-                  type="button"
+                <Button
+                  size="sm"
+                  variant="soft"
                   onClick={() => void startSync()}
                   disabled={!actionsAvailable || syncRunning || syncBusy || orgEnrolled}
                   title={orgEnrolled ? signInDisabledTitle : "Drain the outbox and pull enrichment results now (same as `observer cloud sync`)"}
-                  className="rounded-2 border border-accent/40 bg-bg-2 px-2.5 py-1 text-[11px] font-medium text-accent hover:bg-bg-3 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {syncRunning ? "Syncing…" : syncBusy ? "Starting…" : "Sync now"}
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
                   onClick={() => void startLogin()}
                   disabled={!canSignIn}
-                  className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3 disabled:opacity-40"
                   title={signInDisabledTitle || "Run the sign-in again (refreshes the stored WorkOS sign-in)"}
                 >
                   Sign in again
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="secondary"
                   onClick={() => void logout()}
                   disabled={!actionsAvailable || busy !== null || phase !== "signed_in"}
-                  className="rounded-2 border border-line-2 bg-bg-2 px-3 py-1.5 text-[12px] font-medium text-fg-1 hover:bg-bg-3 disabled:opacity-40"
                 >
                   {busy === "logout" ? "Signing out…" : "Sign out"}
-                </button>
+                </Button>
               </>
             )}
             {phase !== "signed_in" && (
-              <button
-                type="button"
-                disabled
-                title="Sign in first"
-                className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-3 opacity-40"
-              >
+              <Button size="sm" variant="secondary" disabled title="Sign in first">
                 Sync now
-              </button>
+              </Button>
             )}
           </div>
           {!actionsAvailable && signIn && (
@@ -542,9 +546,9 @@ function CloudAccountCard({
               <summary className="cursor-pointer text-[10.5px] text-fg-3 hover:text-fg-2">
                 Output
               </summary>
-              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-1 border border-line-3 bg-bg-1 p-2 font-mono text-[10.5px] text-fg-2">
-                {sync.tail}
-              </pre>
+              <div className="mt-1">
+                <JsonPreview value={sync.tail} maxHeight={160} />
+              </div>
             </details>
           )}
         </div>
@@ -573,13 +577,6 @@ const CLOUD_ENABLE_SWITCH2_DESC =
 const CLOUD_ENABLE_SWITCH3_LABEL = "Enrich sessions automatically";
 const CLOUD_ENABLE_SWITCH3_DESC =
   "Use your allowance for eligible new sessions, longest-waiting first. Turn this off to choose sessions yourself from the Sessions page. Save below to apply.";
-
-const CLOUD_ENABLE_PRIMARY_CLASS =
-  "rounded-2 border border-accent/60 bg-accent px-3.5 py-1.5 text-[12px] font-semibold text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-40";
-const CLOUD_ENABLE_DANGER_CLASS =
-  "rounded-2 border border-danger/40 bg-bg-2 px-3 py-1.5 text-[12px] font-medium text-danger hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-40";
-const CLOUD_ENABLE_DANGER_ARMED_CLASS =
-  "rounded-2 border border-danger/60 bg-danger px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40";
 
 // EnableSwitchRow is a Toggle + label + description row shared by both the
 // "Turn on" draft state and the live/on state of CloudEnableCard, so the
@@ -730,13 +727,6 @@ function CloudEnableCard({
   const evidenceInvalid = !!evidenceSettingsError(effectiveEvidence);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [disableArmed, setDisableArmed] = useState(false);
-
-  useEffect(() => {
-    if (!disableArmed) return;
-    const id = window.setTimeout(() => setDisableArmed(false), 8000);
-    return () => window.clearTimeout(id);
-  }, [disableArmed]);
 
   async function doEnable(withExcerpts: boolean, background: boolean) {
     setError(null);
@@ -841,8 +831,14 @@ function CloudEnableCard({
         </div>
 
         <CloudEvidenceSettingsEditor value={draftEvidence} excerpts={draftExcerpts} disabled={busy || !actionsAvailable} onChange={setDraftEvidence} />
-        <button type="button" className={`${CLOUD_ENABLE_PRIMARY_CLASS} mt-3`} disabled={busy || !actionsAvailable || evidenceInvalid}
-          onClick={() => void doEnable(draftExcerpts, draftBackground)}>{busy ? "Saving…" : "Save enrichment settings"}</button>
+        <Button
+          variant="primary"
+          className="mt-3"
+          disabled={busy || !actionsAvailable || evidenceInvalid}
+          onClick={() => void doEnable(draftExcerpts, draftBackground)}
+        >
+          {busy ? "Saving…" : "Save enrichment settings"}
+        </Button>
 
         <p className="mt-3 text-[11px] leading-relaxed text-fg-3">
           Results appear on each session's header and in the Sessions list once enrichment
@@ -861,22 +857,18 @@ function CloudEnableCard({
         <CloudDisclosure disclosure={disclosure} />
 
         <div className="mt-3">
-          <button
-            type="button"
-            onClick={() => {
-              if (!disableArmed) {
-                setDisableArmed(true);
-                return;
-              }
-              setDisableArmed(false);
-              void doDisable();
-            }}
-            disabled={busy || !actionsAvailable}
+          <ConfirmButton
+            onConfirm={() => void doDisable()}
+            variant="secondary"
+            armedVariant="danger"
+            timeoutMs={8000}
+            confirmLabel="Click again to turn off"
+            disabled={!actionsAvailable}
+            loading={busy}
             title={disabledTitle}
-            className={disableArmed ? CLOUD_ENABLE_DANGER_ARMED_CLASS : CLOUD_ENABLE_DANGER_CLASS}
           >
-            {busy ? "Working…" : disableArmed ? "Click again to turn off" : "Turn off"}
-          </button>
+            Turn off
+          </ConfirmButton>
         </div>
 
         {error && (
@@ -924,15 +916,14 @@ function CloudEnableCard({
       <CloudDisclosure disclosure={disclosure} />
 
       <div className="mt-3">
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={() => void doEnable(draftExcerpts, draftBackground)}
           disabled={busy || !actionsAvailable || evidenceInvalid}
           title={disabledTitle}
-          className={CLOUD_ENABLE_PRIMARY_CLASS}
         >
           {busy ? "Turning on…" : "Turn on"}
-        </button>
+        </Button>
       </div>
 
       {error && (
@@ -945,9 +936,6 @@ function CloudEnableCard({
 }
 
 // ---------- Consent grants ----------
-
-const CLOUD_CARD_BUTTON_CLASS =
-  "rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] font-medium text-fg-2 hover:bg-bg-3 disabled:cursor-not-allowed disabled:opacity-40";
 
 // CloudConsentGrantsCard is the dashboard equivalent of `observer cloud
 // consent grant|revoke|list`: every consent receipt already on this device,
@@ -1036,50 +1024,48 @@ function CloudConsentGrantsCard({ actionsAvailable }: { actionsAvailable: boolea
       <ChartState loading={grants.loading && !grants.data} error={grants.error} empty={false} height={80}>
         {grants.data && (
           <div className="mt-3 space-y-3">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[520px] text-left text-[11.5px]">
-                <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
-                  <tr className="border-b border-line-2">
-                    <th className="py-1.5 pl-1 font-medium">Purpose</th>
-                    <th className="py-1.5 font-medium">Mode</th>
-                    <th className="py-1.5 font-medium">Created</th>
-                    <th className="py-1.5 font-medium">Review</th>
-                    <th className="py-1.5 font-medium">State</th>
+            <Table
+              minWidth={520}
+              head={
+                <tr className="border-b border-line-2">
+                  <th className="py-1.5 pl-1 font-medium">Purpose</th>
+                  <th className="py-1.5 font-medium">Mode</th>
+                  <th className="py-1.5 font-medium">Created</th>
+                  <th className="py-1.5 font-medium">Review</th>
+                  <th className="py-1.5 font-medium">State</th>
+                </tr>
+              }
+            >
+              {receipts.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-3 pl-1 text-fg-3">
+                    No consent receipts yet.
+                  </td>
+                </tr>
+              ) : (
+                receipts.map((r) => (
+                  <tr key={r.id} className="border-b border-line-1 last:border-b-0 align-top">
+                    <td className="py-2 pl-1 text-fg-1">
+                      {CLOUD_PURPOSE_LABELS[r.purpose] ?? r.purpose}
+                    </td>
+                    <td className="py-2 text-fg-2">
+                      {r.mode === "standing" ? "Standing" : "Per-upload"}
+                    </td>
+                    <td className="py-2 font-mono text-[10.5px] text-fg-2">
+                      {r.created_at ? fmtDateTime(r.created_at) : "-"}
+                    </td>
+                    <td className="py-2 font-mono text-[10.5px] text-fg-2">
+                      {r.review_at ? fmtDateTime(r.review_at) : "-"}
+                    </td>
+                    <td className="py-2">
+                      <Pill variant={r.live ? "success" : "neutral"}>
+                        {r.live ? "live" : "revoked"}
+                      </Pill>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {receipts.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="py-3 pl-1 text-fg-3">
-                        No consent receipts yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    receipts.map((r) => (
-                      <tr key={r.id} className="border-b border-line-1 last:border-b-0 align-top">
-                        <td className="py-2 pl-1 text-fg-1">
-                          {CLOUD_PURPOSE_LABELS[r.purpose] ?? r.purpose}
-                        </td>
-                        <td className="py-2 text-fg-2">
-                          {r.mode === "standing" ? "Standing" : "Per-upload"}
-                        </td>
-                        <td className="py-2 font-mono text-[10.5px] text-fg-2">
-                          {r.created_at ? fmtDateTime(r.created_at) : "-"}
-                        </td>
-                        <td className="py-2 font-mono text-[10.5px] text-fg-2">
-                          {r.review_at ? fmtDateTime(r.review_at) : "-"}
-                        </td>
-                        <td className="py-2">
-                          <Pill variant={r.live ? "success" : "neutral"}>
-                            {r.live ? "live" : "revoked"}
-                          </Pill>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+                ))
+              )}
+            </Table>
 
             <div className="space-y-1.5">
               <div className="text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-3">
@@ -1094,7 +1080,7 @@ function CloudConsentGrantsCard({ actionsAvailable }: { actionsAvailable: boolea
                       <span
                         key={g.purpose}
                         title={g.reason || "Not grantable on this device."}
-                        className="cursor-help rounded-2 border border-line-2 bg-bg-1 px-2.5 py-1 text-[11px] text-fg-4"
+                        className="cursor-help rounded-2 border border-line-2 bg-bg-3 px-2.5 py-1 text-[11px] text-fg-4"
                       >
                         {label} - locked
                       </span>
@@ -1106,36 +1092,32 @@ function CloudConsentGrantsCard({ actionsAvailable }: { actionsAvailable: boolea
                   if (live) {
                     const armed = revokeArmed === g.purpose;
                     return (
-                      <button
+                      <Button
                         key={g.purpose}
-                        type="button"
+                        size="sm"
+                        variant={armed ? "danger" : "secondary"}
                         onClick={() => onRevokeClick(g.purpose)}
                         disabled={isBusy}
                         title={armed ? undefined : `Revoke standing consent for ${label}`}
-                        className={
-                          armed
-                            ? "rounded-2 border border-danger/60 bg-danger px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40"
-                            : CLOUD_CARD_BUTTON_CLASS
-                        }
                       >
                         {isBusy
                           ? "Working…"
                           : armed
                             ? "Revoke - cancels anything queued under it"
                             : `Revoke ${label}`}
-                      </button>
+                      </Button>
                     );
                   }
                   return (
-                    <button
+                    <Button
                       key={g.purpose}
-                      type="button"
+                      size="sm"
+                      variant="soft"
                       onClick={() => void runAction(g.purpose, "grant")}
                       disabled={isBusy}
-                      className="rounded-2 border border-accent/40 bg-bg-1 px-2.5 py-1 text-[11px] font-medium text-accent hover:bg-bg-3 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {isBusy ? "Working…" : `Grant ${label}`}
-                    </button>
+                    </Button>
                   );
                 })}
               </div>
@@ -1241,16 +1223,11 @@ function CloudDeleteAccountCard({
       </label>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
+        <Button
+          variant="danger"
           onClick={() => void run()}
           disabled={busy}
           title={armed ? "Click again to confirm - this cannot be undone" : undefined}
-          className={
-            armed
-              ? "rounded-2 border border-danger/60 bg-danger px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40"
-              : "rounded-2 border border-danger/40 bg-bg-2 px-3 py-1.5 text-[12px] font-medium text-danger hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-40"
-          }
         >
           {busy
             ? "Working…"
@@ -1261,15 +1238,11 @@ function CloudDeleteAccountCard({
               : localOnly
                 ? "Clear this device"
                 : "Delete cloud account"}
-        </button>
+        </Button>
         {armed && (
-          <button
-            type="button"
-            onClick={() => setArmed(false)}
-            className="rounded-2 border border-line-2 bg-bg-2 px-3 py-1.5 text-[12px] text-fg-2 hover:bg-bg-3"
-          >
+          <Button variant="secondary" onClick={() => setArmed(false)}>
             Cancel
-          </button>
+          </Button>
         )}
       </div>
 
@@ -1397,9 +1370,6 @@ function useCloudConfigForm(): CloudConfigForm {
   };
 }
 
-const cloudInputClass =
-  "w-full rounded-2 border border-line-2 bg-bg-1 px-2.5 py-1 font-mono text-[12px] text-fg-1 placeholder:text-fg-4";
-
 // CloudPreferences is the egress-preferences footer on the account card: the
 // two toggles (auto-sync, auto-enrich) that govern what leaves the machine and
 // when. They belong with the account, not in a raw settings grid.
@@ -1417,14 +1387,9 @@ function CloudPreferences({
         <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">
           Cloud preferences
         </div>
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={!dirty || saving}
-          className="rounded-2 border border-line-2 bg-bg-2 px-3 py-1 text-[11.5px] font-medium text-fg-1 hover:bg-bg-3 disabled:opacity-40"
-        >
+        <Button size="sm" variant="secondary" onClick={() => void save()} disabled={!dirty || saving}>
           {saving ? "Saving…" : "Save"}
-        </button>
+        </Button>
       </div>
       {orgEnrolled && (
         <div className="mt-2 text-[10.5px] text-fg-4">
@@ -1446,18 +1411,16 @@ function CloudPreferences({
             consent-gated - nothing is sent without a live grant. Restart the daemon to apply.
           </div>
           {form.AutoSync && (
-            <label className="block">
-              <div className="mb-1 text-[10.5px] font-medium text-fg-2">Interval (minutes)</div>
-              <input
-                type="number"
-                min={0}
-                step={1}
-                value={form.AutoSyncIntervalMinutes}
-                onChange={(ev) => update("AutoSyncIntervalMinutes", Number(ev.target.value))}
-                className={cloudInputClass}
-              />
-              <div className="mt-1 text-[10.5px] text-fg-4">0 = built-in default (60); otherwise at least 5.</div>
-            </label>
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              value={form.AutoSyncIntervalMinutes}
+              onChange={(ev) => update("AutoSyncIntervalMinutes", Number(ev.target.value))}
+              mono
+              label="Interval (minutes)"
+              help="0 = built-in default (60); otherwise at least 5."
+            />
           )}
         </div>
 
@@ -1503,40 +1466,36 @@ function CloudAdvancedSettings({ settings }: { settings: CloudConfigForm }) {
 
         <ChartState loading={loading} error={error} empty={false} height={80}>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <label className="block text-[11px] text-fg-3">
-              <div className="mb-1 font-medium text-fg-2">
-                WorkOS client id{" "}
-                <span className="font-mono text-fg-4">[cloud].workos_client_id</span>
-              </div>
-              <input
-                type="text"
-                value={form.WorkOSClientID}
-                onChange={(ev) => update("WorkOSClientID", ev.target.value)}
-                placeholder="client_01…"
-                spellCheck={false}
-                className={cloudInputClass}
-              />
-              <div className="mt-1 text-[10.5px] text-fg-4">
-                The public OAuth client id used to start a browser sign-in. Not a secret.
-              </div>
-            </label>
+            <Input
+              type="text"
+              value={form.WorkOSClientID}
+              onChange={(ev) => update("WorkOSClientID", ev.target.value)}
+              placeholder="client_01…"
+              spellCheck={false}
+              mono
+              label={
+                <>
+                  WorkOS client id{" "}
+                  <span className="font-mono normal-case text-fg-4">[cloud].workos_client_id</span>
+                </>
+              }
+              help="The public OAuth client id used to start a browser sign-in. Not a secret."
+            />
 
-            <label className="block text-[11px] text-fg-3">
-              <div className="mb-1 font-medium text-fg-2">
-                Cloud base URL <span className="font-mono text-fg-4">[cloud].base_url</span>
-              </div>
-              <input
-                type="url"
-                value={form.BaseURL}
-                onChange={(ev) => update("BaseURL", ev.target.value)}
-                placeholder="https://cloud.superbased.app"
-                spellCheck={false}
-                className={cloudInputClass}
-              />
-              <div className="mt-1 text-[10.5px] text-fg-4">
-                The hosted service every `observer cloud` command talks to. Must be an absolute http(s) URL.
-              </div>
-            </label>
+            <Input
+              type="url"
+              value={form.BaseURL}
+              onChange={(ev) => update("BaseURL", ev.target.value)}
+              placeholder="https://cloud.superbased.app"
+              spellCheck={false}
+              mono
+              label={
+                <>
+                  Cloud base URL <span className="font-mono normal-case text-fg-4">[cloud].base_url</span>
+                </>
+              }
+              help="The hosted service every `observer cloud` command talks to. Must be an absolute http(s) URL."
+            />
           </div>
 
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
@@ -1545,14 +1504,9 @@ function CloudAdvancedSettings({ settings }: { settings: CloudConfigForm }) {
               <span className="font-mono text-fg-3">{form.LoginPort || 9797}</span> - file-only
               (edit config.toml directly); it must match the redirect URI registered in WorkOS.
             </div>
-            <button
-              type="button"
-              onClick={() => void save()}
-              disabled={!dirty || saving}
-              className="rounded-2 border border-line-2 bg-bg-2 px-3 py-1.5 text-[12px] font-medium text-fg-1 hover:bg-bg-3 disabled:opacity-40"
-            >
+            <Button size="sm" variant="secondary" onClick={() => void save()} disabled={!dirty || saving}>
               {saving ? "Saving…" : "Save"}
-            </button>
+            </Button>
           </div>
         </ChartState>
 
@@ -1702,38 +1656,36 @@ function OutboxTable({ data }: { data: CloudStatusWithDigestPlan }) {
       <div className="mb-2 text-[12px] font-semibold text-fg-1">
         Outbox by state
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[420px] text-left text-[11.5px]">
-          <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
-            <tr className="border-b border-line-2">
-              <th className="py-1.5 pl-1 font-medium">State</th>
-              <th className="py-1.5 text-right font-medium">Count</th>
-              <th className="py-1.5 pl-4 font-medium">Meaning</th>
+      <Table
+        minWidth={420}
+        head={
+          <tr className="border-b border-line-2">
+            <th className="py-1.5 pl-1 font-medium">State</th>
+            <th className="py-1.5 text-right font-medium">Count</th>
+            <th className="py-1.5 pl-4 font-medium">Meaning</th>
+          </tr>
+        }
+      >
+        {states.map((state) => {
+          const meta = cloudStateMeta(state);
+          return (
+            <tr
+              key={state}
+              className="border-b border-line-1 last:border-b-0 align-top"
+            >
+              <td className="py-2 pl-1">
+                <Pill variant={meta.variant}>{meta.label}</Pill>
+              </td>
+              <td className="py-2 text-right font-mono tabular-nums text-fg-1">
+                {fmtInt(data.outbox_by_state[state])}
+              </td>
+              <td className="py-2 pl-4 text-[11px] leading-snug text-fg-3">
+                {meta.meaning}
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {states.map((state) => {
-              const meta = cloudStateMeta(state);
-              return (
-                <tr
-                  key={state}
-                  className="border-b border-line-1 last:border-b-0 align-top"
-                >
-                  <td className="py-2 pl-1">
-                    <Pill variant={meta.variant}>{meta.label}</Pill>
-                  </td>
-                  <td className="py-2 text-right font-mono tabular-nums text-fg-1">
-                    {fmtInt(data.outbox_by_state[state])}
-                  </td>
-                  <td className="py-2 pl-4 text-[11px] leading-snug text-fg-3">
-                    {meta.meaning}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+          );
+        })}
+      </Table>
     </div>
   );
 }

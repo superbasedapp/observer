@@ -74,6 +74,11 @@ var contractTools = []ContractTool{
 	// may not have run, and its by-category / channel key set is still
 	// settling — experimental until the field-set rides a minor unchanged.
 	{Name: "get_output_composition", Tier: TierExperimental},
+	// get_project_guidance (agent-guidance inventory) is new: its row
+	// vocabulary (the Kind set, the front-matter map, the content caps) has
+	// not ridden a minor release unchanged yet, so it lands experimental —
+	// the tier every new tool starts at, promoted once the field-set settles.
+	{Name: "get_project_guidance", Tier: TierExperimental},
 	{Name: "get_project_patterns", Tier: TierStable},
 	{Name: "get_redundancy_report", Tier: TierStable},
 	{Name: "get_relations", Tier: TierConditional, ConfigGated: true},

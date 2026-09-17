@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChartShell, Toggle } from "@/components/primitives";
+import {
+  Button,
+  ChartShell,
+  Input,
+  Select,
+  SettingRow,
+  Toggle,
+} from "@/components/primitives";
 import type { ConfigResponse } from "@/lib/types";
 import { markRestartPending } from "@/lib/restartPending";
 import { useApi } from "@/lib/useApi";
@@ -130,10 +137,16 @@ export function StructuredConfigSection({
     setErr(null);
     setSavedMsg(null);
     try {
+      // A field the spec marks `disabled` renders inert (honest-disabled-
+      // copy) precisely because no Go consumer reads it — writing it back
+      // anyway would still land a dead key in config.toml. Strip only
+      // those keys from the OUTGOING payload; the draft itself (and the
+      // rest of the section object) is untouched.
+      const payload = stripDisabledFields(draft, spec);
       const res = await fetch(`/api/config/section/${spec.id}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(draft),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const text = await res.text();
@@ -226,24 +239,22 @@ export function StructuredConfigSection({
           </p>
         )}
         <div className="flex flex-wrap items-center gap-3 border-t border-line-1 pt-3">
-          <button
-            type="button"
+          <Button
+            variant="primary"
             onClick={save}
             disabled={!dirty || busy || readOnly}
+            loading={busy}
             title={readOnly ? "Managed by your organization" : undefined}
-            className="rounded-2 bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-on transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy ? "Saving…" : "Save"}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
             onClick={reset}
             disabled={!dirty || busy || readOnly}
             title={readOnly ? "Managed by your organization" : undefined}
-            className="rounded-2 border border-line-2 bg-bg-2 px-3 py-1.5 text-[12px] text-fg-2 hover:bg-bg-3 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Reset
-          </button>
+          </Button>
           {savedMsg && (
             <span className="text-[11.5px] text-success">{savedMsg}</span>
           )}
@@ -302,6 +313,9 @@ function GroupCard({
   );
 }
 
+// FieldRow is a thin wrapper over the shared SettingRow: label + help in
+// the label column, the typed control beside it, and — for a field the
+// spec marks `disabled` — the honest "why" note under the control.
 function FieldRow({
   field,
   value,
@@ -316,17 +330,15 @@ function FieldRow({
   effectiveModes?: Record<string, string>;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-1.5 lg:grid-cols-[180px_minmax(0,1fr)] lg:items-start lg:gap-4">
-      <div className="lg:pt-1.5">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-2">
-          {field.label}
-        </div>
-        {field.help && (
-          <div className="mt-1 text-[11px] leading-snug text-fg-3">
-            {field.help}
-          </div>
-        )}
-      </div>
+    <SettingRow
+      label={field.label}
+      help={field.help}
+      status={
+        field.disabled && field.note ? (
+          <span className="text-[11px] leading-snug text-warn">{field.note}</span>
+        ) : undefined
+      }
+    >
       <FieldInput
         field={field}
         value={value}
@@ -334,7 +346,7 @@ function FieldRow({
         dynamicOptions={dynamicOptions}
         effectiveModes={effectiveModes}
       />
-    </div>
+    </SettingRow>
   );
 }
 
@@ -351,8 +363,10 @@ function FieldInput({
   dynamicOptions?: Record<string, string[] | undefined>;
   effectiveModes?: Record<string, string>;
 }) {
-  const common =
-    "w-full rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1.5 font-mono text-[12px] text-fg-1 placeholder:text-fg-4 focus:border-accent focus:outline-none";
+  // A spec may mark a field `disabled` — a key the config still carries but
+  // that no consumer reads. It renders inert rather than live, and
+  // FieldRow prints the field's `note` under it (honest-disabled-copy).
+  const disabled = Boolean(field.disabled);
 
   if (field.kind === "bool") {
     const on = Boolean(value);
@@ -361,6 +375,7 @@ function FieldInput({
         <Toggle
           on={on}
           onChange={onChange}
+          disabled={disabled}
           label={on ? "enabled" : "disabled"}
         />
       </div>
@@ -385,17 +400,13 @@ function FieldInput({
     const differs = effectiveMode != null && effectiveMode !== rawValue;
     return (
       <div>
-        <select
-          className={common}
+        <Select
+          mono
+          disabled={disabled}
+          options={options}
           value={rawValue}
           onChange={(e) => onChange(e.target.value)}
-        >
-          {options.map((o) => (
-            <option key={o} value={o}>
-              {o}
-            </option>
-          ))}
-        </select>
+        />
         {effectiveMode != null && (
           <div
             className={
@@ -413,9 +424,10 @@ function FieldInput({
 
   if (field.kind === "int") {
     return (
-      <input
+      <Input
+        mono
         type="number"
-        className={common}
+        disabled={disabled}
         value={value == null ? "" : Number(value)}
         min={field.min}
         max={field.max}
@@ -431,9 +443,10 @@ function FieldInput({
   if (field.kind === "list") {
     const arr = Array.isArray(value) ? value : [];
     return (
-      <input
+      <Input
+        mono
         type="text"
-        className={common}
+        disabled={disabled}
         value={arr.join(", ")}
         placeholder="comma-separated"
         onChange={(e) => {
@@ -449,9 +462,10 @@ function FieldInput({
 
   // text
   return (
-    <input
+    <Input
+      mono
       type="text"
-      className={common}
+      disabled={disabled}
       value={value == null ? "" : String(value)}
       onChange={(e) => onChange(e.target.value)}
     />
@@ -493,6 +507,33 @@ function pickField(
 
 function prettyTitle(id: string): string {
   return id.charAt(0).toUpperCase() + id.slice(1);
+}
+
+// stripDisabledFields drops every key whose FieldDef is marked
+// `disabled: true` (honest-disabled-copy — the config still carries the
+// key but no Go consumer reads it) from the OUTGOING save payload only,
+// leaving the rest of the section object — and the caller's `draft`
+// state — intact. Walks both the section's flat `fields` and each
+// group's `fields` at the group's resolved sub-path.
+function stripDisabledFields(
+  draft: Record<string, unknown> | null,
+  spec: SectionSpec,
+): Record<string, unknown> | null {
+  if (!draft) return draft;
+  const out = deepClone(draft);
+  for (const f of spec.fields ?? []) {
+    if (f.disabled) delete out[f.id];
+  }
+  for (const g of spec.groups ?? []) {
+    const rel =
+      spec.path.length === 0 ? g.path : g.path.slice(spec.path.length);
+    const sub = resolveSub(out, rel);
+    if (!sub) continue;
+    for (const f of g.fields) {
+      if (f.disabled) delete sub[f.id];
+    }
+  }
+  return out;
 }
 
 function deepClone<T>(v: T): T {

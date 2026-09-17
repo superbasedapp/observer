@@ -53,6 +53,11 @@ func Embedded(ctx context.Context, dir string, opts Options) (*Log, error) {
 		// the stream's own MaxMsgSize check can classify it.
 		MaxPayload: maxPayloadFor(o.MaxMsgBytes),
 	}
+	// An explicit pool, when the caller asked for one; otherwise the server
+	// derives it from free disk as it always has (production default).
+	if o.EmbeddedMaxStore > 0 {
+		sopts.JetStreamMaxStore = o.EmbeddedMaxStore
+	}
 	// When a token or a user/password is configured, the embedded server
 	// REQUIRES it, so the in-process client (connectNATS presents the same o)
 	// and any external client must authenticate. NKey/creds-file auth needs

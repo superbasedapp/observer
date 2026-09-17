@@ -16,6 +16,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/proxy"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -35,7 +36,7 @@ func TestAcquireProcessGuard_SharedPerDBPath(t *testing.T) {
 
 	openStore := func(path string) *store.Store {
 		t.Helper()
-		database, err := db.Open(ctx, db.Options{Path: path})
+		database, err := dbtemplate.Open(ctx, db.Options{Path: path})
 		if err != nil {
 			t.Fatalf("db.Open: %v", err)
 		}
@@ -121,7 +122,7 @@ func TestBuildGuardForStore_PromptLaneEndToEnd(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	dbPath := filepath.Join(t.TempDir(), "observer.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -252,7 +253,7 @@ func TestProxyPromptLane_SessionlessRealGuardAskOnce(t *testing.T) {
 	defer upstream.Close()
 
 	dbPath := filepath.Join(t.TempDir(), "observer.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

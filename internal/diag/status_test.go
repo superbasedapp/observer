@@ -437,3 +437,115 @@ func TestSnapshot_QueryErrors(t *testing.T) {
 		}
 	})
 }
+
+// TestSnapshot_SurfacesIntegrityVerdict is the RES-3 status-surface pin
+// (codebase audit 2026-09-16). The background `PRAGMA quick_check` used to
+// write one ERROR log line and nothing else, so a corrupt database degraded
+// capture silently. Its verdict now reaches the struct `observer status` prints
+// and /api/status serves.
+//
+// Four rows: never probed (ABSENT — a fresh install must not read as damaged,
+// and the healthy render must stay silent), probed clean (present, silent), and
+// the two non-ok statuses, which must each be rendered LOUDLY and distinctly —
+// "error" means the probe could not complete and must not be reported as
+// corruption.
+func TestSnapshot_SurfacesIntegrityVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		record      *db.IntegrityVerdict
+		wantPresent bool
+		wantOK      bool
+		wantInText  []string
+		wantNotText []string
+	}{
+		{
+			name:        "never probed",
+			wantPresent: false,
+			wantNotText: []string{"DB INTEGRITY"},
+		},
+		{
+			name:        "probed clean",
+			record:      &db.IntegrityVerdict{Status: db.IntegrityOK},
+			wantPresent: true,
+			wantOK:      true,
+			wantNotText: []string{"DB INTEGRITY"},
+		},
+		{
+			name:        "corrupt",
+			record:      &db.IntegrityVerdict{Status: db.IntegrityCorrupt, Message: "Page 42: btreeInitPage"},
+			wantPresent: true,
+			wantInText:  []string{"DB INTEGRITY:     CORRUPT", "Page 42: btreeInitPage", "observer doctor db"},
+		},
+		{
+			name:        "probe did not complete",
+			record:      &db.IntegrityVerdict{Status: db.IntegrityError, Message: "context deadline exceeded"},
+			wantPresent: true,
+			wantInText:  []string{"DB INTEGRITY:     UNVERIFIED", "context deadline exceeded"},
+			wantNotText: []string{"CORRUPT"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "agent.db")
+			database, err := db.Open(ctx, db.Options{Path: path})
+			if err != nil {
+				t.Fatalf("db.Open: %v", err)
+			}
+			defer func() { _ = database.Close() }()
+
+			if tc.record != nil {
+				body, err := json.Marshal(db.IntegrityVerdict{
+					CheckedAt: time.Now().UTC(), Status: tc.record.Status, Message: tc.record.Message,
+				})
+				if err != nil {
+					t.Fatalf("marshal verdict: %v", err)
+				}
+				if _, err := database.ExecContext(ctx,
+					`INSERT INTO schema_meta(key, value) VALUES ('integrity_verdict', ?)
+					 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, string(body)); err != nil {
+					t.Fatalf("seed verdict: %v", err)
+				}
+			}
+
+			snap, err := Snapshot(ctx, database, path)
+			if err != nil {
+				t.Fatalf("Snapshot: %v", err)
+			}
+			if (snap.Integrity != nil) != tc.wantPresent {
+				t.Fatalf("Integrity present = %v, want %v", snap.Integrity != nil, tc.wantPresent)
+			}
+			if snap.QueryErrors != 0 {
+				t.Errorf("QueryErrors = %d, want 0 — an absent verdict is a legitimate answer, not a failed lookup", snap.QueryErrors)
+			}
+			if tc.wantPresent {
+				if snap.Integrity.Status != tc.record.Status {
+					t.Errorf("status = %q, want %q", snap.Integrity.Status, tc.record.Status)
+				}
+				if snap.Integrity.OK() != tc.wantOK {
+					t.Errorf("OK() = %v, want %v", snap.Integrity.OK(), tc.wantOK)
+				}
+			}
+
+			out := FormatStatus(snap)
+			for _, want := range tc.wantInText {
+				if !strings.Contains(out, want) {
+					t.Errorf("FormatStatus output missing %q:\n%s", want, out)
+				}
+			}
+			for _, bad := range tc.wantNotText {
+				if strings.Contains(out, bad) {
+					t.Errorf("FormatStatus output unexpectedly contains %q:\n%s", bad, out)
+				}
+			}
+
+			// The JSON surface (what the dashboard reads) must carry it too.
+			raw, err := json.Marshal(snap)
+			if err != nil {
+				t.Fatalf("marshal snapshot: %v", err)
+			}
+			if got := bytes.Contains(raw, []byte(`"integrity"`)); got != tc.wantPresent {
+				t.Errorf("JSON carries \"integrity\" = %v, want %v", got, tc.wantPresent)
+			}
+		})
+	}
+}

@@ -1,6 +1,8 @@
 package hermes
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -93,6 +95,46 @@ func TestBuildToolEvent_ToolCall_FailureFromExitCode(t *testing.T) {
 	}
 	if evt.ToolOutput == "" {
 		t.Error("ToolOutput empty, want stderr-like text")
+	}
+}
+
+// TestBuildToolEvent_ToolCall_ResultFallbackScrubsJSONWithoutCorruption
+// pins MHC-4 (docs/audits/codebase-audit-2026-09-16.md): when
+// parseToolResult finds neither an "output" nor a "content" key, it
+// falls back to the WHOLE raw JSON result body — which must then be
+// scrubbed with RawJSON, not String, or a secret-shaped value sitting
+// next to another field truncates/corrupts the stored JSON instead of
+// just getting redacted.
+func TestBuildToolEvent_ToolCall_ResultFallbackScrubsJSONWithoutCorruption(t *testing.T) {
+	t.Parallel()
+	const secret = "sk_live_abcdef1234567890"
+	const sibling = "echo hi"
+	// No "output"/"content" key present, so parseToolResult's fallback
+	// (output = body) fires, handing the WHOLE object to the scrubber.
+	body := []byte(`{
+		"event": "tool_call",
+		"session_id": "s1",
+		"tool_call_id": "call_x",
+		"tool_name": "terminal",
+		"args": {"command": "` + sibling + `"},
+		"result": "{\"api_key\": \"` + secret + `\", \"exit_code\": 0, \"note\": \"` + sibling + `\"}",
+		"timestamp": 1717500000
+	}`)
+	evt, ok, err := BuildToolEvent(EventToolCall, body, scrub.New())
+	if err != nil {
+		t.Fatalf("BuildToolEvent: %v", err)
+	}
+	if !ok {
+		t.Fatal("ok = false")
+	}
+	if !json.Valid([]byte(evt.ToolOutput)) {
+		t.Fatalf("ToolOutput is not valid JSON after scrubbing: %q", evt.ToolOutput)
+	}
+	if strings.Contains(evt.ToolOutput, secret) {
+		t.Errorf("secret survived scrubbing: %q", evt.ToolOutput)
+	}
+	if !strings.Contains(evt.ToolOutput, sibling) {
+		t.Errorf("sibling field lost — scrubbing truncated/corrupted the JSON: %q", evt.ToolOutput)
 	}
 }
 

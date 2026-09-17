@@ -64,6 +64,20 @@ func budgetLaunchSpendAdmission(ctx context.Context, cfg config.Config, configPa
 		})
 	}
 	source := budgetLaunchAccountingSource(ctx, st, cfg.Observer.DBPath, tool)
+	// NEITHER SessionID NOR Model IS PASSED, and neither can be (BUD-GUARD-1,
+	// docs/audits/codebase-audit-2026-09-16.md). This runs BEFORE the process
+	// starts: there is no session to name, and nothing names the model the
+	// agent is about to pick — an argv scan would be a per-tool guess about a
+	// flag the developer may not even have typed, and a cap denied on a guess
+	// is worse than a cap that honestly does not reach here.
+	//
+	// So the org's per-TOOL caps (B-626/B-627) refuse a launch, because a
+	// launch names its tool; the per-MODEL caps (B-628/B-629) do not, and bite
+	// instead on the proxy request path and on the node's running-session pass
+	// (see nodeInterventionBudget). The node-wide windows apply either way,
+	// minus the per-session one, which an absent SessionID marks unavailable
+	// rather than fabricating as zero. docs/budgets.md's
+	// subject_scope_node_enforced caveat states exactly this split.
 	decision := gd.CheckInterventionBudget(guard.InterventionBudgetInput{
 		Tool:          tool,
 		SourceReady:   source.Ready,

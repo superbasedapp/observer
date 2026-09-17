@@ -64,6 +64,13 @@ issues:
     - testdata
     - bin
     - scripts
+    # /scratchpad/ is gitignored (see .gitignore) — throwaway operator
+    # probes and one-off estate-verification programs that never reach a
+    # commit, a release artifact or CI. Linting them made `make lint`
+    # diverge from the CI gate (which checks out a tree without them) AND
+    # blew the 20m run timeout, so a genuine tree-wide finding could be
+    # truncated away behind hundreds of scratch-file gofumpt messages.
+    - scratchpad
     # Vendored npm packages can ship Go source (e.g. flatted's golang/ port
     # under vscode/node_modules); third-party code isn't ours to lint and CI
     # never installs node_modules for the Go job.

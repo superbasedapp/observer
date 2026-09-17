@@ -39,6 +39,8 @@ function NavIconSvg({ icon }: { icon: NavIcon }) {
       return <ListIcon size={13} />;
     case "actions":
       return <LightningIcon size={13} />;
+    case "projects":
+      return <LayersIcon size={13} />;
     case "security":
       return <ShieldIcon size={13} />;
     case "egress":

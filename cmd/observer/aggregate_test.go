@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // runAggregate executes `observer aggregate <args...>` against an isolated
@@ -41,7 +42,7 @@ func TestAggregateEnableSubmitDisableFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Ensure the db exists (loadConfigAndDB opens it; migrations create tables).
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +114,7 @@ func TestAggregatePreviewNoNetwork(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+dbPath+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

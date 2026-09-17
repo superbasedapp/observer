@@ -170,6 +170,37 @@ type FileCursorSemantics struct {
 	// verbatim in the dashboard's watcher-health payload. Empty is
 	// allowed; consumers fall back to a generic phrasing.
 	Detail string
+	// StreamsFromCursor declares that a parse of this file SEEKS to the
+	// persisted byte offset and STREAMS forward through a fixed-size
+	// reader — so one parse allocates on the order of the unread tail,
+	// not of the file.
+	//
+	// It is a SEPARATE capability from Kind, and deliberately so: a
+	// byte-offset cursor does NOT imply streaming. At least seven
+	// adapters persist `NewOffset = fi.Size()` while doing a whole-file
+	// os.ReadFile on every tick (kirocrew, cline, copilot's modern
+	// store, deepseek, cursor's scan, gemini, antigravity) — for those a
+	// 4 GB file with a 2 KB append has a 2 KB unread delta and a 4 GB
+	// allocation, so gating on the delta would turn the DoS guard into a
+	// no-op for exactly the files it was written for.
+	//
+	// The zero value is false = "assume whole-file read", which keeps
+	// the total-size gate every adapter had before this field existed.
+	// Set it true only with the seek verified at a file:line.
+	StreamsFromCursor bool
+}
+
+// DeltaGateMeaningful reports whether the watcher's oversize DoS guard
+// should compare the UNREAD DELTA (file size minus the persisted
+// cursor) instead of the file's total size.
+//
+// True only when the adapter declared StreamsFromCursor AND the cursor
+// is an actual byte offset — a watermark/encrypted/no-actions cursor is
+// not a byte count, so subtracting it from a size is a category error
+// (and watermark files are exempt from the guard entirely via
+// SizeGateMeaningful).
+func (s FileCursorSemantics) DeltaGateMeaningful() bool {
+	return s.StreamsFromCursor && s.Kind == CursorByteOffset
 }
 
 // CursorSemantics is an OPTIONAL interface an adapter implements when

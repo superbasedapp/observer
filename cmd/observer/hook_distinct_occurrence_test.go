@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -84,7 +85,7 @@ func TestClaudeCodeHookDistinctOccurrencesArePreserved(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ctx := context.Background()
-			database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
+			database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
 			if err != nil {
 				t.Fatalf("db.Open: %v", err)
 			}
@@ -128,7 +129,7 @@ func TestClaudeCodeHookDistinctOccurrencesArePreserved(t *testing.T) {
 // turns across real message boundaries.
 func TestUserPromptBoundariesFeedPredictor(t *testing.T) {
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

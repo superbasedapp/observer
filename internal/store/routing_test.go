@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
 func openRoutingTestStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "routing_test.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "routing_test.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

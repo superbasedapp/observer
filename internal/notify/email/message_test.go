@@ -1,6 +1,9 @@
 package email
 
 import (
+	"context"
+	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -99,7 +102,7 @@ func TestComposeHTMLEscaping(t *testing.T) {
 
 func TestRenderMultipartMIME(t *testing.T) {
 	m := Message{To: []string{"a@x.com", "b@x.com"}, Subject: "Subj", Text: "hello", HTML: "<b>hello</b>"}
-	raw := string(m.render("from@x.com", time.Unix(0, 0).UTC()))
+	raw := mustRender(t, m, "from@x.com")
 	for _, want := range []string{
 		"From: from@x.com\r\n",
 		"To: a@x.com, b@x.com\r\n",
@@ -120,18 +123,18 @@ func TestRenderMultipartMIME(t *testing.T) {
 }
 
 func TestRenderSingleParts(t *testing.T) {
-	textOnly := string(Message{To: []string{"a@x"}, Subject: "s", Text: "body"}.render("f@x", time.Unix(0, 0).UTC()))
+	textOnly := mustRender(t, Message{To: []string{"a@x"}, Subject: "s", Text: "body"}, "f@x")
 	if !strings.Contains(textOnly, "Content-Type: text/plain; charset=UTF-8") || strings.Contains(textOnly, "multipart") {
 		t.Errorf("text-only render wrong:\n%s", textOnly)
 	}
-	htmlOnly := string(Message{To: []string{"a@x"}, Subject: "s", HTML: "<b>x</b>"}.render("f@x", time.Unix(0, 0).UTC()))
+	htmlOnly := mustRender(t, Message{To: []string{"a@x"}, Subject: "s", HTML: "<b>x</b>"}, "f@x")
 	if !strings.Contains(htmlOnly, "Content-Type: text/html; charset=UTF-8") || strings.Contains(htmlOnly, "multipart") {
 		t.Errorf("html-only render wrong:\n%s", htmlOnly)
 	}
 }
 
 func TestRenderSubjectEncoding(t *testing.T) {
-	raw := string(Message{To: []string{"a@x"}, Subject: "café ☕ over budget", Text: "x"}.render("f@x", time.Unix(0, 0).UTC()))
+	raw := mustRender(t, Message{To: []string{"a@x"}, Subject: "café ☕ over budget", Text: "x"}, "f@x")
 	if strings.Contains(raw, "Subject: café") {
 		t.Fatalf("non-ASCII subject not RFC2047-encoded:\n%s", raw)
 	}
@@ -141,8 +144,101 @@ func TestRenderSubjectEncoding(t *testing.T) {
 }
 
 func TestRenderDotStuffing(t *testing.T) {
-	raw := string(Message{To: []string{"a@x"}, Subject: "s", Text: ".leading dot\nnormal"}.render("f@x", time.Unix(0, 0).UTC()))
+	raw := mustRender(t, Message{To: []string{"a@x"}, Subject: "s", Text: ".leading dot\nnormal"}, "f@x")
 	if !strings.Contains(raw, "..leading dot") {
 		t.Fatalf("leading-dot line not dot-stuffed:\n%s", raw)
+	}
+}
+
+// mustRender renders m at a fixed clock and fails the test if the headers are
+// refused, so the existing render assertions stay one-liners now that render
+// reports a refusal (writeHeader's control-character guard).
+func mustRender(t *testing.T, m Message, from string) string {
+	t.Helper()
+	b, err := m.render(from, time.Unix(0, 0).UTC())
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	return string(b)
+}
+
+// TestRenderRefusesControlCharactersInHeaders is the header-injection guard:
+// a CR, LF, NUL or TAB anywhere in a recipient or a subject must REFUSE the
+// whole message rather than emit a header line that an SMTP peer would read
+// as two. The body is not a header, so a control character there is rendered
+// (normalizeCRLF owns it) and cannot inject anything: it lands after the
+// blank line that ends the header block.
+func TestRenderRefusesControlCharactersInHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		msg     Message
+		from    string
+		wantErr bool
+	}{
+		{name: "clean", msg: Message{To: []string{"a@x"}, Subject: "s", Text: "body"}, wantErr: false},
+		{name: "CR in recipient", msg: Message{To: []string{"a@x\r"}, Subject: "s", Text: "b"}, wantErr: true},
+		{name: "LF in recipient", msg: Message{To: []string{"a@x\nBcc: evil@x"}, Subject: "s", Text: "b"}, wantErr: true},
+		{name: "CRLF in recipient", msg: Message{To: []string{"a@x\r\nBcc: evil@x"}, Subject: "s", Text: "b"}, wantErr: true},
+		{name: "NUL in recipient", msg: Message{To: []string{"a@x\x00"}, Subject: "s", Text: "b"}, wantErr: true},
+		{name: "TAB in recipient", msg: Message{To: []string{"a@x\t"}, Subject: "s", Text: "b"}, wantErr: true},
+		{name: "second recipient dirty", msg: Message{To: []string{"a@x", "b@x\r\nBcc: evil@x"}, Subject: "s", Text: "b"}, wantErr: true},
+		{name: "CR in subject", msg: Message{To: []string{"a@x"}, Subject: "s\r", Text: "b"}, wantErr: true},
+		{name: "LF in subject", msg: Message{To: []string{"a@x"}, Subject: "s\nBcc: evil@x", Text: "b"}, wantErr: true},
+		{name: "NUL in subject", msg: Message{To: []string{"a@x"}, Subject: "s\x00", Text: "b"}, wantErr: true},
+		{name: "TAB in subject", msg: Message{To: []string{"a@x"}, Subject: "s\tmore", Text: "b"}, wantErr: true},
+		{name: "DEL in subject", msg: Message{To: []string{"a@x"}, Subject: "s\x7f", Text: "b"}, wantErr: true},
+		{name: "LF in From", msg: Message{To: []string{"a@x"}, Subject: "s", Text: "b"}, from: "f@x\nBcc: evil@x", wantErr: true},
+		{name: "non-ASCII subject is fine", msg: Message{To: []string{"a@x"}, Subject: "café ☕", Text: "b"}, wantErr: false},
+		{name: "heading/body control chars render", msg: Message{To: []string{"a@x"}, Subject: "s", Text: "line\r\nBcc: evil@x\tmore"}, wantErr: false},
+		{name: "heading/body NUL renders", msg: Message{To: []string{"a@x"}, Subject: "s", HTML: "<b>x\x00</b>"}, wantErr: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			from := tc.from
+			if from == "" {
+				from = "f@x"
+			}
+			out, err := tc.msg.render(from, time.Unix(0, 0).UTC())
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("render succeeded on a header with a control character:\n%s", out)
+				}
+				if out != nil {
+					t.Error("render returned bytes alongside its refusal")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("render = %v, want success", err)
+			}
+			// The header block ends at the first blank line; nothing after it
+			// can be a header, which is why a dirty BODY is safe.
+			head, _, ok := strings.Cut(string(out), "\r\n\r\n")
+			if !ok {
+				t.Fatalf("rendered message has no header/body separator:\n%s", out)
+			}
+			if strings.Contains(head, "Bcc:") {
+				t.Errorf("an injected header reached the header block:\n%s", head)
+			}
+		})
+	}
+}
+
+// TestSenderRefusesBeforeDialing: a refused message never opens a connection,
+// so a half-trusted recipient cannot reach RCPT TO.
+func TestSenderRefusesBeforeDialing(t *testing.T) {
+	dialed := 0
+	s := &SMTPSender{
+		cfg: Config{Host: "smtp.example", From: "f@x"}.Resolve(),
+		dial: func(context.Context, string, string) (net.Conn, error) {
+			dialed++
+			return nil, errors.New("must not dial")
+		},
+	}
+	err := s.Send(context.Background(), Message{To: []string{"a@x\r\nBcc: evil@x"}, Subject: "s", Text: "b"})
+	if err == nil {
+		t.Fatal("Send accepted a recipient carrying a CRLF")
+	}
+	if dialed != 0 {
+		t.Fatalf("dials = %d, want 0 (refuse before the SMTP conversation)", dialed)
 	}
 }

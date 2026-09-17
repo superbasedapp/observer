@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/remoteauth"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -20,7 +21,7 @@ func openPersistTestDB(t *testing.T, cfgPath string) (config.Config, *sql.DB) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	database, err := db.Open(context.Background(), db.Options{Path: cfg.Observer.DBPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: cfg.Observer.DBPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

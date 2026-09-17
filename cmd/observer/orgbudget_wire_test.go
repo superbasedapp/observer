@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -46,7 +47,7 @@ func localBudget(monthlyTokens int64, fromOrg bool) config.GuardBudgetConfig {
 func TestOrgBudgetWireRefusesStaleEnrollmentOutcome(t *testing.T) {
 	t.Parallel()
 	_, dbPath := writeManagedBudgetLaunchFixture(t, false, "enforce")
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

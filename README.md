@@ -1,7 +1,7 @@
 # SuperBased
 
 > The exact tokens your AI provider billed you — cache splits,
-> reasoning tokens, long-context surcharges — reconciled across 29
+> reasoning tokens, long-context surcharges — reconciled across 40
 > coding tools, entirely on your own machine. Nothing you build here
 > ever leaves your machine unless you opt a node into it.
 

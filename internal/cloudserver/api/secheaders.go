@@ -22,6 +22,24 @@
 //     sandbox-buy.paddle.com, script host cdn.paddle.com, no CSP violation;
 //     frame-src tightened from the *.paddle.com hedge to the two documented
 //     hosts.
+//   - 2026-09-17: live-observed in PRODUCTION (cloud.superbased.app) - three
+//     blocks caused by our own policy, all from Paddle.js v2 itself rather
+//     than anything the portal directly loads: (1) Paddle.js injects its own
+//     stylesheet from https://cdn.paddle.com/paddle/v2/assets/css/paddle.css,
+//     blocked by style-src; (2) with ProfitWell Retain enabled on the Paddle
+//     account, Paddle.js loads https://public.profitwell.com/js/profitwell.js,
+//     blocked by script-src; (3) the overlay's "Contact support" affordance
+//     navigates the checkout iframe to a Paddle host other than
+//     buy.paddle.com/sandbox-buy.paddle.com, which frame-src rejected outright
+//     ("This content is blocked"). Fixes: style-src gains cdn.paddle.com;
+//     script-src gains public.profitwell.com; connect-src gains
+//     *.profitwell.com (ProfitWell's script reports back to its own API —
+//     this host is best-effort, not from a Paddle doc, since Retain's network
+//     footprint isn't itself documented); and frame-src is widened back to
+//     the *.paddle.com hedge, REVERSING the 2026-09-12 tightening above — the
+//     overlay itself needs to navigate across Paddle's own subdomains, so
+//     enumerating hosts one violation at a time is a losing game. The two
+//     explicit hosts are kept alongside the wildcard for documentation value.
 package api
 
 import (
@@ -42,11 +60,11 @@ var cspDirectives = []struct {
 	value string
 }{
 	{"default-src", "'self'"},
-	{"script-src", "'self' https://cdn.paddle.com"},
-	{"frame-src", "https://buy.paddle.com https://sandbox-buy.paddle.com"},
-	{"connect-src", "'self' https://*.paddle.com"},
+	{"script-src", "'self' https://cdn.paddle.com https://public.profitwell.com"},
+	{"frame-src", "https://buy.paddle.com https://sandbox-buy.paddle.com https://*.paddle.com"},
+	{"connect-src", "'self' https://*.paddle.com https://*.profitwell.com"},
 	{"img-src", "'self' data: https://*.paddle.com"},
-	{"style-src", "'self' 'unsafe-inline'"},
+	{"style-src", "'self' 'unsafe-inline' https://cdn.paddle.com"},
 	{"font-src", "'self' data:"},
 	{"frame-ancestors", "'none'"},
 	{"base-uri", "'self'"},

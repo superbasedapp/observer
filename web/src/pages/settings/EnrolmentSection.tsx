@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChartShell, SlideOver, StatCard, Tooltip } from "@/components/primitives";
+import { Button, ChartShell, Input, JsonPreview, SlideOver, StatCard, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { useApi } from "@/lib/useApi";
 import { fmtBytes, fmtDateTime, fmtInt } from "@/lib/format";
@@ -42,40 +42,28 @@ export function EnrolmentSection() {
       right={
         enrolled ? (
           <div className="flex items-center gap-2 text-[11px]">
-            <button
-              type="button"
-              onClick={() => setPayloadOpen(true)}
-              className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-fg-1 hover:bg-bg-3"
-            >
+            <Button size="sm" variant="secondary" onClick={() => setPayloadOpen(true)}>
               View raw push payload
-            </button>
+            </Button>
             {unenroll.state === "confirm" ? (
               <span className="flex items-center gap-1.5">
                 <span className="text-fg-2">Unenrol?</span>
-                <button
-                  type="button"
-                  onClick={doUnenroll}
-                  className="rounded-2 border border-danger/40 bg-danger-soft px-2.5 py-1 font-medium text-danger hover:bg-danger/20"
-                >
+                <Button size="sm" variant="danger" onClick={doUnenroll}>
                   Confirm
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setUnenroll({ state: "idle" })}
-                  className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-fg-2 hover:bg-bg-3"
-                >
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => setUnenroll({ state: "idle" })}>
                   Cancel
-                </button>
+                </Button>
               </span>
             ) : (
-              <button
-                type="button"
+              <Button
+                size="sm"
+                variant="danger"
                 onClick={() => setUnenroll({ state: "confirm" })}
                 disabled={unenroll.state === "working"}
-                className="rounded-2 border border-danger/40 bg-danger-soft px-3 py-1 font-medium text-danger disabled:opacity-40"
               >
                 {unenroll.state === "working" ? "Unenrolling…" : "Unenrol"}
-              </button>
+              </Button>
             )}
           </div>
         ) : null
@@ -254,13 +242,9 @@ function InviteTeammate() {
       <div className="rounded-2 border border-dashed border-line-2 bg-bg-3/40 px-4 py-3 text-[12px] text-fg-2">
         <span className="font-medium text-fg-1">Working in a team?</span> Invite a teammate
         who is already a member of this organisation - they get a one-time enrolment token.{" "}
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-1 hover:bg-bg-3"
-        >
+        <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
           Invite a teammate
-        </button>
+        </Button>
       </div>
     );
   }
@@ -269,16 +253,16 @@ function InviteTeammate() {
     <div className="rounded-2 border border-line-1 bg-bg-2 px-4 py-3 text-[12px]">
       <div className="mb-2 flex items-center justify-between">
         <div className="font-medium text-fg-1">Invite a teammate</div>
-        <button
-          type="button"
+        <Button
+          size="sm"
+          variant="ghost"
           onClick={() => {
             reset();
             setOpen(false);
           }}
-          className="rounded-2 border border-line-2 px-2 py-0.5 text-[11px] text-fg-3 hover:bg-bg-3"
         >
           Close
-        </button>
+        </Button>
       </div>
 
       {invite ? (
@@ -288,19 +272,19 @@ function InviteTeammate() {
             command - it works once and expires {fmtDateTime(invite.expires_at)}.
           </div>
           <div className="flex items-center gap-2">
-            <code className="flex-1 break-all rounded-2 border border-line-1 bg-bg-1 px-2 py-1 font-mono text-[11.5px] text-fg-1">
+            <code className="flex-1 break-all rounded-2 border border-line-1 bg-bg-3 px-2 py-1 font-mono text-[11.5px] text-fg-1">
               {invite.command}
             </code>
-            <button
-              type="button"
+            <Button
+              size="sm"
+              variant="secondary"
               onClick={() => {
                 void navigator.clipboard?.writeText(invite.command);
                 setCopied(true);
               }}
-              className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-1 hover:bg-bg-3"
             >
               {copied ? "Copied" : "Copy"}
-            </button>
+            </Button>
           </div>
           <div className="text-warn">
             Shown once. Nothing here is stored on this machine - close this panel and the token
@@ -311,13 +295,9 @@ function InviteTeammate() {
               {invite.minted_this_month} of {invite.monthly_cap} invites used this month.
             </div>
           )}
-          <button
-            type="button"
-            onClick={reset}
-            className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
-          >
+          <Button size="sm" variant="secondary" onClick={reset}>
             Invite someone else
-          </button>
+          </Button>
         </div>
       ) : (
         <form onSubmit={mint} className="space-y-2">
@@ -326,21 +306,22 @@ function InviteTeammate() {
             does not create an account.
           </div>
           <div className="flex items-center gap-2">
-            <input
+            <Input
               type="email"
               required
               value={email}
               onChange={(ev) => setEmail(ev.target.value)}
               placeholder="teammate@example.com"
-              className="flex-1 rounded-2 border border-line-2 bg-bg-1 px-2.5 py-1 text-[12px] text-fg-1"
+              className="flex-1"
             />
-            <button
+            <Button
               type="submit"
+              size="sm"
+              variant="secondary"
               disabled={state === "working" || !email.trim()}
-              className="rounded-2 border border-line-2 bg-bg-2 px-3 py-1 text-[11px] font-medium text-fg-1 disabled:opacity-40"
             >
               {state === "working" ? "Minting…" : "Mint invite"}
-            </button>
+            </Button>
           </div>
           {state === "err" && (
             <div className="rounded-2 border border-danger/40 bg-danger-soft px-3 py-2 text-[11.5px] text-danger">
@@ -396,9 +377,7 @@ function RawPayloadDrawer({ open, onClose }: { open: boolean; onClose: () => voi
             Nothing pushed yet.
           </div>
         ) : (
-          <pre className="m-0 max-h-[70vh] overflow-auto whitespace-pre-wrap break-all rounded-2 border border-line-1 bg-bg-1 px-3 py-2 font-mono text-[11.5px] text-fg-2">
-            {text}
-          </pre>
+          <JsonPreview value={text} maxHeight={560} />
         )}
       </div>
     </SlideOver>

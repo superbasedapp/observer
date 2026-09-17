@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // seedPredictCorpus writes a temp DB with one cached claude-code session
@@ -21,7 +22,7 @@ func seedPredictCorpus(t *testing.T) string {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "o.db")
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

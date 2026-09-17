@@ -12,6 +12,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/benchmark"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -30,7 +31,7 @@ func benchTempConfig(t *testing.T) (cfgPath, dbPath string) {
 func seedCLIRun(t *testing.T, dbPath string) string {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestBenchmarkCLIListReportExportDelete(t *testing.T) {
 func TestBenchmarkCLIDryRun(t *testing.T) {
 	cfg, dbPath := benchTempConfig(t)
 	// migrate the DB so loadConfigAndDB opens a real schema.
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

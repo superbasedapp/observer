@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -101,6 +102,47 @@ func nodeInterventionCaptureUsable(capturedAt, now time.Time) bool {
 	return age >= 0 && age <= nodeInterventionCaptureMaxAge
 }
 
+// nodeInterventionSessionIDLookupTimeout bounds the per-workload
+// session_pid_bridge read below a busy reconcile cycle's own deadlines; it
+// is a single indexed lookup by primary key, so this is a generous ceiling,
+// not an expected duration.
+const nodeInterventionSessionIDLookupTimeout = 2 * time.Second
+
+// nodeInterventionWorkloadSessionID resolves the real session a matched
+// process belongs to, so process-control audit rows and any session-scoped
+// managed budget cap (internal/guard/interventionbudget.go's SessionID
+// attribution path) can be joined back to the session that was stopped
+// (P1-7). It reuses the SAME direct pid->session bridge
+// (internal/store.LookupSessionPID over session_pid_bridge, migration 004,
+// pid-reuse-fenced per P2-2) the SessionStart hook and the
+// SessionProcessSeeds watcher-path ingest already populate for exactly this
+// purpose — never a fabricated or best-guess id. A pid with no bridge row
+// (an adapter that doesn't seed the bridge, a session that predates it, or
+// a reused pid the fence refused) yields "" SILENTLY — that is the same
+// honest "no session known" the rest of this path already treats as
+// absent, never as a fabricated empty-session zero, and it is the
+// overwhelmingly common case on an unmanaged/unbridged tool, so it is not
+// warn-worthy. An actual lookup ERROR (a broken store, a bad query) is
+// different — that is unexpected and worth a node operator's attention —
+// so it is logged at WARN (still returning "": a broken session lookup
+// must never fail process control itself).
+func nodeInterventionWorkloadSessionID(ctx context.Context, st *store.Store, pid int, tool string) string {
+	if st == nil || pid <= 0 || tool == "" {
+		return ""
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, nodeInterventionSessionIDLookupTimeout)
+	defer cancel()
+	sessionID, ok, err := st.LookupSessionPID(lookupCtx, pid, tool)
+	if err != nil {
+		slog.Warn("node intervention: session_pid_bridge lookup failed", "tool", tool)
+		return ""
+	}
+	if !ok {
+		return ""
+	}
+	return sessionID
+}
+
 // reconcileNodeIntervention is the daemon's native-control cycle. The manifest
 // is explicit so tests can use isolated executables and never discover or
 // signal actual developer tools. The production caller supplies only the
@@ -128,7 +170,8 @@ func reconcileNodeIntervention(ctx context.Context, st *store.Store, cfg config.
 	// per-tool fold exists because the status report is keyed by tool.
 	nativeByTool := make(map[string]bool, len(scan.Matches))
 	for _, match := range scan.Matches {
-		workloads = append(workloads, intervention.Workload{SurfaceID: match.SurfaceID, Identity: match.Identity})
+		sessionID := nodeInterventionWorkloadSessionID(ctx, st, match.Identity.PID, match.Tool)
+		workloads = append(workloads, intervention.Workload{SurfaceID: match.SurfaceID, SessionID: sessionID, Identity: match.Identity})
 		toolsBySurface[match.SurfaceID] = match.Tool
 		toolSet[match.Tool] = true
 		nativeByTool[match.Tool] = nativeByTool[match.Tool] || usageBySurface[match.SurfaceID]

@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/processobs"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -36,7 +37,7 @@ func sweepUnattributedRun(key, parent, basename, cwd string, pid int, started ti
 func sweepTestStore(t *testing.T) (*store.Store, *sql.DB) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "sweep.db")
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

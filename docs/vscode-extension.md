@@ -157,7 +157,8 @@ Open the command palette (`Ctrl+Shift+P` / `⌘⇧P`) and search for
 | Setting | Default | Purpose |
 |---|---|---|
 | `observer.daemon.mode` | `detect` | `detect` attaches only; `managed` spawns + kills with the editor; `auto` attaches if a daemon is running, otherwise spawns. |
-| `observer.binary.path` | empty | Absolute path to override binary auto-detection. |
+| `observer.binary.path` | empty | Absolute path to override binary auto-detection. **Machine-scoped and restricted in untrusted workspaces** — see "Workspace trust" below. |
+| `observer.binary.preferPathBinary` | `false` | Scan `$PATH` before the bundled binary. **Machine-scoped and restricted in untrusted workspaces**, same reason as `observer.binary.path`. |
 | `observer.dashboard.port` | `8081` | Where the dashboard listens. |
 | `observer.proxy.port` | `8820` | Where the API proxy listens. |
 | `observer.statusBar.enabled` | `true` | Today-spend status bar item. |
@@ -225,6 +226,28 @@ living in the extension's own global-storage cache) is not something the
 node updater will ever touch - the install-method table marks it
 no-self-apply and the node reports `blocked{install_method:vscode}` if it
 somehow tried.
+
+### Workspace trust
+
+`observer.binary.path` and `observer.binary.preferPathBinary` name (or
+change how the extension searches for) the executable this extension
+resolves and spawns as the long-running daemon. Without a guard, a
+cloned repo's checked-in `.vscode/settings.json` could set
+`observer.binary.path` to an arbitrary path and have the extension
+launch it the moment you opened the folder. Both settings are declared
+`"scope": "machine"` (VS Code will not apply a workspace/folder-level
+value for them at all) and are additionally listed in
+`capabilities.untrustedWorkspaces.restrictedConfigurations`, so they are
+ignored from workspace configuration until you grant trust. On top of
+that, `activate()` itself checks `vscode.workspace.isTrusted`: in an
+untrusted workspace the extension does not resolve or spawn the observer
+binary, attach to a running daemon, or wire up any commands/status
+bars/tree views at all — it logs to the Output channel, shows a
+one-time warning notification explaining why, and resumes full
+activation automatically the moment you grant trust (no reload
+needed). Every other setting (ports, status bar toggles, the LOC
+reporting opt-in) stays workspace-scoped, since none of them choose an
+executable or read a secret off disk.
 
 ## Local-first guarantees
 

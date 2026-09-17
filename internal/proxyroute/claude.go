@@ -32,7 +32,7 @@ func claudeBaseURL(port int) string {
 // Preserves every other top-level key in settings.json (hooks,
 // mcpServers, permissions, etc.) and every other key in the env map.
 //
-// Added v1.8.2 to close N4 in docs/teams-test-regression-2026-06-03.md:
+// Added v1.8.2 to close N4 in docs/audits/teams-test-regression-2026-06-03.md:
 // the prior `observer enroll` flow PRINTED the env-var hint but never
 // applied it, so accurate api_turns capture required manual operator
 // action despite the claim of "auto-wire proxy routing".
@@ -137,7 +137,7 @@ func (r *Registrar) registerClaudeCodeAt(dir, want, toolLabel string) Registrati
 // the host keeps routing through the (now-stopped) observer proxy
 // after the operator unenrolls, breaking sessions until they edit
 // settings.json by hand. N4 caveat in
-// docs/teams-test-regression-v1.8.2-2026-06-04.md.
+// docs/audits/teams-test-regression-v1.8.2-2026-06-04.md.
 //
 // The DryRun field's semantics differ here vs RegisterClaudeCode:
 // Added=true means "would remove"; AlreadySet=true means "found

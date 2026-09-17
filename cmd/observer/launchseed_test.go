@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/pidbridge"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -18,7 +19,7 @@ import (
 func newLaunchSeedTestDB(t *testing.T) (path string, database *sql.DB, st *store.Store, bridge *pidbridge.Store) {
 	t.Helper()
 	path = filepath.Join(t.TempDir(), "launchseed.db")
-	database, err := db.Open(context.Background(), db.Options{Path: path})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -51,7 +52,7 @@ func TestRecordLaunchSeed_PersistsPastChildExit(t *testing.T) {
 
 	recordLaunchSeed(path, "opencode", "/proj", 555, nil)
 
-	database, err := db.Open(context.Background(), db.Options{Path: path})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestRecordLaunchSeed_DisabledOnEmptyPathOrPID(t *testing.T) {
 	recordLaunchSeed("", "opencode", "/proj", 1, nil) // must not panic / no-op
 	path, _, _, _ := newLaunchSeedTestDB(t)
 	recordLaunchSeed(path, "opencode", "/proj", 0, nil)
-	database, err := db.Open(context.Background(), db.Options{Path: path})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

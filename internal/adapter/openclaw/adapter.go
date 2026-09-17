@@ -741,14 +741,14 @@ func (a *Adapter) parseTrajectoryJSONL(ctx context.Context, path string, fromOff
 	}
 	aliasCache := map[string]string{}
 	// Lazily-loaded set of message-log calls that already have a
-	// TokenEvent (see messageLogUsageTimestamps). Loaded at most once,
+	// TokenEvent (see messageLogUsageCalls). Loaded at most once,
 	// and only if a usage-bearing model.completed actually shows up.
-	var covered map[int64]bool
+	var covered messageLogCoverage
 	coveredLoaded := false
-	coveredCalls := func() map[int64]bool {
+	coveredCalls := func() messageLogCoverage {
 		if !coveredLoaded {
 			coveredLoaded = true
-			covered = messageLogUsageTimestamps(filepath.Join(filepath.Dir(path), fallbackSession+".jsonl"))
+			covered = messageLogUsageCalls(filepath.Join(filepath.Dir(path), fallbackSession+".jsonl"))
 		}
 		return covered
 	}
@@ -794,7 +794,7 @@ func (a *Adapter) parseTrajectoryJSONL(ctx context.Context, path string, fromOff
 		// the sibling file from DISK, so it does not depend on which of
 		// the two files the watcher happens to parse first.
 		callTS := trajectoryCallTimestamp(line)
-		if callTS > 0 && coveredCalls()[callTS] {
+		if callTS > 0 && coveredCalls().covers(callTS, u) {
 			continue
 		}
 		sessionID := trajectorySessionID(path, line, state, fallbackSession, aliasCache)
@@ -867,18 +867,75 @@ func trajectoryCallTimestamp(line trajLine) int64 {
 	return line.Data.PromptCache.LastCacheTouchAt
 }
 
-// messageLogUsageTimestamps scans a sibling `<id>.jsonl` message log and
-// returns the message.timestamp of every assistant message that carries
-// usage — i.e. exactly the set of calls parseSessionJSONL emits a TokenEvent
-// for. A missing/unreadable/rotated log yields nil, which suppresses nothing.
-func messageLogUsageTimestamps(msgLogPath string) map[int64]bool {
+// messageLogCall is the exact-usage join key used ONLY to disambiguate
+// two message-log calls that share one epoch-ms timestamp.
+//
+// The model id is deliberately NOT part of it: the two files spell it
+// differently in places (OpenRouter `:suffix` tails).
+type messageLogCall struct {
+	TS         int64
+	Input      int64
+	Output     int64
+	CacheRead  int64
+	CacheWrite int64
+}
+
+// callKeyFor builds the exact-usage key for one usage record at ts.
+func callKeyFor(ts int64, u tokenUsage) messageLogCall {
+	return messageLogCall{
+		TS:         ts,
+		Input:      u.Input,
+		Output:     u.Output,
+		CacheRead:  u.CacheRead,
+		CacheWrite: u.CacheWrite,
+	}
+}
+
+// messageLogCoverage answers "does the message log already emit a
+// TokenEvent for this call?".
+//
+// The TIMESTAMP is the key. The usage counts are a TIEBREAK, consulted
+// only when the same epoch-ms carries more than one message-log call
+// (parallel sub-agent runs, a retried call) and the join is therefore
+// genuinely ambiguous. Making usage part of the primary key instead
+// would trade a rare false-suppression for a SYSTEMATIC duplicate token
+// row the day the two files disagree on one count — and a duplicate is
+// the failure this suppression exists to prevent.
+type messageLogCoverage struct {
+	countByTS map[int64]int
+	exact     map[messageLogCall]bool
+}
+
+// covers reports whether the message log already emitted a row for the
+// call at ts with usage u. An unambiguous ts (exactly one message-log
+// call) suppresses on the timestamp alone.
+func (c messageLogCoverage) covers(ts int64, u tokenUsage) bool {
+	switch c.countByTS[ts] {
+	case 0:
+		return false
+	case 1:
+		return true
+	default:
+		return c.exact[callKeyFor(ts, u)]
+	}
+}
+
+// messageLogUsageCalls scans a sibling `<id>.jsonl` message log and
+// returns the coverage of every assistant message that carries usage —
+// i.e. exactly the set of calls parseSessionJSONL emits a TokenEvent
+// for. A missing/unreadable/rotated log yields the zero value, which
+// suppresses nothing.
+func messageLogUsageCalls(msgLogPath string) messageLogCoverage {
 	f, err := os.Open(msgLogPath)
 	if err != nil {
-		return nil
+		return messageLogCoverage{}
 	}
 	defer f.Close()
 
-	covered := map[int64]bool{}
+	covered := messageLogCoverage{
+		countByTS: map[int64]int{},
+		exact:     map[messageLogCall]bool{},
+	}
 	scanner := bufio.NewScanner(f)
 	const maxLine = 16 * 1024 * 1024
 	scanner.Buffer(make([]byte, 64*1024), maxLine)
@@ -895,7 +952,8 @@ func messageLogUsageTimestamps(msgLogPath string) map[int64]bool {
 			continue
 		}
 		if line.Message.Timestamp > 0 && hasUsage(line.Message.Usage) {
-			covered[line.Message.Timestamp] = true
+			covered.countByTS[line.Message.Timestamp]++
+			covered.exact[callKeyFor(line.Message.Timestamp, line.Message.Usage)] = true
 		}
 	}
 	return covered

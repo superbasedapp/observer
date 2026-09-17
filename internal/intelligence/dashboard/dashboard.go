@@ -814,6 +814,7 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 		secLive        = SectionLive
 		secSessions    = SectionSessions
 		secActions     = SectionActions
+		secProjects    = SectionProjects
 		secSecurity    = SectionSecurity
 		secSearch      = SectionSearch
 		secCost        = SectionCost
@@ -1137,6 +1138,18 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/benchmarks", V, secBenchmarks, s.handleBenchmarks)
 	reg("/api/benchmarks/", V, secBenchmarks, s.handleBenchmarkDetail)
 	reg("/api/projects", V, secNone, s.handleProjects)
+	// Agent-guidance inventory (internal/guidance). The inventory + roll-up
+	// are metadata reads over already-persisted rows, classed like
+	// /api/projects itself. The /file endpoint returns a project file's
+	// SCRUBBED body, so it carries the terminal project-panel's class —
+	// View-tier, secTerminals, with the same in-handler
+	// [remote].allow_terminal_view gate.
+	// The guidance inventory + summary are the Projects PAGE's own reads
+	// (web/src/pages/Projects.tsx); /api/projects itself stays secNone because
+	// the project picker is shared by the terminal launcher and others.
+	reg("/api/projects/guidance", V, secProjects, s.handleProjectGuidance)
+	reg("/api/projects/guidance/summary", V, secProjects, s.handleProjectGuidanceSummary)
+	reg("/api/projects/guidance/file", V, secTerminals, s.handleProjectGuidanceFile)
 	reg("/api/export.xlsx", V, secNone, s.handleExportXLSX)
 	reg("/api/analysis/headline", V, secAnalysis, s.handleAnalysisHeadline)
 	reg("/api/statusline", V, secNone, s.handleStatuslineTile)

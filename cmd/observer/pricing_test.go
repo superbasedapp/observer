@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/pricingfeed"
@@ -93,7 +94,7 @@ func signedFeed(t *testing.T, priv ed25519.PrivateKey, feedVersion int64, inputR
 func feedTestStore(t *testing.T) (*store.Store, *sql.DB) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "observer.db")
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

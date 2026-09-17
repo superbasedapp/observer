@@ -14,6 +14,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // TestBuildProxy_DefaultConfigWiresCacheEngine is the
@@ -137,7 +138,7 @@ prewarm_targets = []
 	resp.Body.Close()
 
 	// Open the SAME DB and poll for rows.
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("re-open db: %v", err)
 	}
@@ -224,7 +225,7 @@ enabled = false
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

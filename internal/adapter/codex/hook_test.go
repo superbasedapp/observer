@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -106,6 +107,31 @@ func TestBuildHookEvent_PermissionRequest(t *testing.T) {
 	}
 	if !strings.Contains(ev.RawToolInput, "command") {
 		t.Errorf("RawToolInput=%q (want JSON-stringified input)", ev.RawToolInput)
+	}
+}
+
+// TestBuildHookEvent_PermissionRequest_ScrubsJSONWithoutCorruption pins
+// MHC-4 (docs/audits/codebase-audit-2026-09-16.md): tool_input scrubbing
+// must go through scrubJSON (scrub.Scrubber.RawJSON), not scrubText
+// (scrub.Scrubber.String) — String's line-oriented secret patterns are
+// greedy across compact JSON's lack of whitespace and can truncate the
+// structure instead of just redacting the matched value.
+func TestBuildHookEvent_PermissionRequest_ScrubsJSONWithoutCorruption(t *testing.T) {
+	const secret = "sk_live_abcdef1234567890"
+	const sibling = "echo hi"
+	body := []byte(`{"session_id":"019e0c21","cwd":"/tmp","hook_event_name":"PermissionRequest","model":"gpt-5.5","tool_name":"Bash","tool_input":{"api_key":"` + secret + `","command":"` + sibling + `"}}`)
+	ev, ok, err := BuildHookEvent("PermissionRequest", body, scrub.New())
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if !json.Valid([]byte(ev.RawToolInput)) {
+		t.Fatalf("RawToolInput is not valid JSON after scrubbing: %q", ev.RawToolInput)
+	}
+	if strings.Contains(ev.RawToolInput, secret) {
+		t.Errorf("secret survived scrubbing: %q", ev.RawToolInput)
+	}
+	if !strings.Contains(ev.RawToolInput, sibling) {
+		t.Errorf("sibling field lost — scrubbing truncated/corrupted the JSON: %q", ev.RawToolInput)
 	}
 }
 

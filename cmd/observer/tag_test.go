@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -38,7 +39,7 @@ func newTagCLIFixtureIDs(t *testing.T, sessionIDs ...string) string {
 	}
 
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +570,7 @@ func TestTagsRollupChunksPastBindLimit(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: tagFixtureDBPath(cfg)})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: tagFixtureDBPath(cfg)})
 	if err != nil {
 		t.Fatal(err)
 	}

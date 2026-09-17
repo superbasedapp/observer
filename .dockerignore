@@ -22,6 +22,13 @@ sdk
 npm
 pypi
 docs
+# docs/embed.go embeds the eight deployment runbooks into observer-org
+# (`observer-org deploy export`); the root-level markdown must stay in the
+# context or the go:embed pattern fails the image build. Only docs/*.md is
+# re-included (180 files / 5.6 MB) plus the embed declaration itself;
+# docs/ subdirectories stay excluded.
+!docs/*.md
+!docs/embed.go
 browser-extension
 observer
 observer.exe

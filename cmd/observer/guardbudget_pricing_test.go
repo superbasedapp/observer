@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/intervention"
@@ -45,7 +46,7 @@ func TestGuardBudgetAccountingCarriesDurablePricingWitness(t *testing.T) {
 	ctx := context.Background()
 	_, dbPath := writeManagedBudgetLaunchFixture(t, false, "enforce")
 	t.Setenv("HOME", t.TempDir())
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

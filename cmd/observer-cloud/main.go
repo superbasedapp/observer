@@ -702,6 +702,26 @@ func newServeCmd() *cobra.Command {
 			defer s.Pool().Close()
 			log.Info("observer-cloud: serve store bound to application role", "app_role", s.Role())
 
+			// Readiness signal, not a gate: a feature whose only active route
+			// is plan_pinned has no eligible ResolveRoute default left (the
+			// adversarial-review follow-up to the migration-0039
+			// plan_pinned exclusion — see store.classifyFeatureCoverage).
+			// ERROR-logged and nothing more: the Sol activation runbook
+			// deliberately passes through a window where this is
+			// momentarily true, so refusing to start here would make that
+			// runbook impossible to follow. GET /healthz's
+			// "route_default_missing" field carries the same signal for
+			// external monitoring.
+			if coverage, covErr := s.FeatureDefaultCoverage(ctx); covErr != nil {
+				log.Warn("observer-cloud: startup route-coverage check failed", "err", covErr)
+			} else {
+				for _, c := range coverage {
+					if !c.HasDefault {
+						log.Error("observer-cloud: feature has no eligible default route (every route is plan_pinned or inactive) — ResolveRoute will 503 for accounts not pinned to one", "feature", c.Feature)
+					}
+				}
+			}
+
 			// W9 + the 2026-09-12 production-live arc (gaps 1.1/1.5/1.8/1.11):
 			// parse the Paddle price catalogue and confirm every configured
 			// plan actually exists before wiring it — a typo in

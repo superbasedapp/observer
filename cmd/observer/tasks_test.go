@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/taskreport"
 )
@@ -24,7 +25,7 @@ func seedTasksCorpus(t *testing.T) string {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "o.db")
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

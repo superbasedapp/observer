@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	notifydigest "github.com/marmutapp/superbased-observer/internal/notify/digest"
 )
@@ -25,7 +26,7 @@ var reportPrivateStrings = []string{
 func seedReportDB(t *testing.T) string {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "node.db")
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
@@ -208,6 +210,179 @@ func TestResolveRouteForPlanRefusesAnotherFeaturesRoute(t *testing.T) {
 	if got.RouteID != def.RouteID || fb.Reason != store.PlanRouteFeatureMismatch {
 		t.Fatalf("foreign-feature pin served %q reason %q, want %q / %q",
 			got.RouteID, fb.Reason, def.RouteID, store.PlanRouteFeatureMismatch)
+	}
+}
+
+// insertTestRoute seeds a minimal route_registry row against a synthetic
+// feature (never "session_enrichment") so these cases are self-contained and
+// don't interact with the real luna/sol rows the migrations seed.
+func insertTestRoute(t *testing.T, pool *pgxpool.Pool, feature, routeID string, version int64, active, planPinned bool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO route_registry (route_id, feature, deployment, route_version, active, plan_pinned)
+		 VALUES ($1, $2, 'test-deployment', $3, $4, $5)`,
+		routeID, feature, version, active, planPinned); err != nil {
+		t.Fatalf("insertTestRoute(%s): %v", routeID, err)
+	}
+}
+
+// TestResolveRouteScenarios is the table-driven ordering-trap suite (the
+// kickoff doc's §3 "handle that when flipping it on"): the four shapes the
+// feature-default resolver must get right once a second active
+// session_enrichment route exists at the same route_version as the default.
+// Each case gets its own fresh database (a fresh newStore call) so a
+// synthetic feature name is unnecessary for isolation between cases, but is
+// used anyway to keep every case readable without cross-referencing the
+// migration-seeded rows.
+func TestResolveRouteScenarios(t *testing.T) {
+	const feature = "test_feature_route_scenarios"
+
+	tests := []struct {
+		name   string
+		seed   func(t *testing.T, pool *pgxpool.Pool)
+		wantID string
+	}{
+		{
+			name: "one active route resolves trivially",
+			seed: func(t *testing.T, pool *pgxpool.Pool) {
+				insertTestRoute(t, pool, feature, "route.solo", 1, true, false)
+			},
+			wantID: "route.solo",
+		},
+		{
+			name: "two active same version, one plan-pinned - pinned is never the default",
+			seed: func(t *testing.T, pool *pgxpool.Pool) {
+				insertTestRoute(t, pool, feature, "route.default", 1, true, false)
+				insertTestRoute(t, pool, feature, "route.pinned", 1, true, true)
+			},
+			wantID: "route.default",
+		},
+		{
+			name: "two active same version, neither pinned - deterministic tiebreak",
+			seed: func(t *testing.T, pool *pgxpool.Pool) {
+				insertTestRoute(t, pool, feature, "route.zzz", 1, true, false)
+				insertTestRoute(t, pool, feature, "route.aaa", 1, true, false)
+			},
+			wantID: "route.aaa", // lexically lowest route_id wins the tie
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, pool := newStore(t)
+			tt.seed(t, pool)
+			got, err := s.ResolveRoute(context.Background(), feature)
+			if err != nil {
+				t.Fatalf("ResolveRoute: %v", err)
+			}
+			if got.RouteID != tt.wantID {
+				t.Fatalf("ResolveRoute(%s) = %q, want %q", feature, got.RouteID, tt.wantID)
+			}
+		})
+	}
+}
+
+// TestResolveRouteForPlanScenarioPinnedRouteInactive is the fourth
+// table-driven scenario, kept separate because it exercises
+// ResolveRouteForPlan (the per-account degrade path), not ResolveRoute (the
+// feature-default pick): a plan pinned to a route that is active=false must
+// still resolve the feature's live default, with the fallback signalled.
+func TestResolveRouteForPlanScenarioPinnedRouteInactive(t *testing.T) {
+	const feature = "test_feature_route_scenarios_pinned"
+	s, pool := newStore(t)
+	insertTestRoute(t, pool, feature, "route.default", 1, true, false)
+	insertTestRoute(t, pool, feature, "route.pinned", 1, false /* inactive */, true)
+
+	got, fb, err := s.ResolveRouteForPlan(context.Background(), feature, "route.pinned")
+	if err != nil {
+		t.Fatalf("ResolveRouteForPlan: %v", err)
+	}
+	if got.RouteID != "route.default" {
+		t.Fatalf("ResolveRouteForPlan(inactive pin) = %q, want the feature default %q", got.RouteID, "route.default")
+	}
+	if !fb.Fell() || fb.RouteID != "route.pinned" || fb.Reason != store.PlanRouteInactive {
+		t.Fatalf("fallback signal = %+v, want {route.pinned, %s}", fb, store.PlanRouteInactive)
+	}
+}
+
+// featureCoverageFor is a small lookup helper over FeatureDefaultCoverage's
+// result slice, since tests only ever care about one feature at a time out of
+// however many route_registry happens to carry.
+func featureCoverageFor(t *testing.T, coverage []store.FeatureCoverage, feature string) store.FeatureCoverage {
+	t.Helper()
+	for _, c := range coverage {
+		if c.Feature == feature {
+			return c
+		}
+	}
+	t.Fatalf("FeatureDefaultCoverage did not report feature %q at all (coverage=%+v)", feature, coverage)
+	return store.FeatureCoverage{}
+}
+
+// TestFeatureDefaultCoverage is the PG-backed half of the adversarial-review
+// follow-up: excluding plan_pinned routes from ResolveRoute's candidate set
+// can leave a feature with NO eligible default if the only active route left
+// is plan_pinned. FeatureDefaultCoverage is the readiness signal that catches
+// it - proven here against a real database, not just the pure classifier.
+func TestFeatureDefaultCoverage(t *testing.T) {
+	s, pool := newStore(t)
+	ctx := context.Background()
+
+	// 1) As shipped: the real session_enrichment feature has ONE active
+	// non-pinned route (Luna) plus the inactive plan-pinned Sol row - covered.
+	coverage, err := s.FeatureDefaultCoverage(ctx)
+	if err != nil {
+		t.Fatalf("FeatureDefaultCoverage: %v", err)
+	}
+	if got := featureCoverageFor(t, coverage, store.FeatureSessionEnrichment); !got.HasDefault {
+		t.Fatalf("session_enrichment coverage = %+v, want HasDefault=true (Luna is active + unpinned)", got)
+	}
+
+	// 2) A synthetic feature whose ONLY route is a normal active, unpinned one
+	// - covered.
+	const featureOK = "test_feature_coverage_ok"
+	insertTestRoute(t, pool, featureOK, "route.ok", 1, true, false)
+	coverage, err = s.FeatureDefaultCoverage(ctx)
+	if err != nil {
+		t.Fatalf("FeatureDefaultCoverage: %v", err)
+	}
+	if got := featureCoverageFor(t, coverage, featureOK); !got.HasDefault {
+		t.Fatalf("%s coverage = %+v, want HasDefault=true", featureOK, got)
+	}
+
+	// 3) The outage the review flagged: a feature whose ONLY route is active
+	// but plan_pinned - ResolveRoute has nothing left to resolve to, and
+	// FeatureDefaultCoverage must say so.
+	const featureOutage = "test_feature_coverage_outage"
+	insertTestRoute(t, pool, featureOutage, "route.pinned_only", 1, true, true)
+	coverage, err = s.FeatureDefaultCoverage(ctx)
+	if err != nil {
+		t.Fatalf("FeatureDefaultCoverage: %v", err)
+	}
+	if got := featureCoverageFor(t, coverage, featureOutage); got.HasDefault {
+		t.Fatalf("%s coverage = %+v, want HasDefault=false (the only route is plan_pinned)", featureOutage, got)
+	}
+	if _, err := s.ResolveRoute(ctx, featureOutage); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ResolveRoute(%s) = %v, want ErrNotFound (confirms the coverage signal matches reality)", featureOutage, err)
+	}
+
+	// 4) The SAME outage reached by deactivating the real default: turn off
+	// Luna (leaving only the inactive, plan-pinned Sol row for
+	// session_enrichment) and confirm coverage flips to false and ResolveRoute
+	// itself now fails - this is the exact single-activation outage mode an
+	// operator could cause mid-migration.
+	if err := s.SetRouteActive(ctx, "session_enrichment.luna.v1", false); err != nil {
+		t.Fatalf("SetRouteActive(luna, false): %v", err)
+	}
+	coverage, err = s.FeatureDefaultCoverage(ctx)
+	if err != nil {
+		t.Fatalf("FeatureDefaultCoverage: %v", err)
+	}
+	if got := featureCoverageFor(t, coverage, store.FeatureSessionEnrichment); got.HasDefault {
+		t.Fatalf("session_enrichment coverage after deactivating Luna = %+v, want HasDefault=false", got)
+	}
+	if _, err := s.ResolveRoute(ctx, store.FeatureSessionEnrichment); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ResolveRoute(session_enrichment) after deactivating Luna = %v, want ErrNotFound", err)
 	}
 }
 

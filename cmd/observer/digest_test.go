@@ -12,6 +12,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	notifydigest "github.com/marmutapp/superbased-observer/internal/notify/digest"
 	"github.com/marmutapp/superbased-observer/internal/notify/email"
 )
@@ -23,7 +24,7 @@ var nodeFixedNow = time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 func seedDigestDB(t *testing.T) string {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "node.db")
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +51,7 @@ func seedDigestDB(t *testing.T) string {
 
 func openDigestDB(t *testing.T, dbPath string) *sql.DB {
 	t.Helper()
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

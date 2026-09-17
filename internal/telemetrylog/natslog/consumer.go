@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -17,26 +18,58 @@ import (
 // reattaches and unacked records are redelivered.
 type natsConsumer struct {
 	cons            jetstream.Consumer
+	name            string
 	streamName      string
 	streamCreated   time.Time
 	consumerCreated time.Time
 	orderGeneration string
 	maxAckPending   int
+
+	mu     sync.Mutex
+	closed bool
 }
 
 // Fetch blocks up to wait for at least one record and returns at most max.
 // wait <= 0 uses a non-blocking single request. An empty slice with a nil
 // error means nothing was available within wait.
 func (c *natsConsumer) Fetch(ctx context.Context, max int, wait time.Duration) ([]telemetrylog.Delivered, error) {
+	if c.isClosed() {
+		return nil, fmt.Errorf("natslog.Fetch: %w", telemetrylog.ErrClosed)
+	}
 	// A same-name durable recreated under this live handle must not inherit
 	// the previous stream's ordering provenance. Also fail closed if another
 	// subscriber relaxed the global credit promised by this handle.
 	info, err := c.cons.Info(ctx)
 	if err != nil {
+		// A DELETED durable is a reattach case, not a transport fault: the
+		// connection is healthy and every future Fetch on this handle fails the
+		// same way, so it must carry the sentinel or the runner backs off forever
+		// (the incident's failure mode, one step earlier in the same path).
+		if isConsumerGone(err) {
+			return nil, fmt.Errorf("natslog.Fetch: durable %q no longer exists: %w",
+				c.name, telemetrylog.ErrReattachRequired)
+		}
+		if isStreamGone(err) {
+			// The STREAM took the durable with it — the shape a broker whose
+			// store does not survive a restart actually takes (the estate's
+			// sidecar runs on emptyDir, R=1). It is reported as the same typed
+			// reattach demand, deliberately: the re-Subscribe that answers it
+			// is refused with ErrReconnectRequired, which is what escalates to
+			// the Log's Reconnector capability. Leaving it untyped is what left
+			// every consumer backing off forever on a plain fetch error while
+			// the backlog grew.
+			return nil, fmt.Errorf("natslog.Fetch: stream %q no longer exists (durable %q went with it): %w",
+				c.streamName, c.name, telemetrylog.ErrReattachRequired)
+		}
 		return nil, fmt.Errorf("natslog.Fetch: durable identity: %w", mapTransportErr(err))
 	}
-	if info.Stream != c.streamName || !info.Created.Equal(c.consumerCreated) || (c.maxAckPending > 0 && info.Config.MaxAckPending != c.maxAckPending) {
-		return nil, fmt.Errorf("natslog.Fetch: durable identity or global credit changed; reattach required")
+	if why := c.identityDrift(info); why != "" {
+		// Typed, not prose: the caller must Close this handle and Subscribe by
+		// the same durable Name. errors.Is is the only supported branch; why is
+		// diagnostic only (the incident's single collapsed message could not say
+		// WHICH of the three conditions had tripped).
+		return nil, fmt.Errorf("natslog.Fetch: durable identity or global credit changed (%s): %w",
+			why, telemetrylog.ErrReattachRequired)
 	}
 	if max <= 0 {
 		max = 1
@@ -67,6 +100,25 @@ func (c *natsConsumer) Fetch(ctx context.Context, max int, wait time.Duration) (
 		return nil, err
 	}
 	return append(out, rest...), nil
+}
+
+// identityDrift reports, for the operator's log line, WHICH fact about the live
+// durable no longer matches what this handle attached to — empty when the handle
+// is still valid. A same-name durable that was re-created (a broker restart
+// racing JetStream's store recovery) shows up as a changed created stamp.
+func (c *natsConsumer) identityDrift(info *jetstream.ConsumerInfo) string {
+	switch {
+	case info == nil:
+		return "no consumer info"
+	case info.Stream != c.streamName:
+		return fmt.Sprintf("stream %q != %q", info.Stream, c.streamName)
+	case !info.Created.Equal(c.consumerCreated):
+		return fmt.Sprintf("durable re-created at %s (attached to %s)",
+			info.Created.UTC().Format(time.RFC3339Nano), c.consumerCreated.UTC().Format(time.RFC3339Nano))
+	case c.maxAckPending > 0 && info.Config.MaxAckPending != c.maxAckPending:
+		return fmt.Sprintf("max_ack_pending %d != %d", info.Config.MaxAckPending, c.maxAckPending)
+	}
+	return ""
 }
 
 // pull issues one blocking pull request for up to n records.
@@ -103,8 +155,32 @@ func (c *natsConsumer) drainBatch(batch jetstream.MessageBatch) ([]telemetrylog.
 	return out, nil
 }
 
-// Close releases the pull handle. The durable cursor is untouched.
-func (c *natsConsumer) Close() error { return nil }
+// Close retires this handle. The durable cursor is untouched, so a Subscribe by
+// the same ConsumerSpec.Name reattaches and every unacked record redelivers.
+//
+// There is deliberately NO broker-side teardown here, and that is an honest
+// nothing rather than an omission: with the pull API this adapter uses, every
+// Fetch issues its own short-lived pull request that drainBatch consumes to
+// completion, so between Fetches the handle owns no subscription, no goroutine
+// and no server-side interest — unlike kafkalog's consumer, which owns a
+// franz-go client + consumer-group membership and must release both. What Close
+// DOES own is the local invariant: after it returns, Fetch on this handle is
+// telemetrylog.ErrClosed rather than a silent read through a handle its owner
+// has already replaced (the Runner's reattach closes the stale handle straight
+// after the swap). Idempotent.
+func (c *natsConsumer) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+
+// isClosed reports whether Close has run.
+func (c *natsConsumer) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
 
 // natsDelivered wraps one fetched jetstream.Msg as a telemetrylog.Delivered.
 type natsDelivered struct {

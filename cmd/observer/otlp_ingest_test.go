@@ -9,6 +9,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/adapter/ccotel"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/store"
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
@@ -27,7 +28,7 @@ func TestSourceTagPinnedToStore(t *testing.T) {
 
 func TestOTLPLogsHandler_UpsertsTurn(t *testing.T) {
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: t.TempDir() + "/o.db"})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: t.TempDir() + "/o.db"})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

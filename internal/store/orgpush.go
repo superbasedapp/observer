@@ -713,7 +713,7 @@ func (s *Store) LastPushLog(ctx context.Context) (*PushLogEntry, error) {
 // `observer org status` after a re-enroll shows "(none yet)" instead of
 // a stale timestamp. Called by orgclient.Enroll alongside the cursor
 // seed; idempotent on a never-pushed agent. N5 in
-// docs/teams-test-regression-2026-06-03.md.
+// docs/audits/teams-test-regression-2026-06-03.md.
 func (s *Store) ClearLastPushState(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1104,6 +1104,13 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 				return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: scan session: %w", err)
 			}
 			r.IsWorktree = isWorktree != 0
+			// Closed-vocabulary gate on the capture-surface HOST (PRIV-2,
+			// codebase audit 2026-09-16). surface_host ships in EVERY posture
+			// on the grounds that it is a bounded host token; this is what
+			// makes that true rather than merely conventional. Unrecognized ⇒
+			// "other"; empty stays empty (unstamped, not unknown-host). See
+			// knownSurfaceHosts at the bottom of this file.
+			r.SurfaceHost = surfaceHostForWire(r.SurfaceHost)
 			// Privacy seam: strip raw paths when not opted into full-content
 			// sharing. The hash counterparts (already scanned) carry the
 			// signal the server needs. git_branch is stripped outright — it has
@@ -2361,4 +2368,116 @@ func (s *Store) readMeta(ctx context.Context, key string) (string, error) {
 		return "", err
 	}
 	return v, nil
+}
+
+// surfaceHostOther is what an out-of-vocabulary sessions.surface_host becomes
+// on the wire (PRIV-2, codebase audit 2026-09-16). It is deliberately a
+// non-empty token distinct from "": empty means UNSTAMPED (the session's origin
+// was never grounded, the honest unknown the W1 canary pins), while "other"
+// means "stamped with something this seam does not recognize". Collapsing the
+// two would make an unrecognized value look like no capture at all.
+const surfaceHostOther = "other"
+
+// knownSurfaceHosts is the CLOSED wire vocabulary for sessions.surface_host.
+//
+// Why a gate exists at all: `surface` is refused outside models.KnownSurface by
+// the store's own writer, but surface_host has never had a counterpart check —
+// internal/store/surface.go says so in as many words ("SurfaceHost is free-form
+// (lowercase token by convention)"). It nevertheless ships UNGATED under every
+// posture, including the metadata-only teams default, on the stated grounds
+// that it is "a bounded host token" that "can never carry a path, a prompt or a
+// branch name". That was a convention, not a constraint: one adapter resolving
+// a host from a directory name, a client_name or a vendor suffix could put an
+// arbitrary string on a wire that ships in EVERY posture. This is the
+// constraint.
+//
+// Why it is a hand-maintained ALLOW-LIST and not a call into the producers'
+// tables: a gate that automatically admits whatever the producer emits gates
+// nothing. The whole value is that this list is independent of the resolution
+// tables in internal/adapter/* and internal/platform/{vscodehost,jetbrainshost}
+// — a new host token has to be looked at by someone editing THIS file before it
+// can cross to an org.
+//
+// The failure mode is COARSENING, never a leak: an unlisted token ships as
+// "other", so the org sees a session it cannot attribute to a product rather
+// than a value nobody reviewed. Adding a row is the fix when that happens; the
+// vocabulary below is grounded on every token the adapters emit as of
+// 2026-09-16.
+var knownSurfaceHosts = map[string]bool{
+	// VS Code family (internal/platform/vscodehost).
+	"vscode":          true,
+	"vscode-insiders": true,
+	"vscode-remote":   true,
+	"vscodium":        true,
+	"cursor":          true,
+	"cursor-remote":   true,
+	"windsurf":        true,
+	"kiro":            true,
+	"qoder":           true,
+	"trae":            true,
+	// JetBrains family (internal/platform/jetbrainshost) + the generic token
+	// an adapter stamps when it knows "a JetBrains IDE" but not which.
+	"jetbrains":                true,
+	"jetbrains-idea":           true,
+	"jetbrains-pycharm":        true,
+	"jetbrains-webstorm":       true,
+	"jetbrains-goland":         true,
+	"jetbrains-clion":          true,
+	"jetbrains-rider":          true,
+	"jetbrains-phpstorm":       true,
+	"jetbrains-rubymine":       true,
+	"jetbrains-rustrover":      true,
+	"jetbrains-datagrip":       true,
+	"jetbrains-dataspell":      true,
+	"jetbrains-android-studio": true,
+	// Other editors / editor-shaped hosts.
+	"neovim": true,
+	"zed":    true,
+	"ide":    true,
+	// Claude Code (internal/adapter/claudecode): the CLI, Claude Desktop's
+	// own tab, and the Agent SDK language tokens ("sdk-ts" ⇒ "ts"). An SDK
+	// language this list has not caught up with coarsens to "other".
+	"claude":         true,
+	"claude-desktop": true,
+	"sdk":            true,
+	"ts":             true,
+	"py":             true,
+	// Codex + its Open Interpreter rebadge (internal/adapter/codex).
+	"codex-cli":        true,
+	"codex-exec":       true,
+	"codex-desktop":    true,
+	"open-interpreter": true,
+	// Per-adapter hosts.
+	"antigravity":      true,
+	"antigravity-cli":  true,
+	"cline-api":        true,
+	"cline-cli":        true,
+	"cline-core":       true,
+	"cline-desktop":    true,
+	"cline-enterprise": true,
+	"cline-kanban":     true,
+	"cline-subagent":   true,
+	"cline-web":        true,
+	"copilot-cli":      true,
+	"cursor-agent":     true,
+	"devin-desktop":    true,
+	"factory-desktop":  true,
+	"freebuff":         true,
+	"freebuff-desktop": true,
+	"junie-cli":        true,
+	"kiro-cli":         true,
+	"kiro-crew":        true,
+	"qoder-work":       true,
+	"vibe":             true,
+}
+
+// surfaceHostForWire applies the closed vocabulary to one stored
+// sessions.surface_host (PRIV-2). Empty passes through as empty — an unstamped
+// session must reach the org as UNKNOWN, never as a defaulted host — and every
+// other unrecognized value becomes surfaceHostOther.
+func surfaceHostForWire(stored string) string {
+	if stored == "" || knownSurfaceHosts[stored] {
+		return stored
+	}
+	return surfaceHostOther
 }

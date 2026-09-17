@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -116,7 +117,7 @@ func TestGuardApproveRevokeCmds(t *testing.T) {
 	}
 
 	// The grant is live in the store lookup the guard consults.
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +156,7 @@ func TestGuardSimulateAndRescan(t *testing.T) {
 
 	// Seed history through the normal ingest path (no guard wired —
 	// the live seam stays silent so rescan has something to find).
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

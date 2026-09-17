@@ -332,6 +332,13 @@ func (g *Gateway) BootstrapExchangeWorkOSCode(ctx context.Context, clientID, cod
 // login), never as the server rejecting the item that happened to hit it.
 var ErrSignInExpired = cloudclient.ErrSignInExpired
 
+// ErrJobNotFound is returned (wrapped) by ReadSession.Job when the server
+// returned 404 for the requested job id — unknown, or not this device's
+// account (GetJob is tenant-scoped; the two look identical from outside, by
+// design). Re-exported so callers classify it with errors.Is without naming
+// (and therefore importing) the network lane.
+var ErrJobNotFound = cloudclient.ErrJobNotFound
+
 // HTTPStatus reports the HTTP status a cloud API error carried, if any. It
 // exists so a caller can classify retryable vs terminal outcomes without naming
 // (and therefore importing) the network lane's error type — which is what keeps

@@ -82,15 +82,29 @@ const SANDBOX_SOURCE_LABELS: Record<string, string> = {
 // sandboxDisabledReason computes the "Run in sandbox" checkbox's disabled
 // copy, honoring the honest-copy convention (CLAUDE.md): every disabled
 // control names the exact blocker verbatim from the server, never a generic
-// "unavailable". Priority: no tool picked > the probe hasn't resolved yet (or
-// failed — B5's fail-silent pattern: a broken probe disables the control
-// rather than erroring the whole dialog) > the daemon-wide verdict
-// (SandboxAvailability.reason, quoted verbatim) > the shell pseudo-tool
-// (never in the capability registry the probe's per-tool map is built from)
-// > the selected tool's own SandboxToolAvail.reason (v1 grounds only
-// claude-code; every other launchable tool carries an honest reason instead
-// of silently omitting itself from the map). Returns null when the checkbox
+// "unavailable", AND - where the operator can actually fix it - says where
+// the switch lives, the way sshSystemDisabledReason below does.
+//
+// Priority: no tool picked > the probe hasn't resolved yet (or failed -
+// B5's fail-silent pattern: a broken probe disables the control rather than
+// erroring the whole dialog) > the daemon-wide verdict > the shell
+// pseudo-tool (never in the capability registry the probe's per-tool map is
+// built from) > the selected tool's own SandboxToolAvail.reason (a tool
+// whose state dirs are not grounded carries an honest reason instead of
+// silently omitting itself from the map). Returns null when the checkbox
 // should be enabled.
+//
+// The daemon-wide verdict is split three ways on purpose, because the three
+// have three different fixes:
+//   - disabled_by_config: nothing is broken, the feature is off. The switch
+//     is two clicks away on this very dashboard and the save binds
+//     immediately, so say so instead of quoting a config key at the user.
+//   - runtime_init_failed: the operator ALREADY enabled it and the daemon
+//     could not build the runtime (e.g. an unwritable workspaces_dir). The
+//     server's reason is the actual error; telling them to "enable it"
+//     would send them to flip a switch that is already on.
+//   - everything else (backend_missing / backend_too_old / userns_denied /
+//     unsupported_platform): an environment gap, quoted verbatim.
 function sandboxDisabledReason(
   tool: string,
   probe: SandboxAvailability | null,
@@ -100,6 +114,12 @@ function sandboxDisabledReason(
     return "Sandbox status unknown - this daemon may not support sandboxed terminals, or the probe request failed.";
   }
   if (!probe.available) {
+    if (probe.verdict === "disabled_by_config") {
+      return "Sandbox isolation is turned off. Enable it in Terminals -> Settings -> Sandbox isolation and save; it takes effect immediately.";
+    }
+    if (probe.verdict === "runtime_init_failed") {
+      return `Sandbox isolation is enabled but the daemon could not start it - ${probe.reason || "the sandbox runtime failed to initialize"}. Fix it in Terminals -> Settings -> Sandbox isolation.`;
+    }
     return `Sandbox unavailable - ${probe.reason || "sandboxing is unavailable on this daemon"}`;
   }
   if (tool === SHELL_TOOL) {

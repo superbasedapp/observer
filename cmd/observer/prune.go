@@ -162,7 +162,7 @@ func newPruneCmd() *cobra.Command {
 			}
 			fmt.Fprintf(
 				cmd.OutOrStdout(),
-				"prune complete in %dms: actions=%d sessions=%d logs=%d file_state=%d cache_rows=%d guard_rows=%d prompt_reconsider_rows=%d process_rows=%d handoff_rows=%d benchmark_rows=%d codeintel_projects=%d size_passes=%d (db %d → %d bytes)\n",
+				"prune complete in %dms: actions=%d sessions=%d logs=%d file_state=%d cache_rows=%d guard_rows=%d prompt_reconsider_rows=%d process_rows=%d handoff_rows=%d benchmark_rows=%d codeintel_projects=%d compaction_events=%d compression_events=%d size_passes=%d (db %d → %d bytes)\n",
 				res.DurationMs,
 				res.ActionsDeleted,
 				res.OrphanedSessionsDeleted,
@@ -175,6 +175,8 @@ func newPruneCmd() *cobra.Command {
 				res.HandoffRowsDeleted,
 				res.BenchmarkRowsDeleted,
 				res.CodeIntelProjectsDeleted,
+				res.EventRowsDeleted["compaction_events"],
+				res.EventRowsDeleted["compression_events"],
 				res.SizePassesRun,
 				res.DBSizeBytesBefore,
 				res.DBSizeBytesAfter,
@@ -360,6 +362,14 @@ func runRetention(ctx context.Context, cfg config.Config, database *sql.DB) (ret
 		MaxDBSizeMB:           cfg.Observer.Retention.MaxDBSizeMB,
 		ObserverLogMaxAgeDays: cfg.Observer.Retention.ObserverLogMaxAgeDays,
 		DBPath:                cfg.Observer.DBPath,
+		// The bounded, table-driven event sweep (internal/retention/
+		// events.go). These two tables had no horizon at all before
+		// 2026-09-16 and held ~2.3 GiB between them on the operator's live
+		// DB; 0 on either key keeps that table forever.
+		EventSweep: retention.EventSweepDays{
+			CompactionEventsDays:  cfg.Observer.Retention.CompactionEventsDays,
+			CompressionEventsDays: cfg.Observer.Retention.CompressionEventsDays,
+		},
 	})
 	if err != nil {
 		return res, err
@@ -686,10 +696,12 @@ func retentionTickLoop(ctx context.Context, configPath string) {
 				logger.Warn("retention startup pass failed", "err", err)
 			}
 		} else {
-			if res.ActionsDeleted+res.LogEntriesDeleted+res.OrphanedSessionsDeleted+res.FileStateDeleted > 0 {
+			if res.ActionsDeleted+res.LogEntriesDeleted+res.OrphanedSessionsDeleted+res.FileStateDeleted+res.EventRowsDeleted.Total() > 0 {
 				logger.Info("retention startup pass",
 					"actions", res.ActionsDeleted, "sessions", res.OrphanedSessionsDeleted,
 					"logs", res.LogEntriesDeleted, "file_state", res.FileStateDeleted,
+					"compaction_events", res.EventRowsDeleted["compaction_events"],
+					"compression_events", res.EventRowsDeleted["compression_events"],
 					"incremental_vacuum", res.IncrementalVacuumRun,
 					"duration_ms", res.DurationMs)
 			}
@@ -729,6 +741,8 @@ func retentionTickLoop(ctx context.Context, configPath string) {
 				"sessions", res.OrphanedSessionsDeleted,
 				"codeintel_projects", res.CodeIntelProjectsDeleted,
 				"process_rows", res.ProcessRowsDeleted,
+				"compaction_events", res.EventRowsDeleted["compaction_events"],
+				"compression_events", res.EventRowsDeleted["compression_events"],
 				"incremental_vacuum", res.IncrementalVacuumRun,
 				"db_bytes", res.DBSizeBytesAfter,
 				"duration_ms", res.DurationMs)

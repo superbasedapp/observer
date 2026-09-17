@@ -113,6 +113,7 @@ func newCloudCmd() *cobra.Command {
 		newCloudEnableCmd(),
 		newCloudDisableCmd(),
 		newCloudSyncCmd(),
+		newCloudJobCmd(),
 		newCloudLogoutCmd(),
 		newCloudDeleteAccountCmd(),
 	)
@@ -1558,6 +1559,98 @@ func newCloudSyncCmd() *cobra.Command {
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "Cloud base URL (else $"+cloudBaseURLEnv+", else [cloud].base_url)")
 	cmd.Flags().StringVar(&devToken, "dev-token", "", "Dev WorkOS access token for the stub broker (never stored)")
 	cmd.Flags().StringVar(&sessionID, "session", "", "Upload only this session; skip structural/community uploads and still pull available results")
+	return cmd
+}
+
+// cloudLocalOutboxIDPrefix is the prefix `store.EnqueueCloudOutbox` mints for a
+// LOCAL outbox row id (see store.cloudRandomID("job_")). It is entirely
+// distinct from the CLOUD job id the hosted service assigns at submit time
+// (UploadResult.JobID, printed by `observer cloud sync` as "cloud job <id>")
+// — observer does not persist a mapping from one to the other, so
+// newCloudJobCmd refuses a local-shaped argument with an explanation instead
+// of guessing.
+const cloudLocalOutboxIDPrefix = "job_"
+
+// newCloudJobCmd looks up one hosted enrichment job's status by its CLOUD job
+// id (GET /v1/jobs/{id} through the consent-gated read lane — the same lane
+// `sync` already uses for Results/Usage, no new egress path).
+func newCloudJobCmd() *cobra.Command {
+	var (
+		configPath string
+		baseURL    string
+		devToken   string
+		asJSON     bool
+	)
+	cmd := &cobra.Command{
+		Use:   "job <cloud-job-id>",
+		Short: "Show a hosted enrichment job's status",
+		Long: "Looks up one hosted enrichment job by its CLOUD job id — the id\n" +
+			"`observer cloud sync` prints as \"cloud job <id>\" once an item sends.\n\n" +
+			"This is NOT the same as the LOCAL outbox id (job_<hex>) `observer cloud\n" +
+			"consent` prints when it enqueues a session: observer does not store a\n" +
+			"mapping from the local id back to the cloud id, so a job_<hex> argument\n" +
+			"is refused with an explanation rather than looked up wrong.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := strings.TrimSpace(args[0])
+			if strings.HasPrefix(id, cloudLocalOutboxIDPrefix) {
+				return fmt.Errorf(
+					"%q looks like a LOCAL outbox id (printed by `observer cloud consent`); "+
+						"observer does not store a mapping from it to the hosted job id — "+
+						"pass the id `observer cloud sync` printed as \"cloud job <id>\" instead",
+					id)
+			}
+			cfg, database, cleanup, err := loadConfigAndDB(cmd.Context(), configPath)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			st := store.New(database)
+			resolved := resolveCloudBaseURL(baseURL, cfg)
+			if err := requireCloudBaseURL(resolved); err != nil {
+				return err
+			}
+			gw, err := openCloudGateway(cfg, resolved, devToken, st, nil)
+			if err != nil {
+				return err
+			}
+			w := cmd.OutOrStdout()
+			var status cloudgateway.JobStatus
+			ferr := gw.FeatureFetch(cmd.Context(), func(sess cloudgateway.ReadSession) error {
+				var perr error
+				status, perr = sess.Job(cmd.Context(), id)
+				return perr
+			})
+			switch {
+			case errors.Is(ferr, cloudgateway.ErrNoLiveGrant):
+				return errors.New("no live consent grant — nothing can be fetched (run `observer cloud consent` first)")
+			case errors.Is(ferr, cloudgateway.ErrJobNotFound):
+				fmt.Fprintln(w, "job not found for this device's account")
+				return nil
+			case ferr != nil:
+				return fmt.Errorf("fetch job status: %w", ferr)
+			}
+			if asJSON {
+				enc := json.NewEncoder(w)
+				enc.SetIndent("", "  ")
+				return enc.Encode(status)
+			}
+			fmt.Fprintf(w, "job:             %s\n", status.ID)
+			fmt.Fprintf(w, "state:           %s\n", status.State)
+			if status.TerminalReason != "" {
+				fmt.Fprintf(w, "terminal reason: %s\n", status.TerminalReason)
+			}
+			fmt.Fprintf(w, "feature:         %s\n", status.Feature)
+			fmt.Fprintf(w, "attempts:        %d\n", status.Attempts)
+			fmt.Fprintf(w, "created:         %s\n", status.CreatedAt.Format(time.RFC3339))
+			fmt.Fprintf(w, "updated:         %s\n", status.UpdatedAt.Format(time.RFC3339))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
+	cmd.Flags().StringVar(&baseURL, "base-url", "", "Cloud base URL (else $"+cloudBaseURLEnv+", else [cloud].base_url)")
+	cmd.Flags().StringVar(&devToken, "dev-token", "", "Dev WorkOS access token for the stub broker (never stored)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print the job status as JSON")
 	return cmd
 }
 

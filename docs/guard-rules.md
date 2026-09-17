@@ -73,6 +73,14 @@ appear once per row.
 | B-622 | budget | high | flag | flag | daily token usage (all sessions) exceeded [guard.budget].daily_tokens |
 | B-623 | budget | high | flag | flag | calendar-month token usage (all sessions) exceeded [guard.budget].monthly_tokens |
 | B-624 | budget | high | flag | flag | rolling-7-day token usage (all sessions) exceeded [guard.budget].weekly_tokens |
+| B-626 | budget | high | flag | deny | per-tool spend exceeded the organization's tool budget cap |
+| B-626 | budget | high | flag | flag | per-tool spend exceeded the organization's tool budget cap |
+| B-627 | budget | high | flag | deny | per-tool token usage exceeded the organization's tool budget cap |
+| B-627 | budget | high | flag | flag | per-tool token usage exceeded the organization's tool budget cap |
+| B-628 | budget | high | flag | deny | per-model spend exceeded the organization's model budget cap |
+| B-628 | budget | high | flag | flag | per-model spend exceeded the organization's model budget cap |
+| B-629 | budget | high | flag | deny | per-model token usage exceeded the organization's model budget cap |
+| B-629 | budget | high | flag | flag | per-model token usage exceeded the organization's model budget cap |
 | B-625 | budget | high | flag | deny | the organization requires a budget on this managed node and none has been verified |
 | B-610 | limit | warn | flag | flag | 5h usage window utilization reached [guard.budget.window].util_5h_warn |
 | B-611 | limit | high | flag | deny | 5h usage window utilization reached [guard.budget.window].util_5h_deny |

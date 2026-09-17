@@ -954,6 +954,17 @@ func newStartCmd() *cobra.Command {
 				}).Run(gctx)
 				return nil
 			})
+			// Agent-guidance inventory (internal/guidance): one scan at start,
+			// then one every [guidance].rescan_minutes over every project root
+			// the store knows, recording which CLAUDE.md / AGENTS.md / skill /
+			// rule / command files each AI tool reads here. Names, sizes,
+			// hashes and front-matter only — never a body. Self-gating on
+			// [guidance].enabled and P1 fail-soft like every sibling loop: a
+			// failed root is logged and retried, never cancels the daemon.
+			g.Go(func() error {
+				guidanceScanLoop(gctx, configPath)
+				return nil
+			})
 			// One-time DB integrity probe + path-hash backfill, moved OFF the
 			// readiness path (2026-07-16). db.Open never verifies by default, so
 			// the listener binds fast; the multi-GB

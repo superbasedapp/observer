@@ -1,7 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import clsx from "clsx";
-import { ChartShell, PageHeader, Pill, SlideOver, Tooltip } from "@/components/primitives";
+import {
+  Button,
+  Card,
+  ChartShell,
+  Input,
+  PageHeader,
+  Pill,
+  Select,
+  SettingRow,
+  SlideOver,
+  Table,
+  Textarea,
+  Toggle,
+  Tooltip,
+} from "@/components/primitives";
 import { HelpInd } from "@/components/HelpInd";
 import { BUILTIN_PROFILE_NAMES, SECTION_SPECS, type SectionSpec } from "./settings/sectionSpecs";
 import { StructuredConfigSection } from "./settings/StructuredConfigSection";
@@ -781,13 +795,9 @@ function SettingsHeader({
           </>
         }
         right={
-          <button
-            type="button"
-            onClick={onToggleHelp}
-            className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3 hover:text-fg-0"
-          >
+          <Button size="sm" onClick={onToggleHelp}>
             {helpOpen ? "Hide help" : "Show help"}
-          </button>
+          </Button>
         }
       />
     </div>
@@ -1074,32 +1084,28 @@ function PricingSection({
             </Tooltip>
           )}
           <Tooltip content="Jump to baked-in defaults">
-            <button
-              type="button"
+            <Button
+              size="sm"
               onClick={() => setShowDefaults((v) => !v)}
-              className="rounded-pill border border-line-2 bg-bg-3 px-2 py-0.5 text-[10.5px] text-fg-2 hover:bg-bg-4"
+              className="!rounded-pill"
             >
               Baked-in defaults · {defaultKeys.length}
-            </button>
+            </Button>
           </Tooltip>
           <Tooltip content="Pick a default model and add a pricing override">
-            <button
-              type="button"
-              onClick={() => setShowDefaults(true)}
-              className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-1 hover:bg-bg-3"
-            >
+            <Button size="sm" onClick={() => setShowDefaults(true)}>
               + Add override
-            </button>
+            </Button>
           </Tooltip>
-          <button
-            type="button"
+          <Button
+            variant="soft"
+            size="sm"
             onClick={saveAll}
             disabled={save.state === "saving" || loading || !config || readOnly}
             title={readOnly ? "Managed by your organization" : undefined}
-            className="rounded-2 border border-accent/40 bg-accent-soft px-3 py-1 text-[11px] font-medium text-accent disabled:opacity-40"
           >
             {save.state === "saving" ? "Saving…" : "Save pricing"}
-          </button>
+          </Button>
         </div>
       }
     >
@@ -1116,13 +1122,14 @@ function PricingSection({
           <div className="rounded-2 border border-dashed border-line-2 bg-bg-3/40 px-4 py-3 text-[12px] text-fg-3">
             No overrides defined. The cost engine is using its baked-in
             defaults (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => setShowDefaults((v) => !v)}
-              className="text-accent hover:text-accent-strong"
+              className="!inline-flex !gap-0 !border-0 !bg-transparent !p-0 !text-accent hover:!bg-transparent hover:!text-accent-strong"
             >
               {showDefaults ? "hide" : "show"} {defaultKeys.length} models
-            </button>
+            </Button>
             ). Add an override below to shadow a default rate.
           </div>
         ) : (
@@ -1233,23 +1240,23 @@ function PricingTable({
   onRemove: (key: string) => void;
 }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[820px] text-left text-[11.5px]">
-        <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
-          <tr className="border-b border-line-2">
-            <th className="py-1.5 pl-2 font-medium">Model</th>
-            {PRICING_FIELDS.map((f) => (
-              <Tooltip key={f.key} content="$ per million tokens">
-                <th tabIndex={0} className="cursor-help py-1.5 text-right font-medium focus:outline-none">
-                  {f.label}
-                </th>
-              </Tooltip>
-            ))}
-            <th className="py-1.5 pl-3 font-medium" />
-          </tr>
-        </thead>
-        <tbody>
-          {modelKeys.map((k) => (
+    <Table
+      minWidth={820}
+      head={
+        <tr className="border-b border-line-2">
+          <th className="py-1.5 pl-2 font-medium">Model</th>
+          {PRICING_FIELDS.map((f) => (
+            <Tooltip key={f.key} content="$ per million tokens">
+              <th tabIndex={0} className="cursor-help py-1.5 text-right font-medium focus:outline-none">
+                {f.label}
+              </th>
+            </Tooltip>
+          ))}
+          <th className="py-1.5 pl-3 font-medium" />
+        </tr>
+      }
+    >
+      {modelKeys.map((k) => (
             <tr
               key={k}
               className="border-b border-line-1 last:border-b-0 hover:bg-bg-3/40"
@@ -1257,32 +1264,32 @@ function PricingTable({
               <td className="py-1.5 pl-2 font-mono text-fg-1">{k}</td>
               {PRICING_FIELDS.map((f) => (
                 <td key={f.key} className="py-1.5">
-                  <input
+                  <Input
+                    mono
                     type="number"
                     step="0.01"
                     min="0"
                     value={models[k][f.key]}
                     onChange={(e) => onChange(k, f.key, e.target.value)}
-                    className="ml-auto block h-7 w-[88px] rounded-1 border border-line-2 bg-bg-2 px-2 text-right font-mono text-[11px] text-fg-1 focus:border-accent focus:outline-none"
+                    className="ml-auto h-7 w-[88px] !rounded-1 !px-2 !text-[11px] text-right"
                   />
                 </td>
               ))}
               <td className="py-1.5 pl-3">
                 <Tooltip content="Remove override (revert to default)">
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={() => onRemove(k)}
-                    className="text-[10.5px] text-fg-3 hover:text-danger"
+                    className="!p-0 !border-0 !bg-transparent !text-[10.5px] !text-fg-3 hover:!bg-transparent hover:!text-danger"
                   >
                     Reset
-                  </button>
+                  </Button>
                 </Tooltip>
               </td>
             </tr>
           ))}
-        </tbody>
-      </table>
-    </div>
+    </Table>
   );
 }
 
@@ -1308,27 +1315,29 @@ function DefaultsTable({
   }, [defaults, query]);
   return (
     <>
-      <input
+      <Input
         type="search"
         placeholder={`Filter ${Object.keys(defaults).length} models…`}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        className="mb-2 h-7 w-full rounded-2 border border-line-2 bg-bg-2 px-2 text-[11px] text-fg-1 placeholder:text-fg-4 focus:border-accent focus:outline-none"
+        className="mb-2"
       />
-      <div className="max-h-[300px] overflow-y-auto">
-        <table className="w-full text-left text-[11px]">
-          <thead className="sticky top-0 bg-bg-2 text-[10px] uppercase tracking-[0.06em] text-fg-3">
-            <tr className="border-b border-line-2">
-              <th className="py-1 pl-2 font-medium">Model</th>
-              <th className="py-1 text-right font-medium">Input</th>
-              <th className="py-1 text-right font-medium">Output</th>
-              <th className="py-1 text-right font-medium">Cache R</th>
-              <th className="py-1 text-right font-medium">Cache W</th>
-              <th className="py-1 pl-3 font-medium" />
-            </tr>
-          </thead>
-          <tbody>
-            {keys.map((k) => {
+      <Table
+        maxHeight={300}
+        stickyHead
+        size="sm"
+        head={
+          <tr className="border-b border-line-2">
+            <th className="py-1 pl-2 font-medium">Model</th>
+            <th className="py-1 text-right font-medium">Input</th>
+            <th className="py-1 text-right font-medium">Output</th>
+            <th className="py-1 text-right font-medium">Cache R</th>
+            <th className="py-1 text-right font-medium">Cache W</th>
+            <th className="py-1 pl-3 font-medium" />
+          </tr>
+        }
+      >
+        {keys.map((k) => {
               const p = defaults[k];
               const exists = existing.has(k);
               return (
@@ -1357,21 +1366,18 @@ function DefaultsTable({
                     {fmtUSD(p.cache_creation, true)}
                   </td>
                   <td className="py-1 pl-3">
-                    <button
-                      type="button"
+                    <Button
+                      size="sm"
                       onClick={() => onAdd(k)}
                       disabled={exists}
-                      className="rounded-1 border border-line-2 bg-bg-3 px-2 py-0.5 text-[10px] text-fg-2 hover:text-fg-0 disabled:opacity-30"
                     >
                       {exists ? "Already overridden" : "Override"}
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               );
             })}
-          </tbody>
-        </table>
-      </div>
+      </Table>
     </>
   );
 }
@@ -1594,14 +1600,9 @@ function BackfillSection() {
       right={
         status.data && status.data.modes.length > 0 ? (
           <Tooltip content="Fire every mode in sequence">
-            <button
-              type="button"
-              onClick={runAll}
-              disabled={anyRunning}
-              className="rounded-2 border border-accent/40 bg-accent-soft px-3 py-1 text-[11px] font-medium text-accent disabled:opacity-40"
-            >
+            <Button variant="soft" size="sm" onClick={runAll} disabled={anyRunning}>
               {anyRunning ? "Running…" : "Run all"}
-            </button>
+            </Button>
           </Tooltip>
         ) : null
       }
@@ -1625,13 +1626,9 @@ function BackfillSection() {
               <span className="text-danger">{failedCount} failed</span>
             )}
           </span>
-          <button
-            type="button"
-            onClick={() => setTrackerOpen(true)}
-            className="ml-auto rounded-2 border border-line-3 bg-bg-3 px-2.5 py-0.5 text-[11px] text-fg-1 hover:border-accent hover:text-accent"
-          >
+          <Button size="sm" onClick={() => setTrackerOpen(true)} className="ml-auto">
             View progress
-          </button>
+          </Button>
         </div>
       )}
 
@@ -1642,32 +1639,32 @@ function BackfillSection() {
             re-walks session files from offset 0 (idempotent; the recovery
             path for watcher gaps) -
           </span>
-          <select
+          <Select
             value={scanAdapter}
             onChange={(e) => setScanAdapter(e.target.value)}
-            className="rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-[11px] text-fg-1"
-          >
-            <option value="">all adapters</option>
-            {(toolsStatus.data?.tools ?? []).map((t) => (
-              <option key={t.tool} value={t.tool}>
-                {t.tool}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
+            className="!w-auto"
+            options={[
+              { value: "", label: "all adapters" },
+              ...(toolsStatus.data?.tools ?? []).map((t) => ({
+                value: t.tool,
+                label: t.tool,
+              })),
+            ]}
+          />
+          <Button
+            variant="soft"
+            size="sm"
             onClick={runScan}
             disabled={
               jobs[scanAdapter ? `scan:${scanAdapter}` : "scan"]?.status ===
               "running"
             }
-            className="rounded-2 border border-accent/40 bg-accent-soft px-3 py-1 text-[11px] font-medium text-accent disabled:opacity-40"
           >
             {jobs[scanAdapter ? `scan:${scanAdapter}` : "scan"]?.status ===
             "running"
               ? "Rescanning…"
               : "Rescan"}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -1706,14 +1703,14 @@ function BackfillSection() {
                         {m.description}
                       </p>
                     </div>
-                    <button
-                      type="button"
+                    <Button
+                      variant="soft"
+                      size="sm"
                       onClick={() => run(m.mode)}
                       disabled={job?.status === "running"}
-                      className="rounded-2 border border-accent/40 bg-accent-soft px-3 py-1 text-[11px] font-medium text-accent disabled:opacity-40"
                     >
                       {job?.status === "running" ? "Running…" : "Run"}
-                    </button>
+                    </Button>
                   </div>
 
                   {job && (job.status === "done" || job.status === "failed") && (
@@ -1976,15 +1973,15 @@ function IntelligenceSection({
               </span>
             </Tooltip>
           )}
-          <button
-            type="button"
+          <Button
+            variant="soft"
+            size="sm"
             onClick={saveSection}
             disabled={save.state === "saving" || loading || !intel || readOnly}
             title={readOnly ? "Managed by your organization" : undefined}
-            className="rounded-2 border border-accent/40 bg-accent-soft px-3 py-1 text-[11px] font-medium text-accent disabled:opacity-40"
           >
             {save.state === "saving" ? "Saving…" : "Save section"}
-          </button>
+          </Button>
         </div>
       }
     >
@@ -1997,31 +1994,34 @@ function IntelligenceSection({
       >
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <Field label="Summary model" hint="Used by `observer summarize` for session summaries.">
-            <input
+            <Input
+              mono
               type="text"
               value={summaryModel}
               onChange={(e) => setSummaryModel(e.target.value)}
               placeholder="claude-haiku-4-5-20251001"
-              className="h-8 w-full rounded-2 border border-line-2 bg-bg-2 px-2 font-mono text-[12px] text-fg-1 focus:border-accent focus:outline-none"
+              className="h-8"
             />
           </Field>
           <Field label="API key env" hint="Env var name to read the summary API key from.">
-            <input
+            <Input
+              mono
               type="text"
               value={apiKeyEnv}
               onChange={(e) => setApiKeyEnv(e.target.value)}
               placeholder="ANTHROPIC_API_KEY"
-              className="h-8 w-full rounded-2 border border-line-2 bg-bg-2 px-2 font-mono text-[12px] text-fg-1 focus:border-accent focus:outline-none"
+              className="h-8"
             />
           </Field>
           <Field label="Monthly budget (USD)" hint="Drives the MTD budget bar on the Analysis tab.">
-            <input
+            <Input
+              mono
               type="number"
               min="0"
               step="10"
               value={monthlyBudget}
               onChange={(e) => setMonthlyBudget(Number(e.target.value) || 0)}
-              className="h-8 w-full rounded-2 border border-line-2 bg-bg-2 px-2 font-mono text-[12px] text-fg-1 focus:border-accent focus:outline-none"
+              className="h-8"
             />
             <div className="mt-1 text-[11px] text-fg-3">
               Current: <strong>{fmtUSD(monthlyBudget)}</strong>
@@ -2031,15 +2031,11 @@ function IntelligenceSection({
             label="Code graph"
             hint="Enable codebase-memory-mcp queries for richer MCP responses."
           >
-            <label className="flex items-center gap-2 text-[12px] text-fg-1">
-              <input
-                type="checkbox"
-                checked={codeGraphEnabled}
-                onChange={(e) => setCodeGraphEnabled(e.target.checked)}
-                className="h-3.5 w-3.5 accent-current"
-              />
-              {codeGraphEnabled ? "Enabled" : "Disabled"}
-            </label>
+            <Toggle
+              on={codeGraphEnabled}
+              onChange={setCodeGraphEnabled}
+              label={codeGraphEnabled ? "Enabled" : "Disabled"}
+            />
           </Field>
         </div>
       </ChartState>
@@ -2047,6 +2043,9 @@ function IntelligenceSection({
   );
 }
 
+// Field is this page's local name for the shared SettingRow in its
+// stacked layout (label above the control, hint below). Kept as a shim so
+// the existing call sites are untouched.
 function Field({
   label,
   hint,
@@ -2057,13 +2056,9 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div>
-      <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-fg-3">
-        {label}
-      </div>
+    <SettingRow layout="stack" label={label} help={hint}>
       {children}
-      {hint && <div className="mt-1 text-[11px] text-fg-3">{hint}</div>}
-    </div>
+    </SettingRow>
   );
 }
 
@@ -2251,7 +2246,7 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
 
   const findings = lint?.lint ?? [];
   return (
-    <div className="mt-4 rounded-3 border border-line-2 bg-bg-2 p-4 text-[11.5px]">
+    <Card className="mt-4 text-[11.5px]">
       <div className="text-[12px] font-semibold text-fg-1">
         Custom rules - [[routing.rules]]
         <HelpInd id="card.settings_routing_rules" />
@@ -2264,8 +2259,9 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
         gallery). Tiers, budgets, privacy rules, key pools and local upstreams stay config-file-only.
       </p>
       {policy.error && <p className="m-0 mt-2 text-danger">{String(policy.error)}</p>}
-      <textarea
-        className="mt-3 h-56 w-full resize-y rounded-2 border border-line-1 bg-bg-1 p-2 font-mono text-[11.5px] leading-relaxed text-fg-1"
+      <Textarea
+        mono
+        className="mt-3 h-56 leading-relaxed"
         value={text}
         onChange={(e) => {
           setDraft(e.target.value);
@@ -2276,6 +2272,7 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
         spellCheck={false}
         disabled={policy.loading}
       />
+
       {lint && lint.ok && (
         <div className="mt-2 text-success">
           Lints clean - {lint.rules} rule(s).
@@ -2301,23 +2298,21 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
       )}
       {error && <p className="m-0 mt-2 text-danger">{error}</p>}
       <div className="mt-3 flex items-center gap-2">
-        <button
-          type="button"
+        <Button
           onClick={validate}
           disabled={busy || policy.loading}
-          className="rounded-2 border border-line-1 bg-bg-1 px-3 py-1.5 text-[12px] text-fg-1 hover:border-line-2 disabled:opacity-50"
+          loading={busy}
         >
           {busy ? "Working…" : "Validate"}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="primary"
           onClick={save}
           disabled={busy || policy.loading || readOnly}
           title={readOnly ? "Managed by your organization" : undefined}
-          className="rounded-2 bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-on transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Save rules
-        </button>
+        </Button>
         {saved && <Pill variant="warn">saved - restart the daemon to apply</Pill>}
         {policy.data && !saved && (
           <span className="text-fg-3">
@@ -2326,7 +2321,7 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
           </span>
         )}
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -2403,24 +2398,24 @@ function MCPValueMeterCard() {
               </p>
             )}
             {m.by_tool.length > 0 && (
-              <table className="w-auto border-collapse">
-                <thead>
-                  <tr className="text-left text-[10px] uppercase tracking-[0.06em] text-fg-3">
+              <Table
+                fit
+                head={
+                  <tr>
                     <th className="pb-1 pr-4 font-semibold">Tool</th>
                     <th className="pb-1 pr-4 font-semibold">Calls</th>
                     <th className="pb-1 font-semibold">Bytes returned</th>
                   </tr>
-                </thead>
-                <tbody>
-                  {m.by_tool.map((t) => (
-                    <tr key={t.tool} className="border-t border-line-1">
-                      <td className="py-1 pr-4 font-mono text-fg-2">{t.tool}</td>
-                      <td className="py-1 pr-4 text-fg-2">{fmtInt(t.calls)}</td>
-                      <td className="py-1 text-fg-2">{fmtInt(t.bytes)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                }
+              >
+                {m.by_tool.map((t) => (
+                  <tr key={t.tool} className="border-t border-line-1">
+                    <td className="py-1 pr-4 font-mono text-fg-2">{t.tool}</td>
+                    <td className="py-1 pr-4 text-fg-2">{fmtInt(t.calls)}</td>
+                    <td className="py-1 text-fg-2">{fmtInt(t.bytes)}</td>
+                  </tr>
+                ))}
+              </Table>
             )}
             {m.denied_calls > 0 && (
               <p className="text-fg-3">
@@ -2519,35 +2514,29 @@ function CustomProfilesCard({
           {userProfiles.map((name) => (
             <div
               key={name}
-              className="rounded-2 border border-line-1 bg-bg-1 px-3 py-2"
+              className="rounded-2 border border-line-1 bg-bg-3 px-3 py-2"
             >
               <div className="flex items-center gap-3">
                 <span className="flex-1 font-mono text-[12px] text-fg-1">
                   {name}
                 </span>
-                <button
-                  type="button"
+                <Button
+                  size="sm"
                   onClick={() => {
                     setOpen(open === name ? null : name);
                     setConfirmDelete(null);
                   }}
-                  className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
                 >
                   {open === name ? "Close" : "Edit"}
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  size="sm"
+                  variant={confirmDelete === name ? "danger" : "secondary"}
                   onClick={() => remove(name)}
                   disabled={busy}
-                  className={clsx(
-                    "rounded-2 border px-2.5 py-1 text-[11px] disabled:opacity-40",
-                    confirmDelete === name
-                      ? "border-danger bg-danger/10 font-semibold text-danger"
-                      : "border-line-2 bg-bg-2 text-fg-3 hover:bg-bg-3",
-                  )}
                 >
                   {confirmDelete === name ? "Confirm delete" : "Delete"}
-                </button>
+                </Button>
               </div>
               {open === name && <ProfileEditor name={name} />}
             </div>
@@ -2561,7 +2550,8 @@ function CustomProfilesCard({
       )}
 
       <div className="flex flex-wrap items-center gap-2 border-t border-line-1 pt-3">
-        <input
+        <Input
+          mono
           type="text"
           value={newName}
           onChange={(e) => {
@@ -2569,28 +2559,19 @@ function CustomProfilesCard({
             setErr(null);
           }}
           placeholder="profile-name"
-          className="w-44 rounded-2 border border-line-2 bg-bg-1 px-2.5 py-1.5 font-mono text-[12px] text-fg-1 placeholder:text-fg-4 focus:border-accent focus:outline-none"
+          className="w-44"
         />
         <span className="text-[11px] text-fg-3">from</span>
-        <select
+        <Select
+          mono
           value={newFrom}
           onChange={(e) => setNewFrom(e.target.value)}
-          className="rounded-2 border border-line-2 bg-bg-1 px-2.5 py-1.5 font-mono text-[12px] text-fg-1 focus:border-accent focus:outline-none"
-        >
-          {names.map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={create}
-          disabled={!validName || busy}
-          className="rounded-2 bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-on transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-        >
+          className="!w-auto"
+          options={names}
+        />
+        <Button variant="primary" onClick={create} disabled={!validName || busy}>
           Create
-        </button>
+        </Button>
         {newName && !validName && (
           <span className="text-[11px] text-fg-3">
             lowercase letters, digits, dashes; max 64
@@ -2711,8 +2692,6 @@ function ProfileEditor({ name }: { name: string }) {
       <p className="mt-2 text-[11px] text-fg-3">{err ?? "Loading…"}</p>
     );
   }
-  const inputCls =
-    "w-full rounded-2 border border-line-2 bg-bg-2 px-2 py-1 font-mono text-[11.5px] text-fg-1 focus:border-accent focus:outline-none";
   return (
     <div className="mt-2 border-t border-line-1 pt-2">
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -2722,23 +2701,18 @@ function ProfileEditor({ name }: { name: string }) {
               {k.label}
             </div>
             {k.kind === "select" ? (
-              <select
-                className={inputCls}
+              <Select
+                mono
                 value={draft[k.key] ?? ""}
                 onChange={(e) =>
                   setDraft((d) => ({ ...d, [k.key]: e.target.value }))
                 }
-              >
-                {(k.options ?? []).map((o) => (
-                  <option key={o} value={o}>
-                    {o}
-                  </option>
-                ))}
-              </select>
+                options={k.options ?? []}
+              />
             ) : (
-              <input
+              <Input
+                mono
                 type="text"
-                className={inputCls}
                 value={draft[k.key] ?? ""}
                 onChange={(e) =>
                   setDraft((d) => ({ ...d, [k.key]: e.target.value }))
@@ -2749,14 +2723,14 @@ function ProfileEditor({ name }: { name: string }) {
         ))}
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-3">
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
           onClick={apply}
           disabled={changedKeys.length === 0 || busy}
-          className="rounded-2 bg-accent px-3 py-1 text-[11.5px] font-semibold text-accent-on transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? "Applying…" : "Apply changes"}
-        </button>
+        </Button>
         <span className="text-[10.5px] text-fg-4">
           Values shown resolved against your master config. Other keys:{" "}
           <code className="font-mono">
@@ -2802,35 +2776,32 @@ function ProfilesReferenceCard() {
     },
   ];
   return (
-    <div className="mt-4 rounded-3 border border-line-2 bg-bg-2 p-4">
-      <h4 className="mb-2 text-[12px] font-semibold uppercase tracking-[0.06em] text-fg-1">
-        Built-in profiles
-      </h4>
-      <table className="w-full border-collapse text-[11.5px]">
-        <thead>
-          <tr className="text-left text-[10px] uppercase tracking-[0.06em] text-fg-3">
+    <Card title="Built-in profiles" className="mt-4">
+      <Table
+        minWidth={520}
+        head={
+          <tr>
             <th className="pb-1.5 pr-3 font-semibold">Profile</th>
             <th className="pb-1.5 pr-3 font-semibold">Tuned for</th>
             <th className="pb-1.5 font-semibold">Headline parameters</th>
           </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.name} className="border-t border-line-1">
-              <td className="py-1.5 pr-3 font-mono text-fg-1">{r.name}</td>
-              <td className="py-1.5 pr-3 text-fg-2">{r.tunedFor}</td>
-              <td className="py-1.5 font-mono text-[11px] text-fg-3">{r.headline}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+        }
+      >
+        {rows.map((r) => (
+          <tr key={r.name} className="border-t border-line-1">
+            <td className="py-1.5 pr-3 font-mono text-fg-1">{r.name}</td>
+            <td className="py-1.5 pr-3 text-fg-2">{r.tunedFor}</td>
+            <td className="py-1.5 font-mono text-[11px] text-fg-3">{r.headline}</td>
+          </tr>
+        ))}
+      </Table>
       <p className="mt-2 text-[11px] leading-snug text-fg-3">
         Full resolved parameters: <code className="font-mono text-fg-2">observer profile show &lt;name&gt;</code>.
         Assignments apply to new sessions immediately; the wrong pairing can
         break provider caching - the per-provider defaults are the measured
         safe choices.
       </p>
-    </div>
+    </Card>
   );
 }
 
@@ -2866,14 +2837,15 @@ function RestoreBackupControl({ onRestored }: { onRestored: () => void }) {
   return (
     <div className="mt-2 border-t border-line-1 pt-2">
       {phase !== "confirm" ? (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => setPhase("confirm")}
           disabled={phase === "working"}
-          className="text-[10.5px] text-accent hover:underline disabled:opacity-40"
+          className="!p-0 !border-0 !bg-transparent !text-[10.5px] !text-accent hover:!bg-transparent hover:underline"
         >
           {phase === "working" ? "Restoring…" : "Restore previous version…"}
-        </button>
+        </Button>
       ) : (
         <div className="space-y-1.5">
           <p className="m-0 text-fg-3">
@@ -2884,20 +2856,12 @@ function RestoreBackupControl({ onRestored }: { onRestored: () => void }) {
             ? Restoring again undoes this.
           </p>
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={restore}
-              className="rounded-2 bg-accent px-2 py-0.5 text-[10.5px] font-semibold text-accent-on hover:opacity-90"
-            >
+            <Button variant="primary" size="sm" onClick={restore}>
               Restore
-            </button>
-            <button
-              type="button"
-              onClick={() => setPhase("idle")}
-              className="rounded-2 border border-line-2 bg-bg-2 px-2 py-0.5 text-[10.5px] text-fg-2 hover:bg-bg-3"
-            >
+            </Button>
+            <Button size="sm" onClick={() => setPhase("idle")}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -2958,14 +2922,14 @@ function PruneNowCard() {
             permanent; the thresholds decide what counts as old.
           </p>
         </div>
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          className="shrink-0"
           onClick={run}
           disabled={busy || job?.status === "running"}
-          className="shrink-0 rounded-2 bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-on transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {job?.status === "running" ? "Pruning…" : "Run retention now"}
-        </button>
+        </Button>
       </div>
       {err && <p className="m-0 mt-2 text-danger">{err}</p>}
       {job && job.status !== "running" && (

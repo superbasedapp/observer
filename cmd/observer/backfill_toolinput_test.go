@@ -40,6 +40,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 )
@@ -92,7 +93,7 @@ func patchApplyEndRaw(callID, changesJSON string) string {
 func seedToolInputFixture(t *testing.T, ctx context.Context, rows []toolInputFixtureRow) *sql.DB {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

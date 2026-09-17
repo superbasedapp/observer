@@ -95,7 +95,7 @@ func Verify(env Envelope, keys KeySet) error {
 	}
 	sig, err := base64.StdEncoding.DecodeString(env.Signature)
 	if err != nil {
-		return fmt.Errorf("%w: signature is not base64: %v", ErrBadSignature, err)
+		return fmt.Errorf("%w: signature is not base64: %w", ErrBadSignature, err)
 	}
 	if !ed25519.Verify(pub, SigningMessage(env.FeedVersion, canonical), sig) {
 		return ErrBadSignature
@@ -119,7 +119,7 @@ func validateRows(feedVersion int64, rows []Row) error {
 			return fmt.Errorf("%w: row %d has an empty model id", ErrInvalidRows, i)
 		}
 		if err := validateEconomics(r.Economics); err != nil {
-			return fmt.Errorf("%w: row %d (%s): %v", ErrInvalidRows, i, r.Model, err)
+			return fmt.Errorf("%w: row %d (%s): %w", ErrInvalidRows, i, r.Model, err)
 		}
 	}
 	return nil

@@ -26,15 +26,41 @@ type SandboxProber interface {
 	ProbeSandbox(ctx context.Context) SandboxAvailability
 }
 
+// The two verdicts the DASHBOARD layer itself produces, as opposed to the
+// platform/backend verdicts internal/sandbox owns (sandbox.Verdict*). They
+// live here because this package owns the wire shape and because the
+// distinction between them is a dashboard-copy distinction: one names a
+// switch the operator can flip on this very page, the other names a config
+// fault that needs fixing first.
+const (
+	// VerdictDisabledByConfig: [terminal.sandbox].enabled is false, or no
+	// sandbox seam is wired into this dashboard at all. Mirrors
+	// sandbox.VerdictDisabledByConfig; re-declared so a dashboard consumer
+	// never has to import the exec-adjacent package (CLAUDE.md #2).
+	VerdictDisabledByConfig = "disabled_by_config"
+	// VerdictRuntimeInitFailed: [terminal.sandbox].enabled is TRUE but the
+	// daemon could not build the sandbox runtime (e.g. an unwritable or
+	// non-absolute workspaces_dir). Distinct from disabled_by_config on
+	// purpose: telling an operator who already enabled the feature that it
+	// is "disabled by config" sends them to flip a switch that is already
+	// on. Reason carries the construction error verbatim.
+	VerdictRuntimeInitFailed = "runtime_init_failed"
+)
+
 // SandboxAvailability is the dashboard-owned wire shape of a sandbox probe
 // result — the GET /api/terminal/sandbox response body AND the value
 // handleTerminalLaunch's fail-closed validation reasons over. Verdict is the
 // closed vocabulary from the plan's §7 failure-honesty table: "available",
 // "unsupported_platform", "backend_missing", "backend_too_old",
 // "userns_denied", "tool_unmapped", "disabled_by_config",
-// "workspace_prep_failed". Reason names the exact gap in human terms (e.g.
-// which sysctl is denied, which bwrap version was found) so the New
-// Terminal dialog's disabled copy can be honest rather than generic.
+// "runtime_init_failed", "workspace_prep_failed". Reason names the exact gap
+// in human terms (e.g. which sysctl is denied, which bwrap version was
+// found, which directory could not be created) so the New Terminal dialog's
+// disabled copy can be honest rather than generic.
+//
+// An unrecognised verdict is fail-closed at the launch gate
+// (statusForSandboxVerdict defaults to 501), so adding a verdict string here
+// can never accidentally widen what a sandboxed launch is allowed to do.
 type SandboxAvailability struct {
 	Available bool   `json:"available"`
 	Verdict   string `json:"verdict,omitempty"`
@@ -104,7 +130,7 @@ func (s *Server) handleTerminalSandbox(w http.ResponseWriter, r *http.Request) {
 	if s.opts.SandboxProber == nil {
 		writeJSON(w, SandboxAvailability{
 			Available: false,
-			Verdict:   "disabled_by_config",
+			Verdict:   VerdictDisabledByConfig,
 			Reason:    "sandbox support is not enabled on this daemon",
 		})
 		return

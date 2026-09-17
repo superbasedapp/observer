@@ -12,6 +12,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/cloudevidence"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 )
 
@@ -48,7 +49,7 @@ type astraSeed struct {
 func seedAstraSession(t *testing.T, dbPath, sessionID, model string, rows []astraSeed) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -317,7 +318,7 @@ func TestOutcomesCoverTheWholeSessionAndLongTargets(t *testing.T) {
 func seedLongAstraSession(t *testing.T, dbPath, sessionID string, total, buildRow int) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -533,7 +534,7 @@ func TestErrorClassesCoverEveryFailure(t *testing.T) {
 func seedFailureHeavyAstraSession(t *testing.T, dbPath, sessionID string) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

@@ -395,12 +395,40 @@ var typedDetectors = []typedDetector{
 }
 
 // init assigns each typedDetectors row its stable slice index (see the
-// idx field's doc comment) once, at package load.
+// idx field's doc comment) once, at package load, and derives the
+// secret-only ActiveDetectors set DetectSecrets scans with.
 func init() {
 	for i := range typedDetectors {
 		typedDetectors[i].idx = i
 	}
+	secretOnlyDetectors = make(map[string]bool, len(typedDetectors)+1)
+	for i := range typedDetectors {
+		if typedDetectors[i].class == classSecret {
+			secretOnlyDetectors[typedDetectors[i].name] = true
+		}
+	}
+	// "entropy" has no table row of its own (it is emitted dynamically by
+	// entropyFindings) but is CLASS-SECRET by definition — DetectorClass
+	// says so — so it must be in the active set or DetectSecrets would
+	// silently lose the heuristic half of its answer.
+	secretOnlyDetectors["entropy"] = true
 }
+
+// secretOnlyDetectors is the detectOptions.active set covering exactly the
+// class-secret rows of typedDetectors plus "entropy" — the ActiveDetectors
+// mechanism (BLOCK-2) reused as a PERFORMANCE gate for the proxy egress hot
+// path (MHC-3, codebase audit 2026-09-16).
+//
+// Before this, DetectSecrets ran the FULL table — the numeric pre-pass, the
+// Luhn/ISO/checksum validators, the fenced-code suppression walk — over every
+// egress body and then threw every PII finding away in filterFindings. On the
+// audit's 128 KB PII-dense body that cost ~11.6 ms/op against the §17.9 8 ms
+// budget, all of it work whose result was discarded by construction.
+//
+// Built once in init() from the table itself, never hand-listed: a new
+// class-secret row joins it automatically, and a new PII row stays out of it
+// automatically. Never mutated after init.
+var secretOnlyDetectors map[string]bool
 
 // typedMatch is one located finding with its span on the SHIELDED
 // input (spans are internal — shielding changes offsets, so they are
@@ -470,6 +498,30 @@ func DetectorNames() []string {
 // secret. The class-aware superset lives at DetectPromptFindings,
 // whose ONLY caller is the prompt-submit intervention boundary
 // (internal/guard/promptguard.go's BuildPromptFindings).
+//
+// Since MHC-3 (codebase audit 2026-09-16) the PII rows are not merely
+// filtered out of the RESULT, they are never SCANNED: the pass runs with
+// secretOnlyDetectors as its ActiveDetectors set. What changes is that the
+// numeric pre-pass, the Luhn/ISO/checksum validators and the PII
+// suppression walk no longer run on the proxy egress hot path for work
+// that was discarded by construction. The trailing filterFindings call is
+// kept as a cheap structural backstop: if a future row is misclassified
+// into the active set, the contract ("secret-class findings only") still
+// holds at the boundary.
+//
+// EQUIVALENCE, AND ITS ONE HONEST RESIDUAL. The returned findings are
+// equivalent to the old scan-everything-then-filter behavior over the
+// pinned corpus (TestSecretOnlyScanMatchesFullTableScan) and over the
+// fuzz corpus (FuzzSecretOnlyScanMatchesFullTable) — not proven identical
+// for ALL inputs, and the claim is deliberately no stronger than that.
+// findTypedShielded resolves span OVERLAPS before the class filter runs,
+// so under the old code a PII match starting before an overlapping secret
+// match could suppress that secret; narrowing the active set removes the
+// PII match and the secret then survives. Every such divergence can only
+// ADD a secret finding the old path swallowed, never drop one — the
+// failure direction is toward detecting more, which is the safe one for
+// an egress scan — and no input exhibiting it has been found. If one is
+// ever found, it is a bug in the OLD behavior.
 func DetectSecrets(v string) []TypedFinding {
 	return filterFindings(findTyped(v), classPII, true)
 }
@@ -568,7 +620,7 @@ func CertainSecretTypes(v string) []string {
 // encrypted_content values survive byte-identical.
 func MaskSecrets(v string, shouldMask func(TypedFinding) bool) (string, []TypedFinding) {
 	shielded, restorations := shieldFernetEncryptedContent(v)
-	matches := excludeClassMatches(findTypedShielded(shielded, defaultDetectOptions()), classPII)
+	matches := excludeClassMatches(findTypedShielded(shielded, secretOnlyDetectOptions()), classPII)
 	findings := make([]TypedFinding, 0, len(matches))
 	for _, m := range matches {
 		findings = append(findings, m.finding)
@@ -596,14 +648,48 @@ func MaskSecrets(v string, shouldMask func(TypedFinding) bool) (string, []TypedF
 	return restoreShielded(b.String(), restorations), findings
 }
 
-// findTyped shields v and locates findings on the shielded form using
-// the package's built-in defaults (secret-and-PII callers alike get
-// the historical maxPIIFindings cap and unconditional code-context
-// suppression) — DetectPromptFindings is the only caller that threads
-// its own PromptDetectOptions through instead (F7, round-2 review).
+// findTyped shields v and locates SECRET-CLASS findings on the shielded
+// form using the package's built-in caps (the historical maxPIIFindings
+// cap and unconditional code-context suppression) restricted to the
+// secret-only detector set — DetectPromptFindings is the only caller that
+// threads its own PromptDetectOptions through instead (F7, round-2
+// review), and it is the only one that wants the PII half at all.
 func findTyped(v string) []typedMatch {
 	shielded, _ := shieldFernetEncryptedContent(v)
-	return findTypedShielded(shielded, defaultDetectOptions())
+	return findTypedShielded(shielded, secretOnlyDetectOptions())
+}
+
+// secretOnlyDetectOptions is defaultDetectOptions restricted to
+// secretOnlyDetectors — the options every SECRET-ONLY entry point
+// (DetectSecrets/CertainSecretTypes via findTyped, MaskSecrets) scans
+// with (MHC-3). The caps are unchanged; only the detector set narrows,
+// and it narrows to exactly the rows whose findings those entry points
+// keep, so the returned secret findings match the full-table scan's over
+// the pinned and fuzz corpora — see DetectSecrets' "EQUIVALENCE, AND ITS
+// ONE HONEST RESIDUAL" note for why that is not stated as an identity for
+// all inputs.
+func secretOnlyDetectOptions() detectOptions {
+	o := defaultDetectOptions()
+	o.active = secretOnlyDetectors
+	return o
+}
+
+// anyNumericCandidateActive reports whether the active set (nil = every
+// detector) admits at least one numericCandidate row. When it does not —
+// the secret-only case, since all five digit-shaped rows are PII — the
+// shared numeric-run pre-pass has nothing to feed and its whole
+// candidate-collection scan is skipped, which is where most of the
+// PII-dense hot-path cost lived.
+func anyNumericCandidateActive(active map[string]bool) bool {
+	for i := range typedDetectors {
+		if !typedDetectors[i].numericCandidate {
+			continue
+		}
+		if active == nil || active[typedDetectors[i].name] {
+			return true
+		}
+	}
+	return false
 }
 
 // detectOptions configures one findTypedShielded pass. defaultDetectOptions
@@ -728,7 +814,12 @@ func findTypedShielded(shielded string, opts detectOptions) []typedMatch {
 			}
 		}
 	}
-	if piiBounded {
+	// The numeric pre-pass exists solely for the five digit-shaped PII rows
+	// (§4.5). When none of them is active — every secret-only caller, which
+	// is the proxy egress hot path — skip the whole candidate-collection
+	// scan, not just the per-row regex fan-out numericPrepassMatches already
+	// skips (MHC-3).
+	if piiBounded && anyNumericCandidateActive(opts.active) {
 		all = append(all, numericPrepassMatches(shielded, lower, state)...)
 	}
 	if opts.active == nil || opts.active["entropy"] {

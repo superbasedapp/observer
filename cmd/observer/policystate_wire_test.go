@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/providers"
@@ -286,7 +287,7 @@ func TestReporter_MultiplePokesCoalesceToOneFollowup(t *testing.T) {
 func TestBuildAndRunReporter(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "agent.db")
-	conn, err := db.Open(ctx, db.Options{Path: dbPath})
+	conn, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -350,7 +351,7 @@ func TestBuildAndRunReporter(t *testing.T) {
 func TestBuildPolicyStateReporter_ReportCarriesModeCapabilityToken(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "agent.db")
-	conn, err := db.Open(ctx, db.Options{Path: dbPath})
+	conn, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

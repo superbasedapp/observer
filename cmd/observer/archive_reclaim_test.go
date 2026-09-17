@@ -14,6 +14,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/archive"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // reclaimTestDB builds a real database with a freelist worth reclaiming: fill a
@@ -24,7 +25,7 @@ func reclaimTestDB(t *testing.T, dir string) (string, *db.Footprint) {
 	t.Helper()
 	ctx := context.Background()
 	path := filepath.Join(dir, "observer.db")
-	database, err := db.Open(ctx, db.Options{Path: path})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestArchiveReclaimRefusesWithoutFreeSpace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	database, oerr := db.Open(ctx, db.Options{Path: cfg.Observer.DBPath})
+	database, oerr := dbtemplate.Open(ctx, db.Options{Path: cfg.Observer.DBPath})
 	if oerr != nil {
 		t.Fatalf("open: %v", oerr)
 	}

@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // res builds a residue row in the planner's shape.
@@ -295,7 +296,7 @@ func TestCarryText(t *testing.T) {
 func seedReasoningFixture(t *testing.T, ctx context.Context, rows []fixtureRow) *sql.DB {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -291,10 +291,19 @@ func (w *Watcher) applyDetectedRoots() []rootBinding {
 			if _, ok := w.byRoot[root]; ok {
 				continue
 			}
-			if err := addRecursive(w.fsw, root); err != nil {
+			addRes := addRecursive(w.fsw, root)
+			if addRes.RootErr != nil {
 				w.logger.Warn("watcher.applyDetectedRoots: add path",
-					"adapter", a.Name(), "root", root, "err", err)
+					"adapter", a.Name(), "root", root, "err", addRes.RootErr)
 				continue
+			}
+			// One WARN per root per pass for partial failures: the root
+			// IS registered and its watched subtree keeps delivering, so
+			// this is a gap to report, not a reason to drop the root.
+			if addRes.Failed > 0 {
+				w.logger.Warn("watcher.applyDetectedRoots: some subdirectories could not be watched",
+					"adapter", a.Name(), "root", root,
+					"watched", addRes.Added, "failed", addRes.Failed, "err", addRes.FirstErr)
 			}
 			w.byRoot[root] = a
 			added = append(added, rootBinding{adapter: a, root: root})
@@ -797,7 +806,7 @@ func (w *Watcher) processFileStrict(ctx context.Context, a adapter.Adapter, path
 }
 
 func (w *Watcher) processFileMode(ctx context.Context, a adapter.Adapter, path string, forceFromZero, strict bool) (out budgetCaptureFileOutcome, err error) {
-	if w.skipProcessFile(a, path, strict, &out) {
+	if w.skipProcessFile(ctx, a, path, forceFromZero, strict, &out) {
 		return out, nil
 	}
 
@@ -900,7 +909,7 @@ func (w *Watcher) processFileMode(ctx context.Context, a adapter.Adapter, path s
 // skipProcessFile applies the pre-parse safety gates shared by ordinary and
 // strict processing. It returns true when the caller must stop before opening
 // the source.
-func (w *Watcher) skipProcessFile(a adapter.Adapter, path string, strict bool, out *budgetCaptureFileOutcome) bool {
+func (w *Watcher) skipProcessFile(ctx context.Context, a adapter.Adapter, path string, forceFromZero, strict bool, out *budgetCaptureFileOutcome) bool {
 	// Refuse a symlink whose target escapes the watch root before opening it.
 	// fsnotify + WalkDir only gate on the path PREFIX (HasPathPrefix does not
 	// resolve symlinks, by design — a watch root may itself be a symlink), so a
@@ -928,6 +937,20 @@ func (w *Watcher) skipProcessFile(a adapter.Adapter, path string, strict bool, o
 	// the day it crosses the cap (the 2026-08-27 Windows opencode.db
 	// finding). Adapters that don't implement CursorSemantics keep the
 	// gate for every file, which is the pre-existing behaviour.
+	//
+	// For the files that DO stay gated, WHAT is compared against the cap
+	// is decided by a SECOND capability the adapter declares:
+	// FileCursorSemantics.DeltaGateMeaningful(). An adapter that seeks to
+	// the persisted offset and streams forward allocates on the order of
+	// the UNREAD TAIL, so the tail is what the guard should bound; gating
+	// its total size froze six Codex transcripts on the 2026-09-16 audit
+	// box at ~52 MB while the files grew to 85 MB.
+	//
+	// A byte-offset cursor does NOT imply that, which is why it is a
+	// separate flag and not a property of CursorKind: several adapters
+	// persist `NewOffset = fi.Size()` while os.ReadFile-ing the whole
+	// file on every tick, and for those the TOTAL size is the allocation.
+	// The zero value keeps the pre-existing total-size behaviour.
 	if w.maxFileBytes <= 0 {
 		return false
 	}
@@ -935,19 +958,79 @@ func (w *Watcher) skipProcessFile(a adapter.Adapter, path string, strict bool, o
 	if statErr != nil || fi.Size() <= w.maxFileBytes {
 		return false
 	}
-	if oversizeGateApplies(a, path) {
-		out.oversize = true
-		if !strict {
-			w.logger.Warn("watcher.processFile: skipping oversize file",
+	sem := fileCursorSemantics(a, path)
+	if !sem.Kind.SizeGateMeaningful() {
+		if !strict && w.warningDedup.Allow(a.Name()+"|"+path+"|<oversize-watermark-exempt>") {
+			w.logger.Info("watcher.processFile: oversize watermark store exempt from size gate",
 				"path", path, "size", fi.Size(), "max", w.maxFileBytes)
 		}
-		return true
+		return false
 	}
-	if !strict && w.warningDedup.Allow(a.Name()+"|"+path+"|<oversize-watermark-exempt>") {
-		w.logger.Info("watcher.processFile: oversize watermark store exempt from size gate",
-			"path", path, "size", fi.Size(), "max", w.maxFileBytes)
+	// A cursor read failure (or a forced from-zero pass) leaves off at 0,
+	// so the delta is the whole file and the gate stays closed — the
+	// conservative direction for a DoS guard. The cursor is not even read
+	// for a whole-file reader: its value cannot change that answer.
+	var off int64
+	streams := sem.DeltaGateMeaningful()
+	if streams && !forceFromZero {
+		off, _ = w.store.GetCursor(ctx, path)
 	}
-	return false
+	if !OversizeSkipped(fi.Size(), off, w.maxFileBytes, streams) {
+		if !strict && w.warningDedup.Allow(a.Name()+"|"+path+"|<oversize-tail-streaming>") {
+			w.logger.Info("watcher.processFile: oversize file still streaming from its cursor",
+				"path", path, "size", fi.Size(), "cursor", off,
+				"unread", OversizeUnreadDelta(fi.Size(), off), "max", w.maxFileBytes)
+		}
+		return false
+	}
+	out.oversize = true
+	// Deduped per (adapter, path) on the warning TTL: an append-only log
+	// that stays past the cap emitted this WARN on every poll tick
+	// before (1,146 lines across 6 paths in one audit log sample).
+	if !strict && w.warningDedup.Allow(a.Name()+"|"+path+"|<oversize>") {
+		w.logger.Warn("watcher.processFile: skipping oversize file",
+			"path", path, "size", fi.Size(), "cursor", off,
+			"streams_from_cursor", streams, "max", w.maxFileBytes)
+	}
+	return true
+}
+
+// OversizeUnreadDelta returns the byte count a SEEK-AND-STREAM parse of a
+// file of size bytes would have to read when its persisted cursor sits
+// at off. A missing (<= 0) or impossible (> size, i.e. the file was
+// truncated or rotated) cursor means the next parse re-reads the whole
+// file, so the delta is the full size.
+//
+// It is meaningful ONLY for a file whose adapter declared
+// StreamsFromCursor; for a whole-file reader one parse allocates the
+// file's total size no matter where the cursor sits.
+func OversizeUnreadDelta(size, off int64) int64 {
+	if off <= 0 || off > size {
+		return size
+	}
+	return size - off
+}
+
+// OversizeSkipped reports whether the watcher's MaxFileBytes DoS guard
+// skips a gated file of size bytes whose cursor is at off.
+//
+// streams is the adapter's FileCursorSemantics.DeltaGateMeaningful()
+// answer. When false — the default for every adapter that has not
+// declared otherwise — the comparison is against the file's TOTAL size,
+// which is what a whole-file os.ReadFile actually allocates.
+//
+// It is the ONE owner of that predicate: the watcher's pre-parse gate
+// and `observer doctor`'s oversize check both call it, so the operator
+// never reads a different rule than the daemon applies. A non-positive
+// maxBytes disables the guard.
+func OversizeSkipped(size, off, maxBytes int64, streams bool) bool {
+	if maxBytes <= 0 {
+		return false
+	}
+	if !streams {
+		return size > maxBytes
+	}
+	return OversizeUnreadDelta(size, off) > maxBytes
 }
 
 // lockProcessFile serializes processing of one source path. Strict callers
@@ -1191,15 +1274,19 @@ func (w *Watcher) pollCursors(ctx context.Context) error {
 // the fsnotify event-handler path has always used (adapterForPath).
 // The registry is still queried per call so dynamically-added
 // adapters appear without restarting Watch.
-// oversizeGateApplies reports whether the MaxFileBytes DoS guard should
-// gate path for adapter a — branching on the file's declared cursor
-// capability (adapter.CursorKind.SizeGateMeaningful), never on the tool
-// name. An adapter without CursorSemantics keeps the gate everywhere.
-func oversizeGateApplies(a adapter.Adapter, path string) bool {
+// fileCursorSemantics resolves one adapter's declaration about one file,
+// which is what the MaxFileBytes DoS guard branches on: whether the
+// guard applies at all (CursorKind.SizeGateMeaningful) and, when it
+// does, whether it bounds the unread tail or the whole file
+// (FileCursorSemantics.DeltaGateMeaningful). Never the tool name.
+//
+// An adapter that does not implement CursorSemantics gets the zero
+// value: gated, on total size — exactly the pre-interface behaviour.
+func fileCursorSemantics(a adapter.Adapter, path string) adapter.FileCursorSemantics {
 	if cs, ok := a.(adapter.CursorSemantics); ok {
-		return cs.CursorSemanticsFor(path).Kind.SizeGateMeaningful()
+		return cs.CursorSemanticsFor(path)
 	}
-	return true
+	return adapter.FileCursorSemantics{}
 }
 
 func (w *Watcher) adapterFor(path string) adapter.Adapter {
@@ -1294,25 +1381,65 @@ func hasPathPrefix(p, prefix string) bool {
 	return adapter.HasPathPrefix(p, prefix)
 }
 
+// watchAdder is the one fsnotify.Watcher method addRecursive needs.
+// Narrowing it to an interface keeps the walk testable with an
+// injected failing Add — *fsnotify.Watcher satisfies it unchanged.
+type watchAdder interface {
+	Add(name string) error
+}
+
+// addRecursiveResult summarizes one addRecursive pass over a root.
+// Failed/FirstErr describe SUBDIRECTORY watches the OS refused;
+// RootErr is the separate, more serious case of the root itself being
+// unwatchable.
+type addRecursiveResult struct {
+	Added    int
+	Failed   int
+	FirstErr error
+	RootErr  error
+}
+
 // addRecursive adds root and every subdirectory to the fsnotify watcher.
 // A root that is itself a FILE (aider's per-repo transcript paths) is
-// watched directly. Non-existent paths return nil — callers check
-// detection separately.
-func addRecursive(fsw *fsnotify.Watcher, root string) error {
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+// watched directly. Non-existent paths add nothing and report no error
+// — callers check detection separately.
+//
+// A per-directory Add failure is COUNTED AND SKIPPED, never propagated:
+// returning it from the WalkDir callback aborted the whole root's walk,
+// so one inotify watch-limit (ENOSPC) or EACCES on a single nested
+// directory left every sibling and descendant unwatched — with the
+// watches already added leaked into the fsnotify watcher — and dropped
+// the root until the next poller retry. Losing one subdirectory is a
+// gap; losing the root's whole subtree is silent capture loss.
+func addRecursive(fsw watchAdder, root string) addRecursiveResult {
+	var res addRecursiveResult
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if !d.IsDir() {
-			// Only the root itself; non-root files are covered by their
-			// parent directory's watch as usual.
+		// Only the root itself when it is a file; non-root files are
+		// covered by their parent directory's watch as usual.
+		if !d.IsDir() && path != root {
+			return nil
+		}
+		if addErr := fsw.Add(path); addErr != nil {
 			if path == root {
-				return fsw.Add(path)
+				res.RootErr = addErr
+			} else {
+				res.Failed++
+				if res.FirstErr == nil {
+					res.FirstErr = addErr
+				}
 			}
 			return nil
 		}
-		return fsw.Add(path)
+		res.Added++
+		return nil
 	})
+	if res.RootErr == nil && walkErr != nil {
+		res.RootErr = walkErr
+	}
+	return res
 }
 
 func addIfDir(fsw *fsnotify.Watcher, path string) error {

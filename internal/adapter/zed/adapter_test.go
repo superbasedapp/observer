@@ -1,6 +1,7 @@
 package zed
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -481,5 +482,69 @@ func TestIsSessionFile(t *testing.T) {
 		if got := a.IsSessionFile(tc.path); got != tc.want {
 			t.Errorf("IsSessionFile(%q) = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+// TestZstdDecoderMemoryCap pins ADAPT-LZ-3: the thread decoder must
+// carry an explicit decoded-size ceiling (the library default is
+// 64 GiB, i.e. none), and a real thread blob must still decode under it.
+func TestZstdDecoderMemoryCap(t *testing.T) {
+	if maxDecodedBytes != 128<<20 {
+		t.Fatalf("maxDecodedBytes = %d, want 128 MiB", maxDecodedBytes)
+	}
+	plain := []byte(`{"messages":[{"User":{"content":[{"Text":"hello zed"}]}}]}`)
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatalf("new zstd writer: %v", err)
+	}
+	blob := enc.EncodeAll(plain, nil)
+	if err := enc.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	// A payload larger than the ceiling under test, to prove the option
+	// is actually enforced rather than merely accepted.
+	bigPlain := bytes.Repeat([]byte("zed thread payload. "), 64*1024) // ~1.25 MiB
+	enc2, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatalf("new zstd writer: %v", err)
+	}
+	bigBlob := enc2.EncodeAll(bigPlain, nil)
+	if err := enc2.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		blob    []byte
+		want    []byte
+		max     uint64
+		wantErr bool
+	}{
+		{name: "production cap decodes a thread blob", blob: blob, want: plain, max: maxDecodedBytes},
+		{name: "production cap decodes a megabyte thread", blob: bigBlob, want: bigPlain, max: maxDecodedBytes},
+		{name: "a frame past the cap is refused, not allocated", blob: bigBlob, max: 64 << 10, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dec, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(tc.max))
+			if err != nil {
+				t.Fatalf("new zstd reader: %v", err)
+			}
+			defer dec.Close()
+			got, err := dec.DecodeAll(tc.blob, nil)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("decode succeeded past the configured ceiling")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DecodeAll: %v", err)
+			}
+			if !bytes.Equal(got, tc.want) {
+				t.Errorf("decoded %d bytes, want %d", len(got), len(tc.want))
+			}
+		})
 	}
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
+import { Button } from "@/components/primitives";
 import { Obs } from "@/components/Obs";
 import { useApi } from "@/lib/useApi";
 import type { CodexHookTrust } from "@/lib/types";
@@ -119,7 +120,7 @@ export function SetupWizard({
   const allDone =
     steps.length > 0 && steps.every((s) => doneMap[s.id] === true);
   return (
-    <div className="my-2 space-y-2 rounded-2 border border-line-2 bg-bg-1 p-3">
+    <div className="my-2 space-y-2 rounded-2 border border-line-2 bg-bg-3 p-3">
       <p className="text-[11px] leading-snug text-fg-3">
         Each step below previews its exact write and runs only when you click
         it - there is no &quot;apply all&quot;. Files written are the same
@@ -338,22 +339,14 @@ function WizardStep({
         </span>
         <span className="flex-1 text-[11px] text-fg-3">{spec.blurb}</span>
         {!state.done && !state.loading && !state.conflict && (
-          <button
-            type="button"
-            onClick={() => apply(false)}
-            className="rounded-2 bg-accent px-2.5 py-1 text-[11px] font-semibold text-accent-on hover:opacity-90"
-          >
+          <Button variant="primary" size="sm" onClick={() => apply(false)}>
             {spec.action}
-          </button>
+          </Button>
         )}
         {state.conflict && (
-          <button
-            type="button"
-            onClick={() => apply(true)}
-            className="rounded-2 border border-danger bg-danger/10 px-2.5 py-1 text-[11px] font-semibold text-danger hover:bg-danger/20"
-          >
+          <Button variant="danger" size="sm" onClick={() => apply(true)}>
             Force overwrite
-          </button>
+          </Button>
         )}
       </div>
       {spec.note && !state.done && (

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // withTempConfig writes a minimal observer config pointing at the given
@@ -39,7 +40,7 @@ func writeFileForTest(path, body string) error {
 // across packages.
 func seedAuditRows(t *testing.T, dbPath string) {
 	t.Helper()
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -77,7 +78,7 @@ func seedAuditRows(t *testing.T, dbPath string) {
 // load-bearing fields. JSON shape matches the audit.Stats struct.
 func TestMCPAuditCmd_StatsHappyPath(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "obs.db")
-	if database, err := db.Open(context.Background(), db.Options{Path: dbPath}); err != nil {
+	if database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath}); err != nil {
 		t.Fatalf("init db: %v", err)
 	} else {
 		database.Close()
@@ -105,7 +106,7 @@ func TestMCPAuditCmd_StatsHappyPath(t *testing.T) {
 // JSON, parseable into []audit.ListRow-shaped objects.
 func TestMCPAuditCmd_ListJSON(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "obs.db")
-	if database, err := db.Open(context.Background(), db.Options{Path: dbPath}); err == nil {
+	if database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath}); err == nil {
 		database.Close()
 	}
 	seedAuditRows(t, dbPath)
@@ -132,7 +133,7 @@ func TestMCPAuditCmd_ListJSON(t *testing.T) {
 // response_ok=0 rows.
 func TestMCPAuditCmd_DeniedFiltersOK(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "obs.db")
-	if database, err := db.Open(context.Background(), db.Options{Path: dbPath}); err == nil {
+	if database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath}); err == nil {
 		database.Close()
 	}
 	seedAuditRows(t, dbPath)
@@ -163,7 +164,7 @@ func TestMCPAuditCmd_DeniedFiltersOK(t *testing.T) {
 // row with calls=2.
 func TestMCPAuditCmd_TopPathsAggregates(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "obs.db")
-	if database, err := db.Open(context.Background(), db.Options{Path: dbPath}); err == nil {
+	if database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath}); err == nil {
 		database.Close()
 	}
 	seedAuditRows(t, dbPath)
@@ -194,7 +195,7 @@ func TestMCPAuditCmd_TopPathsAggregates(t *testing.T) {
 // guard: --older-than alone is not enough; --yes is mandatory.
 func TestMCPAuditCmd_PurgeRequiresYes(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "obs.db")
-	if database, err := db.Open(context.Background(), db.Options{Path: dbPath}); err == nil {
+	if database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath}); err == nil {
 		database.Close()
 	}
 	seedAuditRows(t, dbPath)
@@ -217,7 +218,7 @@ func TestMCPAuditCmd_PurgeRequiresYes(t *testing.T) {
 // TestMCPAuditCmd_PurgeWithYes: --yes proceeds with the deletion.
 func TestMCPAuditCmd_PurgeWithYes(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "obs.db")
-	if database, err := db.Open(context.Background(), db.Options{Path: dbPath}); err == nil {
+	if database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath}); err == nil {
 		database.Close()
 	}
 	seedAuditRows(t, dbPath)

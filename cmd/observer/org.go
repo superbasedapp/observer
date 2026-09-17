@@ -414,7 +414,7 @@ high-water id).`,
 				// settings.json write, so a stopped proxy breaks
 				// EVERY Claude Code instance until the operator
 				// launches `observer start`. N4 caveat in
-				// docs/teams-test-regression-v1.8.2-2026-06-04.md.
+				// docs/audits/teams-test-regression-v1.8.2-2026-06-04.md.
 				if !proxyReachable(fmt.Sprintf("http://127.0.0.1:%d", proxyPort), 200*time.Millisecond) {
 					fmt.Fprintln(out)
 					fmt.Fprintf(out, "WARNING: the observer proxy on 127.0.0.1:%d is not running.\n", proxyPort)
@@ -438,13 +438,46 @@ high-water id).`,
 	return cmd
 }
 
+// errNotAnEnrolmentLink reports that a --link URL parsed as a dashboard
+// sign-in surface (a set-password invite, or the login page) rather than a
+// machine enrolment link. Both of those dashboard surfaces are ALSO of the
+// form http(s)://host/<path>?token=<value> — a set-password invite is
+// literally `?token=<id>.<secret>` (cmd/observer-org/users.go's
+// set-password-link minter) — so without this classification
+// resolveEnrolCredentials would happily hand the dashboard's invite/session
+// token to POST /api/agent/enroll, which answers 401 with nothing to tell
+// the developer that their *link*, not their credentials, was the wrong
+// shape (grounded against internal/orgclient/client.go:498 Enroll).
+type errNotAnEnrolmentLink struct {
+	// path is the URL path that was actually seen (e.g. "/set-password"),
+	// included so the message tells the developer exactly what it saw
+	// rather than a generic "that's wrong" — see docs/demo-environment-playbook.md's
+	// account terms for why a "sign-in invite" and an "enrolment link" are
+	// two different objects a developer can otherwise confuse.
+	path string
+}
+
+func (e *errNotAnEnrolmentLink) Error() string {
+	return fmt.Sprintf(
+		"observer enroll: %s is a dashboard sign-in invite, not a machine enrolment link. "+
+			"Open it in a browser to set your password. To enrol this machine, ask your admin "+
+			"for an enrolment link (observer enroll --link <url>) or run: observer enroll --idp <org-url>",
+		e.path,
+	)
+}
+
 // resolveEnrolCredentials resolves (orgURL, token) from one of:
 //   - --idp http(s)://host                → (http(s)://host, "") — the code is
 //     obtained later by idpEnrolFlow, so this form deliberately returns none
 //   - --link http(s)://host/enrol/<code>  → (http(s)://host, <code>)
 //   - positional [org-url, token]         → as supplied
 //
-// Returns a usage error when neither form provides both pieces.
+// Returns a usage error when neither form provides both pieces, and an
+// *errNotAnEnrolmentLink when --link resolves to a dashboard sign-in surface
+// (/set-password or /login, or a bare ?token= on any other path) instead of
+// the canonical /enrol/<code> form — those are dashboard credentials, not a
+// machine enrolment token, and the two are easy to confuse because a
+// set-password invite is also shaped like `?token=<value>`.
 //
 // The forms are MUTUALLY EXCLUSIVE and that is enforced rather than resolved
 // by precedence: a developer who passes both a code and --idp has two
@@ -466,19 +499,24 @@ func resolveEnrolCredentials(linkURL, idpURL string, args []string) (string, str
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			return "", "", fmt.Errorf("invalid --link URL %q (need http(s)://host/enrol/<code>)", linkURL)
 		}
-		// Accept /enrol/<code> path segment OR ?token=<code> query.
-		var code string
 		path := strings.TrimPrefix(u.Path, "/")
-		switch {
-		case strings.HasPrefix(path, "enrol/"):
-			code = strings.TrimPrefix(path, "enrol/")
-		case u.Query().Get("token") != "":
-			code = u.Query().Get("token")
+		// /enrol/<code> is the ONLY canonical form. Classify everything
+		// else by path BEFORE falling back to a bare ?token= query, so a
+		// dashboard set-password invite or the login page — both of which
+		// carry ?token=/session state that would otherwise parse as a
+		// plausible-looking code — is refused with a message that says so,
+		// instead of being POSTed to the enrol endpoint as a bad credential.
+		if strings.HasPrefix(path, "enrol/") {
+			code := strings.TrimPrefix(path, "enrol/")
+			if code == "" {
+				return "", "", fmt.Errorf("--link %q has no code (expected /enrol/<code> path or ?token=<code> query)", linkURL)
+			}
+			return u.Scheme + "://" + u.Host, code, nil
 		}
-		if code == "" {
-			return "", "", fmt.Errorf("--link %q has no code (expected /enrol/<code> path or ?token=<code> query)", linkURL)
+		if path == "set-password" || path == "login" || u.Query().Get("token") != "" {
+			return "", "", &errNotAnEnrolmentLink{path: "/" + path}
 		}
-		return u.Scheme + "://" + u.Host, code, nil
+		return "", "", fmt.Errorf("--link %q has no code (expected /enrol/<code> path or ?token=<code> query)", linkURL)
 	}
 	if len(args) == 2 {
 		return args[0], args[1], nil
@@ -840,7 +878,7 @@ not delete anything already shared with the org server.`,
 			// keeps routing through the now-stopped observer proxy
 			// after unenroll. Best-effort: a failure here doesn't
 			// fail unenroll. N4 caveat in
-			// docs/teams-test-regression-v1.8.2-2026-06-04.md.
+			// docs/audits/teams-test-regression-v1.8.2-2026-06-04.md.
 			cfg, cfgErr := config.Load(config.LoadOptions{GlobalPath: configPath})
 			proxyPort := 8820
 			if cfgErr == nil && cfg.Proxy.Port > 0 {

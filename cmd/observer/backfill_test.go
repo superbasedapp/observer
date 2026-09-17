@@ -16,6 +16,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/adapter/cursor"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
@@ -35,7 +36,7 @@ func TestBackfillCacheTier_RecoversNullColumns(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestBackfillCodexMessageIDAndModel(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +230,7 @@ func TestBackfillCursorMessageID(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +272,7 @@ func TestBackfillCursorHookUsage(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +336,7 @@ func TestBackfillCursorTranscriptActions(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +414,7 @@ func TestBackfillsAllPrepareCleanlyOnEmptyDB(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +513,7 @@ func TestBackfillClaudeCodeUserPrompts(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +607,7 @@ func TestBackfillCursorSubagents(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -703,7 +704,7 @@ func TestBackfillClaudeCodeAPIErrors(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -799,7 +800,7 @@ func TestBackfillOpenCodeTokens(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -913,7 +914,7 @@ func TestBackfillCopilotMessageID(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -997,7 +998,7 @@ func TestBackfillPiMessageID(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1079,7 +1080,7 @@ func TestBackfillOpenCodeParts(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1185,7 +1186,7 @@ func TestBackfillOpenClawModel(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1284,7 +1285,7 @@ func TestBackfillOpenCodeMessageID(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1379,7 +1380,7 @@ func TestBackfillOpenClawActionTypes(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1469,7 +1470,7 @@ func TestBackfillOpenClawProjectRoot_ReattributesAliasSessions(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1566,7 +1567,7 @@ func TestBackfillOpenClawSessionID(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1672,7 +1673,7 @@ func TestBackfillCursorModel(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1747,7 +1748,7 @@ func TestBackfillCursorModel(t *testing.T) {
 func TestBackfillSessionModels(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1819,7 +1820,7 @@ func TestBackfillCodexReasoning(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1913,7 +1914,7 @@ func TestBackfillCodexProjectRoot_ReattributesWindowsCwd(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2094,7 +2095,7 @@ func TestBackfillProjectRootReattribution_CarriesNormalizedRemote(t *testing.T) 
 	t.Run("codex", func(t *testing.T) {
 		root := t.TempDir()
 		dbPath := filepath.Join(root, "obs.db")
-		database, err := db.Open(ctx, db.Options{Path: dbPath})
+		database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2138,7 +2139,7 @@ func TestBackfillProjectRootReattribution_CarriesNormalizedRemote(t *testing.T) 
 	t.Run("claudecode", func(t *testing.T) {
 		root := t.TempDir()
 		dbPath := filepath.Join(root, "obs.db")
-		database, err := db.Open(ctx, db.Options{Path: dbPath})
+		database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2216,7 +2217,7 @@ func TestBackfillCodexForkDedup(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2418,7 +2419,7 @@ func TestBackfillCodexForkDedupWindowsBasename(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "obs.db")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2526,7 +2527,7 @@ func TestBackfillDryRun_SnapshotAndRedirect(t *testing.T) {
 	// Build a non-trivial live DB so VACUUM INTO actually copies
 	// content (zero-row DBs round-trip but exercise less of the
 	// path).
-	live, err := db.Open(ctx, db.Options{Path: livePath})
+	live, err := dbtemplate.Open(ctx, db.Options{Path: livePath})
 	if err != nil {
 		t.Fatalf("open live: %v", err)
 	}
@@ -2586,7 +2587,7 @@ enabled = false
 	if _, err := os.Stat(snapshotPath); err != nil {
 		t.Fatalf("snapshot not on disk: %v", err)
 	}
-	snap, err := db.Open(ctx, db.Options{Path: snapshotPath})
+	snap, err := dbtemplate.Open(ctx, db.Options{Path: snapshotPath})
 	if err != nil {
 		t.Fatalf("open snapshot: %v", err)
 	}
@@ -2644,7 +2645,7 @@ func TestBackfillDryRun_RefusesOverwrite(t *testing.T) {
 	dst := filepath.Join(root, "dst.db")
 
 	// Build a valid source DB.
-	live, err := db.Open(ctx, db.Options{Path: src})
+	live, err := dbtemplate.Open(ctx, db.Options{Path: src})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2735,7 +2736,7 @@ func contentFixtureSession(t *testing.T) string {
 // silently producing zero rows.
 func runScopedContentRescan(t *testing.T, ctx context.Context, dbPath, watchRoot string) watcher.ScanResult {
 	t.Helper()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2783,7 +2784,7 @@ func runBackfillContent(t *testing.T, configPath string) string {
 // count.
 func countOTelContentRows(t *testing.T, ctx context.Context, dbPath string) int {
 	t.Helper()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2868,7 +2869,7 @@ func TestBackfillContent_CaptureParity(t *testing.T) {
 		t.Fatalf("ScanResult = %+v, want FilesProcessed=1 Errors=0", res)
 	}
 
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

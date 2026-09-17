@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -148,7 +149,7 @@ func TestGuardVerifyAuditCmd(t *testing.T) {
 	cfgPath, dbPath := writeGuardTestConfig(t)
 
 	// Seed two chained rows through the one-owner helper.
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestGuardVerifyAuditCmd(t *testing.T) {
 func TestGuardStatusCmd(t *testing.T) {
 	t.Parallel()
 	cfgPath, dbPath := writeGuardTestConfig(t)
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -234,7 +235,7 @@ func TestGuardStatusCmd(t *testing.T) {
 func TestGuardStatusPrintsTheOrgBudgetPosture(t *testing.T) {
 	t.Parallel()
 	cfgPath, dbPath := writeGuardTestConfig(t)
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -367,7 +368,7 @@ func TestRewriteCachedBudgetFetchState(t *testing.T) {
 func TestGuardStatusOrgBudgetLineHonestAboutPrimedCache(t *testing.T) {
 	t.Parallel()
 	cfgPath, dbPath := writeGuardTestConfig(t)
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

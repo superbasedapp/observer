@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -70,25 +71,80 @@ func scanRoute(row pgx.Row, r *RouteInfo) error {
 
 // ResolveRoute returns the active DEFAULT route for a feature (system table).
 //
-// A route marked plan_pinned (migration 0039) is excluded: it exists only to be
-// named by a plan's route_id, so it must never win the default pick - otherwise
-// activating a paid plan's route would silently start serving FREE accounts on
-// it, decided by nothing more than the tie-break of two rows at the same
-// route_version.
+// A route marked plan_pinned (migration 0039) is excluded from the candidate
+// set entirely: it exists only to be named by a plan's route_id, so it must
+// never win the default pick - otherwise activating a paid plan's route would
+// silently start serving FREE accounts on it.
+//
+// The winner among what is left is picked in Go by pickDefaultRoute, not by an
+// ORDER BY ... LIMIT 1 in the SQL, so the tie-break rule is a pure function a
+// test can drive with a literal slice of rows instead of a live database (the
+// two ambiguous-tie scenarios - two active same-version routes, neither
+// pinned; the same but one pinned - are exactly what pickDefaultRoute's own
+// test table exercises without Postgres).
 func (s *Store) ResolveRoute(ctx context.Context, feature string) (RouteInfo, error) {
-	var r RouteInfo
+	var out []RouteInfo
 	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		e := scanRoute(tx.QueryRow(ctx,
+		rows, e := tx.Query(ctx,
 			`SELECT `+routeSelectColumns+`
 			   FROM route_registry
-			  WHERE feature = $1 AND active = true AND plan_pinned = false
-			  ORDER BY route_version DESC, route_id LIMIT 1`, feature), &r)
-		if errors.Is(e, pgx.ErrNoRows) {
-			return ErrNotFound
+			  WHERE feature = $1 AND active = true AND plan_pinned = false`, feature)
+		if e != nil {
+			return e
 		}
-		return e
+		defer rows.Close()
+		for rows.Next() {
+			var r RouteInfo
+			if e := scanRoute(rows, &r); e != nil {
+				return e
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
 	})
-	return r, err
+	if err != nil {
+		return RouteInfo{}, err
+	}
+	r, found := pickDefaultRoute(out)
+	if !found {
+		return RouteInfo{}, ErrNotFound
+	}
+	return r, nil
+}
+
+// pickDefaultRoute picks the winner among a feature's already-filtered
+// candidate routes (active = true, plan_pinned = false - the caller's job, not
+// this function's: it does not re-check either flag). Highest route_version
+// wins; ties break on route_id ASCENDING.
+//
+// route_id, not a timestamp, is the tiebreak because it is the one column
+// every route_registry row is guaranteed to carry unchanged for its whole
+// life: route_version bumps on a genuine route replacement, but two rows can
+// still land at the same version (the migration-0039 scenario: the Sol row
+// ships at route_version 1, same as Luna's). created_at would work today, but
+// SetRouteBinding/SetRouteActive/SetRouteEnvironment all bump `generation`
+// without touching a bind/activation timestamp - there is no bound_at column -
+// so a created_at tiebreak would silently start depending on migration
+// application order the day someone reorders 0039-style seed statements.
+// route_id is human-authored, stable, and already part of the same ORDER BY
+// the SQL used before this function existed, so this preserves prior
+// behaviour exactly while making it independently testable.
+//
+// Pure (no SQL/HTTP/fsnotify): callers load rows, this function decides.
+func pickDefaultRoute(candidates []RouteInfo) (RouteInfo, bool) {
+	var best RouteInfo
+	found := false
+	for _, r := range candidates {
+		switch {
+		case !found:
+			best, found = r, true
+		case r.RouteVersion > best.RouteVersion:
+			best = r
+		case r.RouteVersion == best.RouteVersion && r.RouteID < best.RouteID:
+			best = r
+		}
+	}
+	return best, found
 }
 
 // Plan-route fallback reasons (migration 0039). Closed vocabulary: every
@@ -197,6 +253,97 @@ func (s *Store) RouteByID(ctx context.Context, routeID string) (RouteInfo, error
 		return e
 	})
 	return r, err
+}
+
+// FeatureCoverage reports whether ResolveRoute can currently pick a default
+// for one feature present in route_registry.
+type FeatureCoverage struct {
+	// Feature is the route_registry.feature value.
+	Feature string
+	// HasDefault is true when at least one row for Feature is active and NOT
+	// plan_pinned - i.e. ResolveRoute(ctx, Feature) would succeed right now.
+	HasDefault bool
+}
+
+// routeCoverageRow is the minimal per-row fact FeatureDefaultCoverage needs -
+// deliberately NOT RouteInfo/scanRoute, which carries a dozen Foundry-call
+// columns this classification never looks at.
+type routeCoverageRow struct {
+	Feature    string
+	Active     bool
+	PlanPinned bool
+}
+
+// classifyFeatureCoverage is the pure half of the readiness check: given every
+// route_registry row's (feature, active, plan_pinned) facts, decide per
+// feature whether ResolveRoute has an eligible candidate. No SQL/HTTP here, so
+// a test drives it with a literal slice instead of a live database.
+//
+// WHY THIS EXISTS. ResolveRoute (above) deliberately excludes plan_pinned
+// routes from the default pick - that's the whole migration-0039 fix: a plan
+// route must never win the free tier by tie-break accident. But excluding a
+// row from a query the operator DID make active is also a new way to break a
+// feature entirely: if a feature's ONLY active route is plan_pinned (an
+// operator deactivates the true default mid-migration, or a feature is seeded
+// with just a plan route and nothing else), ResolveRoute now returns
+// ErrNotFound for every account that doesn't hold that plan - a fleet-wide
+// 503 no_route for the feature's free/default population - and
+// ResolveRouteForPlan's "degrade, never deny" promise cannot be kept either:
+// there is no live default left to degrade TO. This is a readiness signal for
+// exactly that gap, checked and logged, never enforced - the Sol runbook's
+// window between activating the pinned route and finishing the paired
+// binary/prompt rollout is a real, expected, temporary instance of a route
+// existing that is momentarily the only one active for its feature, and
+// refusing to start over it would make the runbook itself impossible to
+// follow.
+func classifyFeatureCoverage(rows []routeCoverageRow) []FeatureCoverage {
+	seen := make(map[string]bool)
+	hasDefault := make(map[string]bool)
+	order := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if !seen[r.Feature] {
+			seen[r.Feature] = true
+			order = append(order, r.Feature)
+		}
+		if r.Active && !r.PlanPinned {
+			hasDefault[r.Feature] = true
+		}
+	}
+	sort.Strings(order)
+	out := make([]FeatureCoverage, 0, len(order))
+	for _, f := range order {
+		out = append(out, FeatureCoverage{Feature: f, HasDefault: hasDefault[f]})
+	}
+	return out
+}
+
+// FeatureDefaultCoverage lists, for every feature present in route_registry,
+// whether ResolveRoute currently has an eligible (active, non-plan-pinned)
+// route to serve as its default. Report-only: callers use this to log/surface
+// a gap, never to refuse to start or to gate ResolveRoute itself - see
+// classifyFeatureCoverage's doc comment for why a temporary gap is expected
+// during a route activation.
+func (s *Store) FeatureDefaultCoverage(ctx context.Context) ([]FeatureCoverage, error) {
+	var rows []routeCoverageRow
+	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		q, e := tx.Query(ctx, `SELECT feature, active, plan_pinned FROM route_registry`)
+		if e != nil {
+			return e
+		}
+		defer q.Close()
+		for q.Next() {
+			var row routeCoverageRow
+			if e := q.Scan(&row.Feature, &row.Active, &row.PlanPinned); e != nil {
+				return e
+			}
+			rows = append(rows, row)
+		}
+		return q.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cloudserver/store.FeatureDefaultCoverage: %w", err)
+	}
+	return classifyFeatureCoverage(rows), nil
 }
 
 // KillSwitchState reports whether the global switch and a specific route's

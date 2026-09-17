@@ -4,6 +4,67 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.34.0-rc.1] — 2026-09-17
+
+Pre-release on the `edge` channel. Its purpose is the first real publish to the private
+enterprise container registry; nothing here changes a running node's behaviour beyond the
+retention horizons and the fix below.
+
+### Added
+
+- **Enterprise private distribution (Phase 0).** The `observer-org` image and, new, the
+  `harness-gateway` image are published to SuperBased's private registry with a per-customer
+  pull token instead of a public GHCR package; both are cosign keyless-signed by digest, and
+  a final release now FAILS when the registry credential is absent instead of silently
+  skipping the image. The public GitHub release no longer carries any `observer-org` asset
+  (archives, SBOM, pull recipe); they attach to the private release together with a signed
+  deployment bundle and an air-gap kit.
+- **`observer-org deploy export --to <dir>` / `deploy list`.** The org-server image carries
+  its own deployment bundle: the hardened compose template, the Helm chart, the developer-node
+  supervisor templates and the enterprise runbooks, stamped with the exact image tag and
+  registry, with `MANIFEST.json`, `SHA256SUMS` and a README holding the pull-and-verify recipe.
+- **`observer cloud job <cloud-job-id>`** reads a hosted job's state, terminal reason and
+  result summary.
+- **feat(retention): horizons for `compaction_events` and
+  `compression_events`, the two node-local event tables that had none.**
+  `[observer.retention].compaction_events_days` (default 30) and
+  `compression_events_days` (default 90) age out per-session compaction
+  snapshots and per-decision compression detail through the ordinary
+  retention pass - startup, the `interval_hours` tick and `observer prune` -
+  in bounded batches, with the counts printed in the `prune complete` line
+  and the retention log. On the node that prompted this the two tables held
+  1.4 GiB in 1,333 rows and 915 MB in 3.59M rows respectively. Both horizons
+  are ON by default, including for existing installs, so the first pass after
+  upgrading deletes accordingly; set either key to 0 to keep forever. One
+  behaviour change: post-compaction context injection reads a session's most
+  recent `compaction_events` row, so a session idle for longer than the
+  compaction horizon no longer receives it.
+
+### Fixed
+
+- **fix(store): the guard limit-window poll no longer full-scans
+  `limit_snapshots`.** `store.LatestLimitWindows` filters on the window
+  columns and orders by `observed_at`, but migration 049 shipped the table
+  with only a `(scope_hash, provider, observed_at)` index whose leading
+  column that query never constrains, so every poll scanned the whole table
+  and sorted it through a temp b-tree. At 178k rows that ran past the poll's
+  3 s deadline every time. Agent migration 123 adds a partial index on
+  `(observed_at DESC, id DESC)` covering exactly the windowed rows.
+
+- **fix(orgserver): ORGSEC-CSRF-2** - one cross-site seam for every cookie-authenticated
+  mutation (415 on a non-JSON body, 403 cross-site).
+- **fix(aigateway): GW-AUDIT-1 / GW-SETTLE-1** - the gateway audit row and the reservation
+  settle are one journaled write; a crash between them no longer strands a reservation.
+- **fix(orgserver): ORG-NATS-REATTACH-1** - a durable consumer whose identity drifted is
+  re-attached (bounded, with the drift cause surfaced) instead of backing off forever; a
+  vanished stream is handled the same way.
+- **fix(projectresolver):** the row-5 enterprise-owner fallback is a deferred suggestion,
+  never an automatic fold, and a suggestion that names a project the hash already belongs to
+  is suppressed.
+- **fix(cloudserver):** the worker role can complete the weekly project digest (migration
+  0040 grants); the portal CSP admits Paddle.js v2's own runtime footprint.
+- **ci:** the `-race` suite is sharded ten ways with per-process migrated SQLite templates.
+
 ## [1.33.0] — 2026-09-15
 
 ### Added

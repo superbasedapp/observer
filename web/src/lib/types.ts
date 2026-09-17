@@ -58,6 +58,25 @@ export type StatusSnapshot = {
   // key bar labels its modifier keys from it (lib/keyPlatform).
   // Optional on the wire: an older daemon omits it entirely.
   host_os?: string;
+  // integrity is the persisted verdict of the daemon's background
+  // `PRAGMA quick_check` (RES-3, codebase audit 2026-09-16). Absent
+  // means the probe has NOT run on this database yet (a fresh install,
+  // or one where [observer.db].integrity_check_max_gb size-gated it
+  // off) — that is NOT a failure and must never render as one.
+  integrity?: IntegrityStatus;
+};
+
+// IntegrityStatus mirrors internal/diag/status.go's IntegrityStatus — the
+// status-surface projection of db.IntegrityVerdict.
+export type IntegrityStatus = {
+  // checked_at is when the probe finished (UTC, RFC3339).
+  checked_at: string;
+  // status is a closed vocabulary: "ok" | "corrupt" | "error". "error"
+  // means the probe could not COMPLETE (timeout, locked file) — it says
+  // nothing about the data, and must not be rendered as corruption.
+  status: "ok" | "corrupt" | "error";
+  // message is the pragma's own text, or the error's. Empty when ok.
+  message?: string;
 };
 
 // ---------- /api/health/watcher ----------
@@ -3421,12 +3440,18 @@ export type OrgIntelResultRow = {
   taxonomy_tags: string[];
   suggested_tags: string[];
   limitations: string[];
-  // NOTE: the five narrative lists (work_done / plans_implemented /
-  // issues_found / failures / next_steps) are NOT on this row yet. The org
-  // rail's prompt asks for them and its validator rejects a leaky one, but
-  // org_intel_results has no column for them, so nothing reaches the node
-  // cache to type here. See internal/orgserver/intel/executor.go
-  // ::normalizedToResult for the deferred, migration-bearing wave.
+  // The five narrative lists: what was done, whether the stated plans landed,
+  // what issues were found, what failed, what to do next. Optional because
+  // they are `omitempty` on the wire - a row the node cached before agent
+  // migration 124, or one pulled from a server predating server migration 156,
+  // carries none of them and must render as ABSENCE, never as five empty
+  // headings. evidence_refs stay off this row on purpose: they are the
+  // server's own grounding tokens, not something to show a developer.
+  work_done?: string[];
+  plans_implemented?: string[];
+  issues_found?: string[];
+  failures?: string[];
+  next_steps?: string[];
   confidence: string;
   schema_version: string;
   fetched_at: string;

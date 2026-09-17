@@ -7,12 +7,13 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/remoteauth"
 )
 
 func newRemoteSessionTestDB(t *testing.T) *RemoteSessionPersister {
 	t.Helper()
-	database, err := db.Open(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "rs.db")})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "rs.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -103,7 +104,7 @@ func TestRemoteSessionResetClearsAndAdvancesMonotonically(t *testing.T) {
 
 func TestAdvanceRemoteSessionGeneration(t *testing.T) {
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "adv.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "adv.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

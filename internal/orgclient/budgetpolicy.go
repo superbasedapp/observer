@@ -84,6 +84,24 @@ type BudgetFetchOutcome struct {
 	// persisted clear, and a read that observed absence or malformed bytes.
 	// Native intervention requires it before acting.
 	Witness store.OrgBudgetWitness
+	// PushInterval is THIS node's resolved push cadence, stamped by the poll
+	// loop that produced the outcome (bundle BUD-N).
+	//
+	// It travels with the outcome because the composition boundary needs it to
+	// decide ONE thing: how old the body's cross-machine spend measurement
+	// (orgcontract.BudgetPolicyCap.SpentAsOf) may be before the node stops
+	// applying it — internal/orgbudget.BaselineMaxAge, which is two cadences
+	// plus slack. The org's number can only ever be as fresh as this node's own
+	// reporting, so a staleness window that did not come from the cadence would
+	// either reject every measurement (on a 15-minute estate) or accept
+	// arbitrarily old ones.
+	//
+	// It is stamped HERE rather than re-read from config at the boundary
+	// because the poll loop is what actually resolves the cadence (default
+	// substitution included), and two resolutions of one number is how they
+	// drift. Zero means a caller that never ran the loop, and the boundary
+	// falls back to the same default.
+	PushInterval time.Duration
 }
 
 // BudgetPolicyBinding derives the shared opaque identity for a budget
@@ -364,6 +382,21 @@ func (c *Client) budgetFetchRequest(ctx context.Context, enr *store.Enrolment, i
 			fmt.Errorf("orgclient.FetchBudgetPolicy: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+bearer)
+	// SAY WHICH MACHINE IS ASKING, so a developer running more than one node
+	// under the same member still receives the cross-machine spend baseline —
+	// the server cannot name the polling machine from a bearer that identifies
+	// only a MEMBER, and without a name it declines to subtract anything.
+	//
+	// It is the SAME value PushOnce puts in PushEnvelope.MachineIdentity, read
+	// through the same one accessor rather than recomputed: the server matches
+	// the header against the identities its own ingest recorded from those
+	// pushes, so a second derivation that ever disagreed would silently stop
+	// matching. An unmanaged enrolment has no machine identity, which is why
+	// the header is omitted rather than sent empty — an empty value is the
+	// same as absent and it is honest to say nothing.
+	if machine := orgcontract.SanitizeMachineHeader(c.ManagedMachineIdentity(ctx)); machine != "" {
+		req.Header.Set(orgcontract.HeaderMachineIdentity, machine)
+	}
 	cachedETag, cachedBody, cachedHave, cachedSigner, cachedIdentity, cachedWitness := c.budget.snapshot()
 	if cachedIdentity.Binding != identity.Binding {
 		cachedETag, cachedBody, cachedHave, cachedSigner = "", orgcontract.BudgetPolicyBody{}, false, ""

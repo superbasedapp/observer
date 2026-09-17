@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import clsx from "clsx";
-import { ChartShell, Pill, Tooltip } from "@/components/primitives";
+import { Button, ChartShell, Pill, Table, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { useApi } from "@/lib/useApi";
 import { fmtInt } from "@/lib/format";
@@ -56,13 +56,9 @@ export function ConnectedToolsSection() {
           </details>
         )}
         <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-line-1 pt-3 text-[11px] text-fg-3">
-          <button
-            type="button"
-            onClick={status.reload}
-            className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
-          >
+          <Button variant="secondary" size="sm" onClick={status.reload}>
             Refresh
-          </button>
+          </Button>
           <span>
             <strong className="font-semibold text-fg-2">Set up</strong> walks
             hooks, MCP, and proxy routing per tool with a preview before every
@@ -94,9 +90,10 @@ function ToolsTable({
     );
   }
   return (
-    <table className="w-full border-collapse text-[11.5px]">
-      <thead>
-        <tr className="text-left text-[10px] uppercase tracking-[0.06em] text-fg-3">
+    <Table
+      minWidth={720}
+      head={
+        <tr className="text-left">
           <th className="pb-1.5 pr-3 font-semibold">Tool</th>
           <th className="pb-1.5 pr-3 font-semibold">Detected</th>
           <th className="pb-1.5 pr-3 font-semibold">Capturing</th>
@@ -105,21 +102,20 @@ function ToolsTable({
           <th className="pb-1.5 pr-3 font-semibold">Proxied</th>
           <th className="pb-1.5 font-semibold"></th>
         </tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <ToolRow
-            key={r.tool}
-            row={r}
-            wizardOpen={openWizard === r.tool}
-            onToggleWizard={() =>
-              setOpenWizard(openWizard === r.tool ? null : r.tool)
-            }
-            onChanged={onChanged}
-          />
-        ))}
-      </tbody>
-    </table>
+      }
+    >
+      {rows.map((r) => (
+        <ToolRow
+          key={r.tool}
+          row={r}
+          wizardOpen={openWizard === r.tool}
+          onToggleWizard={() =>
+            setOpenWizard(openWizard === r.tool ? null : r.tool)
+          }
+          onChanged={onChanged}
+        />
+      ))}
+    </Table>
   );
 }
 
@@ -194,18 +190,13 @@ function ToolRow({
               <LaunchButton tool={r.tool} onResult={setLaunch} />
             )}
             {WIZARD_TOOLS.has(r.tool) && (
-              <button
-                type="button"
+              <Button
+                variant={wizardOpen ? "soft" : "secondary"}
+                size="sm"
                 onClick={onToggleWizard}
-                className={clsx(
-                  "rounded-2 border px-2.5 py-1 text-[11px]",
-                  wizardOpen
-                    ? "border-accent/40 bg-accent-soft text-accent"
-                    : "border-line-2 bg-bg-2 text-fg-2 hover:bg-bg-3",
-                )}
               >
                 {wizardOpen ? "Close" : "Set up"}
-              </button>
+              </Button>
             )}
           </span>
         </td>
@@ -283,14 +274,9 @@ function LaunchButton({
     }
   };
   return (
-    <button
-      type="button"
-      onClick={run}
-      disabled={busy}
-      className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3 disabled:opacity-50"
-    >
+    <Button variant="secondary" size="sm" onClick={run} loading={busy}>
       {busy ? "Launching…" : "Launch"}
-    </button>
+    </Button>
   );
 }
 
@@ -335,26 +321,18 @@ function LaunchResult({
             </span>
           </>
         )}
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="ml-auto text-[11px] text-fg-4 hover:text-fg-2"
-        >
+        <Button variant="ghost" size="sm" onClick={onDismiss} className="ml-auto">
           Dismiss
-        </button>
+        </Button>
       </div>
       {r.command && (
         <div className="mt-1.5 flex items-center gap-2">
-          <code className="select-all rounded-2 bg-bg-1 px-2 py-1 font-mono text-fg-1">
+          <code className="select-all rounded-2 bg-bg-3 px-2 py-1 font-mono text-fg-1">
             {r.command}
           </code>
-          <button
-            type="button"
-            onClick={copy}
-            className="rounded-2 border border-line-2 bg-bg-2 px-2 py-0.5 text-[11px] text-fg-2 hover:bg-bg-3"
-          >
+          <Button variant="secondary" size="sm" onClick={copy}>
             {copied ? "Copied" : "Copy"}
-          </button>
+          </Button>
         </div>
       )}
     </div>

@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
-import { ChartShell, Toggle, Tooltip } from "@/components/primitives";
+import {
+  Button,
+  ChartShell,
+  ConfirmButton,
+  Input,
+  JsonPreview,
+  Select,
+  Textarea,
+  Toggle,
+  Tooltip,
+} from "@/components/primitives";
 import type { ConfigResponse } from "@/lib/types";
 import { markRestartPending } from "@/lib/restartPending";
 import {
@@ -79,6 +89,17 @@ export function SchemaSection({
   const [keyErrors, setKeyErrors] = useState<Record<string, string>>({});
   const [conflict, setConflict] = useState<string[] | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  // Tier-B (list/map) saves re-serialize config.toml, so the first one of a
+  // session asks for a second click. The acknowledgement is remembered for
+  // the session, exactly as the old native prompt did.
+  const [tierBWarned, setTierBWarned] = useState(() => {
+    try {
+      return sessionStorage.getItem(TIER_B_WARNED_KEY) === "1";
+    } catch {
+      // no storage: ask every time
+      return false;
+    }
+  });
 
   // A config refresh (after save / reload) invalidates the draft.
   useEffect(() => {
@@ -96,6 +117,9 @@ export function SchemaSection({
     (l) => l.path in draft && !sameValue(draft[l.path], current(l)),
   );
   const dirty = dirtyLeaves.length > 0;
+  // list / map / table leaves: saving one re-serializes the whole file.
+  const tierBDirty = dirtyLeaves.filter((l) => !isScalarKind(l.kind));
+  const needsRewriteConfirm = tierBDirty.length > 0 && !tierBWarned;
 
   function setValue(leaf: ConfigSchemaLeaf, v: unknown) {
     setDraft((d) => ({ ...d, [leaf.path]: v }));
@@ -118,28 +142,13 @@ export function SchemaSection({
 
   async function save() {
     if (!config || !dirty) return;
-    const tierB = dirtyLeaves.filter((l) => !isScalarKind(l.kind));
-    if (tierB.length > 0) {
-      let warned = false;
-      try {
-        warned = sessionStorage.getItem(TIER_B_WARNED_KEY) === "1";
-      } catch {
-        // no storage: warn every time
-      }
-      if (!warned) {
-        const ok = window.confirm(
-          `Saving ${tierB.map((l) => l.path).join(", ")} rewrites ${config.config_path || "config.toml"}.\n\n` +
-            "Comments and formatting elsewhere in the file are not preserved (list and table values re-serialize the whole file). " +
-            "The previous version is saved to config.toml.bak.\n\nContinue?",
-        );
-        if (!ok) return;
-        try {
-          sessionStorage.setItem(TIER_B_WARNED_KEY, "1");
-        } catch {
-          // ignore
-        }
-      }
-    }
+    // The confirm step itself is the Save control (see ConfirmButton
+    // below) — reaching here means it was given, but the ack is only
+    // recorded once the save actually SUCCEEDS (below). Recording it here
+    // (before the fetch) meant a 409/5xx left the ack set while the edit
+    // that triggered it was never applied, so the very next Save fired
+    // unconfirmed against a rewrite it never got a confirmed "yes" for.
+    const willConsumeTierBConfirm = tierBDirty.length > 0 && !tierBWarned;
     setBusy(true);
     setErr(null);
     setKeyErrors({});
@@ -190,6 +199,16 @@ export function SchemaSection({
       if (out.write_mode === "reserialize") {
         msg += " The file was re-serialized (comments not preserved; prior version in .bak).";
       }
+      // Only now — the save actually landed — is the rewrite confirmation
+      // remembered for the rest of the session.
+      if (willConsumeTierBConfirm) {
+        setTierBWarned(true);
+        try {
+          sessionStorage.setItem(TIER_B_WARNED_KEY, "1");
+        } catch {
+          // ignore
+        }
+      }
       setSavedMsg(msg);
       if (out.restart_required_keys.length > 0) {
         markRestartPending(section, out.restart_required_keys);
@@ -235,23 +254,33 @@ export function SchemaSection({
       ))}
       {(leaves.length > 0 || compact) && (
         <div className="flex flex-wrap items-center gap-3 border-t border-line-1 pt-3">
-          <button
-            type="button"
-            onClick={save}
+          <ConfirmButton
+            onConfirm={save}
+            requireConfirm={needsRewriteConfirm}
+            confirmLabel="Confirm rewrite"
+            armedNote={
+              <>
+                Saving{" "}
+                <span className="font-mono">
+                  {tierBDirty.map((l) => l.path).join(", ")}
+                </span>{" "}
+                re-serializes {config?.config_path || "config.toml"}. Comments
+                and formatting elsewhere are not preserved; the previous
+                version is kept as config.toml.bak.
+              </>
+            }
+            variant="primary"
+            armedVariant="danger"
+            timeoutMs={8000}
             disabled={!dirty || busy || readOnly || !config}
+            loading={busy}
             title={readOnly ? "Managed by your organization" : undefined}
-            className="rounded-2 bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-on transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy ? "Saving…" : dirty ? `Save ${dirtyLeaves.length} change${dirtyLeaves.length === 1 ? "" : "s"}` : "Save"}
-          </button>
-          <button
-            type="button"
-            onClick={reset}
-            disabled={!dirty || busy}
-            className="rounded-2 border border-line-2 bg-bg-2 px-3 py-1.5 text-[12px] text-fg-2 hover:bg-bg-3 disabled:cursor-not-allowed disabled:opacity-40"
-          >
+          </ConfirmButton>
+          <Button onClick={reset} disabled={!dirty || busy}>
             Reset
-          </button>
+          </Button>
           {hasExpert && (
             <label className="flex items-center gap-1.5 text-[11px] text-fg-3">
               <input
@@ -280,13 +309,14 @@ export function SchemaSection({
             )}{" "}
             Reload to see the current values, then re-apply your edits.
           </div>
-          <button
-            type="button"
+          <Button
+            variant="soft"
+            size="sm"
             onClick={() => onSaved()}
-            className="mt-2 rounded-2 border border-accent/50 bg-accent/15 px-2 py-0.5 text-accent hover:bg-accent/25"
+            className="mt-2"
           >
             Reload values
-          </button>
+          </Button>
         </div>
       )}
       {hasSecret && (
@@ -502,18 +532,12 @@ function SecretState({ hasValue }: { hasValue: boolean }) {
   );
 }
 
+// A list / map / table value is structured, so it renders pretty-printed
+// and copyable rather than flattened onto one unreadable line. JsonPreview
+// also fills with bg-bg-3 — bg-bg-1 equals the card fill in the light
+// theme, which made the old block edgeless.
 function ReadOnlyValue({ value }: { value: unknown }) {
-  const text =
-    value == null
-      ? "(unset)"
-      : typeof value === "object"
-        ? JSON.stringify(value, null, 1).replace(/\n\s*/g, " ")
-        : String(value);
-  return (
-    <pre className="m-0 max-h-[120px] overflow-auto whitespace-pre-wrap rounded-2 border border-line-1 bg-bg-1 px-2.5 py-1.5 font-mono text-[11.5px] text-fg-3">
-      {text}
-    </pre>
-  );
+  return <JsonPreview value={value} maxHeight={120} emptyLabel="(unset)" />;
 }
 
 function LeafInput({
@@ -527,8 +551,6 @@ function LeafInput({
   onChange: (v: unknown) => void;
   disabled: boolean;
 }) {
-  const common =
-    "w-full rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1.5 font-mono text-[12px] text-fg-1 placeholder:text-fg-4 focus:border-accent focus:outline-none disabled:opacity-50";
   switch (leaf.kind) {
     case "bool": {
       const on = Boolean(value);
@@ -541,9 +563,9 @@ function LeafInput({
     case "int":
     case "float":
       return (
-        <input
+        <Input
+          mono
           type="number"
-          className={common}
           disabled={disabled}
           value={value == null || value === "" ? "" : Number(value)}
           min={leaf.min}
@@ -558,19 +580,19 @@ function LeafInput({
     case "string":
       if (leaf.enum && leaf.enum.length > 0) {
         return (
-          <select className={common} disabled={disabled} value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}>
-            {leaf.enum.map((o) => (
-              <option key={o} value={o}>
-                {o === "" ? "(default)" : o}
-              </option>
-            ))}
-          </select>
+          <Select
+            mono
+            disabled={disabled}
+            options={leaf.enum}
+            value={String(value ?? "")}
+            onChange={(e) => onChange(e.target.value)}
+          />
         );
       }
       return (
-        <input
+        <Input
+          mono
           type="text"
-          className={common}
           disabled={disabled}
           value={value == null ? "" : String(value)}
           onChange={(e) => onChange(e.target.value)}
@@ -578,13 +600,11 @@ function LeafInput({
       );
     case "string_list": {
       const arr = Array.isArray(value) ? (value as unknown[]).map(String) : [];
-      return (
-        <ListInput items={arr} onChange={onChange} disabled={disabled} className={common} />
-      );
+      return <ListInput items={arr} onChange={onChange} disabled={disabled} />;
     }
     case "string_map": {
       const obj = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-      return <MapInput entries={obj} onChange={onChange} disabled={disabled} className={common} />;
+      return <MapInput entries={obj} onChange={onChange} disabled={disabled} />;
     }
     default:
       return <ReadOnlyValue value={value} />;
@@ -597,12 +617,10 @@ function ListInput({
   items,
   onChange,
   disabled,
-  className,
 }: {
   items: string[];
   onChange: (v: unknown) => void;
   disabled: boolean;
-  className: string;
 }) {
   const [text, setText] = useState(items.join("\n"));
   useEffect(() => {
@@ -610,8 +628,9 @@ function ListInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items.join("\n")]);
   return (
-    <textarea
-      className={clsx(className, "min-h-[64px]")}
+    <Textarea
+      mono
+      className="min-h-[64px]"
       disabled={disabled}
       value={text}
       placeholder="one item per line"
@@ -633,12 +652,10 @@ function MapInput({
   entries,
   onChange,
   disabled,
-  className,
 }: {
   entries: Record<string, unknown>;
   onChange: (v: unknown) => void;
   disabled: boolean;
-  className: string;
 }) {
   const render = (o: Record<string, unknown>) =>
     Object.keys(o)
@@ -652,8 +669,9 @@ function MapInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   return (
-    <textarea
-      className={clsx(className, "min-h-[64px]")}
+    <Textarea
+      mono
+      className="min-h-[64px]"
       disabled={disabled}
       value={text}
       placeholder="key = value, one per line"

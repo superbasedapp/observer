@@ -173,6 +173,38 @@ type Guard struct {
 	// its fresh authority read and may use numeric caps only when it matches.
 	effBudgetBinding   atomic.Pointer[string]
 	effBudgetCalendars atomic.Pointer[BudgetCalendars]
+	// effBudgetSubjects / effBudgetBaseline are the org's PER-TOOL and
+	// PER-MODEL caps and the CROSS-MACHINE spend baseline (bundle BUD-N),
+	// published by ApplyOrgBudgetSubjects and read in the same two places
+	// everything else on this rail is: buildEngine (the caps, so a later
+	// rebuild cannot revert them) and stampBudget (the baseline, so every
+	// budget row compares against one consistent pair).
+	//
+	// They ride beside effBudget rather than inside it for the same reason
+	// effBudgetSoft does: config.GuardBudgetConfig must stay exactly the
+	// operator's own [guard.budget] block, and neither of these is a key an
+	// operator may author.
+	effBudgetSubjects atomic.Pointer[[]policy.BudgetSubjectCap]
+	effBudgetBaseline atomic.Pointer[policy.BudgetWindowAmounts]
+	// effBudgetBaselineFlagOnly says the published baseline may WARN and may
+	// not deny (orgcontract.BudgetBaselineAppliedFlagOnly): the org counted
+	// rows it could not attribute to a machine, so the number may overlap this
+	// node's own spend. Its own field rather than a member of
+	// policy.BudgetWindowAmounts because that type is ALSO the per-tool and
+	// per-model usage shape, where the flag would mean nothing.
+	effBudgetBaselineFlagOnly atomic.Bool
+	// effBudgetSubjectUnmatched records that a published per-tool / per-model
+	// cap's id did not appear in the accounting keys of the last full
+	// accounting pass — the cap is in force and biting nothing on this node. It
+	// is an OBSERVATION, written by the budget stamp and read only by the
+	// posture boundary; nothing in the decision path consults it.
+	effBudgetSubjectUnmatched atomic.Bool
+	// budgetSubjectResolver folds a captured tool/model id onto the identity
+	// the org's subject caps were composed onto. Installed ONCE at composition
+	// (SetBudgetSubjectResolver), like budgetLookup; nil means the plain
+	// trim+lowercase normalisation, which is what a hook process and a node
+	// with no price table both get.
+	budgetSubjectResolver func(kind, id string) string
 	// reloadMu serializes ReloadOrgLayer construct+publish so a
 	// concurrent reload can never publish an OLDER snapshot over a
 	// newer one (the production caller is single-threaded — the mutex
@@ -448,8 +480,12 @@ func (g *Guard) buildEngine(mode policy.Mode, org, user, project *policyFile) (*
 		BudgetDailyTokens:   budget.DailyTokens,
 		BudgetWeeklyTokens:  budget.WeeklyTokens,
 		BudgetMonthlyTokens: budget.MonthlyTokens,
-		BudgetHard:          budget.Hard,
-		BudgetProtection:    g.budgetProtection(),
+		// The organization's per-tool / per-model caps (B-626..B-629). Read
+		// here, in the one rebuild funnel, so a project layer loading lazily
+		// cannot silently drop a cap the org authored.
+		BudgetSubjectCaps: g.budgetSubjectCaps(),
+		BudgetHard:        budget.Hard,
+		BudgetProtection:  g.budgetProtection(),
 		// The fail-closed row (B-625): armed only by an org-composed posture
 		// that says this managed node may not run without the organization's
 		// budget. Zero on every individual node.

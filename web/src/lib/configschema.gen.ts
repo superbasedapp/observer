@@ -25,6 +25,8 @@ export type ConfigKeyPath =
   "observer.retention.interval_hours" |
   "observer.retention.wal_alert_mb" |
   "observer.retention.wal_watch_minutes" |
+  "observer.retention.compaction_events_days" |
+  "observer.retention.compression_events_days" |
   "observer.hooks.timeout_ms" |
   "observer.hooks.auto_register" |
   "observer.antigravity.network_recovery" |
@@ -217,6 +219,16 @@ export type ConfigKeyPath =
   "predict.prior_window_days" |
   "loc.editor_token_file" |
   "loc.editor_token_required" |
+  "guidance.enabled" |
+  "guidance.rescan_minutes" |
+  "guidance.max_file_bytes" |
+  "guidance.max_depth" |
+  "guidance.include_user_scope" |
+  "guidance.max_roots_per_pass" |
+  "guidance.root_timeout_seconds" |
+  "guidance.pass_timeout_minutes" |
+  "guidance.startup_delay_seconds" |
+  "guidance.first_scan_poll_seconds" |
   "update.enabled" |
   "update.channel" |
   "update.auto_apply" |

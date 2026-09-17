@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -461,7 +462,7 @@ func TestFetchPricingPolicyPublicationLockOrdersBlockingSinks(t *testing.T) {
 
 func newExposedPricingIdentityClient(t *testing.T) (*Client, *store.Store, *sql.DB) {
 	t.Helper()
-	database, err := db.Open(context.Background(), db.Options{
+	database, err := dbtemplate.Open(context.Background(), db.Options{
 		Path:        filepath.Join(t.TempDir(), "pricing.db"),
 		BusyTimeout: 50 * time.Millisecond,
 	})

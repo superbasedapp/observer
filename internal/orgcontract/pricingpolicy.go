@@ -154,6 +154,12 @@ type PricingPolicyBody struct {
 	// GeneratedAt is the RFC3339 instant the server FLATTENED the dated rows
 	// at. It is what makes a stale document diagnosable: a node applying a
 	// document generated three weeks ago has missed a rate boundary.
+	//
+	// It is TRUNCATED TO THE MINUTE by the server, because it sits inside the
+	// signed bytes the ETag digests: a per-second stamp moved the validator
+	// every second and re-downloaded an unchanged price list across the whole
+	// fleet. Nothing may read it as a monotonic signal or at second precision —
+	// [PricingPolicyBody.Version] is what orders two documents.
 	GeneratedAt string `json:"generated_at"`
 	// Rows are the effective rows at GeneratedAt, one per model, sorted by
 	// model id so the bytes are stable for a digest and a golden test.

@@ -502,6 +502,9 @@ const scanProxyRequestTestCeiling = 50 * time.Millisecond
 // Skipped under `-short`; otherwise runs a few iterations and fails if
 // the mean per-call cost exceeds scanProxyRequestTestCeiling.
 func TestScanProxyRequest_LatencyRegression(t *testing.T) {
+	if raceDetectorOn {
+		t.Skip("wall-clock latency ceiling is not measurable under the race detector; ci.yml's static go job runs this without -race")
+	}
 	if testing.Short() {
 		t.Skip("wall-clock latency assertion skipped under -short")
 	}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -182,7 +183,7 @@ func TestCheckOrgKeyIdentity_DistinguishesStoreReadFromMismatch(t *testing.T) {
 	})
 
 	t.Run("store read failure is errPinStoreRead, not errPinMismatch", func(t *testing.T) {
-		database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+		database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
 		if err != nil {
 			t.Fatalf("db.Open: %v", err)
 		}

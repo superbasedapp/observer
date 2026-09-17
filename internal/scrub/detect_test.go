@@ -459,6 +459,127 @@ func TestCertainSecretTypes_NeverFlagsEmail(t *testing.T) {
 	}
 }
 
+// TestSecretOnlyScanMatchesFullTableScan is the MHC-3 equivalence pin
+// (codebase audit 2026-09-16): narrowing the secret-only entry points to
+// secretOnlyDetectors must be a PERFORMANCE change and nothing else. For a
+// corpus of bodies mixing secrets, PII, prose, code fences and adjacency
+// cases, the findings DetectSecrets returns — and the string MaskSecrets
+// produces — must be byte-identical to the old behavior (scan the FULL table,
+// then drop the PII rows).
+//
+// The old behavior is reconstructed here rather than left in production code,
+// so this test fails loudly if the two ever diverge. The interesting risk it
+// covers is OVERLAP: findTypedShielded resolves span overlaps BEFORE the class
+// filter runs, so under the old code a PII match starting before an
+// overlapping secret match could suppress that secret. If any such body
+// existed, the new scan would report a finding the old one swallowed and this
+// test would catch it.
+func TestSecretOnlyScanMatchesFullTableScan(t *testing.T) {
+	t.Parallel()
+
+	fullTableSecrets := func(v string) []TypedFinding {
+		shielded, _ := shieldFernetEncryptedContent(v)
+		return filterFindings(findTypedShielded(shielded, defaultDetectOptions()), classPII, true)
+	}
+	fullTableMask := func(v string, shouldMask func(TypedFinding) bool) (string, []TypedFinding) {
+		shielded, restorations := shieldFernetEncryptedContent(v)
+		matches := excludeClassMatches(findTypedShielded(shielded, defaultDetectOptions()), classPII)
+		findings := make([]TypedFinding, 0, len(matches))
+		for _, m := range matches {
+			findings = append(findings, m.finding)
+		}
+		if shouldMask == nil {
+			return v, findings
+		}
+		var b strings.Builder
+		b.Grow(len(shielded))
+		last := 0
+		masked := false
+		for _, m := range matches {
+			if !shouldMask(m.finding) {
+				continue
+			}
+			b.WriteString(shielded[last:m.start])
+			b.WriteString("[REDACTED:" + m.finding.Type + "]")
+			last = m.end
+			masked = true
+		}
+		if !masked {
+			return v, findings
+		}
+		b.WriteString(shielded[last:])
+		return restoreShielded(b.String(), restorations), findings
+	}
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"empty", ""},
+		{"prose only", "the deploy finished and the tests are green"},
+		{"secret only", `ghp_abcdefghijklmnopqrstuvwxyz0123`},
+		{"pii only", "contact dev@corp.io or call +15551234567 (phone)"},
+		{"secret and pii", `{"password": "hunter2hunter2", "owner": "dev@corp.io"}`},
+		{"pii inside a secret value", `{"password": "dev@corp.io"}`},
+		{"connection string with an email-shaped user", "postgres://svc:p4ssw0rdlong@db.example.com:5432/app"},
+		{"email immediately before an assignment", "dev@corp.io token=abcdefghijkl"},
+		{"assignment immediately before an email", "token=abcdefghijkl dev@corp.io"},
+		{"card then key", "card 4532015112830366 AKIA0123456789ABCDEF"},
+		{"key then card", "AKIA0123456789ABCDEF card 4532015112830366"},
+		{"ssn adjacent to a bearer header", "ssn 245-11-1234 Authorization: Bearer abcdefgh1234"},
+		{"fenced code with both classes", "```\nexport API_KEY=sk_live_0123456789abcdef\nemail dev@corp.io\n```"},
+		{"iban and jwt", "GB29NWBK60161331926819 eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk"},
+		{"pii dense", piiDenseBody(4096)},
+		{"clean code", cleanTextBody(4096)},
+		{"secret in a pii-dense body", piiDenseBody(4096) + "\nghp_abcdefghijklmnopqrstuvwxyz0123\n"},
+	}
+
+	maskAll := func(TypedFinding) bool { return true }
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			want := fullTableSecrets(tc.body)
+			got := DetectSecrets(tc.body)
+			if fmt.Sprintf("%+v", want) != fmt.Sprintf("%+v", got) {
+				t.Errorf("DetectSecrets diverged from the full-table scan\n full: %+v\n  new: %+v", want, got)
+			}
+			wantMasked, wantFindings := fullTableMask(tc.body, maskAll)
+			gotMasked, gotFindings := MaskSecrets(tc.body, maskAll)
+			if wantMasked != gotMasked {
+				t.Errorf("MaskSecrets output diverged\n full: %q\n  new: %q", wantMasked, gotMasked)
+			}
+			if fmt.Sprintf("%+v", wantFindings) != fmt.Sprintf("%+v", gotFindings) {
+				t.Errorf("MaskSecrets findings diverged\n full: %+v\n  new: %+v", wantFindings, gotFindings)
+			}
+		})
+	}
+}
+
+// TestSecretOnlyDetectorsCoversEverySecretRow pins the derivation of the
+// active set: it is built from the table in init(), never hand-listed, so a
+// new class-secret row must appear in it automatically and no PII row may.
+// "entropy" is in it although it has no table row (DetectorClass calls it
+// secret) — without that, DetectSecrets would silently lose the heuristic.
+func TestSecretOnlyDetectorsCoversEverySecretRow(t *testing.T) {
+	t.Parallel()
+	for i := range typedDetectors {
+		d := &typedDetectors[i]
+		want := d.class == classSecret
+		if got := secretOnlyDetectors[d.name]; got != want {
+			t.Errorf("secretOnlyDetectors[%q] = %v, want %v (class %q)", d.name, got, want, d.class)
+		}
+	}
+	if !secretOnlyDetectors["entropy"] {
+		t.Error(`secretOnlyDetectors is missing "entropy" — DetectSecrets would lose the context-gated heuristic half of its answer`)
+	}
+	if anyNumericCandidateActive(secretOnlyDetectors) {
+		t.Error("a numericCandidate detector is active in the secret-only set — every digit-shaped row is PII, so the numeric pre-pass must be skippable")
+	}
+	if !anyNumericCandidateActive(nil) {
+		t.Error("anyNumericCandidateActive(nil) must report true — a nil active set means every detector runs")
+	}
+}
+
 // TestDetectSecrets_ExcludesEveryPIIClassRow walks every PII-classified
 // row (email, phone, credit_card, ...) through the secret-only API and
 // asserts none of them ever surface there — DetectSecrets/

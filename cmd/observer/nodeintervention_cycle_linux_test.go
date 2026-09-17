@@ -17,6 +17,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/intervention"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -66,7 +67,7 @@ func TestNodeInterventionDirectProcessStopsFromNativeSpend(t *testing.T) {
 	// SQLite migrations are not part of the process-intervention latency.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +215,7 @@ func TestNodeInterventionScopesAccountingFailureToItsOwnTool(t *testing.T) {
 	rewriteBudgetLaunchEnrolment(t, dbPath, func(e *store.Enrolment) { e.UserID = "fixture-member" })
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -37,6 +37,15 @@ export function OrgIntelCard({ sessionId }: { sessionId: string }) {
     taxonomyTags: r.taxonomy_tags,
     suggestedTags: r.suggested_tags,
     limitations: r.limitations,
+    // The five narrative lists go straight into the SHARED card, which already
+    // owns the one narrative renderer - the node drawer does not get a second
+    // copy of it. Each is undefined when the org sent none, and the card omits
+    // an absent list rather than printing an empty heading.
+    workDone: r.work_done,
+    plansImplemented: r.plans_implemented,
+    issuesFound: r.issues_found,
+    failures: r.failures,
+    nextSteps: r.next_steps,
     schemaVersion: r.schema_version,
     generatedAt: r.fetched_at,
   };

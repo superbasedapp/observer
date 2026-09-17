@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/proxy"
 	"github.com/marmutapp/superbased-observer/internal/routing"
@@ -23,7 +24,7 @@ import (
 func liveRouterFixture(t *testing.T, mode string) (*liveRouter, *store.Store, int64) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "observer.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "observer.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -285,7 +286,7 @@ func TestRunRoutingCalibration_EndToEnd(t *testing.T) {
 // enough to get a router with NO change to this function.
 func TestWireRouting_RoutingEnabledGate(t *testing.T) {
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "observer.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "observer.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

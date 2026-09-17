@@ -56,7 +56,13 @@ func TestMaxAckPendingRetainsCreditAcrossNakAndReplicas(t *testing.T) {
 	if err := retry[0].Ack(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	next, err := first.Fetch(t.Context(), 64, time.Second)
+	// A JetStream Ack is fire-and-forget, and under MaxAckPending=1 the next
+	// record is only released once the server has PROCESSED that ack. The
+	// assertion is "the credit comes back", not "within one second", so the
+	// window is generous: a one-second window loses this race whenever the box
+	// is busy (two test packages in parallel on a 2-core runner) and turns a
+	// correct adapter into a red build.
+	next, err := first.Fetch(t.Context(), 64, 10*time.Second)
 	if err != nil || len(next) != 1 || next[0].Sequence() != 2 {
 		t.Fatalf("next=%v err=%v", next, err)
 	}

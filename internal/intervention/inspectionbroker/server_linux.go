@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/intervention"
@@ -14,14 +15,41 @@ import (
 
 const acceptPollInterval = 250 * time.Millisecond
 
+// maxConcurrentConnections bounds how many accepted connections this Server
+// serves at once. Each one may fork a subprocess (the production
+// AuthorizePeer shells out to systemctl show) and read /proc for the
+// requested target, so an unbounded goroutine-per-connection accept loop
+// would let a burst of local connections exhaust process/file-descriptor
+// limits; a small bound keeps that cost capped while still letting requests
+// run in parallel instead of serially queueing behind acceptPollInterval.
+const maxConcurrentConnections = 8
+
 // Server serves bounded identity reads for one configured operating-system
 // user. AuthorizePeer must independently bind Peer to the trusted, installed
 // controller process; a matching UID alone is never sufficient.
 type Server struct {
 	TargetUID int
 	IOTimeout time.Duration
-	// AuthorizePeer is called before target inspection and again immediately
-	// before a successful response, fencing controller replacement.
+	// AuthorizePeer is called exactly once per request, immediately before a
+	// successful response, fencing controller replacement across the whole
+	// request window: target inspection (which can take real wall-clock
+	// time — two /proc reads bracketing a stability check) runs first, so a
+	// controller that stopped being the trusted, installed process during
+	// that window is still caught before anything is disclosed.
+	//
+	// It is deliberately NOT also called before target inspection any more
+	// (removed by INT-1 to stop forking systemctl-show twice per request).
+	// That is a real behavior change, not a free one: a same-UID peer that
+	// is NOT the legitimate controller previously got refused with zero
+	// /proc work; now it drives two full Inspect passes on every request
+	// before this single call refuses it. That is a bounded self-DoS shape
+	// (capped by maxConcurrentConnections and IOTimeout, like any other
+	// request here) — never a disclosure risk, since nothing is written to
+	// the connection until this call succeeds. No cheap pre-inspect gate
+	// (e.g. a short-TTL cache of the last authorized controller pid/uid)
+	// exists to avoid that extra work; adding one is future work, not done
+	// here, because a cached "authorized" verdict is itself a window a
+	// controller replacement could ride through undetected.
 	AuthorizePeer func(context.Context, Peer) error
 	// Inspect defaults to intervention.Inspect. An override is intended for
 	// deterministic tests of target identity changes.
@@ -31,7 +59,14 @@ type Server struct {
 }
 
 // Serve accepts one request per connection until ctx is canceled. The caller
-// creates and owns listener and its root-owned filesystem path.
+// creates and owns listener and its root-owned filesystem path. Accepted
+// connections are served concurrently, bounded by maxConcurrentConnections:
+// a slow or malicious peer's request (bounded by IOTimeout regardless) can
+// no longer stall every other queued connection behind it, but a burst of
+// connections still can't spawn unbounded goroutines/subprocesses. Serve
+// waits for every in-flight connection to finish before returning, so a
+// caller that cancels ctx never has an orphaned goroutine still holding the
+// listener's root-owned socket.
 func (server Server) Serve(ctx context.Context, listener *net.UnixListener) error {
 	if ctx == nil || listener == nil || server.TargetUID < 0 || server.AuthorizePeer == nil {
 		return ErrInvalidRequest
@@ -43,6 +78,9 @@ func (server Server) Serve(ctx context.Context, listener *net.UnixListener) erro
 	if effectiveUID() != 0 {
 		return ErrUnauthorized
 	}
+	semaphore := make(chan struct{}, maxConcurrentConnections)
+	var inFlight sync.WaitGroup
+	defer inFlight.Wait()
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil
@@ -65,7 +103,18 @@ func (server Server) Serve(ctx context.Context, listener *net.UnixListener) erro
 			}
 			return ErrUnavailable
 		}
-		server.serveConnection(ctx, connection)
+		select {
+		case semaphore <- struct{}{}:
+			inFlight.Add(1)
+			go func() {
+				defer inFlight.Done()
+				defer func() { <-semaphore }()
+				server.serveConnection(ctx, connection)
+			}()
+		case <-ctx.Done():
+			_ = connection.Close()
+			return nil
+		}
 	}
 }
 
@@ -91,7 +140,7 @@ func (server Server) serveConnection(ctx context.Context, connection *net.UnixCo
 		server.writeError(connection, request.Nonce, codeInvalidRequest)
 		return
 	}
-	if peer.UID != server.TargetUID || server.AuthorizePeer(requestContext, peer) != nil {
+	if peer.UID != server.TargetUID {
 		server.writeError(connection, request.Nonce, codeUnauthorized)
 		return
 	}

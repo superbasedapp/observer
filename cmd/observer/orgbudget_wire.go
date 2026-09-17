@@ -152,6 +152,23 @@ func (h *orgBudgetHandle) apply(o orgclient.BudgetFetchOutcome) {
 		HaveBody:   o.HaveBody,
 		FetchState: o.State,
 		GuardMode:  h.guardMode(),
+		// The clock and the staleness window for the org's CROSS-MACHINE spend
+		// baseline (bundle BUD-N / P1-9). The window is derived from the
+		// cadence the poll loop stamped on this very outcome, because the org's
+		// measurement can only be as fresh as this node's own reporting; the
+		// pure composer takes both as inputs so a freshness test is a table row
+		// and not a sleep.
+		Now:            time.Now().UTC(),
+		BaselineMaxAge: orgbudget.BaselineMaxAge(o.PushInterval),
+		// ONE SUBJECT IDENTITY, taken from the guard rather than rebuilt here
+		// (bundle BUD-N, adversarial review P1-3). The same function the
+		// accounting owner keys ByTool / ByModel with and the budget stamp reads
+		// the event's tool and model through — so the org's cap id, this node's
+		// accounting key and the evaluated event cannot spell a subject three
+		// ways. A nil guard (guard off, or the CLI's own recomposition) leaves
+		// it nil, which is the plain trim+lowercase rule the contract already
+		// applied.
+		ResolveSubjectID: h.guard.BudgetSubjectResolver(),
 	}
 	if h.authoritative != nil {
 		// ONE predicate, TWO capabilities (org-budget ruling R2). The
@@ -189,12 +206,32 @@ func (h *orgBudgetHandle) apply(o orgclient.BudgetFetchOutcome) {
 	if h.guard == nil {
 		return
 	}
-	if err := h.guard.ApplyOrgBudgetWithWitness(withThresholds(h.local, effective), effective.SoftWindows,
-		effective.BudgetRequired, budgetProtectionOf(effective.Protection), o.Binding, guardBudgetDocumentWitness(o.Witness),
-		guard.BudgetCalendars{DailyTimezone: effective.DailyTimezone, MonthlyTimezone: effective.MonthlyTimezone}); err != nil {
+	// ONE COMPOSITION, ONE PUBLICATION (adversarial review of BUD-N, P2-6).
+	//
+	// The org's PER-TOOL / PER-MODEL caps and the cross-machine baseline are
+	// not ceilings on config.GuardBudgetConfig — that type is the operator's
+	// own [guard.budget] block and a comparable value the guard's no-op check
+	// depends on — so they travel as what they are: a resolved cap table and
+	// one set of addends. They used to travel on their OWN apply, which meant
+	// two engine rebuilds per cycle and, between them, a live engine holding
+	// the NEW cap table against the PREVIOUS authority provenance and the
+	// previous fail-closed posture — a snapshot no composition ever produced. A
+	// request arriving in that window could be judged against a cap the org had
+	// just authored under authority it had just revoked, or the reverse.
+	//
+	// They come out of one signed body and one Compose call, so they are
+	// published together and the engine is rebuilt once. The call is a no-op
+	// when nothing changed, so the steady state stays free.
+	if err := h.guard.ApplyOrgComposedBudget(
+		withThresholds(h.local, effective), effective.SoftWindows,
+		effective.BudgetRequired, budgetProtectionOf(effective.Protection),
+		o.Binding, guardBudgetDocumentWitness(o.Witness),
+		budgetBaselineOf(effective.Baseline), effective.Baseline.FlagOnly, subjectCapsOf(effective.Subjects),
+		guard.BudgetCalendars{DailyTimezone: effective.DailyTimezone, MonthlyTimezone: effective.MonthlyTimezone},
+	); err != nil {
 		// Fail-open and LOUD: the guard kept its previous engine, so nothing
 		// broke, but an org cap that could not be applied must not be silent.
-		h.logger.Warn("org budget not applied; the guard kept its previous thresholds",
+		h.logger.Warn("org budget not applied; the guard kept its previous thresholds and cap table",
 			"source", posture.Source, "fetch_state", posture.FetchState, "err", err)
 	}
 }
@@ -247,6 +284,16 @@ func (h *orgBudgetHandle) guardMode() string {
 
 // postureProvider is the store seam: the last published posture, or ok=false
 // before anything has been composed (in which case no row ships at all).
+//
+// OrgSubjectUnmatched is stamped HERE rather than inside Compose, and read at
+// PUSH time rather than at budget-fetch time, for the reason the pricing
+// coverage decorator gives (cmd/observer/budgetpricingcoverage.go): it is not a
+// property of the COMPOSITION, it is what the node's own accounting observed
+// about the caps that composition produced. Compose knows the cap ids and has
+// never seen a row; the guard's budget stamp holds both and records the answer
+// there. Reading it at push time means the row describes the accounting that is
+// actually running, not the accounting that was running when the org's document
+// last arrived.
 func (h *orgBudgetHandle) postureProvider() store.BudgetPostureProvider {
 	return func() (orgcontract.BudgetPostureRow, bool) {
 		if h == nil {
@@ -256,7 +303,9 @@ func (h *orgBudgetHandle) postureProvider() store.BudgetPostureProvider {
 		if row == nil {
 			return orgcontract.BudgetPostureRow{}, false
 		}
-		return *row, true
+		out := *row
+		out.OrgSubjectUnmatched = h.guard.BudgetSubjectUnmatched()
+		return out, true
 	}
 }
 
@@ -279,6 +328,39 @@ func budgetProtectionOf(p orgbudget.BudgetProtection) policy.BudgetProtection {
 		WeeklyUSD: p.WeeklyUSD, MonthlyUSD: p.MonthlyUSD,
 		SessionTokens: p.SessionTokens, DailyTokens: p.DailyTokens,
 		WeeklyTokens: p.WeeklyTokens, MonthlyTokens: p.MonthlyTokens,
+		ToolUSD: p.ToolUSD, ToolTokens: p.ToolTokens,
+		ModelUSD: p.ModelUSD, ModelTokens: p.ModelTokens,
+	}
+}
+
+// subjectCapsOf projects the composed per-subject caps onto the guard's shape.
+// The third conversion at this boundary, for the same reason as the other two:
+// internal/orgbudget must not import internal/policy.
+func subjectCapsOf(in []orgbudget.SubjectCap) []policy.BudgetSubjectCap {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]policy.BudgetSubjectCap, 0, len(in))
+	for _, sc := range in {
+		out = append(out, policy.BudgetSubjectCap{
+			Kind: sc.Kind, ID: sc.ID, Window: sc.Window,
+			CapUSD: sc.CapUSD, CapTokens: sc.CapTokens,
+			BaselineUSD: sc.BaselineUSD, BaselineTokens: sc.BaselineTokens,
+			BaselineFlagOnly: sc.BaselineFlagOnly,
+			Hard:             sc.Hard,
+		})
+	}
+	return out
+}
+
+// budgetBaselineOf projects the composed cross-machine baseline onto the shape
+// the guard stamps onto every budget event.
+func budgetBaselineOf(b orgbudget.Baseline) policy.BudgetWindowAmounts {
+	return policy.BudgetWindowAmounts{
+		SessionUSD: b.SessionUSD, DailyUSD: b.DailyUSD,
+		WeeklyUSD: b.WeeklyUSD, MonthlyUSD: b.MonthlyUSD,
+		SessionTokens: b.SessionTokens, DailyTokens: b.DailyTokens,
+		WeeklyTokens: b.WeeklyTokens, MonthlyTokens: b.MonthlyTokens,
 	}
 }
 

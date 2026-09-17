@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -353,7 +354,7 @@ func TestLoadPersistedBudgetRejectsReplacedEnrollment(t *testing.T) {
 func TestLoadPersistedBudgetRejectsLegacyUnboundCache(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +461,7 @@ func TestLoadPersistedBudgetDistinguishesMissingAndMalformedWitness(t *testing.T
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+			database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
 			if err != nil {
 				t.Fatal(err)
 			}

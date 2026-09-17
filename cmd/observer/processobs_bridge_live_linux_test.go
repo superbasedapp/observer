@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/processobs"
 	"github.com/marmutapp/superbased-observer/internal/processobs/bridge"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -45,7 +46,7 @@ func TestProcessBridgeLive_CrossOSAttribution(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestProcessBridgeLive_EnvTokenAttribution(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

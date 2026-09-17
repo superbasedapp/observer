@@ -128,6 +128,54 @@ func isFull(err error) bool {
 		strings.Contains(s, "resource limits exceeded")
 }
 
+// isConsumerGone reports whether err says the durable consumer no longer
+// exists (JetStream 404 / error code 10014). It is NOT a transport failure: the
+// connection is fine, the durable is not there — the only recovery is a
+// Subscribe by the same name, so the adapter maps it onto
+// telemetrylog.ErrReattachRequired rather than ErrUnavailable.
+func isConsumerGone(err error) bool {
+	if errors.Is(err, jetstream.ErrConsumerNotFound) {
+		return true
+	}
+	if ae := apiErr(err); ae != nil && ae.ErrorCode == jetstream.JSErrCodeConsumerNotFound {
+		return true
+	}
+	return false
+}
+
+// isStreamGone reports whether err says the STREAM no longer exists (JetStream
+// 404 / error code 10059). Like isConsumerGone it is not a transport failure —
+// the connection is healthy, the stream is simply absent — but unlike a missing
+// durable it cannot be healed by a re-Subscribe: only a re-provision
+// (Reconnect) can, so the caller maps it onto telemetrylog.ErrReconnectRequired.
+func isStreamGone(err error) bool {
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		return true
+	}
+	if ae := apiErr(err); ae != nil && ae.ErrorCode == jetstream.JSErrCodeStreamNotFound {
+		return true
+	}
+	return false
+}
+
+// isConsumerExists reports whether err says a durable with this name already
+// exists — the lost half of the probe-then-create race in
+// attachOrCreateConsumer (a competing subscriber, or JetStream's store recovery
+// completing between the two calls). It is never a fault: the winner's durable
+// is authoritative and the caller attaches to it.
+func isConsumerExists(err error) bool {
+	if errors.Is(err, jetstream.ErrConsumerExists) || errors.Is(err, jetstream.ErrConsumerNameAlreadyInUse) {
+		return true
+	}
+	if ae := apiErr(err); ae != nil {
+		switch ae.ErrorCode {
+		case jetstream.JSErrCodeConsumerExists, jetstream.JSErrCodeConsumerAlreadyExists:
+			return true
+		}
+	}
+	return false
+}
+
 // isUnavailable reports whether err is a connection-level / timeout failure.
 func isUnavailable(err error) bool {
 	return errors.Is(err, nats.ErrNoResponders) ||

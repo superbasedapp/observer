@@ -17,6 +17,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/cloudcontract"
 	"github.com/marmutapp/superbased-observer/internal/cloudevidence"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // TestCloudStandardTaxonomyTags pins the auto-merge rule: only slugs from the
@@ -57,7 +58,7 @@ func TestCloudStandardTaxonomyTags(t *testing.T) {
 func seedRichCloudSession(t *testing.T, dbPath, sessionID string) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -368,7 +369,7 @@ func TestCloudFieldClassesJSONUsesTheClosedVocabulary(t *testing.T) {
 func seedPricedCloudSession(t *testing.T, dbPath, sessionID string, rows []pricedTokenRow) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -475,7 +476,7 @@ func TestCloudSessionCostPrefersRecordedCost(t *testing.T) {
 	st, cleanup := openCloudTestStore(t, dbPath)
 	defer cleanup()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -534,7 +535,7 @@ func TestCloudEnvelopeOutcomesComeFromTheWholeSession(t *testing.T) {
 func seedWideCloudSession(t *testing.T, dbPath, sessionID string, n int) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/adapter/browserchat"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	browseringest "github.com/marmutapp/superbased-observer/internal/ingest/browser"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -28,7 +29,7 @@ import (
 func openTestStore(t *testing.T) (*store.Store, *sql.DB) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "observer.db")
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -191,7 +192,7 @@ func TestBrowserHookEndToEnd(t *testing.T) {
 	os.Stdin, os.Stdout = oldStdin, oldStdout
 
 	// Assert the rows landed.
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -296,7 +297,7 @@ func TestHandleBrowserHookOverLimitRecordsKeyedDrop(t *testing.T) {
 	}
 
 	// No rows landed — the truncated turn was NOT normalized/inserted.
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

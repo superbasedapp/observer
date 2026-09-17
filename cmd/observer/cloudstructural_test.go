@@ -13,6 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/cloudevidence"
 	"github.com/marmutapp/superbased-observer/internal/cloudgateway"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -27,7 +28,7 @@ import (
 func seedCloudSessionAt(t *testing.T, dbPath, sessionID string, started time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -566,7 +567,7 @@ func TestCloudCaptureExcludesNonPersonalSessions(t *testing.T) {
 
 	// An org session INSIDE the captured window.
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

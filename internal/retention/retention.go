@@ -142,6 +142,14 @@ type Result struct {
 	// touches the table; runRetention calls store.PruneOrgIntelCache and sets
 	// this field (finding 7).
 	OrgIntelCacheDeleted int
+	// EventRowsDeleted is the per-table row count removed by the bounded,
+	// table-driven event sweep (events.go): compaction_events and
+	// compression_events, the two node-local append-only event tables that
+	// had NO retention horizon at all until 2026-09-16 and between them held
+	// ~2.3 GiB on the operator's 33 GiB live DB. Keyed by table name so a
+	// third horizon is a data row, not a third Result field. A table whose
+	// horizon is 0 (keep forever) is absent from the map.
+	EventRowsDeleted EventSweepCounts
 }
 
 // Options parameterize Run.
@@ -170,6 +178,10 @@ type Options struct {
 	// (defaultIncrementalVacuumPages ≈ 200MB at 4KiB pages); negative
 	// disables the step.
 	IncrementalVacuumPages int
+	// EventSweep carries the per-table horizons for the bounded event sweep
+	// (events.go). Zero on a field means keep forever, so the zero Options
+	// value is byte-identical to pre-2026-09-16 behaviour.
+	EventSweep EventSweepDays
 }
 
 // Pruner runs retention on a database.
@@ -218,6 +230,18 @@ func (p *Pruner) Run(ctx context.Context, opts Options) (Result, error) {
 		return res, err
 	}
 	res.FileStateDeleted = n
+
+	// Bounded, table-driven event sweep (events.go). Placed after the
+	// actions/session passes and before the WAL checkpoint so the pages it
+	// frees are part of the same reclamation step; a compaction_events row
+	// deleted here also unblocks its session from the NEXT pass's
+	// deleteOrphanedSessions (which treats a surviving compaction row as a
+	// reason to keep the session).
+	swept, serr := p.sweepEventTables(ctx, opts.EventSweep)
+	res.EventRowsDeleted = swept
+	if serr != nil {
+		return res, serr
+	}
 
 	// Reclaim WAL space — auto_vacuum isn't enabled, so PRAGMA
 	// wal_checkpoint(TRUNCATE) is the cheapest way to shrink storage.

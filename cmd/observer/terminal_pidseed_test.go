@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/pidbridge"
 	"github.com/marmutapp/superbased-observer/internal/termrun"
 	"github.com/marmutapp/superbased-observer/internal/termsession"
@@ -420,7 +421,7 @@ func TestSeedingCorrelator(t *testing.T) {
 // disappears when the terminal's child is reaped.
 func TestTerminalPidSeederEndToEnd(t *testing.T) {
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

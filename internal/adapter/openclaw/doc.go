@@ -128,7 +128,7 @@
 // (dist/selection-*.js) — on the live 2026-07-31 trace the event landed
 // 11:50:30.085Z for a call whose message-log record was already at
 // 11:50:25.318Z. So the message-log bytes are always on disk first, and
-// because messageLogUsageTimestamps re-reads the sibling from offset 0 the
+// because messageLogUsageCalls re-reads the sibling from offset 0 the
 // watcher's own parse order is irrelevant. The ONE way a call gets two rows
 // is a sibling that is no longer readable when the trajectory is (re-)parsed:
 // `openclaw doctor` archives orphaned logs to `<id>.jsonl.deleted.<ts>` (and

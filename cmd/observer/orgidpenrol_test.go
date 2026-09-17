@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -186,7 +188,7 @@ func (m *idpMemBearerStore) Backend() string                         { return "m
 
 func idpTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	database, err := db.Open(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -308,6 +310,33 @@ func TestIdPEnrolEndToEnd_RecordsBrowserConsentWithoutATTY(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), org.consentActor) {
 		t.Fatalf("the printed consent line does not name who approved:\n%s", out.String())
+	}
+}
+
+// TestAnnounceOpensTheHintedURL pins the fix where the auto-opened browser
+// URL dropped the ?user_code= hint that the printed "Open:" line carries: a
+// developer who lets the browser open automatically must land on the SAME
+// pre-filled page as one who copy-pastes the printed URL, not a bare sign-in
+// page that silently drops the hint.
+func TestAnnounceOpensTheHintedURL(t *testing.T) {
+	var out bytes.Buffer
+	var opened string
+	flow := &idpEnrolFlow{
+		out:  &out,
+		open: func(u string) { opened = u },
+	}
+	flow.announce(orgclient.IdPEnrolStart{
+		UserCode:        "ABCD-2345",
+		VerificationURI: "https://org.example/enrol/idp",
+		ExpiresIn:       600,
+	})
+
+	wantHinted := "https://org.example/enrol/idp?user_code=ABCD-2345"
+	if !strings.Contains(out.String(), wantHinted) {
+		t.Fatalf("printed Open: line = %q, want it to contain %q", out.String(), wantHinted)
+	}
+	if opened != wantHinted {
+		t.Fatalf("auto-opened URL = %q, want the same hinted URL %q", opened, wantHinted)
 	}
 }
 
@@ -513,5 +542,92 @@ func TestResolveEnrolCredentialsIdP(t *testing.T) {
 	}
 	if _, _, err := resolveEnrolCredentials("", "not a url", nil); err == nil {
 		t.Fatal("a malformed --idp URL must be refused")
+	}
+}
+
+// TestResolveEnrolCredentialsRejectsDashboardLinks: ENR-N. A dashboard
+// set-password invite (`?token=<id>.<secret>` on /set-password) and the
+// login page both parse as plausible "--link" candidates because they carry
+// the same ?token= shape a real enrolment link uses — but redeeming either
+// against POST /api/agent/enroll gets nothing but a bare 401
+// "invalid or expired enrolment token" (internal/orgclient/client.go:498/532),
+// leaving the developer with no idea their *link*, not their token, was
+// wrong. resolveEnrolCredentials must classify these by path and refuse them
+// with a typed error that names the mistake and points at --idp / a fresh
+// enrolment link, while every canonical /enrol/<code> form keeps working.
+func TestResolveEnrolCredentialsRejectsDashboardLinks(t *testing.T) {
+	rejectCases := []struct {
+		name string
+		link string
+		path string // the path the typed error should report
+	}{
+		{
+			name: "set-password invite",
+			link: "https://org.example/set-password?token=usr_123.s3cr3t",
+			path: "/set-password",
+		},
+		{
+			name: "login page with a stray token",
+			link: "https://org.example/login?token=whatever",
+			path: "/login",
+		},
+		{
+			name: "bare query token on an unrelated path",
+			link: "https://org.example/somewhere?token=abc123",
+			path: "/somewhere",
+		},
+	}
+	for _, tc := range rejectCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := resolveEnrolCredentials(tc.link, "", nil)
+			if err == nil {
+				t.Fatalf("resolveEnrolCredentials(%q) = nil error, want errNotAnEnrolmentLink", tc.link)
+			}
+			var typed *errNotAnEnrolmentLink
+			if !errors.As(err, &typed) {
+				t.Fatalf("resolveEnrolCredentials(%q) error = %v (%T), want *errNotAnEnrolmentLink", tc.link, err, err)
+			}
+			if typed.path != tc.path {
+				t.Fatalf("errNotAnEnrolmentLink.path = %q, want %q", typed.path, tc.path)
+			}
+			if !strings.Contains(err.Error(), "--idp") {
+				t.Fatalf("error message must mention --idp as the remedy: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.path) {
+				t.Fatalf("error message must say the path it saw (%q): %v", tc.path, err)
+			}
+		})
+	}
+
+	// The canonical forms must be unaffected by the new classification.
+	acceptCases := []struct {
+		name     string
+		link     string
+		wantURL  string
+		wantCode string
+	}{
+		{
+			name:     "plain enrol path",
+			link:     "https://org.example/enrol/tok_abc.secret",
+			wantURL:  "https://org.example",
+			wantCode: "tok_abc.secret",
+		},
+		{
+			name:     "enrol path with an unrelated query string",
+			link:     "https://host/enrol/tok_abc.secret?x=1",
+			wantURL:  "https://host",
+			wantCode: "tok_abc.secret",
+		},
+	}
+	for _, tc := range acceptCases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotURL, gotCode, err := resolveEnrolCredentials(tc.link, "", nil)
+			if err != nil {
+				t.Fatalf("resolveEnrolCredentials(%q) = %v, want success", tc.link, err)
+			}
+			if gotURL != tc.wantURL || gotCode != tc.wantCode {
+				t.Fatalf("resolveEnrolCredentials(%q) = (%q, %q), want (%q, %q)", tc.link, gotURL, gotCode, tc.wantURL, tc.wantCode)
+			}
+		})
 	}
 }

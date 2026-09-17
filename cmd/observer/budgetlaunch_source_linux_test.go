@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intervention"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -64,7 +65,7 @@ func TestBudgetLaunchAccountingSourceIsPerTool(t *testing.T) {
 func TestBudgetLaunchAccountingSourceDefaultsReadyWithoutAReport(t *testing.T) {
 	ctx := context.Background()
 	_, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestBudgetLaunchAccountingSourceDefaultsReadyWithoutAReport(t *testing.T) {
 func writeBudgetLaunchCaptureStatus(t *testing.T, dbPath, unreadyTool string) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

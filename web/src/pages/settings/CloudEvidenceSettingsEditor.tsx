@@ -1,4 +1,5 @@
 import type { CloudEvidenceSettings } from "@/lib/cloud";
+import { Input, Toggle } from "@/components/primitives";
 
 export const DEFAULT_EVIDENCE_SETTINGS: CloudEvidenceSettings = {
   version: 1, user_messages: 15, assistant_messages: 1, failure_classes: 3,
@@ -41,19 +42,33 @@ export default function CloudEvidenceSettingsEditor({ value, excerpts, disabled,
       </p>
       <div className="grid gap-3 sm:grid-cols-2">
         {fields.map((field) => (
-          <label key={field.key} className="block min-w-0 text-[12px] text-fg-2">
-            <span className="font-medium">{field.label}</span>
-            <input type="number" min={field.min} max={field.max} step={1} value={effective[field.key]}
-              disabled={disabled || ("needsExcerpts" in field && !excerpts)}
-              onChange={(event) => onChange({ ...effective, [field.key]: Number(event.target.value) })}
-              className="mt-1 block w-full rounded-2 border border-line-2 bg-bg-1 px-2 py-1.5 text-fg-1 disabled:opacity-50" />
-            <span className="mt-1 block text-[11px] leading-relaxed text-fg-3">{field.min}–{field.max}. {field.help}</span>
-          </label>
+          <Input
+            key={field.key}
+            type="number"
+            min={field.min}
+            max={field.max}
+            step={1}
+            value={effective[field.key]}
+            disabled={disabled || ("needsExcerpts" in field && !excerpts)}
+            onChange={(event) => onChange({ ...effective, [field.key]: Number(event.target.value) })}
+            label={field.label}
+            help={`${field.min}–${field.max}. ${field.help}`}
+          />
         ))}
       </div>
-      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-[12px] text-fg-2">
-        <label className="flex items-center gap-2"><input type="checkbox" checked={effective.milestones} onChange={(e) => onChange({ ...effective, milestones: e.target.checked })} />Activity milestones</label>
-        <label className="flex items-center gap-2"><input type="checkbox" checked={effective.outcomes} onChange={(e) => onChange({ ...effective, outcomes: e.target.checked })} />Test and build outcomes</label>
+      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
+        <Toggle
+          on={effective.milestones}
+          onChange={(next) => onChange({ ...effective, milestones: next })}
+          disabled={disabled}
+          label="Activity milestones"
+        />
+        <Toggle
+          on={effective.outcomes}
+          onChange={(next) => onChange({ ...effective, outcomes: next })}
+          disabled={disabled}
+          label="Test and build outcomes"
+        />
       </div>
       <p className="mt-3 text-[11px] text-fg-3">{effective.user_messages + effective.assistant_messages + effective.failure_classes}/20 excerpt slots. Session identity, duration, token/cost totals, and activity counts remain in the structural summary. Raw tool output, reasoning, and file contents are excluded.</p>
       <p className="mt-2 text-[11px] text-fg-3">Saving cancels queued background uploads made under previous settings. Already delivered results stay available.</p>

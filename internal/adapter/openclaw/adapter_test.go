@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -830,7 +831,7 @@ func TestParseBothPaths_TurnCountedOnce(t *testing.T) {
 
 // TestParseBothPaths_DedupIsIndependentOfParseOrder pins the property that
 // makes watcher scheduling irrelevant to the O1 dedup (WP-T6 codex round):
-// messageLogUsageTimestamps re-reads the sibling log from DISK at offset 0,
+// messageLogUsageCalls re-reads the sibling log from DISK at offset 0,
 // so parsing the TRAJECTORY FIRST — the order fsnotify can hand us whenever
 // the trace's write event is delivered before the log's — still yields
 // exactly one row per model call. (OpenClaw itself can never put the
@@ -1325,6 +1326,137 @@ func TestMessageContentListUnmarshal(t *testing.T) {
 			}
 			if tc.wantLen > 0 && m[0].Text != tc.text0 {
 				t.Fatalf("m[0].Text = %q, want %q", m[0].Text, tc.text0)
+			}
+		})
+	}
+}
+
+// writeSameMSFixture writes a message log with one entry per element of
+// msgUsages (all stamped with the SAME epoch-ms ts) and a one-event
+// trajectory whose lastCallUsage is trajUsage at that same ts. It is the
+// minimal shape for the same-millisecond dedup question.
+func writeSameMSFixture(t *testing.T, ts int64, msgUsages []string, trajUsage string) (dir, msgLog, traj string) {
+	t.Helper()
+	dir = t.TempDir()
+	stem := wpStem
+	if err := os.WriteFile(filepath.Join(dir, "sessions.json"), []byte(`{
+		"`+wpSessionKey+`": {
+			"sessionId": "`+stem+`",
+			"modelProvider": "openai",
+			"model": "gpt-5.4-nano",
+			"sessionFile": "`+filepath.ToSlash(filepath.Join(dir, stem+".jsonl"))+`"
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	msgLog = filepath.Join(dir, stem+".jsonl")
+	lines := []string{`{"type":"session","id":"` + stem + `","timestamp":"2026-07-31T11:50:12.080Z"}`}
+	for i, u := range msgUsages {
+		lines = append(lines, `{"type":"message","id":"a`+strconv.Itoa(i)+
+			`","timestamp":"2026-07-31T11:50:12.187Z","message":{"role":"assistant","content":[{"type":"text","text":"turn`+
+			strconv.Itoa(i)+`"}],"stopReason":"stop","provider":"openai","model":"gpt-5.4-nano","usage":`+
+			u+`,"timestamp":`+itoa64(ts)+`}}`)
+	}
+	lines = append(lines, "")
+	if err := os.WriteFile(msgLog, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	traj = filepath.Join(dir, stem+".trajectory.jsonl")
+	trajBody := strings.Join([]string{
+		`{"type":"session.started","ts":"2026-07-31T11:50:12.083Z","sessionId":"` + stem + `","sessionKey":"` + wpSessionKey + `"}`,
+		`{"type":"model.completed","ts":"2026-07-31T11:50:30.085Z","seq":5,"sessionId":"` + stem + `","sessionKey":"` + wpSessionKey +
+			`","runId":"` + stem + `","workspaceDir":"` + wpWorkspace + `","provider":"openai","modelId":"gpt-5.4-nano","data":{"promptCache":{"lastCallUsage":` +
+			trajUsage + `,"lastCacheTouchAt":` + itoa64(ts) + `},"messagesSnapshot":[{"role":"assistant","usage":` + trajUsage + `,"timestamp":` + itoa64(ts) + `}]}}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(traj, []byte(trajBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir, msgLog, traj
+}
+
+func itoa64(v int64) string { return strconv.FormatInt(v, 10) }
+
+// TestTrajectoryDedupUsesUsageAsTiebreak pins ADAPT-LZ-2 after the
+// adversarial correction: the epoch-ms TIMESTAMP stays the join key, and
+// the usage counts are consulted ONLY when that timestamp is ambiguous
+// (more than one message-log call inside the same millisecond).
+//
+// Promoting usage to part of the primary key would trade this rare
+// false-suppression for a systematic DUPLICATE token row the day the two
+// files disagree on one count — the exact failure the suppression exists
+// to prevent.
+func TestTrajectoryDedupUsesUsageAsTiebreak(t *testing.T) {
+	const ts = int64(1785498625318)
+	const usageA = `{"input":14228,"output":149,"cacheRead":0,"cacheWrite":0,"totalTokens":14377}`
+	const usageB = `{"input":368,"output":542,"cacheRead":14848,"cacheWrite":0,"total":15758}`
+	const usageC = `{"input":999,"output":11,"cacheRead":0,"cacheWrite":0,"total":1010}`
+
+	cases := []struct {
+		name      string
+		msgUsages []string
+		trajUsage string
+		wantTraj  int
+		wantMsg   int
+	}{
+		{
+			name:      "one call at that ms, usage agrees: deduped",
+			msgUsages: []string{usageA},
+			trajUsage: usageA,
+			wantMsg:   1,
+			wantTraj:  0,
+		},
+		{
+			name:      "one call at that ms, counts disagree: STILL deduped (ts is the key)",
+			msgUsages: []string{usageA},
+			trajUsage: usageB,
+			wantMsg:   1,
+			wantTraj:  0,
+		},
+		{
+			name:      "two calls at that ms, usage matches one: deduped by the tiebreak",
+			msgUsages: []string{usageA, usageB},
+			trajUsage: usageB,
+			wantMsg:   2,
+			wantTraj:  0,
+		},
+		{
+			name:      "two calls at that ms, usage matches neither: ambiguous, so it emits",
+			msgUsages: []string{usageA, usageB},
+			trajUsage: usageC,
+			wantMsg:   2,
+			wantTraj:  1,
+		},
+		{
+			name:      "no message-log call at that ms: emits",
+			msgUsages: nil,
+			trajUsage: usageA,
+			wantMsg:   0,
+			wantTraj:  1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, msgLog, traj := writeSameMSFixture(t, ts, tc.msgUsages, tc.trajUsage)
+			a := NewWithOptions(nil, []string{dir})
+			ctx := context.Background()
+
+			msgRes, err := a.ParseSessionFile(ctx, msgLog, 0)
+			if err != nil {
+				t.Fatalf("ParseSessionFile(message log): %v", err)
+			}
+			if len(msgRes.TokenEvents) != tc.wantMsg {
+				t.Fatalf("message-log TokenEvents = %d, want %d", len(msgRes.TokenEvents), tc.wantMsg)
+			}
+			trajRes, err := a.ParseSessionFile(ctx, traj, 0)
+			if err != nil {
+				t.Fatalf("ParseSessionFile(trajectory): %v", err)
+			}
+			if len(trajRes.TokenEvents) != tc.wantTraj {
+				t.Fatalf("trajectory TokenEvents = %d, want %d: %+v",
+					len(trajRes.TokenEvents), tc.wantTraj, trajRes.TokenEvents)
 			}
 		})
 	}

@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 func intelTestStore(t *testing.T) *Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "intel.db")
-	database, err := db.Open(context.Background(), db.Options{Path: path})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -60,6 +61,78 @@ func TestUpsertAndGetOrgIntelResult(t *testing.T) {
 	}
 	if !r.FetchedAt.Equal(in.FetchedAt) {
 		t.Fatalf("fetched_at=%v, want %v", r.FetchedAt, in.FetchedAt)
+	}
+}
+
+// TestOrgIntelResultNarrativeRoundTrip pins the node half of the narrative wave
+// (agent migration 124): the five lists survive the cache round-trip, and a
+// result that carries none stores SQL NULL in every one of the five columns —
+// the same bytes a row cached before 124 holds — so absence has exactly one
+// representation and can never render as five empty answers.
+func TestOrgIntelResultNarrativeRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := intelTestStore(t)
+
+	full := OrgIntelResult{
+		SessionID:        "sess-nar",
+		JobID:            "job-nar",
+		Title:            "With narrative",
+		Confidence:       "high",
+		WorkDone:         []string{"Split the login handler."},
+		PlansImplemented: []string{"The PKCE ask landed."},
+		IssuesFound:      []string{"The refresh path trusted a client identifier."},
+		Failures:         []string{"The auth suite outcome was not observable."},
+		NextSteps:        []string{"Run the auth suite."},
+		FetchedAt:        time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC),
+	}
+	if err := s.UpsertOrgIntelResult(ctx, full); err != nil {
+		t.Fatalf("UpsertOrgIntelResult(full): %v", err)
+	}
+	got, err := s.OrgIntelResultsForSession(ctx, "sess-nar")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("OrgIntelResultsForSession: rows=%d err=%v", len(got), err)
+	}
+	for _, c := range []struct {
+		field string
+		got   []string
+		want  string
+	}{
+		{"work_done", got[0].WorkDone, "Split the login handler."},
+		{"plans_implemented", got[0].PlansImplemented, "The PKCE ask landed."},
+		{"issues_found", got[0].IssuesFound, "The refresh path trusted a client identifier."},
+		{"failures", got[0].Failures, "The auth suite outcome was not observable."},
+		{"next_steps", got[0].NextSteps, "Run the auth suite."},
+	} {
+		if len(c.got) != 1 || c.got[0] != c.want {
+			t.Errorf("%s round-trip = %v, want [%q]", c.field, c.got, c.want)
+		}
+	}
+
+	if err := s.UpsertOrgIntelResult(ctx, OrgIntelResult{
+		SessionID: "sess-bare", JobID: "job-bare", Title: "No narrative",
+		FetchedAt: full.FetchedAt,
+	}); err != nil {
+		t.Fatalf("UpsertOrgIntelResult(bare): %v", err)
+	}
+	var nonNull int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM org_intel_cache
+		 WHERE session_id = 'sess-bare'
+		   AND (work_done IS NOT NULL OR plans_implemented IS NOT NULL
+		        OR issues_found IS NOT NULL OR failures IS NOT NULL
+		        OR next_steps IS NOT NULL)`).Scan(&nonNull); err != nil {
+		t.Fatalf("null probe: %v", err)
+	}
+	if nonNull != 0 {
+		t.Errorf("an empty narrative stored a non-NULL column; NULL is the one representation of absence")
+	}
+	bare, err := s.OrgIntelResultsForSession(ctx, "sess-bare")
+	if err != nil || len(bare) != 1 {
+		t.Fatalf("OrgIntelResultsForSession(bare): rows=%d err=%v", len(bare), err)
+	}
+	if len(bare[0].WorkDone) != 0 || len(bare[0].PlansImplemented) != 0 || len(bare[0].IssuesFound) != 0 ||
+		len(bare[0].Failures) != 0 || len(bare[0].NextSteps) != 0 {
+		t.Errorf("empty narrative read back as content: %+v", bare[0])
 	}
 }
 

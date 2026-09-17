@@ -1,6 +1,8 @@
 package orgbudget
 
 import (
+	"time"
+
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 )
@@ -88,6 +90,30 @@ type Thresholds struct {
 	// It NEVER travels with a body: a node that has a verified body — even a
 	// stale one kept in force across an outage — is not in this state.
 	BudgetRequired bool
+
+	// Baseline is the ORGANIZATION's measurement of what this caller already
+	// spent in each window on its OTHER machines (bundle BUD-N / P1-9). Every
+	// comparison the node makes is `Baseline + local spend` against the
+	// ceiling, so one developer's two machines burn one budget.
+	//
+	// It travels with an ADOPTED cap and only with an adopted cap, exactly as
+	// the timezone and the enforcement mode do: an org cap that lost to a
+	// tighter local ceiling governs nothing, and adding its fleet-wide spend to
+	// a ceiling the developer set themselves would tighten a number the org
+	// never actually reached. Zero on every window the org did not govern, and
+	// zero whenever the baseline was stale, absent or uncomposable — see
+	// baseline.go, whose whole point is that all three of those keep running.
+	Baseline Baseline
+
+	// Subjects are the org's PER-TOOL and PER-MODEL caps, resolved per node
+	// window. They are REAL caps: the node enforces them at the same
+	// chokepoints, in whichever unit the org authored, with their own baseline
+	// and their own hardness.
+	//
+	// They are a LIST rather than more fields because the number of capped
+	// subjects is the org's to choose. An empty list is every node whose org
+	// authored none, and composes to the pre-feature thresholds exactly.
+	Subjects []SubjectCap
 }
 
 // BudgetProtection carries managed hard-budget provenance per window and
@@ -102,13 +128,25 @@ type BudgetProtection struct {
 	DailyTokens   bool
 	WeeklyTokens  bool
 	MonthlyTokens bool
+
+	// ToolUSD / ToolTokens / ModelUSD / ModelTokens are the SUBJECT rows'
+	// provenance (bundle BUD-N): a managed organization authored at least one
+	// HARD per-tool / per-model cap in that unit. Per kind+unit rather than per
+	// subject because that is the granularity of the rule row the authority is
+	// asked about; which subject crossed is the matcher's business, and each
+	// cap carries its own Hard flag.
+	ToolUSD     bool
+	ToolTokens  bool
+	ModelUSD    bool
+	ModelTokens bool
 }
 
 // Any reports whether any effective ceiling carries managed hard-budget
 // authority.
 func (p BudgetProtection) Any() bool {
 	return p.SessionUSD || p.DailyUSD || p.WeeklyUSD || p.MonthlyUSD ||
-		p.SessionTokens || p.DailyTokens || p.WeeklyTokens || p.MonthlyTokens
+		p.SessionTokens || p.DailyTokens || p.WeeklyTokens || p.MonthlyTokens ||
+		p.ToolUSD || p.ToolTokens || p.ModelUSD || p.ModelTokens
 }
 
 type adoptedUnits struct {
@@ -198,6 +236,52 @@ type Capabilities struct {
 	// on the posture because it, not the caps, decides whether a breach
 	// blocks.
 	GuardMode string
+	// Now is the composition clock, INJECTED so this package stays pure and so
+	// a baseline-freshness test is a table row rather than a sleep. A zero Now
+	// makes every baseline stale (an undated comparison cannot show a
+	// measurement to be current), which is the safe direction: the node
+	// enforces on its own rows.
+	Now time.Time
+	// BaselineMaxAge is how old the org's spend measurement may be. The
+	// boundary computes it from THIS node's own push cadence
+	// ([org_client].push_interval_seconds) through [BaselineMaxAge]; zero
+	// falls back to the same default.
+	BaselineMaxAge time.Duration
+	// ResolveSubjectID folds a per-tool / per-model cap's id onto the SAME
+	// identity this node's own accounting keys its totals by. It is INJECTED —
+	// this package must not reach the price table any more than it may reach
+	// the config graph — and nil means "trim + lowercase only", which is what
+	// shipped before and what a node with no price table still gets.
+	//
+	// WHY IT IS NEEDED AT ALL (adversarial review of BUD-N, P1-3). A model cap
+	// compares an id the ORG typed against an id an ADAPTER captured, and both
+	// sides were only trimmed and lowercased. `claude-sonnet-5` and
+	// `claude-sonnet-5-20260501` are the same model and never compared equal,
+	// so an authored cap bit nothing and reported as in force — the worst shape
+	// a ceiling can have. The boundary therefore resolves BOTH sides through
+	// the price table's own alias ladder (exact -> date-stripped -> family),
+	// which is the one place in the product that already knows two model
+	// strings name one model.
+	//
+	// It is applied at COMPOSE time to the cap and at SNAPSHOT time to the
+	// accounting keys, through this one func, so the two can never drift onto
+	// two rules. kind is orgcontract.BudgetSubjectTool / BudgetSubjectModel: a
+	// tool id has no alias ladder and resolves to the plain normalisation.
+	ResolveSubjectID func(kind, id string) string
+}
+
+// resolveSubjectID applies the injected resolver, falling back to the id the
+// contract already normalized. A resolver that answers "" is ignored for the
+// same reason an unknown subject kind is: an empty id would widen a cap that
+// named one thing into a cap that matches nothing at all, and silently.
+func (c Capabilities) resolveSubjectID(kind, id string) string {
+	if c.ResolveSubjectID == nil {
+		return id
+	}
+	if out := c.ResolveSubjectID(kind, id); out != "" {
+		return out
+	}
+	return id
 }
 
 // Posture is the enum-only self-report of what Compose actually did. It
@@ -222,6 +306,15 @@ type Posture struct {
 	// (finding M2). See orgcontract.BudgetPostureRow.ResolvedScopeNone.
 	ResolvedScopeNone bool
 	Coverage          string
+	// OrgBaseline is the closed orgcontract.BudgetBaseline* enum: did the
+	// cross-machine baseline get APPLIED, or was it stale / absent /
+	// uncomposable, leaving these caps enforced against this machine's own
+	// rows only. OrgBaselineUnattributed rides with it: an applied baseline
+	// that counted rows the server could not attribute to any machine may
+	// overlap this node's own spend, and an admin reading "over budget"
+	// should see that caveat rather than discover it.
+	OrgBaseline             string
+	OrgBaselineUnattributed bool
 	// PricingSource / PricingVersion describe the price table the dollars
 	// this budget is enforced against were computed from (pricing arc §3.3).
 	//
@@ -256,8 +349,11 @@ func (p Posture) Row() orgcontract.BudgetPostureRow {
 		Capped:            p.Capped,
 		ResolvedScopeNone: p.ResolvedScopeNone,
 		Coverage:          p.Coverage,
-		PricingSource:     p.PricingSource,
-		PricingVersion:    p.PricingVersion,
+
+		OrgBaseline:             p.OrgBaseline,
+		OrgBaselineUnattributed: p.OrgBaselineUnattributed,
+		PricingSource:           p.PricingSource,
+		PricingVersion:          p.PricingVersion,
 	}
 }
 
@@ -399,6 +495,12 @@ func blockingCeiling(local Thresholds, posture Posture) (Thresholds, Posture) {
 	eff := local
 	eff.Protection = BudgetProtection{}
 	eff.SoftWindows = nil
+	// No body reached this node, so there is no cross-machine baseline and no
+	// subject cap. Stated rather than inherited: `local` is the developer's own
+	// block and has never carried either, and a future caller that passed a
+	// pre-filled Thresholds must not have it survive into a fail-closed state.
+	eff.Baseline, eff.Subjects = Baseline{}, nil
+	posture.OrgBaseline = orgcontract.BudgetBaselineAbsent
 	eff.Hard = true
 	eff.BudgetRequired = true
 
@@ -416,6 +518,11 @@ func blockingCeiling(local Thresholds, posture Posture) (Thresholds, Posture) {
 // never had the org budget rail.
 func localUnchanged(local Thresholds, posture Posture) (Thresholds, Posture) {
 	local.Protection = BudgetProtection{}
+	// Same reasoning as blockingCeiling: the fail-open path composes nothing,
+	// so it carries no baseline and no subject cap, and the posture says the
+	// cross-machine half is simply not there.
+	local.Baseline, local.Subjects = Baseline{}, nil
+	posture.OrgBaseline = orgcontract.BudgetBaselineAbsent
 	posture.Hard = local.Hard
 	posture.Capped = capped(local)
 	return local, posture
@@ -498,6 +605,7 @@ func Compose(local Thresholds, body orgcontract.BudgetPolicyBody, caps Capabilit
 	eff := local
 	eff.Protection = BudgetProtection{}
 	eff.SoftWindows = nil
+	eff.Baseline, eff.Subjects = Baseline{}, nil
 	// hardOf starts every window on the DEVELOPER's own posture. session and
 	// weekly stay there for good — the org's period vocabulary reaches neither.
 	hardOf := map[window]bool{}
@@ -505,7 +613,47 @@ func Compose(local Thresholds, body orgcontract.BudgetPolicyBody, caps Capabilit
 		hardOf[w] = local.Hard
 	}
 
+	// The baseline state reported for the WHOLE body: the worst outcome any
+	// applicable cap had (baselineStateRank). It starts unset and is only
+	// stamped by a cap that actually reached the classification, so a body with
+	// no caps at all reports absent rather than a verdict on nothing.
+	baselineState := ""
+	unattributed := false
+	maxAge := caps.BaselineMaxAge
+	if maxAge <= 0 {
+		maxAge = BaselineMaxAge(0)
+	}
+	noteBaseline := func(state string, entry orgcontract.BudgetPolicyCap, applied bool) {
+		if baselineState == "" || baselineStateRank[state] > baselineStateRank[baselineState] {
+			baselineState = state
+		}
+		if applied && entry.SpentIncludesUnattributed {
+			unattributed = true
+		}
+	}
+
 	for _, entry := range capsOf(body) {
+		// SUBJECT caps take the other path entirely: they do not touch the
+		// node's four window ceilings, they carry their own, and a node that
+		// folded a per-tool cap into the node-wide daily ceiling would enforce
+		// it against every tool at once.
+		if entry.Subject != nil {
+			kind, id, ok := entry.SubjectKey()
+			if !ok {
+				// A subject this build does not understand — an unknown kind,
+				// an empty id — is IGNORED, exactly as an unknown period is.
+				// It must never fall through to the whole-caller branch: a cap
+				// the org narrowed to one thing would then be enforced against
+				// EVERYTHING, which is the worst possible misreading of an
+				// authored ceiling and the one a future subject kind would
+				// trigger on every old node.
+				continue
+			}
+			if sc, added := subjectCapOf(entry, kind, id, caps, maxAge, noteBaseline); added {
+				eff.Subjects = append(eff.Subjects, sc)
+			}
+			continue
+		}
 		w := windowFor(entry.Period)
 		if w == windowNone {
 			continue
@@ -521,8 +669,22 @@ func Compose(local Thresholds, body orgcontract.BudgetPolicyBody, caps Capabilit
 		hardOf[w] = windowHard(local.Hard, entry.Enforcement, caps.OrgAuthoritative)
 		eff.Protection.set(w, adopted,
 			caps.OrgAuthoritative && enforcementRank(entry.Enforcement) >= enforcementRank(orgcontract.BudgetPolicyEnforcementHard))
+		// The baseline rides with the ADOPTED cap, for the same reason the
+		// calendar and the enforcement mode do.
+		state, apply, flagOnly := classifyBaseline(entry, caps.Now, maxAge)
+		noteBaseline(state, entry, apply)
+		if apply {
+			usd, tokens := baselineAmounts(entry)
+			eff.Baseline.set(w, usd, tokens, flagOnly)
+		}
 	}
+	if baselineState == "" {
+		baselineState = orgcontract.BudgetBaselineAbsent
+	}
+	posture.OrgBaseline = baselineState
+	posture.OrgBaselineUnattributed = unattributed
 
+	eff.Protection.ToolUSD, eff.Protection.ToolTokens, eff.Protection.ModelUSD, eff.Protection.ModelTokens = SubjectProtection(eff.Subjects, caps.OrgAuthoritative)
 	if caps.OrgAuthoritative {
 		posture.Source = orgcontract.BudgetSourceOrgAuthoritative
 	} else {

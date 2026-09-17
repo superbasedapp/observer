@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -95,7 +96,7 @@ enabled = false
 // un-enrolment precedence defect, so the fixture now carries the row.
 func seedOrgPricingDocument(t *testing.T, ctx context.Context, dbPath string) {
 	t.Helper()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -203,7 +204,7 @@ func TestAssembly_OrgRateReachesTheProxiedTurnCost(t *testing.T) {
 
 	// The proxy inserts the turn on a DETACHED context, so poll rather than
 	// assume it has landed.
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -249,7 +250,7 @@ func TestAssembly_OrgRateReachesTheOrgPushWire(t *testing.T) {
 	// non-proxied adapters produce, and the whole reason the push-time pricer
 	// exists.
 	const inputTokens, outputTokens = 2_000_000, 50_000
-	seed, err := db.Open(ctx, db.Options{Path: dbPath})
+	seed, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

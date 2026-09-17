@@ -23,6 +23,12 @@ type InterventionBudgetInput struct {
 	// this tool's spend is unknown rather than merely estimated - is scoped
 	// here.
 	Tool string
+	// Model is the model this session is running, when the caller knows one.
+	// It scopes the organization's per-MODEL caps (B-628/B-629) exactly as Tool
+	// scopes the per-tool ones (bundle BUD-N). Empty means "not known", and a
+	// model cap then cannot match — never a guess, and never a fallback to the
+	// node-wide number under a model cap's name.
+	Model string
 	// SourceReason is the machine-readable reason behind SourceReady. It is
 	// operator-facing denial context only; the decision uses SourceReady.
 	//
@@ -114,7 +120,20 @@ func (g *Guard) checkInterventionBudgetWith(es *engineSet, in InterventionBudget
 		out.Deny, out.Reason = true, "budget decision time is unavailable"
 		return out
 	}
-	ev := policy.Event{Kind: policy.KindAPIRequest, SessionID: in.SessionID, Now: in.Now}
+	// Tool and Model are carried onto the event so the organization's PER-TOOL
+	// and PER-MODEL caps are evaluated by the process-control pass too (bundle
+	// BUD-N). A cap the org authored for one tool must stop that tool's running
+	// process for the same reason the node-wide cap does: the proxy is not the
+	// only way spend happens, and a cap enforced on one chokepoint only is a
+	// cap with a documented hole.
+	//
+	// The per-subject TOTALS are stamped from the same accounting snapshot as
+	// the node-wide ones, below, so a subject decision and a node-wide decision
+	// in the same pass are measured over the same rows.
+	ev := policy.Event{
+		Kind: policy.KindAPIRequest, SessionID: in.SessionID, Now: in.Now,
+		Tool: in.Tool, Model: in.Model,
+	}
 	if !in.SourceReady {
 		ev.USDUnavailable = policy.BudgetUnavailableWindows{Session: true, Daily: true, Weekly: true, Monthly: true}
 		ev.TokensUnavailable = ev.USDUnavailable
@@ -163,7 +182,23 @@ func (g *Guard) checkInterventionBudgetWith(es *engineSet, in InterventionBudget
 
 func interventionUSDBudgetRule(ruleID string) bool {
 	switch ruleID {
-	case "B-601", "B-602", "B-603", "B-604":
+	// B-626 / B-628 are the DOLLAR halves of the subject caps; their token
+	// siblings B-627 / B-629 belong to the token branch, exactly as
+	// B-621..B-624 do.
+	case "B-601", "B-602", "B-603", "B-604", "B-626", "B-628":
+		return true
+	default:
+		return false
+	}
+}
+
+// subjectInterventionRuleID reports whether a rule is one of the per-tool /
+// per-model rows. They need their own answer in two places below because a
+// subject row spans every window: which window it compared is a property of the
+// CAP that matched, not of the rule id.
+func subjectInterventionRuleID(ruleID string) bool {
+	switch ruleID {
+	case "B-626", "B-627", "B-628", "B-629":
 		return true
 	default:
 		return false
@@ -191,6 +226,15 @@ func interventionBudgetWindowUnavailable(ruleID string, windows policy.BudgetUna
 	case "B-604", "B-624":
 		return windows.Weekly
 	default:
+		if subjectInterventionRuleID(ruleID) {
+			// A subject row can carry caps in several windows at once, and the
+			// verdict does not name which one matched. Any unavailable window
+			// is therefore reported as unavailable evidence: the alternative —
+			// claiming measured evidence the row may not have had — is the
+			// direction that turns an accounting gap into a stopped process
+			// with a number nobody can reproduce.
+			return windows.Any()
+		}
 		return false
 	}
 }
@@ -241,8 +285,10 @@ func interventionBudgetHorizon(ruleID string, now time.Time, calendars BudgetCal
 		return now
 	default:
 		// Session totals do not reset with wall time, and B-625 is independent
-		// of accounting windows. The authority's short validity remains the
-		// bound for those decisions.
+		// of accounting windows. A SUBJECT row is here for a third reason: it
+		// does not name the window that matched, so no boundary can be proven
+		// for it, and an unprovable horizon must never be rendered as a long
+		// one. The authority's short validity remains the bound for all three.
 		return time.Time{}
 	}
 }

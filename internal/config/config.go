@@ -41,6 +41,7 @@ type Config struct {
 	CacheWarm    CacheWarmConfig    `toml:"cachewarm"`
 	Predict      PredictConfig      `toml:"predict"`
 	Loc          LocConfig          `toml:"loc"`
+	Guidance     GuidanceConfig     `toml:"guidance"`
 	Update       UpdateConfig       `toml:"update"`
 	Tasks        TasksConfig        `toml:"tasks"`
 	Browser      BrowserConfig      `toml:"browser"`
@@ -1097,8 +1098,11 @@ type GuardWebhookConfig struct {
 	RoutingKey  string `toml:"routing_key"`
 }
 
-// AdvisorConfig gates the suggestions engine (spec §15.7; plan
+// AdvisorConfig gates the suggestions engine (docs/advisor.md; plan
 // docs/plans/suggestions-engine-implementation-plan-2026-06-10.md).
+// "§15.7" is the engine's long-standing informal handle used across
+// docs/plans — the numbered spec itself only goes to §15.6, so this
+// comment cites the operator doc instead of a section that doesn't exist.
 // Default-ON: read-layer only, local, zero LLM cost. Same partial-merge
 // invariant as CacheTrackConfig — an install with no [advisor] section
 // must get Enabled=true from Default(), never a zero-valued false.
@@ -1184,6 +1188,77 @@ type PredictConfig struct {
 	// PriorWindowDays bounds the recency of sessions feeding the
 	// cross-session T prior. Default 30. 0 = no bound.
 	PriorWindowDays int `toml:"prior_window_days"`
+}
+
+// GuidanceConfig is the [guidance] surface — the agent-guidance-file
+// inventory (CLAUDE.md / AGENTS.md / .cursor/rules / skills / commands /
+// subagent definitions and their per-tool equivalents). LOCAL-ONLY: the
+// scan records file NAMES, sizes, hashes and frontmatter metadata, never
+// file bodies (CLAUDE.md "no content in the DB" rule — a body is read on
+// demand through the capped, symlink-safe fsview reader instead).
+//
+// Default-ON, with the CacheTrack partial-merge rule: an install whose
+// config.toml has no [guidance] section MUST get Enabled=true from
+// Default(), not a zero-valued false, and a section that sets only
+// rescan_minutes must keep Enabled=true.
+type GuidanceConfig struct {
+	// Enabled gates the daemon-lifetime scan loop, the CLI's implicit
+	// scan, and the dashboard/MCP read surfaces. When false nothing is
+	// scanned and the surfaces report the disabled state honestly.
+	Enabled bool `toml:"enabled"`
+	// RescanMinutes is the interval between whole-estate rescans (every
+	// known project root). Default 15. <= 0 disables the periodic tick —
+	// the one-shot scan at daemon start still runs.
+	RescanMinutes int `toml:"rescan_minutes"`
+	// MaxFileBytes caps how much of a guidance file the scanner reads to
+	// hash it and parse its frontmatter. Default 524288 (512KB). A larger
+	// file is still inventoried; only its parse is bounded.
+	MaxFileBytes int64 `toml:"max_file_bytes"`
+	// MaxDepth bounds directory recursion below a guidance root (e.g.
+	// `.claude/skills/<name>/SKILL.md`). Default 4.
+	MaxDepth int `toml:"max_depth"`
+	// IncludeUserScope also inventories the operator's HOME-scoped
+	// guidance (`~/.claude/CLAUDE.md`, `~/.claude/skills/…`) alongside the
+	// project-scoped files. Default true — a user-scope skill changes the
+	// agent's behaviour in this project just as much as a project one.
+	IncludeUserScope bool `toml:"include_user_scope"`
+	// MaxRootsPerPass caps how many project roots one pass walks. Roots
+	// are ordered most-recently-active first, so the cap drops the
+	// dormant tail; the tail is not starved, because each pass rotates
+	// its start offset. Default 50. <= 0 means the seeded default.
+	//
+	// It was 200 (a compile-time constant) until a live machine with 404
+	// recorded roots — most of them slow DrvFs mounts — turned a start-up
+	// pass into four CPU-minutes.
+	MaxRootsPerPass int `toml:"max_roots_per_pass"`
+	// RootTimeoutSeconds bounds ONE root's walk. A root that overruns is
+	// reported incomplete and NOT persisted — a partial inventory would
+	// tombstone guidance files that are still there — and is retried on
+	// the next pass. Default 20. <= 0 means the seeded default; there is
+	// deliberately no "unbounded" setting, because an unbounded root is
+	// exactly the failure this bounds.
+	RootTimeoutSeconds int `toml:"root_timeout_seconds"`
+	// PassTimeoutMinutes bounds a WHOLE pass. Roots not reached inside it
+	// are simply picked up next tick. Default 10. <= 0 means the seeded
+	// default.
+	PassTimeoutMinutes int `toml:"pass_timeout_minutes"`
+	// StartupDelaySeconds delays the first pass after the daemon starts,
+	// so a restart is not immediately CPU-heavy while the proxy, watcher
+	// and dashboard are coming up. Default 90. <= 0 runs the first pass
+	// immediately.
+	StartupDelaySeconds int `toml:"startup_delay_seconds"`
+	// FirstScanPollSeconds is how often the daemon looks for project roots
+	// that have NEVER been scanned and inventories just those, so a brand
+	// new project does not wait up to RescanMinutes for its first (and
+	// only informative) inventory. Default 60. 0 disables the poll
+	// entirely; the periodic pass still covers the root eventually.
+	//
+	// It is deliberately NOT a per-session trigger: a scan is filesystem
+	// work, and firing one every time a session starts in an
+	// already-inventoried project would be the same unbounded cost the
+	// per-root/per-pass budgets exist to prevent. Never-scanned is the one
+	// state where waiting a quarter of an hour shows the operator nothing.
+	FirstScanPollSeconds int `toml:"first_scan_poll_seconds"`
 }
 
 // DefaultPricingFeedURL is the public edge route serving the signed pricing
@@ -3399,6 +3474,26 @@ type RetentionConfig struct {
 	WALAlertMB int `toml:"wal_alert_mb"`
 	// WALWatchMinutes is the watchdog cadence. Default 10. ≤ 0 disables.
 	WALWatchMinutes int `toml:"wal_watch_minutes"`
+	// CompactionEventsDays drops compaction_events rows whose timestamp is
+	// older than this. Default 30. 0 keeps them forever.
+	//
+	// Each row carries a whole point-in-time file-state blob
+	// (file_state_snapshot plus ghost_files_after), which averaged ~1.1 MB
+	// per row on the operator's live node — 1.4 GiB in 1,333 rows, with no
+	// horizon of any kind until 2026-09-16. The snapshot exists to
+	// reconstruct what a session knew across a context compaction, which
+	// stops being actionable long before the session's own actions age out,
+	// so its horizon is deliberately much shorter than max_age_days.
+	CompactionEventsDays int `toml:"compaction_events_days"`
+	// CompressionEventsDays drops compression_events rows whose timestamp is
+	// older than this. Default 90. 0 keeps them forever.
+	//
+	// One row per compression decision per proxied turn: small rows, but
+	// 3.59M of them / 915 MB on the live node. The savings figures the
+	// dashboard and `observer compression` report are rolled up from
+	// api_turns, so this table is the per-decision debugging tail behind
+	// them and can age out on its own, longer horizon.
+	CompressionEventsDays int `toml:"compression_events_days"`
 }
 
 // HooksConfig controls hook runtime.
@@ -4029,6 +4124,8 @@ func Default() Config {
 				IntervalHours:         24,
 				WALAlertMB:            1024,
 				WALWatchMinutes:       10,
+				CompactionEventsDays:  30,
+				CompressionEventsDays: 90,
 			},
 			Hooks: HooksConfig{
 				TimeoutMS:    500,
@@ -4201,6 +4298,24 @@ func Default() Config {
 			YoungSessionMessages:   3,
 			DefaultTurnsPerMessage: 12,
 			PriorWindowDays:        30,
+		},
+		// Guidance (the agent-guidance-file inventory) is default-ON for
+		// the same reasons CacheTrack is: local, passive, network-free,
+		// and it records names/sizes/hashes — never file bodies. Same
+		// partial-merge rule — an install with no [guidance] section gets
+		// Enabled=true here, and a section that sets only rescan_minutes
+		// must not silently downgrade Enabled to a zero-valued false.
+		Guidance: GuidanceConfig{
+			Enabled:              true,
+			RescanMinutes:        15,
+			MaxFileBytes:         512 * 1024,
+			MaxDepth:             4,
+			IncludeUserScope:     true,
+			MaxRootsPerPass:      50,
+			RootTimeoutSeconds:   20,
+			PassTimeoutMinutes:   10,
+			StartupDelaySeconds:  90,
+			FirstScanPollSeconds: 60,
 		},
 		// Pricing feed (standalone-node pricing sync) is OPT-IN and OFF by
 		// default — the zero-egress-by-default invariant (D3). The seed sets
@@ -4429,7 +4544,7 @@ func Default() Config {
 			MaxProjectsPerPass: 8,
 			BatchRows:          512,
 		},
-		// Advisor (the suggestions engine, spec §15.7) is default-ON:
+		// Advisor (the suggestions engine, docs/advisor.md) is default-ON:
 		// read-layer only, local, zero LLM cost. Same partial-merge
 		// rule as CacheTrack — an install with no [advisor] section
 		// gets Enabled=true. Detector thresholds default in the
@@ -5170,6 +5285,9 @@ func Validate(cfg Config) error {
 		return err
 	}
 	if err := validateTasks(cfg.Tasks); err != nil {
+		return err
+	}
+	if err := validateGuidance(cfg.Guidance); err != nil {
 		return err
 	}
 	if err := validateObservabilityJudges(cfg); err != nil {
@@ -5939,6 +6057,19 @@ func validateTasks(t TasksConfig) error {
 	case "", "shared", "none":
 	default:
 		return fmt.Errorf("config: tasks.concurrent_attribution %q not in {shared, none}", t.ConcurrentAttribution)
+	}
+	return nil
+}
+
+// validateGuidance rejects the one [guidance] value that has no sensible
+// meaning. Every other key in the block resolves a <= 0 value to its seeded
+// budget (an unbounded pass is the failure those budgets exist to prevent),
+// but first_scan_poll_seconds is a CADENCE, so 0 legitimately means "never
+// poll" and only a negative value is nonsense.
+func validateGuidance(g GuidanceConfig) error {
+	if g.FirstScanPollSeconds < 0 {
+		return fmt.Errorf("config: guidance.first_scan_poll_seconds %d must be >= 0 (0 disables the poll)",
+			g.FirstScanPollSeconds)
 	}
 	return nil
 }

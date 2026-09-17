@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 )
 
@@ -53,7 +54,7 @@ func TestManagedBudgetLaunchRejectsUnboundOrStaleExplicitNone(t *testing.T) {
 			t.Parallel()
 			cfgPath, dbPath := writeManagedBudgetLaunchFixture(t, false, "enforce")
 			ctx := context.Background()
-			database, err := db.Open(ctx, db.Options{Path: dbPath})
+			database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 			if err != nil {
 				t.Fatalf("reopen database: %v", err)
 			}
@@ -97,7 +98,7 @@ func TestManagedBudgetStatusRejectsUnboundCache(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
 			_, dbPath := writeManagedBudgetLaunchFixture(t, false, "enforce")
-			database, err := db.Open(ctx, db.Options{Path: dbPath})
+			database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 			if err != nil {
 				t.Fatalf("reopen database: %v", err)
 			}

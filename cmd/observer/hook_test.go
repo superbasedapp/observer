@@ -17,6 +17,8 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
+	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/pidbridge"
@@ -417,7 +419,7 @@ func TestHandleCodexUserPromptSubmit_EndToEnd(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -592,7 +594,7 @@ func TestHandlePoolsidePromptSubmit_EndToEnd(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -1105,7 +1107,7 @@ func TestHandleClaudeCodeUserPromptSubmit_EndToEnd(t *testing.T) {
 	// The pre-existing capture (actions.user_prompt row) must have
 	// landed for BOTH submissions regardless of the verdict.
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -1606,6 +1608,72 @@ func TestBuildClaudePermissionDeniedEvent(t *testing.T) {
 	}
 }
 
+// TestClaudeToolInputScrubbing_SecretInJSONStaysValidJSON pins MHC-4
+// (docs/audits/codebase-audit-2026-09-16.md): every builder that carries
+// a JSON `tool_input` into RawToolInput must scrub it with
+// scrub.Scrubber.RawJSON (structure-aware), not .String (line-oriented
+// regexes). CLAUDE.md's "Don'ts" spells out why this matters — String's
+// generic `(api[_-]?key)(\s*[=:]\s*)(\S+)` pattern is greedy across
+// compact JSON's total lack of whitespace, so on a secret sitting next
+// to other fields it doesn't just redact the secret, it swallows and
+// truncates everything after it, corrupting the stored JSON.
+//
+// Table-driven across the four builders MHC-4 named (post_tool_failure,
+// post_tool_batch, permission_request, permission_denied): each gets a
+// COMPACT (no-whitespace) tool_input JSON body with a secret-shaped
+// value sitting next to an innocuous sibling field. The fix must (1)
+// keep the result valid JSON, (2) redact the secret, and (3) preserve
+// the sibling field — proving the JSON wasn't truncated.
+func TestClaudeToolInputScrubbing_SecretInJSONStaysValidJSON(t *testing.T) {
+	const secret = "sk_live_abcdef1234567890"
+	const sibling = "echo hi"
+
+	tests := []struct {
+		name  string
+		body  string
+		build func([]byte) (models.ToolEvent, bool)
+	}{
+		{
+			name:  "post_tool_failure",
+			body:  `{"session_id":"s1","cwd":"/r","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"api_key":"` + secret + `","command":"` + sibling + `"},"tool_use_id":"toolu_01","error":"failed","is_interrupt":false,"duration_ms":1}`,
+			build: buildClaudePostToolFailureEvent,
+		},
+		{
+			name:  "post_tool_batch",
+			body:  `{"session_id":"s1","cwd":"/r","hook_event_name":"PostToolBatch","tool_calls":[{"tool_name":"Bash","tool_input":{"api_key":"` + secret + `","command":"` + sibling + `"},"tool_use_id":"toolu_01","tool_response":"ok"}]}`,
+			build: buildClaudePostToolBatchEvent,
+		},
+		{
+			name:  "permission_request",
+			body:  `{"session_id":"s1","cwd":"/r","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"api_key":"` + secret + `","command":"` + sibling + `"}}`,
+			build: buildClaudePermissionRequestEvent,
+		},
+		{
+			name:  "permission_denied",
+			body:  `{"session_id":"s1","cwd":"/r","hook_event_name":"PermissionDenied","tool_name":"Bash","tool_input":{"api_key":"` + secret + `","command":"` + sibling + `"},"tool_use_id":"toolu_01","reason":"denied"}`,
+			build: buildClaudePermissionDeniedEvent,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ev, ok := tc.build([]byte(tc.body))
+			if !ok {
+				t.Fatal("ok=false")
+			}
+			if !json.Valid([]byte(ev.RawToolInput)) {
+				t.Fatalf("RawToolInput is not valid JSON after scrubbing: %q", ev.RawToolInput)
+			}
+			if strings.Contains(ev.RawToolInput, secret) {
+				t.Errorf("secret survived scrubbing: %q", ev.RawToolInput)
+			}
+			if !strings.Contains(ev.RawToolInput, sibling) {
+				t.Errorf("sibling field lost — scrubbing truncated/corrupted the JSON: %q", ev.RawToolInput)
+			}
+		})
+	}
+}
+
 func TestBuildClaudeInstructionsLoadedEvent(t *testing.T) {
 	body := []byte(`{"session_id":"s1","cwd":"/r","hook_event_name":"InstructionsLoaded","file_path":"/r/CLAUDE.md","memory_type":"Project","load_reason":"session_start"}`)
 	ev, ok := buildClaudeInstructionsLoadedEvent(body)
@@ -1998,6 +2066,161 @@ func TestInstallHookWatchdogZeroRuntimeIsNoop(t *testing.T) {
 		t.Errorf("watchdog fired despite zero budget: exit=%d", code)
 	case <-time.After(50 * time.Millisecond):
 		// expected
+	}
+}
+
+// resetHookVerdictState restores the package-level verdict-tracking
+// vars (hookReplied/hookPendingExitCode/hookExpectsStdoutReply — see
+// their doc comment) to newHookCmd's Run-time reset values, so a test
+// that exercises recoverHookPanic directly isn't affected by state a
+// PRIOR test in the same binary left behind, mirroring the reset
+// Run itself performs at the top of every real invocation.
+func resetHookVerdictState() {
+	hookReplied = false
+	hookPendingExitCode = 0
+	hookExpectsStdoutReply = true
+}
+
+// TestRecoverHookPanicFailsOpen pins P1-4/RES-2 (docs/audits/
+// codebase-audit-2026-09-16.md): a panic anywhere inside a hook
+// receiver must never surface as a non-zero exit, because a non-zero
+// exit from a PreToolUse-class hook BLOCKS the host AI tool — the
+// exact inversion of this command's documented fail-open contract.
+// Simulates newHookCmd's `defer recoverHookPanic(...)` wiring directly:
+// a handler injected to panic BEFORE anything has been decided (the
+// default fresh-invocation state) must still leave recoverHookPanic
+// writing the {"decision":"approve"} fail-open reply to stdout (never
+// stdout+stderr mixed), logging the panic + stack to stderr only, and
+// calling exitFn(0) — mirroring TestInstallHookWatchdogFiresOnExceededRuntime's
+// injected-exitFn pattern so the test never actually terminates the
+// process.
+func TestRecoverHookPanicFailsOpen(t *testing.T) {
+	resetHookVerdictState()
+	var stdout, stderr bytes.Buffer
+	exitCh := make(chan int, 1)
+
+	func() {
+		defer recoverHookPanic("claude-code:PreToolUse", &stdout, &stderr, func(code int) {
+			exitCh <- code
+		})
+		// Simulates a receiver panicking (e.g. handleClaudeCodePreTool's
+		// hook.RewriteBash over a pathological command) BEFORE any
+		// reply has gone out and before any exit code was decided.
+		panic("simulated hook receiver panic")
+	}()
+
+	select {
+	case code := <-exitCh:
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0 (fail-open; non-zero would block the tool)", code)
+		}
+	default:
+		t.Fatal("recoverHookPanic did not call exitFn after a panic")
+	}
+
+	var decision struct {
+		Decision string `json:"decision"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &decision); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v (stdout=%q)", err, stdout.String())
+	}
+	if decision.Decision != "approve" {
+		t.Errorf("decision = %q, want %q", decision.Decision, "approve")
+	}
+
+	if !strings.Contains(stderr.String(), "PANIC") || !strings.Contains(stderr.String(), "simulated hook receiver panic") {
+		t.Errorf("stderr missing panic diagnostics: %q", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "PANIC") {
+		t.Errorf("panic diagnostics leaked onto stdout, corrupting the hook protocol reply: %q", stdout.String())
+	}
+}
+
+// TestRecoverHookPanicPreservesAlreadyDecidedBlock pins P2-1
+// (adversarial review of the P1-4 fix, docs/audits/
+// codebase-audit-2026-09-16.md): once a receiver has ALREADY written
+// its reply and decided a blocking exit code (e.g.
+// handleClaudeCodeUserPromptSubmit's Claude Code dialect: the JSON
+// block reply goes out, exitCode is set to 2, THEN the capture
+// ingest — which can panic — runs, THEN hookOSExit(2)), a panic in
+// that post-decision work must NEVER let recoverHookPanic (a) write a
+// second stdout object on top of the one already sent, or (b)
+// downgrade the decided exit code to 0, silently turning the block
+// into an allow.
+func TestRecoverHookPanicPreservesAlreadyDecidedBlock(t *testing.T) {
+	resetHookVerdictState()
+	var stdout, stderr bytes.Buffer
+	exitCh := make(chan int, 1)
+
+	const blockReply = `{"decision":"block","reason":"secret detected"}` + "\n"
+
+	func() {
+		defer recoverHookPanic("claude-code:UserPromptSubmit", &stdout, &stderr, func(code int) {
+			exitCh <- code
+		})
+		// Simulates the sequence handleClaudeCodeUserPromptSubmit
+		// actually runs: HandlePromptSubmitGuarded already wrote the
+		// block reply and decided exitCode=2 — the caller marks both
+		// BEFORE doing the capture-ingest work that follows.
+		_, _ = stdout.WriteString(blockReply)
+		markHookReplied()
+		markHookPendingExit(2)
+		// Simulates a panic in the capture-ingest closure that runs
+		// AFTER the verdict is decided but BEFORE hookOSExit(2).
+		panic("simulated ingest panic")
+	}()
+
+	select {
+	case code := <-exitCh:
+		if code != 2 {
+			t.Errorf("exit code = %d, want 2 (an already-decided BLOCK must survive the panic, never silently become an ALLOW)", code)
+		}
+	default:
+		t.Fatal("recoverHookPanic did not call exitFn after a panic")
+	}
+
+	if got := stdout.String(); got != blockReply {
+		t.Errorf("stdout = %q, want EXACTLY the one block reply already written (no second JSON object appended)", got)
+	}
+}
+
+// TestRecoverHookPanicOnNilReplyDialectStaysSilent pins P2-1: Qoder and
+// Cascade are exit-code-only prompt-submit dialects with NO stdout
+// JSON channel for this event at all (see
+// promptDialectsWithoutStdoutReply) — a panic before anything has been
+// decided on one of these dialects must leave stdout completely empty
+// (never the generic {"decision":"approve"} fail-open body, which is
+// unexpected output no such host parses) and still exit 0, since
+// nothing was ever decided.
+func TestRecoverHookPanicOnNilReplyDialectStaysSilent(t *testing.T) {
+	resetHookVerdictState()
+	// Simulates handlePromptSubmitOnlyHook's dialect-contract flip,
+	// made right before it enters the guarded evaluation for a
+	// nil-reply dialect.
+	hookExpectsStdoutReply = !promptDialectsWithoutStdoutReply[hook.PromptDialectQoder]
+	var stdout, stderr bytes.Buffer
+	exitCh := make(chan int, 1)
+
+	func() {
+		defer recoverHookPanic("qoder:UserPromptSubmit", &stdout, &stderr, func(code int) {
+			exitCh <- code
+		})
+		// Simulates a panic before HandlePromptSubmitGuarded ever
+		// returned — nothing has been replied or decided yet.
+		panic("simulated pre-decision panic")
+	}()
+
+	select {
+	case code := <-exitCh:
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0 (nothing was ever decided)", code)
+		}
+	default:
+		t.Fatal("recoverHookPanic did not call exitFn after a panic")
+	}
+
+	if got := stdout.String(); got != "" {
+		t.Errorf("stdout = %q, want empty — this dialect has no stdout JSON channel at all", got)
 	}
 }
 

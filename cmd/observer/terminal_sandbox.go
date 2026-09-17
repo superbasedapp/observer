@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -68,6 +69,214 @@ var sandboxRuntimeLadder = []string{
 // next dialog open, long enough that repeated dialog opens / launch attempts
 // don't re-run the version+canary exec each time.
 const sandboxProbeTTL = 60 * time.Second
+
+// sandboxHolder is the HOT-SWAPPABLE B9 sandbox seam: one long-lived value
+// wired into termsvc (as the Sandboxer) and into the dashboard (as the
+// SandboxProber) for the daemon's whole life, holding the *sandboxRuntime
+// that actually does the work behind an atomic pointer.
+//
+// WHY IT EXISTS. Before this, buildTerminalStack resolved
+// [terminal.sandbox].enabled exactly once, at construction. Turning the
+// sandbox on from Terminals → Settings wrote config.toml and changed
+// nothing else: the probe kept answering "disabled_by_config" and the New
+// Terminal dialog kept the "Run in a sandbox" checkbox greyed out until the
+// operator restarted the daemon — with no copy anywhere saying so. The
+// holder makes the seam swappable so a save binds on the next launch.
+//
+// The swap discipline is the one-owner rule (CLAUDE.md #4): the holder is
+// the only thing that ever constructs a sandboxRuntime after startup, the
+// runtime itself stays immutable, and every reader takes ONE atomic load —
+// so an in-flight Prepare keeps running against the runtime it started
+// with instead of observing a half-rebuilt one. internal/sandbox stays
+// pure; nothing about the exec seam moves.
+type sandboxHolder struct {
+	// configPath is the daemon's resolved config.toml. Empty disables the
+	// self-refresh (nothing to stat), leaving the holder pinned to its
+	// boot-time runtime.
+	configPath string
+	// observerDir / observerBin are the rebuild inputs that CANNOT change
+	// without a restart (the DB path and the running executable), so they
+	// are resolved once here rather than re-read per reload.
+	observerDir string
+	observerBin string
+	logger      *slog.Logger
+	// managedRoot is the workspaces root handed to termsvc.Options.
+	// SandboxWorkspacesDir at construction. termsvc holds its own copy for
+	// the daemon's life, so a reload that MOVES workspaces_dir cannot take
+	// effect for managed (non-"live") sources — reload warns instead of
+	// silently validating against the wrong root.
+	managedRoot string
+
+	// rt is the live runtime, or nil when the feature is off. initErr is
+	// the last rebuild failure (nil when the last rebuild succeeded), which
+	// is what turns an enabled-but-broken sandbox into its OWN verdict
+	// instead of being flattened into "disabled_by_config".
+	rt      atomic.Pointer[sandboxRuntime]
+	initErr atomic.Pointer[string]
+
+	// mu guards the config-file stamp + serializes rebuilds so two
+	// concurrent probes can't both construct a runtime.
+	mu       sync.Mutex
+	stampMod time.Time
+	stampLen int64
+	stamped  bool
+}
+
+// newSandboxHolder builds the holder and performs its FIRST resolve, so a
+// daemon that boots with [terminal.sandbox].enabled = true has a live
+// runtime before the first dialog opens. It never fails: a broken runtime
+// is a verdict (runtime_init_failed), not a reason to refuse to build the
+// terminal stack.
+func newSandboxHolder(cfg config.Config, configPath, observerDir, observerBin string, logger *slog.Logger) *sandboxHolder {
+	h := &sandboxHolder{
+		configPath:  strings.TrimSpace(configPath),
+		observerDir: observerDir,
+		observerBin: observerBin,
+		logger:      logger,
+		managedRoot: defaultWorkspacesDir(cfg.Terminal.Sandbox, observerDir),
+	}
+	// Canonicalize the managed root the same way newSandboxRuntime does, so
+	// termsvc's ValidateManagedWorkspace and the runtime agree on a
+	// symlink-free prefix when the directory already exists. When it does
+	// not (the feature is off and nothing has created it), the plain joined
+	// path is the honest answer and the first enable-reload creates it.
+	if resolved, err := filepath.EvalSymlinks(h.managedRoot); err == nil {
+		h.managedRoot = resolved
+	}
+	h.reload(cfg.Terminal.Sandbox, cfg.Launch.Tools)
+	h.stampConfig()
+	return h
+}
+
+// reload swaps in a runtime built from the supplied [terminal.sandbox]
+// block. Disabling clears the runtime AND the error (an off switch is not a
+// failure). Enabling with a runtime that will not initialize KEEPS the
+// previous seam — an operator mid-edit should not lose a working sandbox to
+// a typo — and records the error so the probe reports it verbatim.
+func (h *sandboxHolder) reload(cfg config.TerminalSandboxConfig, launchTools map[string]config.LaunchToolConfig) {
+	if !cfg.Enabled {
+		h.rt.Store(nil)
+		h.initErr.Store(nil)
+		return
+	}
+	rt, err := newSandboxRuntime(cfg, launchTools, h.observerDir, h.observerBin, h.logger)
+	if err != nil {
+		msg := err.Error()
+		h.initErr.Store(&msg)
+		if h.logger != nil {
+			h.logger.Warn("terminal sandbox: could not initialize the sandbox runtime — keeping the previous seam", "err", err)
+		}
+		return
+	}
+	if rt.workspacesDir() != h.managedRoot && h.logger != nil {
+		h.logger.Warn("terminal sandbox: [terminal.sandbox].workspaces_dir changed since daemon start — "+
+			"live-source launches are unaffected, but a managed workspace (clone/worktree) needs a daemon restart",
+			"boot", h.managedRoot, "config", rt.workspacesDir())
+	}
+	h.rt.Store(rt)
+	h.initErr.Store(nil)
+}
+
+// refresh re-resolves the seam when config.toml has changed on disk since
+// the last look. It is the hot-reload trigger: the dashboard's sandbox PUT
+// writes the file (and fires Options.OnConfigSaved), `observer config
+// reload` fires the same hook, and a hand-edit fires nothing at all — a
+// mtime+size stamp catches all three, from the two seams that matter
+// (ProbeSandbox and Prepare) and nowhere else.
+//
+// Cost is one os.Stat per probe/prepare; the rebuild itself runs only when
+// the stamp actually moved. Best-effort: an unreadable config path leaves
+// the current seam in place rather than tearing down a working sandbox.
+func (h *sandboxHolder) refresh() {
+	if h.configPath == "" {
+		return
+	}
+	info, err := os.Stat(h.configPath)
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	changed := !h.stamped || !info.ModTime().Equal(h.stampMod) || info.Size() != h.stampLen
+	h.stampMod, h.stampLen, h.stamped = info.ModTime(), info.Size(), true
+	h.mu.Unlock()
+	if !changed {
+		return
+	}
+	cfg, err := config.Load(config.LoadOptions{GlobalPath: h.configPath})
+	if err != nil {
+		if h.logger != nil {
+			h.logger.Warn("terminal sandbox: config changed but could not be reloaded — keeping the previous seam", "err", err)
+		}
+		return
+	}
+	h.reload(cfg.Terminal.Sandbox, cfg.Launch.Tools)
+}
+
+// stampConfig records the config file's identity without rebuilding, so the
+// first refresh() after construction is a no-op rather than an immediate
+// second resolve.
+func (h *sandboxHolder) stampConfig() {
+	if h.configPath == "" {
+		return
+	}
+	info, err := os.Stat(h.configPath)
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	h.stampMod, h.stampLen, h.stamped = info.ModTime(), info.Size(), true
+	h.mu.Unlock()
+}
+
+// workspacesDir returns the boot-time managed-workspaces root termsvc holds
+// for the daemon's life (see sandboxHolder.managedRoot).
+func (h *sandboxHolder) workspacesDir() string { return h.managedRoot }
+
+// ProbeSandbox implements dashboard.SandboxProber over the live runtime,
+// distinguishing the THREE honest "no sandbox" states the dialog used to
+// flatten into one string:
+//
+//   - disabled_by_config — [terminal.sandbox].enabled is false. The switch
+//     is in the dashboard and the save binds immediately, which is what the
+//     reason says.
+//   - runtime_init_failed — enabled, but the runtime could not be built
+//     (an unwritable workspaces_dir, a non-absolute path). Carries the
+//     construction error verbatim; it is an operator-fixable config fault,
+//     not a missing capability.
+//   - the probe verdicts (available / backend_missing / backend_too_old /
+//     userns_denied / unsupported_platform) from the runtime itself.
+func (h *sandboxHolder) ProbeSandbox(ctx context.Context) dashboard.SandboxAvailability {
+	h.refresh()
+	if msg := h.initErr.Load(); msg != nil {
+		return dashboard.SandboxAvailability{
+			Available: false,
+			Verdict:   dashboard.VerdictRuntimeInitFailed,
+			Reason:    *msg,
+		}
+	}
+	rt := h.rt.Load()
+	if rt == nil {
+		return dashboard.SandboxAvailability{
+			Available: false,
+			Verdict:   dashboard.VerdictDisabledByConfig,
+			Reason:    "[terminal.sandbox].enabled is false on this daemon",
+		}
+	}
+	return rt.ProbeSandbox(ctx)
+}
+
+// Prepare implements termsvc.Sandboxer over the live runtime. With no
+// runtime it returns termsvc.ErrSandboxUnavailable — the SAME fail-closed
+// error a nil Sandboxer produces, so wiring the holder unconditionally
+// never widens what a sandboxed launch is allowed to do.
+func (h *sandboxHolder) Prepare(ctx context.Context, req termsvc.PrepareRequest) (termsvc.PrepareResult, error) {
+	h.refresh()
+	rt := h.rt.Load()
+	if rt == nil {
+		return termsvc.PrepareResult{}, termsvc.ErrSandboxUnavailable
+	}
+	return rt.Prepare(ctx, req)
+}
 
 // sandboxRuntime implements termsvc.Sandboxer and dashboard.SandboxProber over
 // internal/sandbox + internal/workspace. It is constructed once per daemon in
@@ -169,17 +378,6 @@ func newSandboxRuntime(cfg config.TerminalSandboxConfig, launchTools map[string]
 // Stack can hand termsvc.Options.SandboxWorkspacesDir the SAME value this
 // runtime validates prepared workspaces against.
 func (r *sandboxRuntime) workspacesDir() string { return r.managedRoot }
-
-// sandboxSeamProber returns the runtime as a dashboard.SandboxProber, or a NIL
-// interface (not a non-nil interface over a nil pointer) when rt is nil, so a
-// disabled sandbox leaves dashboard.Options.SandboxProber == nil and the
-// fail-closed / disabled-report paths fire correctly.
-func sandboxSeamProber(rt *sandboxRuntime) dashboard.SandboxProber {
-	if rt == nil {
-		return nil
-	}
-	return rt
-}
 
 // homeMode returns the configured home mode, defaulting to "tmpfs".
 func (r *sandboxRuntime) homeMode() string {

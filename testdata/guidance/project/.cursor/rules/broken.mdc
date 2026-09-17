@@ -1,0 +1,6 @@
+---
+globs: [unclosed
+alwaysApply: true
+---
+
+Broken on purpose.

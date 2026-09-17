@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
@@ -57,7 +58,7 @@ func TestManagedBudgetPricesWithTheSameLadderAsTheDashboard(t *testing.T) {
 		t.Fatalf("fallback rate produced no dollars: %v", want)
 	}
 
-	database, err := db.Open(ctx, db.Options{Path: t.TempDir() + "/observer.db"})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: t.TempDir() + "/observer.db"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +119,7 @@ func TestBudgetPricingCoverageSplitsFallbackFromTrueMiss(t *testing.T) {
 		t.Fatalf("%q is not a fallback rung; this test needs one", fallbackPricedModel)
 	}
 
-	database, err := db.Open(ctx, db.Options{Path: t.TempDir() + "/observer.db"})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: t.TempDir() + "/observer.db"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +178,7 @@ func TestBudgetPricingCoverageSplitsFallbackFromTrueMiss(t *testing.T) {
 func TestManagedBudgetTrueMissFlagsPartialWithoutDenial(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: t.TempDir() + "/observer.db"})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: t.TempDir() + "/observer.db"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +258,7 @@ func TestBudgetLaunchAllowsFallbackPricedUsageUnderCap(t *testing.T) {
 func seedManagedUSDCapAndOrgPrices(t *testing.T, dbPath string) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +316,7 @@ func seedManagedUSDCapAndOrgPrices(t *testing.T, dbPath string) {
 func recordManagedBudgetUsage(t *testing.T, dbPath, tool, model string) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

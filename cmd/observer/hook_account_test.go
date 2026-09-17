@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -52,7 +53,7 @@ func TestNativeHookAccountCaptureWithoutActionOrEffort(t *testing.T) {
 			} else {
 				runCodexAccountHook(t, body, configPath)
 			}
-			database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+			database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 			if err != nil {
 				t.Fatal(err)
 			}

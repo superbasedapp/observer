@@ -552,6 +552,27 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		// diagnostics gap, not an outage — the response still reports "ok".
 		s.log.Warn("cloudserver/api: healthz schema read failed", "embedded_err", embErr, "deployed_err", depErr)
 	}
+	// route_default_missing: the features that currently have NO eligible
+	// (active, non-plan-pinned) default route — see
+	// store.classifyFeatureCoverage's doc comment for why this is report-only,
+	// never a reason to answer anything but 200. A momentary gap here is the
+	// EXPECTED shape of an in-progress route activation (the Sol runbook), not
+	// necessarily an outage, so it rides on the existing "ok" response exactly
+	// like the schema drift field above rather than flipping the status.
+	if coverage, covErr := s.store.FeatureDefaultCoverage(r.Context()); covErr == nil {
+		var missing []string
+		for _, c := range coverage {
+			if !c.HasDefault {
+				missing = append(missing, c.Feature)
+			}
+		}
+		if missing == nil {
+			missing = []string{}
+		}
+		body["route_default_missing"] = missing
+	} else if s.log != nil {
+		s.log.Warn("cloudserver/api: healthz route coverage read failed", "err", covErr)
+	}
 	writeJSON(w, http.StatusOK, body)
 }
 

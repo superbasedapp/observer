@@ -10,6 +10,21 @@ import (
 )
 
 // Normalize validates a minimal identity projection and derives its stable key.
+//
+// The key is sha256(tool || 0x00 || identity) where identity is the first
+// non-empty of AccountID, Email, Name. It is UNSALTED on purpose: two nodes
+// that observe the same vendor account must derive the same key, which is what
+// makes "did these two developers use one account?" answerable without either
+// of them disclosing the identity itself. An HMAC would break exactly that.
+//
+// The consequence, and the reason callers must not treat the key as opaque
+// (PRIV-1, codebase audit 2026-09-16): when the preimage is an EMAIL or a NAME
+// rather than an opaque AccountID, the preimage space is small and enumerable,
+// so the key is recoverable offline by anyone holding a candidate list. The
+// org-push seam therefore gates an account_id-less key behind the same
+// raw-content posture as the identity columns — see
+// internal/store/toolaccountsummary.go, which owns that decision. This function
+// stays a pure derivation and makes no disclosure decision of its own.
 func Normalize(o models.ToolAccountObservation) (models.ToolAccountObservation, string, bool) {
 	o.Email = strings.ToLower(strings.TrimSpace(o.Email))
 	o.Name = strings.TrimSpace(o.Name)

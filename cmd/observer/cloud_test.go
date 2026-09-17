@@ -23,6 +23,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/cloudpop"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -46,7 +47,7 @@ func writeCloudTestConfig(t *testing.T) (string, string, string) {
 func seedCloudSession(t *testing.T, dbPath, sessionID, authority string) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -86,7 +87,7 @@ func seedCloudSession(t *testing.T, dbPath, sessionID, authority string) {
 // openCloudTestStore opens a store handle over dbPath for direct assertions.
 func openCloudTestStore(t *testing.T, dbPath string) (*store.Store, func()) {
 	t.Helper()
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -382,6 +383,27 @@ func newFakeCloudServer(t *testing.T) *fakeCloudServer {
 		f.cloudSessionID = jobBody.CloudSessionID
 		writeCloudJSON(w, map[string]string{"job_id": "job-1", "status": "queued", "cloud_session_id": jobBody.CloudSessionID})
 	})
+	// GET /v1/jobs/{id} (observer cloud job): authenticated exactly like the
+	// POST /v1/jobs upload above. Only the id the upload above assigned
+	// ("job-1") resolves; anything else is the tenant-scoped 404 handleGetJob
+	// returns for an unknown or foreign-account job.
+	mux.HandleFunc("GET /v1/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if bearer != f.apiToken || r.Header.Get("SBO-PoP") == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.PathValue("id") != "job-1" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"code":"not_found","error":"job not found"}`))
+			return
+		}
+		writeCloudJSON(w, map[string]any{
+			"id": "job-1", "state": "succeeded", "feature": "session_enrichment",
+			"attempts": 1, "created_at": "2026-09-17T10:00:00Z", "updated_at": "2026-09-17T10:05:00Z",
+		})
+	})
 	// Preview-confirmation handshake (the server admits a session-evidence
 	// upload only after the exact bytes are preview-confirmed). Authenticated
 	// like /v1/jobs; returns the recorded receipt + consent generation.
@@ -644,6 +666,102 @@ func TestCloudSyncAgainstFakeServer(t *testing.T) {
 	// nowhere on this device — already proven by the honest "1 associated, 1
 	// for sessions not on this device" count assertion above, and by the fact
 	// that s1's only stored result is res-1.
+}
+
+// TestCloudJobLooksUpStatus drives login → consent → sync (which uploads and
+// gets back "job-1", exactly like TestCloudSyncAgainstFakeServer) then
+// `observer cloud job` against the same fake server: the CLOUD job id
+// resolves through the consent-gated read lane, an unknown id gets the honest
+// "job not found" line rather than a raw HTTP error, and the LOCAL outbox id
+// (job_<hex>, from `consent`'s own output) is refused up front because
+// observer stores no mapping from it to the cloud id.
+func TestCloudJobLooksUpStatus(t *testing.T) {
+	f := newFakeCloudServer(t)
+	cfgPath, dbPath, _ := writeCloudTestConfig(t)
+	seedCloudSession(t, dbPath, "s1", "personal")
+
+	consentOut, err := runCloudCmd(t, "consent",
+		"--config", cfgPath, "--base-url", f.srv.URL,
+		"--session", "s1", "--purpose", string(cloudcontract.PurposeStructuralInsights), "--yes")
+	if err != nil {
+		t.Fatalf("consent: %v\n%s", err, consentOut)
+	}
+	if out, err := runCloudCmd(t, "login",
+		"--config", cfgPath, "--base-url", f.srv.URL, "--dev-token", "workos-dev-token"); err != nil {
+		t.Fatalf("login: %v\n%s", err, out)
+	}
+	if out, err := runCloudCmd(t, "sync",
+		"--config", cfgPath, "--base-url", f.srv.URL, "--dev-token", "workos-dev-token"); err != nil {
+		t.Fatalf("sync: %v\n%s", err, out)
+	}
+	if f.uploads != 1 {
+		t.Fatalf("want 1 upload before the job lookup, server saw %d", f.uploads)
+	}
+
+	// The known cloud job id ("job-1", the server's fixed answer for the
+	// upload above) resolves and prints the status table.
+	out, err := runCloudCmd(t, "job", "job-1",
+		"--config", cfgPath, "--base-url", f.srv.URL, "--dev-token", "workos-dev-token")
+	if err != nil {
+		t.Fatalf("job job-1: %v\n%s", err, out)
+	}
+	for _, want := range []string{"job:             job-1", "state:           succeeded", "feature:         session_enrichment", "attempts:        1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("job output missing %q:\n%s", want, out)
+		}
+	}
+
+	// --json prints the decoded JobStatus as JSON.
+	jsonOut, err := runCloudCmd(t, "job", "job-1", "--json",
+		"--config", cfgPath, "--base-url", f.srv.URL, "--dev-token", "workos-dev-token")
+	if err != nil {
+		t.Fatalf("job job-1 --json: %v\n%s", err, jsonOut)
+	}
+	var decoded struct {
+		ID    string `json:"ID"`
+		State string `json:"State"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &decoded); err != nil {
+		t.Fatalf("decode --json output: %v\n%s", err, jsonOut)
+	}
+	if decoded.ID != "job-1" || decoded.State != "succeeded" {
+		t.Fatalf("decoded --json = %+v", decoded)
+	}
+
+	// An unknown cloud job id gets the server's tenant-scoped 404, printed as
+	// the honest not-found line, not an error exit.
+	notFoundOut, err := runCloudCmd(t, "job", "no-such-job",
+		"--config", cfgPath, "--base-url", f.srv.URL, "--dev-token", "workos-dev-token")
+	if err != nil {
+		t.Fatalf("job no-such-job: unexpected error: %v\n%s", err, notFoundOut)
+	}
+	if !strings.Contains(notFoundOut, "job not found for this device's account") {
+		t.Errorf("job no-such-job output = %q, want the honest not-found line", notFoundOut)
+	}
+
+	// A LOCAL outbox id (job_<hex>, as printed by `observer cloud consent`) is
+	// refused up front — no lookup exists from it to the cloud job id.
+	if !strings.Contains(consentOut, "job_") {
+		t.Fatalf("consent output does not carry a local job_ id to test against:\n%s", consentOut)
+	}
+	localID := ""
+	for _, tok := range strings.Fields(consentOut) {
+		if strings.HasPrefix(tok, "job_") {
+			localID = strings.Trim(tok, ".:,")
+			break
+		}
+	}
+	if localID == "" {
+		t.Fatalf("could not find a job_ token in consent output:\n%s", consentOut)
+	}
+	localOut, err := runCloudCmd(t, "job", localID,
+		"--config", cfgPath, "--base-url", f.srv.URL, "--dev-token", "workos-dev-token")
+	if err == nil {
+		t.Fatalf("job %s: want a refusal (local outbox id, no cloud mapping), got success:\n%s", localID, localOut)
+	}
+	if !strings.Contains(err.Error(), "LOCAL outbox id") {
+		t.Errorf("job %s: error = %v, want it to explain the local/cloud id distinction", localID, err)
+	}
 }
 
 // TestCloudAssociateResultPreservesOverrides proves a user override on a
@@ -1050,7 +1168,7 @@ func TestCloudSyncReclaimsStrandedSending(t *testing.T) {
 	// Simulate crash-before-mark: force the enqueued item to `sending` with a
 	// stale updated_at (older than the reclaim lease).
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

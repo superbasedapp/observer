@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -399,13 +400,25 @@ func TestAppDataSpecIsOSShaped(t *testing.T) {
 }
 
 // TestDefaultRootsShape pins what the LIVE root set looks like on
-// whatever host runs the tests: every root is the store directory, and
-// none of them is a Linux path Grok Bot does not ship.
+// whatever host runs the tests, per that host's OS: on Windows/macOS
+// every root is the store directory. On native Linux (no mounted
+// foreign Windows/macOS home) the set is legitimately empty, because
+// Grok Bot is a Windows+macOS desktop app and does not ship a Linux
+// build — TestAppDataSpecIsOSShaped pins that against staged homes;
+// this test pins it against the LIVE host, so it must tolerate a WSL2
+// dev box where crossmount surfaces a real mounted Windows home even
+// though GOOS is "linux". Whatever roots ARE present, on any OS, must
+// still satisfy the shape checks below.
 func TestDefaultRootsShape(t *testing.T) {
 	t.Parallel()
 	roots := New().WatchPaths()
 	if len(roots) == 0 {
-		t.Fatal("no default watch roots")
+		if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+			t.Fatal("no default watch roots")
+		}
+		// Linux ships no Grok Bot build; an empty result is the
+		// legitimate CI-runner case (no mounted foreign home).
+		return
 	}
 	for _, r := range roots {
 		n := filepath.ToSlash(r)

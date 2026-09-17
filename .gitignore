@@ -225,9 +225,11 @@ model-pricing/scripts/extract-cache/
 /cmd/observer-org-bridge-agent/
 /cmd/observer-org-pi-agent/
 /cmd/observer-edge/
+/cmd/observer-aigateway/
 /internal/orgserver/
 /internal/obs/
 /internal/edge/
+/internal/aigateway/
 /deploy/
 /web2/
 /charts/
@@ -247,9 +249,9 @@ model-pricing/scripts/extract-cache/
 /.github/workflows/ci-private.yml
 /.github/workflows/npm-release.yml
 /.github/workflows/teams-golden-path.yml
-/.github/workflows/ghcr-mirror.yml
 /.github/workflows/obs-eval.yml
 /.github/workflows/website-deploy.yml
+/.github/workflows/org-postgres.yml
 # The org-plane half of the copilot harness walkthrough. Its Phase-1
 # sibling (examples/copilot-harness/README.md) stays public.
 /examples/copilot-harness/README-orgplane.md

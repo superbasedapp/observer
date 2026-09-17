@@ -18,14 +18,17 @@ func TestNatslogConformance(t *testing.T) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		l, err := natslog.Embedded(ctx, t.TempDir(), natslog.Options{
+		// EmbeddedTestOptions pins the small, explicit test-broker footprint;
+		// the 10 GiB production MaxBytes default cannot be backed by a small CI
+		// runner's disk and the broker refuses the stream outright.
+		l, err := natslog.Embedded(ctx, t.TempDir(), natslog.EmbeddedTestOptions(natslog.Options{
 			MaxMessages:     int64(cfg.MaxMessages),
 			MaxMsgBytes:     int32(cfg.MaxMsgBytes),
 			DuplicateWindow: cfg.DuplicateWindow,
 			MaxDeliver:      cfg.MaxDeliver,
 			AckWait:         cfg.AckWait,
 			MaxAge:          cfg.DuplicateWindow * 4,
-		})
+		}))
 		if err != nil {
 			t.Fatalf("natslog.Embedded: %v", err)
 		}

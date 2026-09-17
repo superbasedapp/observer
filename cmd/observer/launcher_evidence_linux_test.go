@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intervention"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -118,7 +119,7 @@ func attestBudgetLaunchSurface(t *testing.T, dbPath, tool, surfaceID, executable
 	budgetLaunchInterventionCandidates = func() []intervention.InstalledCandidate { return candidates }
 	t.Cleanup(func() { budgetLaunchInterventionCandidates = original })
 
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open fixture DB: %v", err)
 	}

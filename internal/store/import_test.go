@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/compression/indexing"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // importTestForeign builds a foreign observer.db carrying one project
@@ -19,7 +20,7 @@ import (
 func importTestForeign(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "foreign.db")
-	fdb, err := db.Open(context.Background(), db.Options{Path: path})
+	fdb, err := dbtemplate.Open(context.Background(), db.Options{Path: path})
 	if err != nil {
 		t.Fatal(err)
 	}

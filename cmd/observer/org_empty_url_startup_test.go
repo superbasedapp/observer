@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -16,9 +15,41 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
+
+// orgEmptyURLPollTimeout bounds how long runOrgEmptyURLTestNode waits for a
+// settled signal (the "org push disabled" notice, or a hit against the fake
+// org server) before giving up and treating "neither happened yet" as the
+// answer. It replaces a fixed sleep: the two positive-signal cases usually
+// resolve in well under a second (PushIntervalSeconds=1), while the two
+// negative-result cases (never-enrolled; config URL with no persisted row)
+// only get a confident "nothing happened" by waiting out the full budget.
+const orgEmptyURLPollTimeout = 30 * time.Second
+
+// waitForOrgClientSignal polls getOutput and hits until either the
+// "org push disabled" startup notice appears in the captured output or the
+// fake org server records at least one hit, or timeout elapses — whichever
+// comes first. All four truth-table cases in this file resolve on one of
+// those two signals (or, for the two negative cases, exhaust the timeout
+// with neither ever firing).
+func waitForOrgClientSignal(getOutput func() string, hits *atomic.Int64, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if hits.Load() > 0 {
+			return
+		}
+		if strings.Contains(getOutput(), "org push disabled") {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
 
 // orgEmptyURLResult is what runOrgEmptyURLTestNode reports back to each
 // of the three truth-table cases below.
@@ -38,8 +69,10 @@ type orgEmptyURLResult struct {
 // URL (useConfigURL) or the DB-persisted row's own URL (seedRow), which
 // orgclient.Client.PushOnce reads from the store, never from config.
 //
-// PushIntervalSeconds=1 with a 3s wait gives an un-gated loop several
-// cycles' worth of time to have hit the server at least once.
+// PushIntervalSeconds=1 gives an un-gated loop several cycles a second to
+// hit the server; waitForOrgClientSignal below polls for that hit (or the
+// disabled-notice) instead of sleeping a fixed duration, so this settles as
+// soon as the real signal appears rather than on a guessed clock time.
 func runOrgEmptyURLTestNode(t *testing.T, useConfigURL, seedRow bool) orgEmptyURLResult {
 	t.Helper()
 	dir := t.TempDir()
@@ -86,14 +119,32 @@ func runOrgEmptyURLTestNode(t *testing.T, useConfigURL, seedRow bool) orgEmptyUR
 		t.Fatalf("WriteToml: %v", err)
 	}
 
+	// Pre-seed the migrated schema at dbPath BEFORE `observer start` gets a
+	// chance to open it. Without this, start's own db.Open runs the full
+	// 124+-migration chain under -race (measured ~3.28s/op), and the fixed
+	// short sleep this harness used to take could fire while that migration
+	// was still in flight — surfacing as "ping: context canceled" /
+	// "runMigrations: exec ...: context canceled" instead of the expected
+	// startup notice. dbtemplate.Open only materializes the template when
+	// dbPath is fresh (see its doc comment), so this is a cheap byte-copy in
+	// every case, including the seedRow branch below.
+	seedCtx := context.Background()
+	preseed, err := dbtemplate.Open(seedCtx, db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatalf("db.Open preseed: %v", err)
+	}
+	if err := preseed.Close(); err != nil {
+		t.Fatalf("close preseed db: %v", err)
+	}
+
 	if seedRow {
 		// The "was enrolled once" shape: a PERSISTED enrolment row pointing
 		// at the fake server, independent of whatever config says. This is
 		// what the push/announcement/routing-policy loops actually dial
 		// (internal/orgclient.Client.PushOnce reads it from the store, not
-		// from cfg.OrgClient.OrgServerURL).
-		seedCtx := context.Background()
-		database, err := db.Open(seedCtx, db.Options{Path: dbPath})
+		// from cfg.OrgClient.OrgServerURL). dbPath is already migrated by the
+		// preseed above, so this open is a fast no-op migration check.
+		database, err := dbtemplate.Open(seedCtx, db.Options{Path: dbPath})
 		if err != nil {
 			t.Fatalf("db.Open seed: %v", err)
 		}
@@ -124,13 +175,13 @@ func runOrgEmptyURLTestNode(t *testing.T, useConfigURL, seedRow bool) orgEmptyUR
 	startCmd := newStartCmd()
 	t.Cleanup(func() { setDaemonConfigPath("") })
 	startCmd.SetArgs([]string{"--no-dashboard", "--no-open", "--config", cfgPath})
-	var out bytes.Buffer
-	startCmd.SetOut(&out)
-	startCmd.SetErr(&out)
+	out := &syncBuffer{}
+	startCmd.SetOut(out)
+	startCmd.SetErr(out)
 	done := make(chan error, 1)
 	go func() { done <- startCmd.ExecuteContext(ctx) }()
 
-	time.Sleep(3 * time.Second)
+	waitForOrgClientSignal(out.String, &hits, orgEmptyURLPollTimeout)
 
 	cancel()
 	select {
@@ -139,7 +190,7 @@ func runOrgEmptyURLTestNode(t *testing.T, useConfigURL, seedRow bool) orgEmptyUR
 		t.Fatal("observer start did not exit within 10s of cancel")
 	}
 
-	database2, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database2, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open verify: %v", err)
 	}
@@ -185,7 +236,7 @@ func TestStartupSkipsOrgClientWhenNeverEnrolled(t *testing.T) {
 // client MUST start here, exactly as it would with a real config
 // org_server_url, and its push loop dials the PERSISTED row's server —
 // never the blank config field — so the fake server (reachable ONLY via
-// that row's URL) sees at least one hit within the 3s window.
+// that row's URL) sees at least one hit within the poll window.
 func TestStartupUsesPersistedEnrolmentWhenConfigURLBlank(t *testing.T) {
 	res := runOrgEmptyURLTestNode(t, false /* useConfigURL */, true /* seedRow */)
 

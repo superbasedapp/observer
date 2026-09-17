@@ -88,7 +88,7 @@ func (f *httpFetcher) Fetch(ctx context.Context, feedURL, lastDigest string) (Re
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrTransport, err)
+		return Result{}, fmt.Errorf("%w: %w", ErrTransport, err)
 	}
 	req.Header.Set("Accept", "application/json")
 	if d := strings.TrimSpace(lastDigest); d != "" {
@@ -99,7 +99,7 @@ func (f *httpFetcher) Fetch(ctx context.Context, feedURL, lastDigest string) (Re
 	}
 	resp, err := f.hc.Do(req)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrTransport, err)
+		return Result{}, fmt.Errorf("%w: %w", ErrTransport, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -111,7 +111,7 @@ func (f *httpFetcher) Fetch(ctx context.Context, feedURL, lastDigest string) (Re
 	}
 	var env pricingfeed.Envelope
 	if derr := json.NewDecoder(io.LimitReader(resp.Body, maxFeedBodyBytes)).Decode(&env); derr != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrDecode, derr)
+		return Result{}, fmt.Errorf("%w: %w", ErrDecode, derr)
 	}
 	return Result{Envelope: env}, nil
 }

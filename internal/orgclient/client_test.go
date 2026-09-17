@@ -22,6 +22,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -73,10 +74,20 @@ func (m *memBearerStore) Backend() string { return "mem" }
 
 // --- helpers ----------------------------------------------------------------
 
+// newAgentStore opens a fresh agent store for a test. It uses
+// [dbtemplate.Open] rather than [db.Open] directly: this package's suite
+// creates one fresh SQLite database per test (sometimes several), and
+// re-running the full agent migration chain (125 migrations as of writing)
+// on every one of them was the single largest contributor to the package's
+// wall-clock time under `go test -race` — a from-scratch db.Open costs well
+// over a second, dominating tests whose own logic runs in milliseconds.
+// dbtemplate seeds each fresh path from a process-wide pre-migrated image
+// (built once, byte-copied per test) and is behaviour-identical to db.Open
+// for every other purpose (same schema, same options, same cleanup).
 func newAgentStore(t *testing.T) *store.Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "agent.db")
-	database, err := db.Open(context.Background(), db.Options{Path: path})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -197,6 +208,79 @@ func TestEnroll_AuthFailure(t *testing.T) {
 	}
 	if enr, _ := s.LoadEnrolment(context.Background()); enr != nil {
 		t.Errorf("enrolment row written despite failed enrol")
+	}
+}
+
+// TestEnroll_MemberNotActiveVsGenuinelyInvalid pins the discriminator: a 403
+// carrying {"error":"member_not_active",...} must surface as
+// ErrMemberNotActive with guidance to retry the SAME command (never "ask your
+// admin for a new one"), while a plain 401/403 with no such body — or a
+// different error code — keeps the existing ErrAuthFailed "invalid or
+// expired" text.
+func TestEnroll_MemberNotActiveVsGenuinelyInvalid(t *testing.T) {
+	tests := []struct {
+		name           string
+		status         int
+		body           map[string]string
+		wantErrIs      error
+		wantContains   []string
+		wantNotContain []string
+	}{
+		{
+			name:   "pending member 403",
+			status: http.StatusForbidden,
+			body: map[string]string{
+				"error":   "member_not_active",
+				"message": "your organisation account is not active yet: redeem your dashboard sign-in invite and set a password first, then run this command again — your enrolment token is still valid",
+			},
+			wantErrIs: ErrMemberNotActive,
+			wantContains: []string{
+				"redeem your dashboard sign-in invite",
+				"run the same command again after you have signed in",
+			},
+			wantNotContain: []string{"ask your admin for a new one"},
+		},
+		{
+			name:         "genuinely invalid or expired token",
+			status:       http.StatusUnauthorized,
+			body:         map[string]string{"error": "unauthorized"},
+			wantErrIs:    ErrAuthFailed,
+			wantContains: []string{"invalid or expired enrolment token", "ask your admin for a new one"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newAgentStore(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeTestJSON(w, tc.status, tc.body)
+			}))
+			defer srv.Close()
+
+			bs := &memBearerStore{}
+			c := newTestClient(t, s, bs)
+			_, _, err := c.Enroll(context.Background(), srv.URL, "tok_id.secret")
+			if !errors.Is(err, tc.wantErrIs) {
+				t.Fatalf("Enroll error = %v, want errors.Is(_, %v)", err, tc.wantErrIs)
+			}
+			for _, want := range tc.wantContains {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err.Error(), want)
+				}
+			}
+			for _, notWant := range tc.wantNotContain {
+				if strings.Contains(err.Error(), notWant) {
+					t.Errorf("error %q unexpectedly contains %q", err.Error(), notWant)
+				}
+			}
+			// Never persisted: a not-yet-active member must not leave the
+			// node half-enrolled, same as a genuinely invalid token.
+			if bs.bearer != "" || bs.key != nil {
+				t.Errorf("secrets stored despite a failed enrol")
+			}
+			if enr, _ := s.LoadEnrolment(context.Background()); enr != nil {
+				t.Errorf("enrolment row written despite a failed enrol")
+			}
+		})
 	}
 }
 

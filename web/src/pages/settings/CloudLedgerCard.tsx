@@ -1,7 +1,7 @@
 import { cloudEvidenceSettingsSummary } from "@/lib/cloud";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Pill } from "@/components/primitives";
+import { Button, JsonPreview, Pill, Table } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { useApi } from "@/lib/useApi";
 import { apiReason } from "@/lib/api";
@@ -50,9 +50,10 @@ export function CloudLedgerCard({ actionsAvailable }: { actionsAvailable: boolea
         {entries.length === 0 ? (
           <p className="mt-3 text-[11.5px] text-fg-3">Nothing has been sent from this device yet.</p>
         ) : (
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left text-[11.5px]">
-              <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
+          <div className="mt-3">
+            <Table
+              minWidth={720}
+              head={
                 <tr className="border-b border-line-2">
                   <th className="py-1.5 pl-1 font-medium">When</th>
                   <th className="py-1.5 font-medium">Consent</th>
@@ -61,13 +62,12 @@ export function CloudLedgerCard({ actionsAvailable }: { actionsAvailable: boolea
                   <th className="py-1.5 font-medium">Result</th>
                   <th className="py-1.5 pr-1 font-medium">Action</th>
                 </tr>
-              </thead>
-              <tbody>
-                {entries.map((entry) => (
-                  <LedgerRow key={entry.receipt.id} entry={entry} actionsAvailable={actionsAvailable} />
-                ))}
-              </tbody>
-            </table>
+              }
+            >
+              {entries.map((entry) => (
+                <LedgerRow key={entry.receipt.id} entry={entry} actionsAvailable={actionsAvailable} />
+              ))}
+            </Table>
           </div>
         )}
       </ChartState>
@@ -167,8 +167,9 @@ function LedgerRow({
         </td>
         <td className="py-2 pr-1">
           {canShowBytes ? (
-            <button
-              type="button"
+            <Button
+              size="sm"
+              variant="secondary"
               onClick={() => void showBytes()}
               disabled={previewBusy || !actionsAvailable}
               title={
@@ -176,10 +177,9 @@ function LedgerRow({
                   ? "Available when the dashboard runs under `observer start`"
                   : undefined
               }
-              className="rounded-2 border border-line-2 bg-bg-1 px-2 py-1 text-[10.5px] font-medium text-fg-2 hover:bg-bg-3 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {previewBusy ? "Loading…" : previewOpen && preview ? "Hide" : "Show exact bytes"}
-            </button>
+            </Button>
           ) : (
             <span className="text-[10.5px] text-fg-4">-</span>
           )}
@@ -189,9 +189,7 @@ function LedgerRow({
         <tr className="border-b border-line-1 last:border-b-0">
           <td colSpan={6} className="py-2 pl-1">
             {receipt.evidence_settings_json && <p className="mb-2 break-words text-[11px] text-fg-3">Saved evidence limits: {cloudEvidenceSettingsSummary(receipt.evidence_settings_json)}</p>}
-            <pre className="max-h-[20rem] overflow-auto whitespace-pre-wrap break-all rounded-2 border border-line-2 bg-bg-1 p-2 font-mono text-[10.5px] leading-snug text-fg-2">
-              {preview.output || "(no output)"}
-            </pre>
+            <JsonPreview value={preview.output || "(no output)"} maxHeight={320} />
             {preview.truncated && (
               <div className="mt-1 text-[10px] text-fg-4">
                 Output truncated - showing the first part.

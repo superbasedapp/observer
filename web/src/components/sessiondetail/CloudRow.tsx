@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Pill, SegmentedControl, Tooltip } from "@/components/primitives";
+import { Button, Pill, SegmentedControl, Tooltip } from "@/components/primitives";
 import { CopyOnClick } from "@/components/CopyOnClick";
 import { useApi } from "@/lib/useApi";
 import { fmtDateTime, fmtRelative, fmtShortId } from "@/lib/format";
@@ -15,8 +15,6 @@ import type { CloudStatusWithPolicy } from "@/lib/cloud";
 import type { CloudConsentResponse, CloudPreviewResponse, CloudPurpose, CloudSessionResponse } from "@/lib/types";
 
 const CLOUD_ID_TOOLTIP = "This is the pseudonym the cloud service knows this session by. Your local session id never leaves this machine.";
-const BUTTON = "rounded-2 border border-line-2 bg-bg-1 px-2.5 py-1.5 text-[11px] font-medium text-fg-2 hover:bg-bg-3 disabled:cursor-not-allowed disabled:opacity-50";
-const PRIMARY = `${BUTTON} border-accent/60 bg-accent text-white hover:bg-accent/90 disabled:border-line-2 disabled:bg-bg-1 disabled:text-fg-3`;
 
 type Submit = (purpose: CloudPurpose, digest?: string) => Promise<void>;
 
@@ -81,7 +79,7 @@ export function CloudRow({ sessionId, onChanged }: { sessionId: string; onChange
 
   if (!d) return <div className="space-y-2 p-4 text-[12px] text-fg-3" role="status">
     <p>{cloud.error ? "Could not load enrichment status." : "Loading enrichment status…"}</p>
-    {cloud.error && <button type="button" className={BUTTON} onClick={refresh}>Retry status</button>}
+    {cloud.error && <Button size="sm" onClick={refresh}>Retry status</Button>}
   </div>;
   const auth = cloudAuthorityMeta(d.authority);
   const state = awaitingStatus ? "pending" : progress?.state;
@@ -103,9 +101,9 @@ export function CloudRow({ sessionId, onChanged }: { sessionId: string; onChange
       </div>
       {progress?.updated_at && <p className="text-[10px] text-fg-4" title={fmtDateTime(progress.updated_at)}>Updated {fmtRelative(progress.updated_at)}</p>}
       {blocked && <div className="flex flex-wrap items-center gap-2">
-        <button type="button" disabled className={PRIMARY}>{operation || meta.label}</button>
-        {!operation && !awaitingStatus && meta.syncLabel && <button type="button" onClick={() => void retryOrCheck()} className={BUTTON}>{meta.syncLabel}</button>}
-        {!operation && (cloud.error || state === "unknown" || !state) && <button type="button" onClick={refresh} className={BUTTON}>Refresh status</button>}
+        <Button size="sm" variant="primary" disabled>{operation || meta.label}</Button>
+        {!operation && !awaitingStatus && meta.syncLabel && <Button size="sm" onClick={() => void retryOrCheck()}>{meta.syncLabel}</Button>}
+        {!operation && (cloud.error || state === "unknown" || !state) && <Button size="sm" onClick={refresh}>Refresh status</Button>}
       </div>}
       {cloud.error && <p role="alert" className="text-[11px] text-warn">Status could not be refreshed. The last known state is shown; check status before submitting again.</p>}
       {error && <p role="alert" className="rounded-2 border border-danger/30 bg-danger-soft p-2 text-[11px] text-danger">{error}</p>}
@@ -114,7 +112,7 @@ export function CloudRow({ sessionId, onChanged }: { sessionId: string; onChange
         {state !== "complete" && <p className="text-[11px] font-medium text-fg-3">Previous enrichment — the new request is shown above.</p>}
         <CloudResultBlock result={d.result} />
       </div>}
-      {d.result && !blocked && state === "complete" && <button type="button" onClick={() => setReenrich((v) => !v)} className={BUTTON}>{reenrich ? "Cancel re-enrichment" : "Re-enrich this session"}</button>}
+      {d.result && !blocked && state === "complete" && <Button size="sm" onClick={() => setReenrich((v) => !v)}>{reenrich ? "Cancel re-enrichment" : "Re-enrich this session"}</Button>}
       {/* Keep preview controls mounted while consent/sync runs; hide the form
           once submitted so its enabled state can never imply another request. */}
       <div hidden={!showForm}>
@@ -139,7 +137,7 @@ function CloudEnrichControls({ sessionId, submit, disabled, forcePreview, previe
   const quick = !!policy && policy.level !== "off" && signedIn && !forcePreview;
   return <fieldset disabled={disabled} className="space-y-2">
     {quick ? <>
-      <button type="button" onClick={() => void submit(cloudPurposeForLevel(policy.level) ?? "structural_activity_insights")} className={PRIMARY}>Enrich now</button>
+      <Button size="sm" variant="primary" onClick={() => void submit(cloudPurposeForLevel(policy.level) ?? "structural_activity_insights")}>Enrich now</Button>
       <p className="text-[10.5px] text-fg-4">Uses your setting: {CLOUD_ENRICH_LEVEL_LABELS[policy.level] ?? policy.level}. <Link to="/settings?section=cloud" className="text-accent">Change enrichment settings</Link></p>
       <details className="rounded-2 border border-line-2 p-2"><summary className="cursor-pointer text-[11px] text-fg-3">Preview or change data for this request</summary><ManualEnrichPanel sessionId={sessionId} submit={submit} signedIn={signedIn} previewVersion={previewVersion} /></details>
     </> : <ManualEnrichPanel sessionId={sessionId} submit={submit} signedIn={signedIn} previewVersion={previewVersion} />}
@@ -170,11 +168,11 @@ function ManualEnrichPanel({ sessionId, submit, signedIn, previewVersion }: { se
     ]} />
     <p className="text-[10.5px] text-fg-4">{purpose === "structural_activity_insights" ? "Sends a structural signal and your first prompt. No other content." : "Additionally sends bounded, post-scrub excerpts."}</p>
     <div className="flex flex-wrap items-center gap-2">
-      <button type="button" onClick={() => void runPreview()} disabled={busy} className={BUTTON}>{busy ? "Previewing…" : "Preview session"}</button>
-      <button type="button" onClick={() => void submit(purpose, preview?.data.upload_digest)} disabled={!signedIn || !ready || busy} title={!signedIn ? "Sign in to submit this request" : !ready ? "Preview the session before confirming" : undefined} className={PRIMARY}>Confirm and enrich</button>
+      <Button size="sm" onClick={() => void runPreview()} disabled={busy} loading={busy}>{busy ? "Previewing…" : "Preview session"}</Button>
+      <Button size="sm" variant="primary" onClick={() => void submit(purpose, preview?.data.upload_digest)} disabled={!signedIn || !ready || busy} title={!signedIn ? "Sign in to submit this request" : !ready ? "Preview the session before confirming" : undefined}>Confirm and enrich</Button>
     </div>
     {!signedIn && <Link to="/settings?section=cloud" className="text-[11px] text-accent">Sign in under Settings → Cloud Intelligence</Link>}
-    {shown && <details open className="rounded-2 border border-line-2 bg-bg-1">
+    {shown && <details open className="rounded-2 border border-line-2 bg-bg-3">
       <summary className="cursor-pointer px-2 py-1 text-[11px] text-fg-3">Exactly what would leave this machine</summary>
       <pre className="max-h-[20rem] overflow-auto whitespace-pre-wrap break-all border-t border-line-2 p-2 font-mono text-[10.5px] text-fg-2">{preview?.data.output || "(no output)"}</pre>
       {preview?.data.truncated && <p className="p-2 text-[11px] text-warn">Preview was truncated. Generate a complete preview before confirming.</p>}

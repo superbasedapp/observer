@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/codexipc"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -100,7 +101,7 @@ func (f *captureCheckFixture) writeRolloutShape(sessionID string, tokenCounts in
 func (f *captureCheckFixture) insertAPITurns(sessionID string, n int) {
 	f.t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: f.dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: f.dbPath})
 	if err != nil {
 		f.t.Fatal(err)
 	}

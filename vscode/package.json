@@ -2,7 +2,7 @@
   "name": "superbased-observer",
   "displayName": "SuperBased",
   "description": "Claude Code cost tracking, Cursor token usage, Codex spend — AI coding agent observability across 40 adapters (Claude Code, Codex, Cursor, Cline + Cline CLI, Copilot, Gemini CLI, Hermes Agent, Kilo Code, Aider, Goose, Devin, and more), proxy-accurate. No telemetry. No cloud.",
-  "version": "1.33.0",
+  "version": "1.34.0-rc.1",
   "publisher": "superbased",
   "license": "Apache-2.0",
   "author": "Santosh Kathira <contact@superbased.app>",
@@ -17,6 +17,16 @@
   "qna": "https://github.com/superbasedapp/observer/discussions",
   "engines": {
     "vscode": "^1.90.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In an untrusted workspace, SuperBased will not resolve or spawn the observer daemon binary. observer.binary.path and observer.binary.preferPathBinary are restricted (machine scope) so a workspace cannot point the extension at an arbitrary executable.",
+      "restrictedConfigurations": [
+        "observer.binary.path",
+        "observer.binary.preferPathBinary"
+      ]
+    }
   },
   "categories": [
     "Other",
@@ -288,12 +298,14 @@
         "observer.binary.path": {
           "type": "string",
           "default": "",
-          "description": "Absolute path to the observer binary. Empty = auto-detect (bundled, then PATH, then download). Set observer.binary.preferPathBinary to scan PATH before the bundled binary."
+          "scope": "machine",
+          "description": "Absolute path to the observer binary. Empty = auto-detect (bundled, then PATH, then download). Set observer.binary.preferPathBinary to scan PATH before the bundled binary. Machine-scoped and restricted in untrusted workspaces: a cloned repo's .vscode/settings.json cannot choose which binary this extension spawns."
         },
         "observer.binary.preferPathBinary": {
           "type": "boolean",
           "default": false,
-          "description": "Scan PATH for an observer binary before using the bundled one; slower activation, use when you intentionally run a self-built daemon."
+          "scope": "machine",
+          "description": "Scan PATH for an observer binary before using the bundled one; slower activation, use when you intentionally run a self-built daemon. Machine-scoped and restricted in untrusted workspaces for the same reason as observer.binary.path."
         },
         "observer.dashboard.port": {
           "type": "number",
@@ -350,11 +362,11 @@
     "package:platform": "vsce package --target ${TARGET}"
   },
   "dependencies": {
-    "adm-zip": "^0.5.16",
-    "tar": "^7.4.3"
+    "adm-zip": "^0.6.1",
+    "tar": "^7.5.22"
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.5",
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "^20.0.0",
     "@types/tar": "^6.1.13",
     "@types/vscode": "^1.90.0",

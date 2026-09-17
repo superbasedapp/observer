@@ -139,6 +139,38 @@ func TestBudgetPostureRowWireShapeIsEnumOnly(t *testing.T) {
 		// $0 hole for an unpriced one.
 		"FallbackRows":   true,
 		"FallbackModels": true,
+		// ORG BASELINE (bundle BUD-N / P1-9). Two fields, both the shapes this
+		// row already admits:
+		//
+		//   OrgBaseline — a closed orgcontract.BudgetBaseline* enum
+		//     (applied|stale|absent|unverified), with "" meaning a node that
+		//     predates the field. Exactly the shape of Coverage and
+		//     DirectControl, and for the same purpose: a developer running two
+		//     machines whose node applied NO baseline is enforcing a fleet cap
+		//     against one machine's rows, and without this the wire cannot tell
+		//     that apart from a cap that is holding.
+		//   OrgBaselineUnattributed — a bool about the SHAPE of what was
+		//     applied (the baseline counted rows the server could not attribute
+		//     to a machine, so it may overlap this node's own), never the
+		//     number and never whose rows they were.
+		//
+		// WHAT IS STILL REFUSED, and note this is the exact field the server
+		// SENT DOWN: the spend numbers themselves. The org shipped SpentUSD /
+		// SpentTokens to this node on the signed budget body; echoing them back
+		// would be a quantity of spend on a row whose whole rule is that it
+		// carries none, and it would tell the server nothing it did not already
+		// measure itself.
+		"OrgBaseline":             true,
+		"OrgBaselineUnattributed": true,
+		// OrgSubjectUnmatched (adversarial review of BUD-N, P1-3). A BOOL about
+		// the SHAPE of what was applied, exactly like Capped and
+		// OrgBaselineUnattributed: at least one per-tool / per-model cap's id
+		// never appeared in this node's own accounting keys, so a cap that
+		// reads as "in force" is governing nothing here. It names NO subject —
+		// the id is the org's own authored value, so echoing it back would add
+		// nothing the server does not know while widening what a compromised
+		// node can assert about somebody else's cap.
+		"OrgSubjectUnmatched": true,
 	}
 	typ := reflect.TypeOf(orgcontract.BudgetPostureRow{})
 	if typ.NumField() != len(allowed) {

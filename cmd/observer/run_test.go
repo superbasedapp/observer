@@ -14,6 +14,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/compression/shell"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 func TestExitCodeFrom(t *testing.T) {
@@ -280,7 +281,7 @@ func assertObserverLogRow(t *testing.T, dbPath string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

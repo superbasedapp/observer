@@ -20,6 +20,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -178,7 +179,7 @@ func TestReloadConvergesPendingRestartToEffective(t *testing.T) {
 
 	// --- pre-seed the node so BOTH points start EFFECTIVE at v1 --------------
 	seedCtx := context.Background()
-	database, err := db.Open(seedCtx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(seedCtx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open seed: %v", err)
 	}

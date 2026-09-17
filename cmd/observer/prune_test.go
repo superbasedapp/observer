@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -22,7 +23,7 @@ import (
 func TestRunRetentionPrunesHandoffRows(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "prune.db")
-	database, err := db.Open(ctx, db.Options{Path: path})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -95,7 +96,7 @@ func TestRunRetentionPrunesHandoffRows(t *testing.T) {
 func TestRunRetentionPrunesCodeIntelProjects(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "prune-codeintel.db")
-	database, err := db.Open(ctx, db.Options{Path: path})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -263,7 +264,7 @@ func TestRunRetentionArchivesCodeIntelProjectsWhenEnabled(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "prune-archive.db")
-	database, err := db.Open(ctx, db.Options{Path: path})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -345,7 +346,7 @@ func TestRunRetentionArchiveSweepFailsOpenToSkip(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "prune-archive-fail.db")
-	database, err := db.Open(ctx, db.Options{Path: path})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

@@ -368,7 +368,16 @@ func TestRuleWhen_Matches(t *testing.T) {
 // (classify + tier-place + pipeline + rule walk), so this passes with
 // orders-of-magnitude headroom — the test exists to catch an accidental
 // I/O or quadratic-blowup regression on the path, not to be tight.
+//
+// It is a WALL-CLOCK assertion, so it is skipped under -short (F3,
+// codebase audit 2026-09-16) and widened by decideLatencyRaceMultiplier
+// under -race, where the detector's instrumentation is what the 5 ms
+// would otherwise be measuring.
 func TestDecideHotPathBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("wall-clock latency budget: not a -short gate")
+	}
+	budget := 5 * time.Millisecond * decideLatencyRaceMultiplier
 	p := valuePolicy(t)
 	snap := testSnapshot()
 	snap.BudgetBurn = []BudgetBurnState{{Scope: "global", LimitUSD: 100, SpentUSD: 40, Window: "week", Bands: DefaultBudgetBands}}
@@ -384,8 +393,8 @@ func TestDecideHotPathBudget(t *testing.T) {
 	}
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 	p99 := durations[n*99/100]
-	if p99 >= 5*time.Millisecond {
-		t.Fatalf("Decide p99 = %v, budget is < 5ms (§R25)", p99)
+	if p99 >= budget {
+		t.Fatalf("Decide p99 = %v, budget is < %v (§R25, ×%d race headroom)", p99, budget, decideLatencyRaceMultiplier)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/modelvalue"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/routing"
@@ -21,7 +22,7 @@ import (
 func seedModelValueCorpus(t *testing.T) (*Store, context.Context, time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "mv_test.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "mv_test.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -249,7 +250,7 @@ func TestLoadModelValueFacts_WindowExcludesOldRows(t *testing.T) {
 func TestLoadModelValueFacts_MultiSessionUnorderedWithoutSQLSort(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "mv_order.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "mv_order.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

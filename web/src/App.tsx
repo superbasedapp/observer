@@ -11,6 +11,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
 import { RestartPendingBanner } from "@/components/RestartPendingBanner";
+import { IntegrityBanner } from "@/components/IntegrityBanner";
 import { ManagedBanner } from "@/components/ManagedBanner";
 import { DemoBanner } from "@/components/DemoBanner";
 import { AnnouncementBanner } from "@/components/AnnouncementBanner";
@@ -59,6 +60,9 @@ const SearchPage = lazy(() =>
 );
 const ActionsPage = lazy(() =>
   import("@/pages/Actions").then((m) => ({ default: m.ActionsPage })),
+);
+const ProjectsPage = lazy(() =>
+  import("@/pages/Projects").then((m) => ({ default: m.ProjectsPage })),
 );
 const ToolsPage = lazy(() =>
   import("@/pages/Tools").then((m) => ({ default: m.ToolsPage })),
@@ -203,6 +207,7 @@ function AnimatedRoutes() {
           <Route path="analysis" element={<AnalysisPage />} />
           <Route path="sessions" element={<SessionsPage />} />
           <Route path="actions" element={<ActionsPage />} />
+          <Route path="projects" element={<ProjectsPage />} />
           <Route path="security" element={<SecurityPage />} />
           <Route path="egress" element={<EgressPage />} />
           <Route path="policies" element={<PoliciesPage />} />
@@ -319,6 +324,7 @@ export default function App() {
           <main className="flex min-w-0 flex-1 flex-col">
             <TopBar onHelp={openHelp} onMenu={() => setMobileNavOpen(true)} />
             <RestartPendingBanner />
+            <IntegrityBanner />
             <ManagedBanner gov={gov.data} />
             <DemoBanner />
             <AnnouncementBanner />

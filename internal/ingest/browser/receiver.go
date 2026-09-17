@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/ingest/hostguard"
 )
 
 // maxBodyBytes caps a captured-turn request body to bound memory on a
@@ -167,23 +169,13 @@ func (r *Receiver) handleCapture(w http.ResponseWriter, req *http.Request) {
 }
 
 // hostIsLoopback reports whether an HTTP Host header value targets loopback.
-// An empty host (HTTP/1.0 with no Host) is treated as loopback (the request
-// reached a loopback-bound listener). A bare "localhost" is loopback; an IP
-// host must parse to a loopback address. A non-loopback name (e.g. an
-// attacker's rebinding domain) is rejected.
+//
+// The predicate itself moved to internal/ingest/hostguard when the OTLP
+// receiver needed the same defense (NODE-OTLP-1, codebase audit 2026-09-16);
+// this stays as the package-local spelling so the call site above reads the
+// same, and so there is exactly ONE implementation to reason about.
 func hostIsLoopback(host string) bool {
-	if host == "" {
-		return true
-	}
-	h := host
-	if hostOnly, _, err := net.SplitHostPort(host); err == nil {
-		h = hostOnly
-	}
-	if h == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(h)
-	return ip != nil && ip.IsLoopback()
+	return hostguard.IsLoopbackHost(host)
 }
 
 // guardLoopback enforces the network posture: a bind address must resolve to

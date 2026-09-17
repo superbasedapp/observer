@@ -11,7 +11,7 @@ import (
 // pinnedMaxVersion is the version pin (plan §6 CI-P3: "its own max-version pin
 // test from 0001"). Bump it deliberately, in the same change that adds a
 // migration, so a stray file cannot slip in.
-const pinnedMaxVersion = 39
+const pinnedMaxVersion = 40
 
 func TestMaxEmbeddedVersionPin(t *testing.T) {
 	got, err := db.MaxEmbeddedVersion()

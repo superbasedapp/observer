@@ -312,4 +312,80 @@ EOF
   echo "stamped plugins/opencode/package.json → $VERSION"
 fi
 
-echo "done — $VERSION written to $(echo "${PACKAGES[*]}" | wc -w) package.json files + vscode/package.json + browser-extension/manifest.json + 11 plugins/ manifests"
+# Enterprise version lockstep (enterprise deployment Phase 0, contract C6).
+# The harness-gateway image and the observer-org Helm chart ship beside the
+# observer-org image under the SAME release tag, and the org binary embeds
+# the chart (`observer-org deploy export`), so neither number may drift
+# from the release. Both carry FULL semver like npm / vsce (a pre-release
+# stamps as 1.2.3-rc.1). Each stamp is READ BACK and compared, because a
+# silent no-op here ships a chart or an image label that still says the
+# previous release — the failure the lockstep exists to make impossible.
+HARNESS_PKG="$REPO_ROOT/harness-gateway/package.json"
+if [ -f "$HARNESS_PKG" ]; then
+  node - "$HARNESS_PKG" "$VERSION" <<'EOF'
+const fs = require('fs');
+const [, , filePath, version] = process.argv;
+const pkg = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+pkg.version = version;
+fs.writeFileSync(filePath, JSON.stringify(pkg, null, 2) + '\n');
+const back = JSON.parse(fs.readFileSync(filePath, 'utf8')).version;
+if (back !== version) {
+  console.error(`error: ${filePath} reads back version ${back}, want ${version}`);
+  process.exit(68);
+}
+EOF
+  echo "stamped harness-gateway/package.json → $VERSION"
+fi
+
+# The lock file carries the package's own version twice (the root
+# `version` and `packages[""].version`), and `npm ci` — which the
+# harness_image job and the Dockerfile both run — refuses a lock whose
+# root entry disagrees with package.json. Stamp both, read both back.
+HARNESS_LOCK="$REPO_ROOT/harness-gateway/package-lock.json"
+if [ -f "$HARNESS_LOCK" ]; then
+  node - "$HARNESS_LOCK" "$VERSION" <<'EOF'
+const fs = require('fs');
+const [, , filePath, version] = process.argv;
+const lock = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+lock.version = version;
+if (lock.packages && lock.packages['']) {
+  lock.packages[''].version = version;
+}
+fs.writeFileSync(filePath, JSON.stringify(lock, null, 2) + '\n');
+const back = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+const rootBack = back.version;
+const pkgBack = back.packages && back.packages[''] ? back.packages[''].version : version;
+if (rootBack !== version || pkgBack !== version) {
+  console.error(`error: ${filePath} reads back version ${rootBack} / packages[""].version ${pkgBack}, want ${version}`);
+  process.exit(68);
+}
+EOF
+  echo "stamped harness-gateway/package-lock.json → $VERSION"
+fi
+
+# Chart.yaml's appVersion is the image tag the chart pins by default, so it
+# carries the tag form ("v1.2.3", quoted — a bare 1.2.3 would be a YAML
+# float for some inputs). Only the appVersion line changes; the chart's own
+# `version:` is a chart-schema number bumped by hand on chart changes.
+CHART_YAML="$REPO_ROOT/charts/observer-org/Chart.yaml"
+if [ -f "$CHART_YAML" ]; then
+  node - "$CHART_YAML" "v$VERSION" <<'EOF'
+const fs = require('fs');
+const [, , filePath, appVersion] = process.argv;
+const before = fs.readFileSync(filePath, 'utf8');
+const re = /^appVersion: .*$/m;
+if (!re.test(before)) {
+  console.error(`error: ${filePath} has no appVersion line to stamp`);
+  process.exit(68);
+}
+fs.writeFileSync(filePath, before.replace(re, `appVersion: "${appVersion}"`));
+const back = fs.readFileSync(filePath, 'utf8').match(re)[0];
+if (back !== `appVersion: "${appVersion}"`) {
+  console.error(`error: ${filePath} reads back ${back}, want appVersion: "${appVersion}"`);
+  process.exit(68);
+}
+EOF
+  echo "stamped charts/observer-org/Chart.yaml appVersion → v$VERSION"
+fi
+
+echo "done — $VERSION written to $(echo "${PACKAGES[*]}" | wc -w) package.json files + vscode/package.json + browser-extension/manifest.json + 11 plugins/ manifests + harness-gateway/package.json + package-lock.json + charts/observer-org/Chart.yaml appVersion"

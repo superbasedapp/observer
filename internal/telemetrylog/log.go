@@ -147,6 +147,10 @@ type Delivered interface {
 // one record and returns at most max; an empty slice with a nil error means
 // nothing was available within wait (never an error). Close releases the
 // subscription without deleting the durable cursor.
+//
+// Fetch may return ErrReattachRequired; only the natslog engine reports it
+// today (memlog and kafkalog have no re-creatable broker-side durable), so a
+// caller must treat it as possible but never assume every engine raises it.
 type Consumer interface {
 	Fetch(ctx context.Context, max int, wait time.Duration) ([]Delivered, error)
 	Close() error
@@ -245,4 +249,48 @@ var (
 	// ErrInvalidRecord is returned by Publish for a record with an empty Org,
 	// Subject, DedupID or Payload, or whose Subject does not belong to Org.
 	ErrInvalidRecord = errors.New("telemetrylog: invalid record")
+	// ErrReattachRequired is returned by Consumer.Fetch when the live durable
+	// consumer is no longer the one this handle attached to — the engine
+	// recreated the same-name durable (a broker restart that re-created the
+	// consumer during store recovery), moved it to another stream, or another
+	// subscriber relaxed the global credit this handle promised. The handle is
+	// permanently stale: the ONLY recovery is Close + Subscribe by the SAME
+	// ConsumerSpec.Name, which reattaches the durable cursor and redelivers
+	// every unacked record. Callers branch on errors.Is, never on message text
+	// (incident ORG-NATS-REATTACH-1: the runner logged "reattach required"
+	// every second for 10+ minutes and nothing reattached).
+	ErrReattachRequired = errors.New("telemetrylog: reattach required")
+	// ErrReconnectRequired is returned by Log.Subscribe when the STREAM behind
+	// this Log handle is no longer the stream it was constructed against (it was
+	// deleted and re-created, so its immutable identity and ordering generation
+	// changed). Unlike ErrReattachRequired, re-Subscribing by the same durable
+	// name can never heal it: the refusal is deliberate and fail-closed, because
+	// silently following a re-created stream would let a handle inherit ordering
+	// provenance it never earned. The ONLY recovery is to re-establish what a
+	// fresh process boot establishes — a restart, or the optional Reconnector
+	// capability when the engine implements it. Callers branch on errors.Is,
+	// never on message text (incident ORG-NATS-REATTACH-1, residual 4).
+	ErrReconnectRequired = errors.New("telemetrylog: reconnect required")
 )
+
+// Reconnector is an OPTIONAL capability a Log implements when it can
+// re-establish, in-process, exactly what a fresh process boot establishes —
+// re-reading the stream's current immutable identity (its creation stamp and
+// ordering generation) and re-provisioning whatever a boot provisions.
+//
+// It exists for the one failure the durable-name reattach cannot heal: the
+// STREAM itself was re-created, so every Subscribe on the running process is
+// refused with ErrReconnectRequired while a fresh boot against the same broker
+// succeeds (incident ORG-NATS-REATTACH-1, residual 4). A caller branches on the
+// CAPABILITY — a type assertion on this interface — never on the engine name
+// (CLAUDE.md rule #3); a Log that cannot do it simply does not implement it and
+// the caller stays fail-closed.
+//
+// Reconnect must be safe to call concurrently with Publish/Subscribe/Stats and
+// must leave the Log usable (or return an error and leave it unchanged). It
+// never resurrects data the re-created stream lost, and it never certifies the
+// old generation: deliveries after a successful Reconnect carry the NEW
+// OrderPosition.Generation, exactly as they would after a restart.
+type Reconnector interface {
+	Reconnect(ctx context.Context) error
+}

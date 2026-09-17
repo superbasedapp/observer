@@ -114,17 +114,9 @@ jobs:
           # targeted Go version"). goinstall sidesteps that mismatch.
           install-mode: goinstall
 
-      - name: test
-        # -race catches the watcher / proxy concurrency bugs that
-        # otherwise slip past until live use. -timeout 40m: the
-        # intelligence/dashboard suite exceeds go test's default 10m
-        # per-binary timeout under -race on CI runners (observed
-        # 2026-07-11; raised 25m→40m 2026-07-21 after the v1.22.0 suite
-        # blew 25m twice — no deadlock, the package is just large: every
-        # newTestServer runs the full migration chain, so the binary
-        # scales with test count × migrations on 2-core runners. The
-        # real fix is a template-DB copy in newTestServer.)
-        run: go test -race -timeout 40m ./...
+      # The `-race` test run used to live here as a single `go test -race
+      # -timeout 40m ./...` step. It now runs in the sharded `go-test` job
+      # below; see that job's comment block for the history.
 
       - name: build
         # `make build` skipped here — that target requires Node for
@@ -137,6 +129,13 @@ jobs:
           GOOS=windows GOARCH=amd64 go build -trimpath -o bin/antigravity-bridge.exe ./cmd/antigravity-bridge
           ls -l bin/
 
+      - name: latency regressions (no race)
+        # internal/guard's two wall-clock latency ceilings skip under the
+        # race detector (it inflates CPU-bound work 2-10x, and the shared
+        # 2-core runner blew a 12x-widened ceiling on 2026-09-16), so they
+        # are gated HERE, without -race, on an otherwise idle runner.
+        run: go test -count=1 -timeout 10m -run LatencyRegression ./internal/guard/
+
       - name: windows cross-compile
         # `go test ./...` and the build step above never compile any
         # `//go:build windows` file, and the build step's only Windows
@@ -145,6 +144,67 @@ jobs:
         # enum_windows.go, and the ETW backend to come) ships undetected.
         # Compile-only; these packages have no Linux-runnable tests.
         run: GOOS=windows GOARCH=amd64 go build ./...
+
+  # ----------------------------------------------------------------
+  # Go race suite, sharded.
+  #
+  # History of the single-step version this replaces: -race catches the
+  # watcher / proxy concurrency bugs that otherwise slip past until live
+  # use, but it is slow. go test's default per-binary timeout is 10m; the
+  # intelligence/dashboard suite blew that on CI runners (observed
+  # 2026-07-11) so the step went to 25m, then 25m→40m on 2026-07-21 after
+  # the v1.22.0 suite blew 25m twice — no deadlock, the package is just
+  # large: every newTestServer runs the full migration chain, so the
+  # binary scales with test count × migrations on 2-core runners. The real
+  # fix for THAT package is still a template-DB copy in newTestServer.
+  #
+  # 2026-09-16: the treadmill ran out of road. The single
+  # `go test -race -timeout 40m ./...` step took 5+ hours on the 2-core
+  # private-repo runner and hit GitHub's hard 6 h JOB cap on three
+  # consecutive pushes — killed mid-suite, no usable signal, so CI had
+  # stopped being a gate. Hence the shards: scripts/ci/go-test-shards.sh
+  # splits the test-package universe (`go list`, TestGoFiles OR
+  # XTestGoFiles) into balanced buckets by a checked-in weight table, and
+  # each matrix job runs exactly one bucket.
+  #
+  # -timeout 90m is the PER-TEST-BINARY timeout inside a shard, not the
+  # shard's budget. It stays generous because internal/intelligence/dashboard
+  # alone can exceed 40m under -race on a loaded runner; the loud failure
+  # is now timeout-minutes: 120 on the job, well under the 6 h cap.
+  #
+  # Shard count: the `matrix.shard` literal below is the SOURCE OF TRUTH.
+  # SHARDS must agree with it, and the `shard plan` step runs
+  # `go-test-shards.sh check $SHARDS`, which fails the job if the split
+  # does not cover the universe exactly once — so a mismatch or a sharder
+  # bug is red, never a silently unrun package.
+  # ----------------------------------------------------------------
+  go-test:
+    name: go test (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    env:
+      SHARDS: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: shard plan
+        # Honesty gate: union of all shards == universe, no duplicates,
+        # no empty shard. Also prints the per-shard package count and the
+        # estimated seconds, which is how we notice the weight table has
+        # gone stale enough to matter.
+        run: scripts/ci/go-test-shards.sh check "${SHARDS}"
+
+      - name: test
+        run: go test -race -timeout 90m $(scripts/ci/go-test-shards.sh list ${{ matrix.shard }} "${SHARDS}")
 
   # ----------------------------------------------------------------
   # Plugin-manifest drift gate. plugins/plugingen derives the in-tool

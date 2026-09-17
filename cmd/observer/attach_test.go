@@ -14,6 +14,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/attachsock"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -256,7 +257,7 @@ func (successAttachMgr) Close(string)                          {}
 // for it rather than reading once right after the (now non-blocking) spawn.
 func TestAttachHostEmitsSpawnAuditRow(t *testing.T) {
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

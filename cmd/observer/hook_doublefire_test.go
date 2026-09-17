@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -137,7 +138,7 @@ func TestClaudeCodeHookDoubleFireIsIdempotent(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestClaudeCodeHookDoubleFireIsIdempotent(t *testing.T) {
 // double fire re-writes one row instead of appending.
 func TestClaudeCodeEffortDoubleFireIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -272,7 +273,7 @@ func TestClaudeCodePreCompactDoubleFireDuplicates(t *testing.T) {
 	}
 
 	// Seed the project + session the compaction recorder resolves against.
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -298,7 +299,7 @@ func TestClaudeCodePreCompactDoubleFireDuplicates(t *testing.T) {
 		`"trigger":"auto","custom_instructions":null}`
 
 	countCompactions := func() int {
-		d, err := db.Open(ctx, db.Options{Path: dbPath})
+		d, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 		if err != nil {
 			t.Fatalf("db.Open: %v", err)
 		}

@@ -50,6 +50,16 @@ type GuardBudgetTokenWindows struct {
 // unreadable: negative or NULL counters, an unreliable source, and — under a
 // managed read — an invalid captured timestamp.
 //
+// WHERE THE PER-SUBJECT TOKEN TOTALS LIVE, and why not here (bundle BUD-N):
+// the organization's per-tool / per-model caps need the same windows in both
+// units, and both units are accumulated in the ONE row loop of
+// GuardBudgetSpendPriced (GuardBudgetSpendResult.ByTool / ByModel), using the
+// token rule this file defines. They are not computed a second time in this
+// CTE — a GROUP BY tool, model here would produce a second set of token totals
+// over the same rows, and two totals that could drift apart is exactly the
+// defect the single-lookup discipline exists to prevent. This function keeps
+// its one job: the node-wide token windows.
+//
 // An empty sessionID skips the session leg (the window legs still run) —
 // the same contract GuardBudgetSpend offers, so the guard's single cached
 // lookup can fill both units from one call site.

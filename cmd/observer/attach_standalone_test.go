@@ -10,6 +10,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/attachsock"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/termsession"
 	"github.com/marmutapp/superbased-observer/internal/termsvc"
 )
@@ -18,7 +19,7 @@ import (
 // which wrap it in a store but issue no queries at construction time.
 func openStackTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	database, err := db.Open(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

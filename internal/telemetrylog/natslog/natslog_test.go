@@ -24,8 +24,35 @@ const (
 // loopback port and returns a ready Log, closed at test cleanup. The caller may
 // override any Options field; the small AckWait / DuplicateWindow defaults keep
 // the timing tests quick.
-func newTestLog(t *testing.T, o Options) *Log {
-	t.Helper()
+const (
+	// testStreamMaxBytes is the stream storage reservation EVERY embedded test
+	// broker makes. It is deliberately tiny and explicit instead of
+	// DefaultMaxBytes (10 GiB): a stream reservation the host cannot back is
+	// refused by the broker at create time (JetStream 10047), so the production
+	// default made every natslog test fail at once on a small CI runner while
+	// passing on a roomy dev box. A test that PROVES the capacity check
+	// (TestConnectStreamStorageCapacity, TestPreflightCapacityErrAgainstFakeJetStream)
+	// sets its own explicit limits and never goes through here.
+	testStreamMaxBytes int64 = 64 << 20
+	// testBrokerMaxStore caps the embedded server's whole JetStream pool, so a
+	// test broker's footprint is bounded by what the test asked for rather than
+	// by the machine's free disk. Comfortably above testStreamMaxBytes: the
+	// pool must hold the reservation, not merely equal it.
+	testBrokerMaxStore int64 = 256 << 20
+)
+
+// EmbeddedTestOptions fills o with the shared embedded-test-broker footprint
+// (see testStreamMaxBytes / testBrokerMaxStore) plus the package's standard test
+// timings, leaving every field the caller set alone. It is exported so the
+// external conformance test package builds its broker from the SAME numbers —
+// one owner for "how big is a test broker".
+func EmbeddedTestOptions(o Options) Options {
+	if o.MaxBytes == 0 {
+		o.MaxBytes = testStreamMaxBytes
+	}
+	if o.EmbeddedMaxStore == 0 {
+		o.EmbeddedMaxStore = testBrokerMaxStore
+	}
 	if o.AckWait == 0 {
 		o.AckWait = testAckWait
 	}
@@ -35,6 +62,49 @@ func newTestLog(t *testing.T, o Options) *Log {
 	if o.ConnectTimeout == 0 {
 		o.ConnectTimeout = 3 * time.Second
 	}
+	return o
+}
+
+// TestEmbeddedTestBrokerFootprintIsExplicit pins the CI failure this closes: a
+// test broker must reserve the small explicit footprint, never the 10 GiB
+// production default, because a reservation the host cannot back is refused by
+// the broker at create time — which on a small runner failed every natslog test
+// at once while passing on a roomy dev box. Both halves are asserted: the shared
+// fixture reserves testStreamMaxBytes, and the production default against a
+// bounded pool really is refused (so the fixture is load-bearing, not decorative).
+func TestEmbeddedTestBrokerFootprintIsExplicit(t *testing.T) {
+	l := newTestLog(t, Options{})
+	info, err := l.stream.Info(context.Background())
+	if err != nil {
+		t.Fatalf("stream info: %v", err)
+	}
+	if info.Config.MaxBytes != testStreamMaxBytes {
+		t.Fatalf("test stream MaxBytes = %d, want the explicit test footprint %d",
+			info.Config.MaxBytes, testStreamMaxBytes)
+	}
+	if info.Config.MaxBytes >= DefaultMaxBytes {
+		t.Fatalf("the test broker is using the production storage default (%d)", DefaultMaxBytes)
+	}
+
+	oversized, err := Embedded(context.Background(), t.TempDir(), Options{
+		MaxBytes:         DefaultMaxBytes,
+		EmbeddedMaxStore: testBrokerMaxStore,
+		ConnectTimeout:   3 * time.Second,
+	})
+	if oversized != nil {
+		t.Cleanup(func() { _ = oversized.Close() })
+	}
+	if err == nil {
+		t.Fatal("a 10 GiB reservation against a bounded pool was accepted; the fixture would not be protecting anything")
+	}
+	if !strings.Contains(err.Error(), "cannot provision stream") {
+		t.Fatalf("unexpected refusal: %v", err)
+	}
+}
+
+func newTestLog(t *testing.T, o Options) *Log {
+	t.Helper()
+	o = EmbeddedTestOptions(o)
 	l, err := Embedded(context.Background(), t.TempDir(), o)
 	if err != nil {
 		t.Fatalf("Embedded: %v", err)

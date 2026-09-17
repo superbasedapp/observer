@@ -208,6 +208,11 @@ func New(opts Options) (*Server, error) {
 	// get_session_message (session handoff): always registered for a
 	// deterministic tool surface; degrades honestly when unwired.
 	s.Register(newGetSessionMessageTool(opts.GetSessionMessage))
+	// get_project_guidance (agent-guidance inventory): always registered —
+	// it reads node-local rows the daemon's scan loop already persisted and
+	// answers honestly ("nothing scanned yet") on a fresh install, so there
+	// is nothing to gate.
+	s.Register(newGetProjectGuidanceTool(opts.DB))
 	if opts.Stash != nil && !opts.RetrieveStashedDisabled && shouldRegisterV7_12Tool(opts.Features, "retrieve_stashed") {
 		s.Register(newRetrieveStashedTool(opts.Stash, opts.SignalRecorder, opts.AuditWriter, opts.RetrieveStashedMaxShasPerCall))
 	}

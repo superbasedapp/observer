@@ -56,6 +56,37 @@ const (
 	BudgetPolicyEnforcementHard   = "hard"
 )
 
+// Budget policy SUBJECT vocabulary (bundle BUD-N). A cap may narrow from "this
+// caller's whole spend" to "this caller's spend on ONE tool" or "... on ONE
+// model". There are exactly two kinds and there are deliberately no composite
+// scopes: a cap that meant "tool X on model Y" would need a resolution order
+// against the plain tool cap and the plain model cap, and every such order is a
+// judgement the node would have to make about numbers the org authored.
+const (
+	// BudgetSubjectTool narrows a cap to one adapter id (the `tool` column of
+	// token_usage — "claude-code", "codex", ...).
+	BudgetSubjectTool = "tool"
+	// BudgetSubjectModel narrows a cap to one model id as the capture path
+	// recorded it ("claude-sonnet-4-5-20250929", ...).
+	BudgetSubjectModel = "model"
+)
+
+// BudgetSubject narrows a [BudgetPolicyCap] to one tool or one model. A nil
+// Subject is the ordinary whole-caller cap (org / team / member), which is what
+// every cap authored before this field existed is.
+type BudgetSubject struct {
+	// Kind is BudgetSubjectTool or BudgetSubjectModel. An unknown kind is
+	// IGNORED by the node, never guessed at — the same rule periodRules
+	// applies to an unknown period.
+	Kind string `json:"kind"`
+	// ID is the subject's identifier, compared case-insensitively after
+	// trimming (see [BudgetPolicyCap.SubjectKey]). Tool and model ids reach
+	// the node from several adapters with inconsistent casing, and a cap that
+	// silently missed because the org typed "Claude-Code" would be a ceiling
+	// that reports as in force and enforces nothing.
+	ID string `json:"id"`
+}
+
 // BudgetPolicyCap is the caller's effective cap for ONE budget period.
 //
 // A period-keyed LIST exists because the node's four budget windows are
@@ -91,6 +122,86 @@ type BudgetPolicyCap struct {
 	// can legitimately come from different levels.
 	ScopeTokens string `json:"scope_tokens,omitempty"`
 	ScopeUSD    string `json:"scope_usd,omitempty"`
+
+	// ---- bundle BUD-N additions. APPEND-ONLY: see the canonicalisation rule
+	// on [BudgetPolicySigningMessage]. New fields go at the END of this
+	// struct, and every one of them carries `omitempty`, so a body that sets
+	// none of them marshals byte-for-byte as it did before they existed.
+
+	// Subject narrows this cap to one tool or one model. nil is the ordinary
+	// whole-caller cap. A subject cap is a REAL cap: the node enforces it at
+	// the same chokepoints as the whole-caller cap, against the same windows,
+	// in whichever unit the org authored.
+	Subject *BudgetSubject `json:"subject,omitempty"`
+	// SpentUSD / SpentTokens are the ORG's own measurement of what this cap's
+	// scope has already consumed in the current period — the cross-machine
+	// BASELINE (P1-9). A developer with a laptop and a devbox burns one org
+	// budget from two nodes, and a node that can only see its own rows
+	// enforces a cap that is, in the org's terms, already breached.
+	//
+	// The node's effective spend for the cap is therefore
+	//
+	//	org baseline (this number) + this machine's own local spend
+	//
+	// which is why SpentExcludesMachine below is not optional decoration: if
+	// the server could not remove the caller's own machine from its
+	// aggregate, this number ALREADY contains the local spend and adding the
+	// two would double-count. The node then refuses the baseline outright
+	// (posture org_baseline_unverified) and enforces on local spend alone.
+	//
+	// 0 is "nothing measured", which composes identically to "no baseline" —
+	// a zero baseline changes no comparison.
+	SpentUSD    float64 `json:"spent_usd,omitempty"`
+	SpentTokens int64   `json:"spent_tokens,omitempty"`
+	// SpentAsOf is when the server measured Spent*, RFC3339. It is what makes
+	// the baseline REFUSABLE: a budget rail that kept applying a number from
+	// an outage three hours ago would enforce a fleet-wide ceiling against a
+	// picture of the past. The node applies it only inside a staleness window
+	// of 2x its own push interval + 60s (internal/orgbudget.BaselineMaxAge) —
+	// two cadences plus slack, because one missed push is ordinary and two is
+	// a rail that has stopped.
+	//
+	// Empty or unparsable means STALE, never fresh: an undated number cannot
+	// be shown to be current. Stale composes to a zero baseline and the
+	// honest posture, never to a refusal to run (ruling: never fail-closed on
+	// a missing baseline).
+	SpentAsOf string `json:"spent_as_of,omitempty"`
+	// SpentExcludesMachine is true when the server EXCLUDED the calling
+	// node's own machine identity from Spent*. Only then may the node add its
+	// own local spend. False (including the zero value a server that predates
+	// this field sends) means the node must not compose the two.
+	SpentExcludesMachine bool `json:"spent_excludes_machine,omitempty"`
+	// SpentIncludesUnattributed is true when Spent* counted rows the server
+	// could not attribute to ANY machine identity. Those rows may or may not
+	// be this node's, so the baseline may double-count a little. It is
+	// applied anyway — under-enforcing a cap is the worse failure for an
+	// enterprise posture — and the fact travels to the posture row
+	// (BudgetPostureRow.OrgBaselineUnattributed) so an admin reading
+	// "over budget" can see the caveat instead of discovering it.
+	SpentIncludesUnattributed bool `json:"spent_includes_unattributed,omitempty"`
+}
+
+// SubjectKey returns this cap's normalized subject kind and id, and whether it
+// HAS a usable subject at all. Normalisation (trim + ASCII lowercase) happens
+// in exactly one place, here, so the server's spelling and the node's captured
+// spelling meet on one rule rather than on two.
+//
+// ok is false for a whole-caller cap (nil Subject), for a kind outside the
+// closed vocabulary, and for an empty id — an unknown subject is IGNORED, never
+// widened into a cap on everything.
+func (c BudgetPolicyCap) SubjectKey() (kind, id string, ok bool) {
+	if c.Subject == nil {
+		return "", "", false
+	}
+	kind = strings.ToLower(strings.TrimSpace(c.Subject.Kind))
+	id = strings.ToLower(strings.TrimSpace(c.Subject.ID))
+	if id == "" {
+		return "", "", false
+	}
+	if kind != BudgetSubjectTool && kind != BudgetSubjectModel {
+		return "", "", false
+	}
+	return kind, id, true
 }
 
 // BudgetPolicyBody is the signed body. Its top-level cap fields mirror the
@@ -253,6 +364,29 @@ const budgetPolicySigningDomain = "sbo-budget-policy-v1"
 // bodyJSON is encoding/json's rendering of the struct: field order is the
 // struct's declaration order and there are no maps anywhere in the shape, so
 // it is deterministic without a canonicaliser.
+//
+// THE CANONICALISATION RULE, stated once for both ends (bundle BUD-N):
+//
+//  1. A new field is APPENDED at the end of its struct, never inserted, and
+//     carries `omitempty`. encoding/json emits declaration order, so appending
+//     leaves every byte of an existing body untouched and `omitempty` keeps a
+//     zero-valued new field out of the bytes entirely. An OLD body therefore
+//     still verifies on a NEW node: the new node unmarshals it, the new fields
+//     stay zero, and the re-marshalled bytes are identical.
+//  2. The reverse direction is the one that needs a deploy order. An OLD node
+//     verifying a body that POPULATES a new field drops the field on unmarshal,
+//     re-marshals shorter bytes, and the signature does not verify — it reports
+//     fetch_state=unverified and keeps its own numbers (fail-open). A server
+//     must therefore not populate Subject / Spent* for a caller whose agent is
+//     too old to know them; gate emission on the reported agent version the
+//     same way [server].min_agent_version already reads it. On a MANAGED node
+//     that has never cached a verified body this is not merely a degraded cap,
+//     it is B-625 refusing requests, so the gate is a requirement and not an
+//     optimisation.
+//  3. A pointer field (Subject) is nil-not-empty-struct: `*BudgetSubject` with
+//     omitempty vanishes when nil, whereas an embedded struct would render
+//     `{"kind":"","id":""}` on every whole-caller cap and change every body's
+//     bytes at once.
 func BudgetPolicySigningMessage(orgID, subject string, body BudgetPolicyBody) ([]byte, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -314,7 +448,8 @@ func VerifyBudgetPolicy(pub ed25519.PublicKey, orgID, subject string, doc Budget
 }
 
 // BudgetPolicyDigest is the ETag substrate for GET /api/agent/budget: the
-// sha256 hex of the signed body WITHOUT IssuedAt.
+// sha256 hex of the signed body WITHOUT IssuedAt. Everything else is in,
+// INCLUDING each cap's SpentAsOf.
 //
 // It hashes the BODY and not merely Version deliberately. Version bumps on
 // every budget mutation, but a caller's effective body also changes when their
@@ -333,7 +468,55 @@ func VerifyBudgetPolicy(pub ed25519.PublicKey, orgID, subject string, doc Budget
 // node itself supplies and compares, never a trust decision. Freshness is
 // judged by BudgetPolicyFresh over the SIGNED IssuedAt, and a 304 changes
 // nothing about the document already in force.
+//
+// EACH CAP'S SpentAsOf IS INCLUDED, and this REVERSES an earlier decision that
+// excluded it by analogy with IssuedAt. The analogy was wrong, and the way it
+// was wrong is worth keeping rather than quietly deleting, because it is the
+// shape of every "this timestamp is only decoration" argument.
+//
+// IssuedAt is decoration for the validator: nothing downstream reads it as
+// evidence that the CONTENT is current — BudgetPolicyFresh reads it to bound
+// replay, and a replayed document is refused whatever the ETag did. SpentAsOf
+// is not decoration. It is the sole input to internal/orgbudget's `stale` rule,
+// so it is not describing the body, it is GOVERNING the body: past
+// BaselineMaxAge (two push cadences plus a minute) the node stops applying the
+// cross-machine baseline entirely.
+//
+// Excluding it therefore built a trap that sprang exactly where the feature is
+// load-bearing (P1, adversarial review). Take a laptop and an idle devbox: the
+// devbox spends $12.34 and stops. The laptop's first poll gets a 200 stamped
+// T0; every later poll re-measures the same $12.34 server-side, digests
+// identically and answers 304, so the node keeps the T0 stamp. Five minutes
+// later the cap flips `stale`, the baseline composes to ZERO, and the node
+// enforces the org's cap against its own local spend alone — silently
+// UNDER-counting by the $12.34 the org can see and the node no longer applies.
+// A STABLE baseline is the common shape (the other machine is usually idle),
+// so the bug bit whenever the feature was doing its job and never when the
+// baseline was absent.
+//
+// WHY THIS FIX AND NOT A NODE-SIDE ONE. The alternative was to let the node
+// read a 304 as "re-measured, unchanged" and refresh the stamp itself. It is
+// TRUE today — the handler measures, signs and digests before it ever compares
+// If-None-Match — but it makes the node's arithmetic depend on an invariant
+// living in another package that nothing enforces, and it would have the node
+// locally rewriting a field INSIDE a signed body whose only defence is that
+// signature. This costs one number in a hash instead.
+//
+// WHAT IT COSTS is the part worth being precise about, because the old comment
+// treated the 304 as if it saved the server's work: it does not. The handler
+// builds the body, measures the spend, signs the document and computes this
+// digest on EVERY request, before the conditional branch. A 304 saves a few
+// hundred bytes of response and one ed25519 verify on the node — not a query,
+// not a signature, not the measurement. And the server stamps SpentAsOf
+// TRUNCATED TO THE MINUTE, so a caller polling faster than once a minute still
+// rides the 304; at the 120-second default cadence a member WITH a baseline
+// gets a small 200 per poll, and a member with none keeps 304ing forever
+// (their caps carry no SpentAsOf to move).
 func BudgetPolicyDigest(doc BudgetPolicyDoc) (string, error) {
+	// IssuedAt is blanked on a COPY of the body — the caps slice is shared with
+	// the caller's document, and this function must never mutate a body the
+	// caller is about to verify or persist. Nothing in Caps is blanked any
+	// more, so the slice is only ever read.
 	body := doc.BudgetPolicyBody
 	body.IssuedAt = ""
 	raw, err := json.Marshal(body)

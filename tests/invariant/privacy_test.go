@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,6 +29,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
+	"github.com/marmutapp/superbased-observer/internal/toolaccount"
 )
 
 // memBearer is a deterministic in-test orgclient.BearerStore (the production
@@ -122,8 +124,18 @@ const (
 	// would have blessed: if the seam ever stopped shipping the column, or
 	// started substituting a default, these distinctive bytes would vanish
 	// from the wire and TestPushPayloadCarriesNoContent's canary block fails.
-	canarySurface     = "CANARY_SURFACE_pulchritudinous_uu"
-	canarySurfaceHost = "CANARY_SURFACEHOST_tintinnabulation_hh"
+	canarySurface = "CANARY_SURFACE_pulchritudinous_uu"
+	// canarySurfaceHost is a REAL vocabulary token, not a nonsense sentinel
+	// like its sibling above, because since PRIV-2 (codebase audit
+	// 2026-09-16) surface_host passes a CLOSED vocabulary at the seam: an
+	// unrecognized value ships as "other", so a nonsense canary would
+	// correctly never appear and the assertion would be measuring the gate
+	// instead of the column. "jetbrains-dataspell" is a genuine, rare
+	// jetbrainshost product token — distinctive enough to byte-scan for, and
+	// admitted by the vocabulary, so the canary still proves the COLUMN
+	// ships. The gate's own behavior is pinned separately by
+	// TestSessionSurfaceHostClosedVocabulary.
+	canarySurfaceHost = "jetbrains-dataspell"
 
 	// Guard-layer additions (migration 040, guard spec §10.2): the
 	// three content-bearing guard_events columns. guard_events rows DO
@@ -216,7 +228,7 @@ var allSentinels = []string{
 // Pre-v1.8.0: this test FAILS — the seam at internal/store/orgpush.go ships
 // `target`, `source_file`, `root_path`, `git_remote` raw. That's the leak the
 // 2026-06-02 teams test caught. The fix (M1.1–M1.3 + M1.5 of the remediation
-// plan at docs/teams-test-findings-remediation-plan-2026-06-03.md) ships only
+// plan at docs/plans/teams-test-findings-remediation-plan-2026-06-03.md) ships only
 // the corresponding *_hash columns by default and gates the raw fields behind
 // an opt-in node config.
 func TestPushPayloadCarriesNoContent(t *testing.T) {
@@ -1599,6 +1611,93 @@ func TestSessionSurfaceAndSidechainTokensShipAsMetadata(t *testing.T) {
 	}
 }
 
+// TestSessionSurfaceHostClosedVocabulary is the PRIV-2 pin (codebase audit
+// 2026-09-16). sessions.surface_host ships in EVERY posture, including the
+// metadata-only teams default, on the stated grounds that it is "a bounded host
+// token" which "can never carry a path, a prompt or a branch name". Nothing
+// enforced that: the store's own writer documents surface_host as free-form
+// (unlike `surface`, which it refuses outside models.KnownSurface), so an
+// adapter resolving a host from a directory name or a vendor suffix could put
+// an arbitrary string on an ungated wire.
+//
+// The seam now applies a closed vocabulary. Three behaviors, one per row:
+// a KNOWN token crosses verbatim (the org still gets its product attribution);
+// an UNKNOWN one coarsens to "other" (never verbatim, whatever it holds — a
+// path, a branch name, a prompt fragment); and EMPTY stays empty, because an
+// unstamped session must reach the org as unknown and "other" would claim a
+// stamp that was never made.
+//
+// Written with direct SQL, bypassing Store.SetSessionSurface, precisely because
+// the threat is a value that reached the column some other way.
+func TestSessionSurfaceHostClosedVocabulary(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stored string
+		want   string
+	}{
+		{"known vscode token", "vscode", "vscode"},
+		{"known jetbrains product", "jetbrains-goland", "jetbrains-goland"},
+		{"known desktop token", "claude-desktop", "claude-desktop"},
+		{"unstamped stays unstamped", "", ""},
+		{"unknown vendor token coarsens", "some-new-editor-2027", "other"},
+		{"a path never crosses verbatim", "/home/dev/clients/acme-migration", "other"},
+		{"a branch name never crosses verbatim", "feature/PROJ-1421-acme", "other"},
+		{"prose never crosses verbatim", "rewrite the acme billing module", "other"},
+		{"case variant is not the token", "VSCode", "other"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+			if err != nil {
+				t.Fatalf("db.Open: %v", err)
+			}
+			defer func() { _ = database.Close() }()
+			st := store.New(database)
+			seed(ctx, t, st)
+
+			if _, err := database.ExecContext(ctx,
+				`UPDATE sessions SET surface = 'ide', surface_host = ? WHERE id = 'sess-cc-1'`, tc.stored); err != nil {
+				t.Fatalf("stamp surface_host: %v", err)
+			}
+
+			// Metadata-only — the posture the gate exists for. A gated value
+			// must not reappear under a wider posture either, so the widest
+			// one is checked in the same breath below.
+			for _, share := range []store.ShareOptions{{}, {FullContent: true}, {AdminManaged: true}} {
+				batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@acme.example",
+					share, store.ScopeOptions{})
+				if err != nil {
+					t.Fatalf("SelectUnpushedSince: %v", err)
+				}
+				var got *orgcontract.SessionRow
+				for i := range batch.Sessions {
+					if batch.Sessions[i].ID == "sess-cc-1" {
+						got = &batch.Sessions[i]
+					}
+				}
+				if got == nil {
+					t.Fatalf("sess-cc-1 missing from the wire, got %+v", batch.Sessions)
+				}
+				if got.SurfaceHost != tc.want {
+					t.Errorf("surface_host on the wire = %q, want %q (stored %q, share %+v)",
+						got.SurfaceHost, tc.want, tc.stored, share)
+				}
+				// Byte-level: an out-of-vocabulary value must not survive
+				// anywhere in the serialized batch.
+				if tc.want == "other" {
+					raw, err := json.Marshal(batch)
+					if err != nil {
+						t.Fatalf("marshal batch: %v", err)
+					}
+					if bytes.Contains(raw, []byte(tc.stored)) {
+						t.Errorf("out-of-vocabulary surface_host %q survived into the batch bytes under %+v", tc.stored, share)
+					}
+				}
+			}
+		})
+	}
+}
+
 // seedSessionTasks writes one checklist item and one status transition for
 // sess-cc-1 whose PROSE columns are sentinels but whose STATUS columns are the
 // real closed vocabulary, so one SelectUnpushedSince batch can be searched both
@@ -1871,6 +1970,144 @@ func TestSessionToolAccountsShipOnlyUnderToolAccountDetail(t *testing.T) {
 				if leaked != tc.wantContent {
 					t.Errorf("sentinel %q present in the marshalled batch = %v, want %v under %s",
 						sentinel, leaked, tc.wantContent, tc.name)
+				}
+			}
+		})
+	}
+}
+
+// TestSessionToolAccountKeyGatedWhenIdentityDerived is the PRIV-1 pin (codebase
+// audit 2026-09-16). TestSessionToolAccountsShipOnlyUnderToolAccountDetail
+// above pins that the IDENTITY columns need the second gate; this pins that the
+// account_key does too WHEN IT IS DERIVED FROM ONE OF THEM.
+//
+// account_key is an unsalted sha256(tool || 0x00 || identity) and identity is
+// the first non-empty of account_id, email, name
+// (internal/toolaccount.Normalize). For an email- or name-derived key the
+// preimage space is small and enumerable — an org admin holds the member
+// roster — so shipping that key under the metadata tier hands over the identity
+// half through the binding half's door. The keys here are computed by the
+// PRODUCTION derivation, not hand-written, so the assertion is exactly "the
+// string an admin with the roster would compute must not be on the wire".
+//
+// Two rows, one of each shape, in ONE batch:
+//
+//	(a) an ACCOUNT-ID-derived key is opaque in both directions and ships under
+//	    tool_account_detail alone, unchanged;
+//	(b) an EMAIL-derived key ships blank under tool_account_detail alone and
+//	    only crosses once the node ALSO ships raw content.
+func TestSessionToolAccountKeyGatedWhenIdentityDerived(t *testing.T) {
+	const (
+		secKeyEmail = "keygate-pangram-jj@example.invalid"
+		secKeyName  = "Keygate Pangram Kk"
+		secKeyAcct  = "keygate-acct-pangram-ll"
+	)
+	// Derive both keys the way production does, so the sentinel below is the
+	// real recoverable string rather than a stand-in.
+	_, idKey, ok := toolaccount.Normalize(models.ToolAccountObservation{
+		SessionID: "sess-cc-1", Tool: "claude-code", BindingKind: "message",
+		BindingID: "msg-id", Role: "assistant", Stage: "activity",
+		Source: "hook", Scope: "session", AccountID: secKeyAcct,
+	})
+	if !ok {
+		t.Fatal("toolaccount.Normalize refused the account-id observation — the fixture is wrong")
+	}
+	_, emailKey, ok := toolaccount.Normalize(models.ToolAccountObservation{
+		SessionID: "sess-cc-1", Tool: "claude-code", BindingKind: "message",
+		BindingID: "msg-email", Role: "assistant", Stage: "activity",
+		Source: "hook", Scope: "session", Email: secKeyEmail, Name: secKeyName,
+	})
+	if !ok {
+		t.Fatal("toolaccount.Normalize refused the email observation — the fixture is wrong")
+	}
+	if emailKey == idKey || emailKey == "" {
+		t.Fatalf("derived keys are degenerate (id=%q email=%q) — the test would be vacuous", idKey, emailKey)
+	}
+
+	for _, tc := range []struct {
+		name            string
+		share           store.ShareOptions
+		wantEmailKeyOut bool
+	}{
+		{"tool_account_detail", store.ShareOptions{ToolAccountDetail: true}, false},
+		{"tool_account_detail+full_content", store.ShareOptions{ToolAccountDetail: true, FullContent: true}, true},
+		{"tool_account_detail+admin_managed", store.ShareOptions{ToolAccountDetail: true, AdminManaged: true}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+			if err != nil {
+				t.Fatalf("db.Open: %v", err)
+			}
+			defer func() { _ = database.Close() }()
+			st := store.New(database)
+			seed(ctx, t, st)
+
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			for _, r := range []struct {
+				bindingID, key, email, name, accountID string
+			}{
+				{"msg-id", idKey, "", "", secKeyAcct},
+				{"msg-email", emailKey, secKeyEmail, secKeyName, ""},
+			} {
+				if _, err := database.ExecContext(ctx,
+					`INSERT INTO tool_account_observations
+					   (session_id, tool, binding_kind, binding_id, role, account_key,
+					    email, name, account_id, source, scope, stage, observed_at)
+					 VALUES ('sess-cc-1', 'claude-code', 'message', ?, 'assistant', ?,
+					         ?, ?, ?, 'hook', 'session', 'activity', ?)`,
+					r.bindingID, r.key, r.email, r.name, r.accountID, now); err != nil {
+					t.Fatalf("seed tool_account_observations (%s): %v", r.bindingID, err)
+				}
+			}
+
+			batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@acme.example",
+				tc.share, store.ScopeOptions{})
+			if err != nil {
+				t.Fatalf("SelectUnpushedSince: %v", err)
+			}
+			if len(batch.SessionToolAccounts) != 2 {
+				t.Fatalf("shipped %d tool-account rows, want 2 — both observations must ride", len(batch.SessionToolAccounts))
+			}
+			for _, r := range batch.SessionToolAccounts {
+				switch r.BindingID {
+				case "msg-id":
+					// An opaque, account-id-derived key ALWAYS ships under the
+					// tier. If this ever blanks, the binding half stops
+					// answering "same account or not" and the tier is pointless.
+					if r.AccountKey != idKey {
+						t.Errorf("account-id-derived key = %q, want %q — an opaque key ships under tool_account_detail alone", r.AccountKey, idKey)
+					}
+				case "msg-email":
+					wantKey := ""
+					if tc.wantEmailKeyOut {
+						wantKey = emailKey
+					}
+					if r.AccountKey != wantKey {
+						t.Errorf("email-derived key = %q, want %q under %s — an enumerable preimage rides the identity gate (PRIV-1)",
+							r.AccountKey, wantKey, tc.name)
+					}
+				default:
+					t.Errorf("unexpected binding_id %q on the wire", r.BindingID)
+				}
+			}
+
+			raw, err := json.Marshal(batch)
+			if err != nil {
+				t.Fatalf("marshal batch: %v", err)
+			}
+			// Byte-level sentinel: the derived key string itself.
+			if got := bytes.Contains(raw, []byte(emailKey)); got != tc.wantEmailKeyOut {
+				t.Errorf("email-derived account_key present in the marshalled batch = %v, want %v under %s",
+					got, tc.wantEmailKeyOut, tc.name)
+			}
+			if !bytes.Contains(raw, []byte(idKey)) {
+				t.Errorf("account-id-derived account_key missing from the batch under %s — the tier must still ship an opaque key", tc.name)
+			}
+			// And the identity itself keeps its own gate, unchanged.
+			for _, sentinel := range []string{secKeyEmail, secKeyName, secKeyAcct} {
+				if got := bytes.Contains(raw, []byte(sentinel)); got != tc.wantEmailKeyOut {
+					t.Errorf("identity sentinel %q present = %v, want %v under %s", sentinel, got, tc.wantEmailKeyOut, tc.name)
 				}
 			}
 		})
@@ -2262,6 +2499,25 @@ var forbiddenCacheTables = []string{
 	// sentinel can keep forbidding the underlying table name here, same
 	// pattern as org_routing_policies/router_decisions above.
 	"project_patterns",
+	// project_guidance_files (migration 122) is the per-project inventory
+	// of the AI-guidance documents each tool reads — CLAUDE.md, AGENTS.md,
+	// .cursor/rules/*.mdc, skills, sub-agents, slash commands. It is
+	// NODE-LOCAL for the same reason codeintel_* and project_patterns are:
+	// the rows name private project paths, and — uniquely on this list —
+	// user-scope rows name files in the OPERATOR'S OWN HOME
+	// (~/.claude/CLAUDE.md and friends), which are personal, not
+	// project-owned, and which no org opt-in on this node should be read
+	// as consenting to. Names and descriptions come out of the files'
+	// front matter, so even the metadata halves describe private working
+	// practice. Bodies are never stored at all (only a sha256 + a capped
+	// description), but that is a separate guarantee from this one.
+	//
+	// There is no paired orgserver migration, by design. If a team-level
+	// "which projects have a CLAUDE.md" rollup is ever wanted it is a
+	// separate opt-in AGGREGATE wire shape composed through a function
+	// seam (the routing_summary / project_patterns precedent) — never this
+	// table, and never the user-scope rows.
+	"project_guidance_files",
 	// Guard-layer tables (migration 040, guard spec §10.2): pins,
 	// policy state and approvals are NODE-LOCAL until the G13/G14
 	// teams arc deliberately adds their wire surfaces (pins ship
@@ -2721,6 +2977,75 @@ var forbiddenCacheTables = []string{
 	// no org share key for it and no paired server migration (the org server
 	// consumes the feed through its own importer, a separate wave).
 	"pricing_feed_cache",
+	// --- PRIV-3 / PRIV-4 (codebase audit 2026-09-16) ---
+	//
+	// Seventeen node-local tables that had never been enumerated here. None
+	// leaks today — orgpush.go names an explicit table allow-list and none of
+	// them is in it — but that is an argument, and this sentinel is a check.
+	// The whole point of the source-level rule is that adding a table to the
+	// push seam should fail a test rather than depend on a reviewer noticing;
+	// a table absent from BOTH the wire and this list has neither protection.
+	//
+	// They were found by enumerating every CREATE TABLE in
+	// internal/db/migrations and subtracting the tables that have a wire row
+	// (actions / api_turns / projects / sessions / token_usage / otel_content /
+	// guard_events / task_items / task_transitions /
+	// tool_account_observations), the push machinery itself (org_push_log /
+	// schema_meta, which orgpush.go legitimately names), the received org
+	// roster caches (org_enrolment / org_members / org_teams /
+	// org_team_members / org_project_team), and the transient *_new rebuild
+	// tables a migration drops behind itself.
+	// TestForbiddenCacheTablesCoversEveryNodeLocalTable keeps that derivation
+	// honest for future migrations.
+	//
+	// What each of them would disclose, since "no leak today" is not a reason
+	// to leave a table unlisted:
+	//
+	//   - action_embeddings / retrieval_signals: vector embeddings OF the
+	//     developer's tool inputs and outputs, plus which past outputs were
+	//     retrieved for which query. An embedding is a lossy but real
+	//     projection of the text it came from — closer to the content columns
+	//     this file forbids than to metadata.
+	//   - compression_events / compaction_events / summary_calls: per-turn
+	//     compression/summarization bookkeeping, including what was dropped and
+	//     what a summary call cost. Reveals conversation shape turn by turn.
+	//   - failure_context: what failed, where, and the surrounding excerpt —
+	//     the single most content-bearing node-local table on this list.
+	//   - file_state / parse_cursors / adapter_unrecoverable_files: per-FILE
+	//     paths and parse positions across the developer's whole machine,
+	//     including transcript files outside any project root.
+	//   - mcp_audit: which MCP tool each AI client called, with arguments'
+	//     provenance — the MCP-side twin of guard_events without its strip.
+	//   - arena_runs / arena_candidates: local head-to-head model evaluation,
+	//     including the prompts a run was scored on.
+	//   - digest_state / observer_log / launch_seeds / session_pid_bridge /
+	//     claudecode_effort: daemon-local operational state (advisor digest
+	//     cursor, the node's own log ring, launcher seed payloads, the pid↔
+	//     session bridge, per-session reasoning-effort sidecar). Operational
+	//     telemetry about the developer's machine, not about their org's work.
+	//
+	// If any of these ever earns a wire surface it follows the established
+	// route: a derived, content-free AGGREGATE composed through a function
+	// seam in its own file (the routing_summary / file_changes precedent), its
+	// own [org_client.share] key, and its own privacy review — the table name
+	// stays forbidden HERE either way.
+	"action_embeddings",
+	"adapter_unrecoverable_files",
+	"arena_candidates",
+	"arena_runs",
+	"claudecode_effort",
+	"compaction_events",
+	"compression_events",
+	"digest_state",
+	"failure_context",
+	"file_state",
+	"launch_seeds",
+	"mcp_audit",
+	"observer_log",
+	"parse_cursors",
+	"retrieval_signals",
+	"session_pid_bridge",
+	"summary_calls",
 	// DELIBERATELY NO LONGER HERE — task_items / task_transitions (agent
 	// migration 109) and tool_account_observations (agent 111). Migration
 	// 109 pinned the task tables node-local "for this first slice" and 111
@@ -4212,6 +4537,119 @@ func TestSelectUnpushedSinceExcludesCacheTables(t *testing.T) {
 	}
 }
 
+// wireBackedTables are the agent tables whose rows have a wire surface in
+// orgcontract, so the push seam legitimately reads them. They are the reason a
+// table may be absent from forbiddenCacheTables.
+var wireBackedTables = map[string]string{
+	"actions":                   "ActionRow",
+	"api_turns":                 "APITurnRow",
+	"projects":                  "ProjectRow (joined for the session's hashes)",
+	"sessions":                  "SessionRow",
+	"token_usage":               "TokenUsageRow",
+	"otel_content":              "OTelContentRow (content gated by shipsRawContent)",
+	"guard_events":              "GuardEventRow (verdict prose gated in Go)",
+	"task_items":                "SessionTaskRow, under task_detail",
+	"task_transitions":          "SessionTaskTransitionRow, under task_detail",
+	"tool_account_observations": "SessionToolAccountRow, under tool_account_detail",
+}
+
+// pushMachineryTables are named by orgpush.go itself and could not be added to
+// the forbidden list without breaking the seam. They carry no captured data:
+// org_push_log is the cursor ledger, schema_meta the key-value migration/meta
+// store.
+var pushMachineryTables = map[string]string{
+	"org_push_log": "the push cursor ledger the seam advances",
+	"schema_meta":  "key-value migration + meta store",
+}
+
+// receivedOrgStateTables hold the org's OWN roster/enrolment coming back to the
+// node. They are deliberately NOT in the forbidden list because the sentinel is
+// about node-captured data crossing outward, and these are the server's own
+// bytes; the enrolment identity in them is what the push is authenticated AS.
+var receivedOrgStateTables = map[string]string{
+	"org_enrolment":    "this node's enrolment record",
+	"org_members":      "received org roster cache",
+	"org_teams":        "received org roster cache",
+	"org_team_members": "received org roster cache",
+	"org_project_team": "received org project↔team mapping cache",
+}
+
+// TestForbiddenCacheTablesCoversEveryNodeLocalTable keeps the PRIV-3/PRIV-4
+// enumeration honest for every FUTURE migration (codebase audit 2026-09-16).
+//
+// The seventeen tables PRIV-3/4 found had simply never been looked at: the
+// forbidden list grew one entry at a time as each feature landed, so a table
+// whose author did not think to add it got no source-level protection at all,
+// and nothing said so. This test closes that by DERIVING the requirement:
+// every CREATE TABLE in internal/db/migrations must be accounted for as either
+// (a) wire-backed, (b) push machinery, (c) received org state, (d) a transient
+// migration-rebuild table, or (e) present in forbiddenCacheTables.
+//
+// A new migration that adds a node-local table therefore fails here until
+// someone writes down which it is — which is exactly the review the sentinel
+// was always meant to force.
+func TestForbiddenCacheTablesCoversEveryNodeLocalTable(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join("..", "..", "internal", "db", "migrations")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	// `CREATE TABLE [IF NOT EXISTS] name (` — the only shape the agent
+	// lineage uses.
+	re := regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["` + "`" + `]?([a-z0-9_]+)`)
+	forbidden := make(map[string]bool, len(forbiddenCacheTables))
+	for _, n := range forbiddenCacheTables {
+		forbidden[n] = true
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		for _, m := range re.FindAllStringSubmatch(string(body), -1) {
+			seen[strings.ToLower(m[1])] = true
+		}
+	}
+	if len(seen) < 50 {
+		t.Fatalf("only %d tables parsed out of the migrations dir — the scan is broken and this test would be vacuous", len(seen))
+	}
+	for name := range seen {
+		switch {
+		case forbidden[name]:
+		case wireBackedTables[name] != "":
+		case pushMachineryTables[name] != "":
+		case receivedOrgStateTables[name] != "":
+		case strings.HasSuffix(name, "_new"):
+			// A migration's own table-rebuild scratch table, dropped by the
+			// same migration that creates it. Never a live table.
+		case strings.HasSuffix(name, "_fts") || strings.HasSuffix(name, "_fts_data") ||
+			strings.HasSuffix(name, "_fts_idx") || strings.HasSuffix(name, "_fts_docsize") ||
+			strings.HasSuffix(name, "_fts_config") || strings.HasSuffix(name, "_fts_content"):
+			// FTS5 shadow tables, created by the virtual table, not by us.
+		default:
+			t.Errorf("agent table %q is in NEITHER forbiddenCacheTables nor any accounted-for set — "+
+				"if it is node-local, add it to forbiddenCacheTables (that is the source-level rule that "+
+				"stops it being added to orgpush.go by accident); if it has a wire row, add it to "+
+				"wireBackedTables with the orgcontract type that carries it", name)
+		}
+	}
+	// The inverse direction, so the list cannot rot: every forbidden AGENT
+	// table name must still exist in the lineage. Names from other databases
+	// (archive_*, the obs lineage, pre-registered codeintel tables) are
+	// deliberately exempt — they are listed here precisely because they live
+	// elsewhere and must stay unreachable.
+	for _, n := range forbiddenCacheTables {
+		if wireBackedTables[n] != "" {
+			t.Errorf("%q is in BOTH forbiddenCacheTables and wireBackedTables — a table cannot be both", n)
+		}
+	}
+}
+
 // TestPushPayloadHasOnlyAllowlistedKeys is the structural-allowlist guard:
 // in metadata-only mode (the default), the actions / sessions / api_turns /
 // token_usage objects must contain ONLY keys from a fixed allowlist. Adding
@@ -4624,14 +5062,27 @@ func TestPushPayloadNeverCarriesOrgIntelCache(t *testing.T) {
 		secDesc  = "SENTINEL_INTEL_DESC_pangram_zz"
 		secTag   = "SENTINEL_INTEL_TAG_pangram_zz"
 		secLim   = "SENTINEL_INTEL_LIM_pangram_zz"
+		// The five NARRATIVE columns (agent migration 124). Each gets its OWN
+		// sentinel: a single shared value would let four of the five columns be
+		// added to the push seam undetected, and these carry the most revealing
+		// prose on the row — "what failed", "what to do next" — so they are the
+		// LAST thing that may cross the wire.
+		secWork  = "SENTINEL_INTEL_WORKDONE_pangram_zz"
+		secPlans = "SENTINEL_INTEL_PLANS_pangram_zz"
+		secIssue = "SENTINEL_INTEL_ISSUES_pangram_zz"
+		secFail  = "SENTINEL_INTEL_FAILURES_pangram_zz"
+		secNext  = "SENTINEL_INTEL_NEXTSTEPS_pangram_zz"
 	)
 	if _, err := database.ExecContext(ctx, `
 		INSERT INTO org_intel_cache
 		  (org_id, session_id, job_id, title, taxonomy_tags, suggested_tags,
-		   description, confidence, limitations, schema_version, fetched_at)
-		VALUES ('org-1','sess-intel-1','j1', ?, ?, '[]', ?, 'high', ?, 'v2', ?)`,
+		   description, confidence, limitations, schema_version, fetched_at,
+		   work_done, plans_implemented, issues_found, failures, next_steps)
+		VALUES ('org-1','sess-intel-1','j1', ?, ?, '[]', ?, 'high', ?, 'v2', ?, ?, ?, ?, ?, ?)`,
 		secTitle, `["`+secTag+`"]`, secDesc, `["`+secLim+`"]`,
-		time.Now().UTC().Format(time.RFC3339)); err != nil {
+		time.Now().UTC().Format(time.RFC3339),
+		`["`+secWork+`"]`, `["`+secPlans+`"]`, `["`+secIssue+`"]`,
+		`["`+secFail+`"]`, `["`+secNext+`"]`); err != nil {
 		t.Fatalf("seed org_intel_cache: %v", err)
 	}
 
@@ -4652,7 +5103,10 @@ func TestPushPayloadNeverCarriesOrgIntelCache(t *testing.T) {
 			if err != nil {
 				t.Fatalf("marshal batch: %v", err)
 			}
-			for _, s := range []string{secTitle, secDesc, secTag, secLim} {
+			for _, s := range []string{
+				secTitle, secDesc, secTag, secLim,
+				secWork, secPlans, secIssue, secFail, secNext,
+			} {
 				if bytes.Contains(raw, []byte(s)) {
 					t.Errorf("org_intel_cache sentinel %q leaked into the push envelope under %s — INV-3: the "+
 						"node-local intel result cache must NEVER cross the push wire", s, tc.name)

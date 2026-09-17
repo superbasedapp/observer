@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // verifyRowByCheck returns the row for a named check, or a zero row.
@@ -26,7 +27,7 @@ func verifyRowByCheck(rows []admissionVerifyRow, check string) admissionVerifyRo
 // is SKIP (no judge), and the audit chain is intact over an empty table.
 func TestRunAdmissionVerifyPass(t *testing.T) {
 	ctx := context.Background()
-	conn, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
+	conn, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -60,7 +61,7 @@ func TestRunAdmissionVerifyPass(t *testing.T) {
 // audit-chain row is skipped (admission disabled here).
 func TestRunAdmissionVerifyFatalLint(t *testing.T) {
 	ctx := context.Background()
-	conn, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
+	conn, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "obs.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -128,7 +129,7 @@ func TestGuardPromptAllowCmd(t *testing.T) {
 
 	// The grants are visible through the SAME mechanism `guard approve`
 	// uses — one shared table, no separate per-detector store.
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +147,7 @@ func TestGuardPromptClearCmd(t *testing.T) {
 	t.Parallel()
 	cfgPath, dbPath := writeGuardTestConfig(t)
 
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +216,7 @@ func TestGuardPromptEventsCmd(t *testing.T) {
 
 	// Seed one prompt-submit guard_events row and one NON-prompt row —
 	// only the prompt-submit one must print.
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}

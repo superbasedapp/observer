@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/identity"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
@@ -19,7 +20,7 @@ import (
 func TestIngestStampsOrgWhenEnrolled(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "stamp.db")
-	database, err := db.Open(ctx, db.Options{Path: path})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: path})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

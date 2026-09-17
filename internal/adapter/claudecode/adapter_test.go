@@ -1478,3 +1478,45 @@ func TestToolResultOutputCappedAtContract(t *testing.T) {
 		t.Errorf("cross-tick ToolOutput = %d bytes, want <= %d (1 MiB + marker)", got, ceiling)
 	}
 }
+
+// TestExtractTarget is the per-tool target-picker table. The load-bearing
+// row is `Skill`: the Claude Code Skill tool_use input is
+// {"skill":"<name>","args":"…"}, and until wave 2 no case matched it, so
+// every skill_invoke action carried an empty target and the skill's name
+// lived only inside raw_tool_input — nothing a guidance.SkillKey join
+// could land on. `args` is free user text and must stay out of the
+// target.
+func TestExtractTarget(t *testing.T) {
+	t.Parallel()
+	a := New()
+	cases := []struct {
+		name  string
+		tool  string
+		input string
+		root  string
+		want  string
+	}{
+		{"skill", "Skill", `{"skill":"update-config","args":"allow npm"}`, "", "update-config"},
+		{"skill trimmed", "Skill", `{"skill":"  code-review  "}`, "", "code-review"},
+		{"skill absent", "Skill", `{"args":"no skill key"}`, "", ""},
+		{"skill empty", "Skill", `{"skill":"","args":"x"}`, "", ""},
+		{"skill ignores args when skill missing", "Skill", `{"args":"deploy"}`, "", ""},
+		{"read relative to root", "Read", `{"file_path":"/repo/a/b.go"}`, "/repo", "a/b.go"},
+		{"read absolute without root", "Read", `{"file_path":"/repo/a/b.go"}`, "", "/repo/a/b.go"},
+		{"grep pattern", "Grep", `{"pattern":"TODO"}`, "", "TODO"},
+		{"glob pattern", "Glob", `{"pattern":"**/*.go"}`, "", "**/*.go"},
+		{"websearch query", "WebSearch", `{"query":"sqlite index"}`, "", "sqlite index"},
+		{"webfetch url", "WebFetch", `{"url":"https://example.com/x"}`, "", "https://example.com/x"},
+		{"unmapped tool", "TodoWrite", `{"todos":[]}`, "", ""},
+		{"empty input", "Skill", ``, "", ""},
+		{"malformed input", "Skill", `{not json`, "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := a.extractTarget(c.tool, []byte(c.input), c.root)
+			if got != c.want {
+				t.Errorf("extractTarget(%q, %q, %q) = %q, want %q", c.tool, c.input, c.root, got, c.want)
+			}
+		})
+	}
+}

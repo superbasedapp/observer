@@ -155,9 +155,26 @@ type Event struct {
 	// internal/models; they are not imported to keep this package
 	// dependency-free (see actionIsWrite in rules_boundary.go).
 	ActionType string
-	// Tool is the client name — for REPORTING only. No logic in
-	// this package may branch on it (spec §17.3, grep-enforced).
+	// Tool is the client name. It is REPORTING data for every rule in
+	// this package except the SUBJECT budget rows (B-626/B-627), which
+	// compare it against an organization cap the admin authored FOR
+	// that tool (bundle BUD-N).
+	//
+	// That is not the branch §17.3 forbids. The forbidden shape is a
+	// hardcoded comparison against a vendor's name — behaviour this
+	// repo decided for one client. A subject cap is DATA: the org
+	// authored a row naming a subject, the rule walks the rows it was
+	// given, and the same code path serves a tool nobody here has
+	// heard of. Nothing in this package enumerates tool names.
 	Tool string
+	// Model is the model id the capture path recorded for this event
+	// ("claude-sonnet-4-5-20250929", ...), stamped by the boundary that
+	// built the event. Like Tool it is reporting data everywhere except
+	// the subject budget rows (B-628/B-629), which compare it against an
+	// organization cap authored for that model. "" means the boundary
+	// does not know one (every hook-path and most watcher-path events),
+	// and a model cap then simply does not match — never a guess.
+	Model string
 	// Target is the path / URL / command string the action operates
 	// on.
 	Target string
@@ -273,6 +290,58 @@ type Event struct {
 	DailyTokens   int64
 	WeeklyTokens  int64
 	MonthlyTokens int64
+	// OrgBaseline is the ORGANIZATION's own measurement of what this
+	// caller already spent in each window ON ITS OTHER MACHINES —
+	// the cross-machine baseline (bundle BUD-N / P1-9), stamped by the
+	// guard from the composed org budget, not from a store read.
+	//
+	// The budget rows compare `OrgBaseline.<window> + <window> stamp`
+	// against the ceiling, because one developer with a laptop and a
+	// devbox burns ONE org budget from two nodes and a node that counted
+	// only its own rows would enforce a cap the org already considers
+	// breached.
+	//
+	// It is zero unless the org supplied a baseline that was FRESH and
+	// measured with this machine excluded (internal/orgbudget decides;
+	// see orgcontract.BudgetPolicyCap.SpentExcludesMachine). A stale,
+	// absent or uncomposable baseline leaves it zero and the node
+	// enforces on local spend alone — never a refusal to run.
+	OrgBaseline BudgetWindowAmounts
+	// OrgBaselineFlagOnly says the baseline above may raise a WARNING and may
+	// not deny (orgcontract.BudgetBaselineAppliedFlagOnly). The org's measure
+	// counted rows it could not attribute to any machine, so it may overlap
+	// this node's own spend, and a request refused — or a process stopped — on
+	// a total that may have counted the same turns twice is not a ceiling, it
+	// is a coin toss.
+	//
+	// The budget rows therefore drop the baseline from any comparison that can
+	// DENY (the node-wide rows under [guard.budget].hard, and a subject cap the
+	// org authored hard) and keep it for the flag comparisons. The
+	// process-control pass evaluates only protected deny rows, so it inherits
+	// the same local-only arithmetic without a second rule.
+	OrgBaselineFlagOnly bool
+	// ToolSubjectID / ModelSubjectID are Tool / Model folded onto the SAME
+	// identity the organization's subject caps were composed onto — the
+	// price-table alias ladder for a model (so `claude-sonnet-5` and
+	// `claude-sonnet-5-20260501` are one subject), the plain normalisation for
+	// a tool. The guard stamps them beside ToolUsage / ModelUsage from one
+	// resolver, so the cap, the accounting key and the event all spell the
+	// subject the same way.
+	//
+	// Empty falls back to normalizing Tool / Model here, which is exactly the
+	// pre-resolver behaviour: an unstamped event (a hook path) or a node with
+	// no price table still matches on the plain spelling.
+	ToolSubjectID  string
+	ModelSubjectID string
+	// ToolUsage / ModelUsage are THIS MACHINE's own spend in each window
+	// narrowed to the event's Tool / Model, stamped by the same TTL-cached
+	// guard budget lookup that fills the node-wide stamps, from the same
+	// query over the same windows. They feed the subject budget rows
+	// (B-626..B-629) and nothing else. Zero means unknown/unstamped or
+	// simply no usage — the rows treat it as no-match either way, exactly
+	// like every other budget stamp.
+	ToolUsage  BudgetWindowAmounts
+	ModelUsage BudgetWindowAmounts
 	// Window5hUtil / Window7dUtil are the provider's own 5h and weekly
 	// usage-window utilization (0..1), stamped from the latest
 	// limit_snapshots row for the B-610..B-613 limit rules. 0 means

@@ -58,6 +58,26 @@ type IntelResultRow struct {
 	Confidence string `json:"confidence,omitempty"`
 	// Limitations enumerates what the enrichment did not observe.
 	Limitations []string `json:"limitations,omitempty"`
+	// WorkDone, PlansImplemented, IssuesFound, Failures and NextSteps are the
+	// NARRATIVE half of the result (cloudcontract.NarrativeFields): what the
+	// session actually did, whether the stated plans landed, what is broken,
+	// what failed or is unresolved, and what to do next. They are the prose a
+	// developer actually reads, and they are ADDITIVE in both directions — an
+	// older server that has not run server migration 156 simply omits them, and
+	// an older node that does not know the keys ignores them. evidence_refs are
+	// deliberately NOT on this wire: they are the server's own grounding tokens
+	// ("a136", "m5", "activity_mix"), checked server-side and never rendered.
+	WorkDone []string `json:"work_done,omitempty"`
+	// PlansImplemented says which stated asks landed and which were left.
+	PlansImplemented []string `json:"plans_implemented,omitempty"`
+	// IssuesFound lists bugs or problems the session identified, as a class of
+	// problem rather than a quoted failure message.
+	IssuesFound []string `json:"issues_found,omitempty"`
+	// Failures lists what failed or is unresolved, including outcomes the
+	// evidence could not establish (reported as unknown, never as a pass).
+	Failures []string `json:"failures,omitempty"`
+	// NextSteps lists concrete actions implied by the unfinished work.
+	NextSteps []string `json:"next_steps,omitempty"`
 	// SchemaVersion is the result schema tag the server produced this row
 	// under (cloudcontract.ResultSchemaVersion at derivation time).
 	SchemaVersion string `json:"schema_version,omitempty"`

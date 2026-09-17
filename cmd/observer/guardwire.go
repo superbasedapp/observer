@@ -146,6 +146,18 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 		defer cancel()
 		return st.ApprovalActiveFor(lctx, ruleID, sessionID, rootHash, time.Now().UTC())
 	})
+	// ONE SUBJECT IDENTITY for the org's per-tool / per-model caps (bundle
+	// BUD-N, adversarial review P1-3). The cap's id, the accounting key and the
+	// stamped event are all folded through THIS function, so an org cap on
+	// `claude-sonnet-5` matches a node that captured `claude-sonnet-5-20260501`
+	// instead of silently governing nothing.
+	//
+	// It resolves the price table LAZILY, per call, for the same reason the
+	// budget lookup below does: the process cost engine is composed by
+	// buildProxy, which runs AFTER this guard is assembled, and constructing one
+	// here would create a second pricing truth.
+	resolveSubject := budgetSubjectResolver(cfg.Observer.DBPath)
+	g.SetBudgetSubjectResolver(resolveSubject)
 	// §12.1 budget lookup: spend-so-far for the B-601/B-602 rows and
 	// the §4.4 cost matchers. Guard caches per session (30s TTL), so
 	// this SUM query runs at most ~2/min/session; errors report
@@ -179,7 +191,7 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 		}
 		spend, err := st.GuardBudgetSpendPriced(
 			lctx, sessionID, dayStart, weekStart, monthStart, pricer,
-			store.GuardBudgetReadOptions{Managed: accounting.Managed},
+			store.GuardBudgetReadOptions{Managed: accounting.Managed, ResolveSubject: resolveSubject},
 		)
 		if err != nil {
 			logger.Warn("guard: budget spend lookup failed", "err", err)
@@ -208,6 +220,17 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 			DailyUSD:           spend.DailyUSD,
 			WeeklyUSD:          spend.WeeklyUSD,
 			MonthlyUSD:         spend.MonthlyUSD,
+			// The PER-SUBJECT slice of the very same read (bundle BUD-N): the
+			// organization's per-tool / per-model caps compare against these,
+			// and because they came out of one query over one set of window
+			// stamps they can never disagree with the node-wide numbers above
+			// about which turns they counted. SessionTool lets the proxy
+			// admission lane — which holds a session id and no tool — scope a
+			// per-tool cap at all.
+			ByTool:       subjectWindowsOf(spend.ByTool),
+			ByModel:      subjectWindowsOf(spend.ByModel),
+			SessionTool:  spend.SessionTool,
+			SessionModel: spend.SessionModel,
 			// UNPRICED ROWS NO LONGER CLOSE A WINDOW (ruling A2, 2026-09-15).
 			// They are priced by the fallback ladder and counted; what is left
 			// unavailable here is only what the price table itself could not
@@ -336,6 +359,65 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 		g.SetDialectRescan(dr.watchPaths(), debouncedDialectRescan(dr, 5*time.Second))
 	}
 	return g
+}
+
+// budgetSubjectResolver builds the ONE identity rule a per-tool / per-model
+// budget cap is compared under.
+//
+//   - a TOOL id has no alias ladder anywhere in the product — an adapter id is
+//     a fixed vocabulary — so it resolves to the plain normalisation.
+//   - a MODEL id resolves through the PRICE TABLE's own ladder
+//     (cost.Table.ResolveModelKey: exact -> :free -> date-stripped -> family ->
+//     router-prefix retry), which is the only component that already knows two
+//     model strings can name one model. A model the table has never seen keeps
+//     its own id, which is the honest fallback: the cap still matches an
+//     identically-spelled row and still misses a differently-spelled one, and
+//     the node reports that miss through BudgetPostureRow.OrgSubjectUnmatched
+//     rather than hiding it.
+//
+// The engine is looked up per call rather than captured, because the process
+// cost engine is composed by buildProxy AFTER the guard is assembled, and a
+// nil engine simply degrades to the normalisation.
+func budgetSubjectResolver(dbPath string) func(kind, id string) string {
+	return func(kind, id string) string {
+		norm := guard.NormalizeBudgetSubjectID(id)
+		if norm == "" || kind != policy.BudgetSubjectKindModel {
+			return norm
+		}
+		engine := lookupProcessCostEngine(dbPath)
+		if engine == nil {
+			return norm
+		}
+		table := engine.Table()
+		if table == nil {
+			return norm
+		}
+		if key, ok := table.ResolveModelKey(norm); ok {
+			return guard.NormalizeBudgetSubjectID(key)
+		}
+		return norm
+	}
+}
+
+// subjectWindowsOf converts the store's per-subject window totals into the
+// guard's shape. Two plain types across one seam, converted at the boundary —
+// the same one-seam-per-integration-point rule every other type on this path
+// follows (CLAUDE.md #2): internal/store must not import internal/policy and
+// internal/guard must not learn a store type.
+func subjectWindowsOf(in map[string]store.GuardBudgetSubjectWindows) map[string]policy.BudgetWindowAmounts {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]policy.BudgetWindowAmounts, len(in))
+	for id, w := range in {
+		out[id] = policy.BudgetWindowAmounts{
+			SessionUSD: w.SessionUSD, DailyUSD: w.DailyUSD,
+			WeeklyUSD: w.WeeklyUSD, MonthlyUSD: w.MonthlyUSD,
+			SessionTokens: w.SessionTokens, DailyTokens: w.DailyTokens,
+			WeeklyTokens: w.WeeklyTokens, MonthlyTokens: w.MonthlyTokens,
+		}
+	}
+	return out
 }
 
 // guardScannerAdapter bridges the daemon's shared *guard.Guard +

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
@@ -131,9 +132,13 @@ func (f *idpEnrolFlow) Run(ctx context.Context, orgURL string) (string, error) {
 func (f *idpEnrolFlow) announce(start orgclient.IdPEnrolStart) {
 	fmt.Fprintln(f.out)
 	fmt.Fprintln(f.out, "Sign in with your organisation account to enrol this machine.")
+	fmt.Fprintln(f.out, "You need an active dashboard account on that organisation first (redeem your")
+	fmt.Fprintln(f.out, "sign-in invite and sign in once). Then open the URL below, sign in if asked,")
+	fmt.Fprintln(f.out, "and enter the code.")
 	fmt.Fprintln(f.out, "You can do this on any device - a phone or another computer is fine.")
 	fmt.Fprintln(f.out)
-	fmt.Fprintf(f.out, "    Open:  %s\n", start.VerificationURI)
+	hintedURI := verificationURIWithCodeHint(start.VerificationURI, start.UserCode)
+	fmt.Fprintf(f.out, "    Open:  %s\n", hintedURI)
 	fmt.Fprintf(f.out, "    Enter: %s\n", start.UserCode)
 	fmt.Fprintln(f.out)
 	fmt.Fprintf(f.out, "Waiting for approval (the code is good for about %s). Press Ctrl-C to stop.\n",
@@ -142,11 +147,37 @@ func (f *idpEnrolFlow) announce(start orgclient.IdPEnrolStart) {
 	if start.VerificationURI == "" {
 		return
 	}
+	// Open the SAME hinted URL that was just printed, so a browser that opens
+	// automatically pre-fills the code exactly like a developer who copy-
+	// pasted the "Open:" line above would get — instead of landing on a bare
+	// sign-in page that silently drops the code hint.
 	if f.open != nil {
-		f.open(start.VerificationURI)
+		f.open(hintedURI)
 		return
 	}
-	openBrowser(start.VerificationURI)
+	openBrowser(hintedURI)
+}
+
+// verificationURIWithCodeHint appends ?user_code=<code> to the verification
+// URL as a convenience hint some servers can use to pre-fill the sign-in
+// page's code field (added once the server bundle lands: `/enrol/idp?user_code=<CODE>`).
+// A server that ignores the query parameter just shows its ordinary sign-in
+// page, and the plain "Enter:" line printed alongside this URL still carries
+// the code for the developer to type by hand — this is a hint, never the
+// only way to supply the code. Malformed input degrades to the original URI
+// rather than failing the whole announcement.
+func verificationURIWithCodeHint(verificationURI, userCode string) string {
+	if verificationURI == "" || userCode == "" {
+		return verificationURI
+	}
+	u, err := url.Parse(verificationURI)
+	if err != nil {
+		return verificationURI
+	}
+	q := u.Query()
+	q.Set("user_code", userCode)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // durationOrDefault converts a server-supplied second count, falling back when

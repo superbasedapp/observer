@@ -1,9 +1,11 @@
 package mistralcode
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -168,5 +170,169 @@ func TestIsSessionFile(t *testing.T) {
 func TestName(t *testing.T) {
 	if got := New().Name(); got != models.ToolMistralCode {
 		t.Errorf("Name() = %q, want %q", got, models.ToolMistralCode)
+	}
+}
+
+// TestParseSessionFile_SkipsOverlongLine pins ADAPT-LZ-4: a transcript
+// line past the 16 MiB scanner cap used to end the loop silently with
+// sc.Err() unchecked, wedging the cursor at that line forever. It must
+// now be warned about, skipped, and the cursor advanced past it so the
+// records that follow are captured.
+func TestParseSessionFile_SkipsOverlongLine(t *testing.T) {
+	cases := []struct {
+		name         string
+		terminated   bool
+		wantAdvanced bool
+		wantRetry    bool
+	}{
+		{name: "terminated overlong line is skipped", terminated: true, wantAdvanced: true},
+		{name: "unterminated overlong line is deferred", terminated: false, wantRetry: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			msgPath := writeVibeSession(t, root)
+			prior, err := os.ReadFile(msgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var buf bytes.Buffer
+			buf.Write(prior)
+			overlongStart := int64(buf.Len())
+			buf.WriteString(`{"role":"tool","name":"bash","tool_call_id":"tc9","content":"`)
+			buf.Write(bytes.Repeat([]byte("x"), maxLineBytes+1024))
+			buf.WriteString(`"}`)
+			if tc.terminated {
+				buf.WriteString("\n")
+				buf.WriteString(`{"role":"assistant","content":"after the big line","message_id":"a9"}` + "\n")
+			}
+			if err := os.WriteFile(msgPath, buf.Bytes(), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			a := NewWithOptions(nil, filepath.Join(root, ".vibe", "logs", "session"))
+			res, err := a.ParseSessionFile(context.Background(), msgPath, 0)
+			if err != nil {
+				t.Fatalf("ParseSessionFile: %v", err)
+			}
+			if len(res.Warnings) == 0 && !tc.wantRetry {
+				t.Error("no warning emitted for an over-long line")
+			}
+			if res.RetrySuggested != tc.wantRetry {
+				t.Errorf("RetrySuggested = %v, want %v", res.RetrySuggested, tc.wantRetry)
+			}
+			if tc.wantAdvanced {
+				if res.NewOffset <= overlongStart {
+					t.Errorf("NewOffset = %d, want past the over-long line at %d (cursor wedged)",
+						res.NewOffset, overlongStart)
+				}
+				if res.NewOffset != int64(buf.Len()) {
+					t.Errorf("NewOffset = %d, want EOF at %d", res.NewOffset, buf.Len())
+				}
+				found := false
+				for _, ev := range res.ToolEvents {
+					if strings.Contains(ev.Target, "after the big line") {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Error("the record following the over-long line was not captured")
+				}
+			} else if res.NewOffset != overlongStart {
+				t.Errorf("NewOffset = %d, want the deferred line's start %d", res.NewOffset, overlongStart)
+			}
+		})
+	}
+}
+
+// TestParseSessionFile_DefersPartialTrailingRecord pins P2-5: bufio's
+// ScanLines hands back an UNTERMINATED trailing line as an ordinary
+// token, so the old `consumed += len(line)+1` counted a half-written
+// record into the cursor; it then failed json.Unmarshal, hit the
+// `continue`, and was lost forever once the writer finished it. The
+// cursor must stop BEFORE a partial line, and the completed record must
+// be captured on the next pass.
+func TestParseSessionFile_DefersPartialTrailingRecord(t *testing.T) {
+	root := t.TempDir()
+	msgPath := writeVibeSession(t, root)
+	prior, err := os.ReadFile(msgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeEnd := int64(len(prior))
+
+	// Append the first half of a record, with no terminator.
+	const full = `{"role":"assistant","content":"the late arrival","message_id":"a9"}` + "\n"
+	half := full[:30]
+	if err := os.WriteFile(msgPath, append(append([]byte{}, prior...), half...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := NewWithOptions(nil, filepath.Join(root, ".vibe", "logs", "session"))
+	first, err := a.ParseSessionFile(context.Background(), msgPath, 0)
+	if err != nil {
+		t.Fatalf("ParseSessionFile(first): %v", err)
+	}
+	if first.NewOffset != completeEnd {
+		t.Errorf("NewOffset = %d, want %d (the cursor must stop before the partial line)",
+			first.NewOffset, completeEnd)
+	}
+	for _, ev := range first.ToolEvents {
+		if strings.Contains(ev.Target, "late arrival") {
+			t.Fatal("a partial record was parsed as if complete")
+		}
+	}
+
+	// The writer completes the record; the next pass must capture it.
+	if err := os.WriteFile(msgPath, append(append([]byte{}, prior...), full...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.ParseSessionFile(context.Background(), msgPath, first.NewOffset)
+	if err != nil {
+		t.Fatalf("ParseSessionFile(second): %v", err)
+	}
+	found := false
+	for _, ev := range second.ToolEvents {
+		if strings.Contains(ev.Target, "the late arrival") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("the completed record was lost: %+v", second.ToolEvents)
+	}
+	if second.NewOffset != completeEnd+int64(len(full)) {
+		t.Errorf("NewOffset = %d, want %d", second.NewOffset, completeEnd+int64(len(full)))
+	}
+}
+
+// TestParseSessionFile_CRLFCursorReachesEOF pins the other half of the
+// `len(line)+1` bug: bufio.ScanLines also strips a `\r`, so a CRLF
+// transcript undercounted by one byte per line and the cursor could
+// never reach EOF — an infinite re-parse loop.
+func TestParseSessionFile_CRLFCursorReachesEOF(t *testing.T) {
+	root := t.TempDir()
+	msgPath := writeVibeSession(t, root)
+	prior, err := os.ReadFile(msgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlf := bytes.ReplaceAll(prior, []byte("\n"), []byte("\r\n"))
+	if err := os.WriteFile(msgPath, crlf, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := NewWithOptions(nil, filepath.Join(root, ".vibe", "logs", "session"))
+	res, err := a.ParseSessionFile(context.Background(), msgPath, 0)
+	if err != nil {
+		t.Fatalf("ParseSessionFile: %v", err)
+	}
+	if res.NewOffset != int64(len(crlf)) {
+		t.Errorf("NewOffset = %d, want EOF at %d (CRLF undercount)", res.NewOffset, len(crlf))
+	}
+	if len(res.ToolEvents) == 0 {
+		t.Error("no events parsed from the CRLF transcript")
 	}
 }

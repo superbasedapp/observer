@@ -181,6 +181,18 @@ type UsageView struct {
 	DigestsThisWeek      int
 }
 
+// JobStatus is one hosted enrichment job's status, mirroring
+// cloudclient.JobStatus.
+type JobStatus struct {
+	ID             string
+	State          string
+	TerminalReason string
+	Feature        string
+	Attempts       int
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 // --- the three narrow session handles ----------------------------------------
 
 // ReadSession is the handle a feature READ receives. It exposes the results
@@ -218,6 +230,27 @@ func (s ReadSession) Usage(ctx context.Context) (UsageView, error) {
 		DigestWeekly:         v.DigestWeekly,
 		ResultsRetentionDays: v.ResultsRetentionDays,
 		DigestsThisWeek:      v.DigestsThisWeek,
+	}, nil
+}
+
+// Job fetches one hosted enrichment job's status (GET /v1/jobs/{id}) — the
+// same consent-gated read lane as Results and Usage, no new egress path. id is
+// the CLOUD job id (the value UploadResult.JobID carried at submit time), not
+// the node's own local outbox id. A 404 surfaces as ErrJobNotFound (re-
+// exported below), which a caller classifies with errors.Is.
+func (s ReadSession) Job(ctx context.Context, id string) (JobStatus, error) {
+	j, err := s.c.Job(ctx, id)
+	if err != nil {
+		return JobStatus{}, err
+	}
+	return JobStatus{
+		ID:             j.ID,
+		State:          j.State,
+		TerminalReason: j.TerminalReason,
+		Feature:        j.Feature,
+		Attempts:       j.Attempts,
+		CreatedAt:      j.CreatedAt,
+		UpdatedAt:      j.UpdatedAt,
 	}, nil
 }
 

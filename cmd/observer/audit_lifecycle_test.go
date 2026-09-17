@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard"
 	"github.com/marmutapp/superbased-observer/internal/remoteauth"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -32,7 +33,7 @@ type leaseAuditHarness struct {
 func newLeaseAuditHarness(t *testing.T) *leaseAuditHarness {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -227,7 +228,7 @@ func TestLeaseTakeoverAuditDirections(t *testing.T) {
 // row still carries its handle (no regression).
 func TestSetupLeaseAuditRedactsHandle(t *testing.T) {
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

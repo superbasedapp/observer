@@ -44,6 +44,14 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 	if len(m.To) == 0 {
 		return errors.New("email: no recipients")
 	}
+	// Render BEFORE the SMTP conversation: a message whose headers are
+	// refused (a control character in a recipient or a subject, see
+	// writeHeader) must never open a connection, let alone reach RCPT TO with
+	// a half-trusted address.
+	body, err := m.render(cfg.From, time.Now().UTC())
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.timeoutSeconds())*time.Second)
 	defer cancel()
 
@@ -109,7 +117,7 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 	if err != nil {
 		return fmt.Errorf("email: DATA: %w", err)
 	}
-	if _, err := w.Write(m.render(cfg.From, time.Now().UTC())); err != nil {
+	if _, err := w.Write(body); err != nil {
 		_ = w.Close()
 		return fmt.Errorf("email: write body: %w", err)
 	}

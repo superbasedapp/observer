@@ -802,7 +802,7 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 	// explicitly skipped proxy-routing — otherwise the write above
 	// did the work and a redundant "next: export ANTHROPIC_BASE_URL"
 	// would be misleading. Pre-v1.8.2 the env var was print-only,
-	// which is N4 in docs/teams-test-regression-2026-06-03.md.
+	// which is N4 in docs/audits/teams-test-regression-2026-06-03.md.
 	if registeredClaudeCode && !opts.DryRun && opts.SkipProxy {
 		var hint strings.Builder
 		printProxyRoutingHint(&hint, port)

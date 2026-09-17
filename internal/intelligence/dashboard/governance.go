@@ -55,6 +55,7 @@ const (
 	SectionLive        Section = "live"
 	SectionSessions    Section = "sessions"
 	SectionActions     Section = "actions"
+	SectionProjects    Section = "projects"
 	SectionSecurity    Section = "security"
 	SectionEgress      Section = "egress"
 	SectionSearch      Section = "search"
@@ -78,7 +79,7 @@ const (
 // AllSections is the closed set, for the coverage test and for callers that
 // need to validate a section id.
 var AllSections = []Section{
-	SectionOverview, SectionLive, SectionSessions, SectionActions, SectionSecurity,
+	SectionOverview, SectionLive, SectionSessions, SectionActions, SectionProjects, SectionSecurity,
 	SectionEgress, SectionSearch, SectionCost, SectionAnalysis, SectionTools,
 	SectionCompression, SectionCache, SectionSuggestions, SectionRouting,
 	SectionBenchmarks, SectionDiscovery, SectionPatterns, SectionPolicies,

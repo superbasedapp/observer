@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard"
 	"github.com/marmutapp/superbased-observer/internal/termoob"
 	"github.com/marmutapp/superbased-observer/internal/termrun"
@@ -168,7 +169,7 @@ func TestAttachCorrelationAssembledThroughHTTP(t *testing.T) {
 	}
 
 	// The real dashboard handler must return the correlated session id over HTTP.
-	database, err := db.Open(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "d.db")})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "d.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

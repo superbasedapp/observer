@@ -516,8 +516,20 @@ func testStatsBacklog(t *testing.T, factory Factory) {
 	for _, d := range got {
 		_ = d.Ack(context.Background())
 	}
-	if cs := consumerStats(t, log, "backlog"); cs.AckPending != 0 || cs.Pending != 0 {
-		t.Fatalf("after ack: Pending=%d AckPending=%d, want 0,0", cs.Pending, cs.AckPending)
+	// Ack is fire-and-forget on JetStream, so the broker's consumer stats
+	// lag the call by a scheduling quantum; on a loaded 2-core CI runner
+	// that quantum is long enough to read the pre-ack counters. Settle on
+	// the property (the credit comes back), not on "within one read".
+	settleDeadline := time.Now().Add(10 * time.Second)
+	for {
+		cs := consumerStats(t, log, "backlog")
+		if cs.AckPending == 0 && cs.Pending == 0 {
+			break
+		}
+		if time.Now().After(settleDeadline) {
+			t.Fatalf("after ack: Pending=%d AckPending=%d, want 0,0", cs.Pending, cs.AckPending)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 	if m := statsMessages(t, log); m != 2 {
 		t.Fatalf("Messages = %d, want 2 (acks do not delete records)", m)

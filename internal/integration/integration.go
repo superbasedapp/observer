@@ -449,11 +449,15 @@ var registry = map[string]Capability{
 		// (B6), so a forwarded `--model <value>` reaches the codex binary
 		// unmodified.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model", Known: []string{"o3"}},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against the adapter's
+		// own roots (internal/adapter/codex/adapter.go WatchPaths → <home>/.codex/
+		// sessions) plus the CLI's config/auth siblings: ~/.codex holds config.toml,
+		// auth.json, history.jsonl and the rollout transcripts. The WHOLE dir is
+		// bound rw — config.toml carries plaintext provider keys, and the sandbox
+		// deliberately does not hide the operator's own credentials from the tool
+		// they just launched; the boundary is about the rest of $HOME and the rest
+		// of the filesystem, not about this tool's own state.
+		Sandbox: SandboxSpec{StateRW: []string{".codex"}},
 		// Headless one-shot, grounded by the live benchmark drives
 		// (cmd/observer/benchmark_driver.go codexDriver): `codex exec
 		// <prompt> --json -o <file>` writes the final message to the -o
@@ -558,11 +562,15 @@ var registry = map[string]Capability{
 			ProxyModelPrefix:  "openrouter/",
 			ProxyDefaultModel: "openrouter/stealth/ox-alpha",
 		},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/opencode/adapter.go defaultRoots (~/.opencode and
+		// ~/.local/share/opencode) plus the XDG config dir the guard dialect
+		// compiler already writes (~/.config/opencode/opencode.json — see
+		// cmd/observer/guardcompile.go). auth.json lives in the data dir, so the
+		// whole state tree is bound rw: the tool needs its own credentials.
+		Sandbox: SandboxSpec{
+			StateRW: []string{".local/share/opencode", ".config/opencode", ".opencode"},
+		},
 		// GUI launch row (plan §2.2): OpenCode Desktop writes the SAME
 		// opencode.db this row's watcher reads (inventory §2.12,
 		// VERIFIED-LIVE via a drafts.sqlite session-id join) — the cleanest
@@ -830,6 +838,10 @@ var registry = map[string]Capability{
 		// P0.1 FULL: tasks/<id>/api_conversation_history.json, Anthropic-
 		// shaped (reader = P2 tranche).
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile, InjectMCP}},
+		// Sandbox filesystem-isolation row (B9). Honest zero: the agent runs
+		// inside its host IDE's process tree, which observer never spawns, so
+		// there is no launch to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: the agent runs inside its host IDE, which observer does not spawn"},
 	},
 	"copilot": {
 		Tool:       "copilot",
@@ -847,6 +859,10 @@ var registry = map[string]Capability{
 		// (kind:0 init + kind:1/2 patches) — content present but needs a
 		// replay reader (deferred tranche).
 		Handoff: HandoffCapability{Transcript: TranscriptPartial, Inject: []InjectKind{InjectFile}, Note: "patch-log replay reader not built"},
+		// Sandbox filesystem-isolation row (B9). Honest zero: the agent runs
+		// inside its host IDE's process tree, which observer never spawns, so
+		// there is no launch to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: the agent runs inside its host IDE, which observer does not spawn"},
 	},
 	"copilot-cli": {
 		Tool:       "copilot-cli",
@@ -946,11 +962,12 @@ var registry = map[string]Capability{
 		// NOT select — no example was grounded for the BYOK lane, so none
 		// is fabricated here.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model"},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/copilotcli/paths.go candidateRoots (<home>/.copilot/
+		// session-state and <home>/.copilot/logs). ~/.copilot is the CLI's whole
+		// state dir and is bound rw as one dir; it holds this tool's own GitHub
+		// auth state.
+		Sandbox: SandboxSpec{StateRW: []string{".copilot"}},
 	},
 	"kilo-code": {
 		Tool:       "kilo-code",
@@ -971,6 +988,10 @@ var registry = map[string]Capability{
 		// unmeasured, so the row stays the honest actions-only floor until
 		// live data grounds it.
 		Handoff: HandoffCapability{},
+		// Sandbox filesystem-isolation row (B9). Honest zero: the agent runs
+		// inside its host IDE's process tree, which observer never spawns, so
+		// there is no launch to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: the agent runs inside its host IDE, which observer does not spawn"},
 	},
 	"kilo-code-cli": {
 		Tool:       "kilo-code-cli",
@@ -1032,11 +1053,15 @@ var registry = map[string]Capability{
 				{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "Kilo-Org/tap/kilo"}, Display: "brew install Kilo-Org/tap/kilo"},
 			},
 		},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/kilocode/adapter.go defaultCLIRoots
+		// (<home>/.local/share/kilo — the same XDG layout on Linux, macOS and
+		// Windows) plus the config dir the plugin install uses
+		// (~/.config/kilo/kilo.jsonc, docs/plans/kilocode-adapter-plan-2026-06-06.md
+		// §"Where does it persist session data?"). Both bound rw.
+		Sandbox: SandboxSpec{
+			StateRW: []string{".local/share/kilo", ".config/kilo"},
+		},
 	},
 
 	// CLI adapters captured via watcher/SQLite (+ opt-in receivers).
@@ -1112,11 +1137,12 @@ var registry = map[string]Capability{
 		// DisableFlagParsing + launcherArgsOrDone (B6), so a forwarded
 		// `--model <value>` reaches the cline binary unmodified.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model"},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/clinecli/roots.go defaultRoots (<home>/.cline, or
+		// $CLINE_DIR). ~/.cline holds data/db/sessions.db, the per-session
+		// transcripts and providers.json/secrets.json — bound rw as one dir,
+		// because the tool needs its own provider credentials to run.
+		Sandbox: SandboxSpec{StateRW: []string{".cline"}},
 	},
 	"hermes": {
 		Tool:       "hermes",
@@ -1257,11 +1283,12 @@ var registry = map[string]Capability{
 		// untouched; it never rewrites or drops it. So a dashboard-supplied
 		// `--model <value>` is RESPECTED, not clobbered (no conflict to flag).
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model", Known: []string{"anthropic/claude-sonnet-4.6"}},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/hermes/roots.go defaultRoots (<home>/.hermes on
+		// linux+darwin, or $HERMES_HOME). ~/.hermes holds the schema-v14 SQLite
+		// store and the OpenRouter credentials the agent needs — bound rw as one
+		// dir.
+		Sandbox: SandboxSpec{StateRW: []string{".hermes"}},
 		// GUI launch row (plan §2.2): Hermes Desktop shares ~/.hermes with
 		// this row's CLI ("one agent, one memory, every surface"). UNVERIFIED
 		// layout ⇒ Grounded=false, empty Binary, never launchable.
@@ -1362,6 +1389,9 @@ var registry = map[string]Capability{
 				"versions). macOS bundle \"Claude.app\" grounded from the Homebrew cask `claude`; winget id " +
 				"`Anthropic.Claude` grounded from a live `winget search --exact` the same day.",
 		},
+		// Sandbox filesystem-isolation row (B9). Honest zero: a GUI desktop app
+		// with no launcher verb — nothing observer spawns, so nothing to wrap.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: a GUI desktop app with no launcher verb, so there is no observer-spawned process to isolate"},
 	},
 	"gemini-cli": {
 		Tool:       "gemini-cli",
@@ -1436,11 +1466,11 @@ var registry = map[string]Capability{
 		// DisableFlagParsing + launcherArgsOrDone (B6), so a forwarded
 		// `--model <value>` reaches the gemini binary unmodified.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model"},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/gemini/adapter.go defaultRoots (<home>/.gemini/tmp) —
+		// ~/.gemini is the whole CLI state dir (settings, oauth creds, per-project
+		// tmp/ chats). Bound rw as one dir; it holds this tool's own credentials.
+		Sandbox: SandboxSpec{StateRW: []string{".gemini"}},
 	},
 	"openclaw": {
 		Tool:       "openclaw",
@@ -1548,11 +1578,12 @@ var registry = map[string]Capability{
 		// interactive `openclaw models` picker / config, not an argv flag) —
 		// the same grounded negative documented on Resume above.
 		Model: ModelSpec{Kind: ModelNone},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/openclaw/adapter.go defaultRoots (<home>/.openclaw/tasks
+		// and <home>/.openclaw/agents). ~/.openclaw is the whole state dir
+		// (sessions.json, per-agent sqlite stores, auth) and is bound rw as one
+		// dir.
+		Sandbox: SandboxSpec{StateRW: []string{".openclaw"}},
 		// GUI launch row (plan §2.2): the OpenClaw desktop companion. It is
 		// Gateway-scoped, not project-scoped — there is no project argv and
 		// no per-workspace launch semantics.
@@ -1682,11 +1713,10 @@ var registry = map[string]Capability{
 		// (B6), so a forwarded `--model <value>` reaches the pi binary
 		// unmodified.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model", Known: []string{"openai/gpt-4o", "sonnet:high"}},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/pi/adapter.go defaultRoots (<home>/.pi/agent/sessions).
+		// ~/.pi is the CLI's whole state dir and is bound rw as one dir.
+		Sandbox: SandboxSpec{StateRW: []string{".pi"}},
 	},
 	"antigravity": {
 		Tool:       "antigravity",
@@ -1771,6 +1801,9 @@ var registry = map[string]Capability{
 				"`Google.Antigravity` grounded from a live `winget search --exact` the same day. This row is " +
 				"the IDE; the `agy` CLI is the separate antigravity-cli registry row.",
 		},
+		// Sandbox filesystem-isolation row (B9). Honest zero: a GUI desktop app
+		// with no launcher verb — nothing observer spawns, so nothing to wrap.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: a GUI desktop app with no launcher verb, so there is no observer-spawned process to isolate"},
 	},
 	"antigravity-cli": {
 		Tool:       "antigravity-cli",
@@ -1958,11 +1991,11 @@ var registry = map[string]Capability{
 		// DisableFlagParsing + launcherArgsOrDone (B6), so a forwarded
 		// `--model <value>` reaches the qwen binary unmodified.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model"},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/qwencode/adapter.go defaultRoots (<home>/.qwen/projects,
+		// or $QWEN_HOME). ~/.qwen is the CLI's whole state dir (settings, oauth
+		// creds, per-project transcripts) and is bound rw as one dir.
+		Sandbox: SandboxSpec{StateRW: []string{".qwen"}},
 	},
 	"kiro-cli": {
 		Tool:       "kiro-cli",
@@ -2044,11 +2077,14 @@ var registry = map[string]Capability{
 		// cmd/observer/kiro.go, ensureLeadingSubcommand). Lead: ["chat"]
 		// composes the same leading subcommand.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model", Lead: []string{"chat"}},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/kirocli/roots.go: sessionsSubpath (<home>/.kiro/sessions)
+		// and sqliteDataSubdir (<home>/.local/share/kiro-cli on non-Windows). Both
+		// bound rw; ~/.kiro also carries the AWS Kiro credential + crew state the
+		// CLI itself needs.
+		Sandbox: SandboxSpec{
+			StateRW: []string{".kiro", ".local/share/kiro-cli"},
+		},
 		// GUI launch row (plan §2.2): the Kiro IDE is the same product line
 		// as this row's CLI and shares ~/.kiro, so the spec rides here.
 		GUI: &GUILaunchSpec{
@@ -2204,11 +2240,10 @@ var registry = map[string]Capability{
 			OutputArgs: []string{"--output-format", "json", "--always-approve"},
 			Result:     HeadlessResultGrokJSON,
 		},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/grok/adapter.go defaultRoots (<home>/.grok/sessions and
+		// <home>/.grok/logs). ~/.grok is bound rw as one dir.
+		Sandbox: SandboxSpec{StateRW: []string{".grok"}},
 	},
 	"kimi-code": {
 		Tool:       "kimi-code",
@@ -2324,11 +2359,13 @@ var registry = map[string]Capability{
 		// (B6), so a forwarded `--model <value>` reaches the kimi binary
 		// unmodified.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model"},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/kimicode/adapter.go defaultRoots (<home>/.kimi-code/
+		// sessions, or $KIMI_CODE_HOME) — the same layout on Linux, macOS and
+		// Windows. ~/.kimi-code also holds config.toml (the openai-compat provider
+		// credentials the adapter NEVER reads but kimi itself needs), so the whole
+		// dir is bound rw.
+		Sandbox: SandboxSpec{StateRW: []string{".kimi-code"}},
 	},
 	"crush": {
 		Tool:       "crush",
@@ -2384,6 +2421,16 @@ var registry = map[string]Capability{
 			Transcript: TranscriptFull,
 			Inject:     []InjectKind{InjectFile},
 			Note:       "no interactive-seed lane (upstream #1791)",
+		},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/crush/discover.go stateDirsForHome
+		// (<home>/.local/share/crush) plus the global config
+		// ($HOME/.config/crush/crush.json, plugins/crush/README.md). The
+		// project-local <repo>/.crush store needs no row — it lives inside the
+		// workspace, which the sandbox already binds rw. Declared even though
+		// crush has no launcher verb today (Handoff.Launch is nil).
+		Sandbox: SandboxSpec{
+			StateRW: []string{".config/crush", ".local/share/crush"},
 		},
 	},
 	"devin": {
@@ -2644,11 +2691,12 @@ var registry = map[string]Capability{
 		// (B6), so a forwarded `--model <value>` reaches the qodercli binary
 		// unmodified.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model"},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/qoder/adapter.go defaultRoots (<home>/.qoder/projects
+		// and <home>/.qoder/logs/sessions). ~/.qoder is the CLI's whole state dir
+		// — including the credential tables the adapter NEVER reads — and is
+		// bound rw as one dir.
+		Sandbox: SandboxSpec{StateRW: []string{".qoder"}},
 		// GUI launch row (plan §2.2). Launch is buildable today; CAPTURE for
 		// the IDE is not — its store schema is unknown (inventory §2.13,
 		// §3.1 #15) — so this row installs and launches honestly without
@@ -2795,6 +2843,15 @@ var registry = map[string]Capability{
 				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-ExecutionPolicy", "ByPass", "-c", "irm https://aider.chat/install.ps1 | iex"}, Display: "irm https://aider.chat/install.ps1 | iex"},
 			},
 		},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/aider/doc.go: the transcripts are PROJECT-local
+		// (<repo>/.aider.chat.history.md), which the sandbox already binds rw
+		// as the workspace, and the only home-relative state is ~/.aider
+		// (analytics.json / installs.json / the model-price cache). Rows are
+		// declared for every adapter, not only the launchable ones — aider has
+		// no launcher verb today (Handoff.Launch is nil), so this row is data
+		// waiting for one.
+		Sandbox: SandboxSpec{StateRW: []string{".aider"}},
 	},
 	"deepseek": {
 		Tool: "deepseek",
@@ -2837,6 +2894,10 @@ var registry = map[string]Capability{
 			Inject:     []InjectKind{InjectFile},
 			Note:       "web-only GUI tool; no launcher, no interactive-seed lane in this adapter's scope",
 		},
+		// Sandbox filesystem-isolation row (B9). Honest zero: this row's data
+		// arrives from the browser-capture extension, not from a process observer
+		// spawns, so there is nothing to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: captured from the vendor's WEB surface through the browser extension, so there is no observer-spawned local process to isolate"},
 	},
 	"goose": {
 		Tool:       "goose",
@@ -2968,11 +3029,14 @@ var registry = map[string]Capability{
 		// no argv flag is reachable, env delivery is the only grounded
 		// seed-time mechanism.
 		Model: ModelSpec{Kind: ModelEnv, EnvVar: "GOOSE_MODEL"},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/goose/store.go storeSubdir (<home>/.local/share/goose/
+		// sessions) plus the config dir docs/goose-adapter.md names
+		// (~/.config/goose/config.yaml + secrets.yaml). Both bound rw: the
+		// adapter NEVER reads secrets.yaml, but goose itself must.
+		Sandbox: SandboxSpec{
+			StateRW: []string{".config/goose", ".local/share/goose"},
+		},
 		// GUI launch row (plan §2.2): Goose Desktop shares this row's
 		// sessions.db (inventory §2.11). NOT installed on this box, so the
 		// row is grounded from the macOS side only.
@@ -3055,6 +3119,10 @@ var registry = map[string]Capability{
 		// honest actions-only floor with the universal file lane. Not
 		// launchable in-terminal.
 		Handoff: HandoffCapability{},
+		// Sandbox filesystem-isolation row (B9). Honest zero: this row's data
+		// arrives from the browser-capture extension, not from a process observer
+		// spawns, so there is nothing to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: captured from the vendor's WEB surface through the browser extension, so there is no observer-spawned local process to isolate"},
 	},
 	// Claude.ai browser web app (SSE content_block_delta). Same rail shape
 	// as chatgpt-web — the only differences are DATA (host, default model,
@@ -3069,6 +3137,10 @@ var registry = map[string]Capability{
 		Native:      NativeRails{},
 		TokenTier:   TokenTier{Best: "browser_extension", Gap: "no server-side usage field; estimated only (Anthropic tokenizer is documented-inaccurate for Claude 3+)"},
 		Handoff:     HandoffCapability{},
+		// Sandbox filesystem-isolation row (B9). Honest zero: this row's data
+		// arrives from the browser-capture extension, not from a process observer
+		// spawns, so there is nothing to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: captured from the vendor's WEB surface through the browser extension, so there is no observer-spawned local process to isolate"},
 	},
 	// Perplexity browser web app (SSE /rest/sse/perplexity_ask — NOT the
 	// Comet automation WebSocket).
@@ -3082,6 +3154,10 @@ var registry = map[string]Capability{
 		Native:      NativeRails{},
 		TokenTier:   TokenTier{Best: "browser_extension", Gap: "no server-side usage field; estimated only (no light client tokenizer — chars/4 heuristic)"},
 		Handoff:     HandoffCapability{},
+		// Sandbox filesystem-isolation row (B9). Honest zero: this row's data
+		// arrives from the browser-capture extension, not from a process observer
+		// spawns, so there is nothing to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: captured from the vendor's WEB surface through the browser extension, so there is no observer-spawned local process to isolate"},
 	},
 	// Gemini browser web app (BatchExecute RPC — the hardest transport). The
 	// extension parser is BEST-EFFORT / incomplete (proposal §3.4); the Gap
@@ -3096,6 +3172,10 @@ var registry = map[string]Capability{
 		Native:      NativeRails{},
 		TokenTier:   TokenTier{Best: "browser_extension", Gap: "no server-side usage field; estimated only; BatchExecute RPC parser is best-effort/incomplete (highest-maintenance site)"},
 		Handoff:     HandoffCapability{},
+		// Sandbox filesystem-isolation row (B9). Honest zero: this row's data
+		// arrives from the browser-capture extension, not from a process observer
+		// spawns, so there is nothing to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: captured from the vendor's WEB surface through the browser extension, so there is no observer-spawned local process to isolate"},
 	},
 	// Consumer Copilot browser web app (copilot.microsoft.com — WebSocket
 	// frames). NOT GitHub Copilot (see "copilot"/"copilot-cli") and NOT
@@ -3111,6 +3191,10 @@ var registry = map[string]Capability{
 		Native:      NativeRails{},
 		TokenTier:   TokenTier{Best: "browser_extension", Gap: "no server-side usage field; estimated only; WebSocket-frame parser (cf_clearance-gated)"},
 		Handoff:     HandoffCapability{},
+		// Sandbox filesystem-isolation row (B9). Honest zero: this row's data
+		// arrives from the browser-capture extension, not from a process observer
+		// spawns, so there is nothing to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: captured from the vendor's WEB surface through the browser extension, so there is no observer-spawned local process to isolate"},
 	},
 	// Factory AI's "droid" CLI (docs/plans/factory-droid-adapter-plan-2026-07-29.md).
 	// Phase-0 research only — no adapter package yet (Phase A wiring row).
@@ -3258,11 +3342,11 @@ var registry = map[string]Capability{
 		// entry point observer does not seed through). No grounded
 		// seed-time mechanism on the interactive lane ⇒ the honest floor.
 		Model: ModelSpec{Kind: ModelNone},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/droid/adapter.go defaultRoots (<home>/.factory/
+		// sessions). ~/.factory is Factory's whole state dir (sessions, per-session
+		// settings sidecars, auth) and is bound rw as one dir.
+		Sandbox: SandboxSpec{StateRW: []string{".factory"}},
 	},
 	// Rebadged OpenAI Codex CLI Rust build, installed under
 	// ~/.openinterpreter (docs/plans/openinterpreter-adapter-plan-2026-07-29.md).
@@ -3407,11 +3491,12 @@ var registry = map[string]Capability{
 		// launcherArgsOrDone (B6), so a forwarded `--model <value>`
 		// reaches the interpreter binary unmodified.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model"},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/codex/openinterpreter.go homeDirName (".openinterpreter"
+		// — the rebadged Codex CLI's own home, <home>/.openinterpreter/sessions).
+		// That dir's config*.toml holds plaintext provider keys, which the adapter
+		// never reads and the tool always needs, so the whole dir is bound rw.
+		Sandbox: SandboxSpec{StateRW: []string{".openinterpreter"}},
 	},
 	// commandcode.ai's npm CLI (docs/plans/commandcode-adapter-plan-2026-07-29.md).
 	// Phase-0 research only — no adapter package yet (Phase A wiring row).
@@ -3527,11 +3612,11 @@ var registry = map[string]Capability{
 		// launcherArgsOrDone (B6), so a forwarded `--model <value>`
 		// reaches the commandcode binary unmodified.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model"},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/commandcode/adapter.go defaultRoots
+		// (<home>/.commandcode/projects). ~/.commandcode is the CLI's whole state
+		// dir (per-project transcripts + config.json) and is bound rw as one dir.
+		Sandbox: SandboxSpec{StateRW: []string{".commandcode"}},
 	},
 	// Meta's Muse Code CLI (docs/muse-adapter.md). Phase-0 grounded
 	// 2026-08-06 against a live `Muse Code 0.1.0 (0.1.0-R708.1)` install on
@@ -3663,11 +3748,15 @@ var registry = map[string]Capability{
 		// login-minted model catalog was never grounded live (Proxy above
 		// stays nil for the same reason), so none is fabricated here.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model"},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/muse/adapter.go defaultRoots
+		// ($XDG_DATA_HOME|<home>/.local/share/muse/sessions) plus the config dir
+		// the package doc names ($XDG_CONFIG_HOME|~/.config/muse — auth.json and
+		// trust.json, both NEVER read by the adapter and both required by muse
+		// itself). Both bound rw.
+		Sandbox: SandboxSpec{
+			StateRW: []string{".config/muse", ".local/share/muse"},
+		},
 	},
 	"prime-agent": {
 		Tool: "prime-agent",
@@ -3804,11 +3893,12 @@ var registry = map[string]Capability{
 		// launcherArgsOrDone (B6), so a forwarded `--model <value>` reaches
 		// the prime-agent binary unmodified.
 		Model: ModelSpec{Kind: ModelArg, Flag: "--model"},
-		// Sandbox filesystem-isolation row (B9). Not grounded in v1 (plan
-		// amendment A3) — only claude-code has a verified state-dir bind
-		// list; every other launchable tool carries the honest zero note
-		// until a per-tool probe grounds its StateRW/StateRO paths.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/primeagent/adapter.go defaultRoots (<home>/.prime/agent/
+		// sessions). ~/.prime also holds auth.json and the daemon-worker state the
+		// adapter never reads; the whole dir is bound rw because the CLI needs
+		// it.
+		Sandbox: SandboxSpec{StateRW: []string{".prime"}},
 	},
 	// JetBrains Junie (docs/junie-adapter.md). Phase-0 grounded 2026-08-17
 	// against two real hello-world-scale sessions captured on the
@@ -3853,6 +3943,10 @@ var registry = map[string]Capability{
 		// (not launchable in-terminal) and cmd/observer/continuefrom.go has
 		// no "junie" case.
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile}},
+		// Sandbox filesystem-isolation row (B9). Honest zero: the agent runs
+		// inside its host IDE's process tree, which observer never spawns, so
+		// there is no launch to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: the agent runs inside its host IDE, which observer does not spawn"},
 	},
 	// Poolside (docs/poolside-adapter.md). Phase-0 grounded 2026-09-05
 	// against a live JetBrains IDEA 2026.2.2 run on Windows — Poolside
@@ -3920,6 +4014,10 @@ var registry = map[string]Capability{
 		// transcript. No Launch/Attach/Resume: there is no standalone
 		// process — matches Junie's JetBrains-embedded precedent exactly.
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile}},
+		// Sandbox filesystem-isolation row (B9). Honest zero: the agent runs
+		// inside its host IDE's process tree, which observer never spawns, so
+		// there is no launch to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: the agent runs inside its host IDE, which observer does not spawn"},
 	},
 	// zcode (Z.AI's OpenCode fork, docs/zcode-adapter.md). Phase-0 grounded
 	// 2026-08-18: a structural transposition of the opencode adapter with
@@ -4004,7 +4102,11 @@ var registry = map[string]Capability{
 		Model: ModelSpec{Kind: ModelNone},
 		// Sandbox filesystem-isolation row (B9). Not grounded — only
 		// claude-code has a verified state-dir bind list.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/zcode/adapter.go defaultRoots (<home>/.zcode/cli/db —
+		// the OpenCode-fork SQLite store). ~/.zcode is bound rw as one dir; it
+		// holds the Z.AI credentials the fork authenticates with.
+		Sandbox: SandboxSpec{StateRW: []string{".zcode"}},
 		// GUI launch row (plan §2.2): ZCode Desktop is the Electron ADE
 		// that BUNDLES this row's zcode CLI runtime and shares its
 		// ~/.zcode/cli/db/db.sqlite store.
@@ -4121,7 +4223,13 @@ var registry = map[string]Capability{
 		Model: ModelSpec{Kind: ModelNone},
 		// Sandbox filesystem-isolation row (B9). Not grounded — only
 		// claude-code has a verified state-dir bind list.
-		Sandbox: SandboxSpec{Note: "state dirs not yet grounded — not sandbox-launchable"},
+		// Sandbox filesystem-isolation row (B9). GROUNDED against
+		// internal/adapter/mistralcode/adapter.go defaultRoots: the `vibe` CLI's
+		// <home>/.vibe/logs/session (or $VIBE_HOME) and the Continue-fork IDE
+		// store's <home>/.mistralcode/sessions. Both roots' parents are bound rw.
+		Sandbox: SandboxSpec{
+			StateRW: []string{".vibe", ".mistralcode"},
+		},
 	},
 	// Freebuff (CodebuffAI; the Manicode -> Codebuff -> Freebuff lineage,
 	// docs/freebuff-adapter.md). Phase-0 grounded 2026-08-18. The first
@@ -4469,6 +4577,10 @@ var registry = map[string]Capability{
 		// to start — this is capture-only, the same shape as junie and
 		// poolside.
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile}},
+		// Sandbox filesystem-isolation row (B9). Honest zero: the agent is built
+		// into the Zed editor, which observer never spawns, so there is no launch
+		// to wrap in a filesystem boundary.
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: the agent is built into the Zed editor itself, which observer does not spawn"},
 	},
 }
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/attachsock"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/termfeed"
@@ -766,7 +767,7 @@ func TestAttachHostResumeSingleFlight(t *testing.T) {
 // the real store SQL + the host wiring together.
 func TestAttachHostResumeRefusedByStoreAuthority(t *testing.T) {
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "authority.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "authority.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -880,7 +881,7 @@ func storeAuthorityFor(t *testing.T, ctx context.Context, st *store.Store, redis
 // SUCCEED with exactly one spawn.
 func TestAttachHostAutoResumeSucceedsForCrashOrphan(t *testing.T) {
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "crash.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "crash.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -926,7 +927,7 @@ func TestAttachHostAutoResumeSucceedsForCrashOrphan(t *testing.T) {
 // is REFUSED with ErrResumeConflict and never spawns.
 func TestAttachHostAutoResumeRefusedWhenDistinctLiveRunPresent(t *testing.T) {
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "distinct.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "distinct.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

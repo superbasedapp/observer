@@ -120,5 +120,9 @@ func renderValue(v attribute.Value) string {
 	if v.Type() == attribute.STRINGSLICE {
 		return strings.Join(v.AsStringSlice(), "\x00")
 	}
-	return v.Emit()
+	// Value.String, not the deprecated Value.Emit (SA1019 since the otel
+	// v1.43 -> v1.44 bump). For a STRING value — every case this helper is
+	// asked about, since STRINGSLICE is handled above — both return the raw
+	// value byte-for-byte, so the leak scan is unchanged.
+	return v.String()
 }

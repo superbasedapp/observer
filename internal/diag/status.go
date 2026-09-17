@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/db"
 )
 
 // StatusSnapshot is a point-in-time view of the observer's state. Exposed so
@@ -73,7 +75,40 @@ type StatusSnapshot struct {
 	// wrong, so a healthy daemon's response is byte-identical to before this
 	// field existed and no client is required to know about it.
 	QueryErrors int `json:"query_errors,omitempty"`
+
+	// Integrity is the persisted verdict of the daemon's background
+	// `PRAGMA quick_check` (RES-3, codebase audit 2026-09-16). nil means the
+	// probe has NOT run on this database yet — a fresh install, or one where
+	// [observer.db].integrity_check_max_gb size-gated it off. nil is NOT a
+	// failure and must never be rendered as one.
+	//
+	// It is here rather than in a new table or a new endpoint because this is
+	// already the struct `observer status` prints and the dashboard's
+	// /api/status serves: before this, a corrupt database produced exactly one
+	// ERROR log line and nothing else, so it degraded capture silently until
+	// somebody thought to run `observer doctor`.
+	//
+	// omitempty + pointer: a daemon that has never probed emits the same bytes
+	// as before this field existed.
+	Integrity *IntegrityStatus `json:"integrity,omitempty"`
 }
+
+// IntegrityStatus is the status-surface projection of db.IntegrityVerdict.
+// Duplicated as its own type rather than embedding the db one so the wire shape
+// this package owns cannot drift when the db type grows a field.
+type IntegrityStatus struct {
+	// CheckedAt is when the probe finished (UTC).
+	CheckedAt time.Time `json:"checked_at"`
+	// Status is db.IntegrityOK / db.IntegrityCorrupt / db.IntegrityError —
+	// a closed vocabulary. "error" means the probe could not COMPLETE
+	// (timeout, locked file); it says nothing about the data.
+	Status string `json:"status"`
+	// Message is the pragma's own text, or the error's. Empty when ok.
+	Message string `json:"message,omitempty"`
+}
+
+// OK reports whether the last probe completed cleanly.
+func (s IntegrityStatus) OK() bool { return s.Status == db.IntegrityOK }
 
 // MarshalJSON preserves StatusSnapshot's public wire shape while actually
 // honoring the optional contract for time.Time fields. encoding/json's
@@ -181,6 +216,18 @@ func Snapshot(ctx context.Context, database *sql.DB, dbPath string) (StatusSnaps
 		ctx,
 		`SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='version'`,
 	).Scan(&snap.SchemaVersion))
+
+	// Last integrity verdict (RES-3). Absent is the common, healthy case on a
+	// fresh install and is NOT counted as a query error — same rule as
+	// sql.ErrNoRows above. A malformed/unreadable record IS counted, because
+	// then the snapshot genuinely could not answer.
+	if v, ok, err := db.LastIntegrityVerdict(ctx, database); err != nil {
+		note(err)
+	} else if ok {
+		snap.Integrity = &IntegrityStatus{
+			CheckedAt: v.CheckedAt, Status: v.Status, Message: v.Message,
+		}
+	}
 
 	tableCounts := []struct {
 		table string
@@ -307,6 +354,20 @@ func FormatStatus(s StatusSnapshot) string {
 	fmt.Fprintf(&b, "Guard events:     %d\n", s.Counts.GuardEvents)
 	fmt.Fprintf(&b, "Router decisions: %d\n", s.Counts.RouterDecisions)
 	fmt.Fprintf(&b, "Live sessions:    %d\n", s.Counts.LiveSessions)
+	// Integrity (RES-3): silent when the probe has not run (a fresh install
+	// must not read as damaged) and when it last came back clean — a healthy
+	// status stays noise-free. Loud, with the remedy, otherwise.
+	if s.Integrity != nil && !s.Integrity.OK() {
+		label := "DB INTEGRITY:     CORRUPT"
+		if s.Integrity.Status == db.IntegrityError {
+			label = "DB INTEGRITY:     UNVERIFIED"
+		}
+		fmt.Fprintf(&b, "%s (checked %s)\n", label, s.Integrity.CheckedAt.Format(time.RFC3339))
+		if s.Integrity.Message != "" {
+			fmt.Fprintf(&b, "                  %s\n", s.Integrity.Message)
+		}
+		fmt.Fprintf(&b, "                  run `observer doctor db` — capture may be degraded\n")
+	}
 	if !s.LastActionAt.IsZero() {
 		fmt.Fprintf(&b, "Last action:      %s by %s\n",
 			s.LastActionAt.Format(time.RFC3339), s.LastActionTool)

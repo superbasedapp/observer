@@ -6,7 +6,7 @@
 --   free v2       daily 5 -> 20. Monthly 100 is KEPT, concurrency 2 is kept,
 --                 and route_id stays NULL: free keeps resolving the feature's
 --                 DEFAULT route (Luna), exactly as today.
---   plus_beta v2  daily 25 kept, monthly 500 -> 60, concurrency 4 kept, and
+--   plus_beta v2  daily 25 kept, monthly 500 -> 120, concurrency 4 kept, and
 --                 route_id is PINNED to the new 'session_enrichment.sol.v1'
 --                 route (deployment gpt-5.6-sol).
 --
@@ -18,12 +18,22 @@
 -- results_retention_days) is COPIED from the v1 row by INSERT ... SELECT, so a
 -- later column addition cannot be silently dropped on the floor here.
 --
--- WHY 60 ON PLUS. 60 is a COST cap, not a generosity dial. An enrichment on
+-- WHY 120 ON PLUS. 120 is a COST cap, not a generosity dial. An enrichment on
 -- gpt-5.6-sol costs roughly $0.10-$0.15 at the $5 / $30 per-MTok public rates,
--- so 60 enrichments is about $9 of COGS at FULL use against a $15 plan. Plus
--- deliberately buys a MORE CAPABLE model with FEWER runs; free buys more runs
--- on the cheaper default route. It is a plain plan-row value, so an operator
--- who wants to raise it publishes a v3 row - no code change, no deploy.
+-- so 120 enrichments is about $18 of COGS at FULL use against a $15 plan -
+-- deliberately loss-making only at the very top of the distribution, which
+-- almost nobody reaches, and bounded, which "unlimited" was not.
+--
+-- It must also stay STRICTLY ABOVE free on EVERY axis. An earlier draft of this
+-- migration set 60 against free's 100, which is not merely ungenerous - it
+-- breaks two things. ResolvePlanForAccount compares caps to classify a change,
+-- so every Paddle purchase would have read as a DOWNGRADE and been deferred to
+-- the next billing cycle; and a free user who had already spent 60 this month
+-- would have upgraded straight into an exhausted cap. Free is 20/100/2, so any
+-- paid plan must exceed all three.
+--
+-- It is a plain plan-row value, so an operator who wants to move it publishes a
+-- v3 row - no code change, no deploy - subject to the same rule.
 --
 -- THE SOL ROUTE SHIPS INACTIVE AND UNBOUND, ON PURPOSE. Production enrichment
 -- is LIVE for paying users on the bound + attested Luna route, and the

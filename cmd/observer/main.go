@@ -250,6 +250,7 @@ func observerSubcommandsWith(deps usageDeps) []*cobra.Command {
 		newMCPAuditCmd(),
 		newCacheHealthCmd(),
 		newCacheStatusCmd(),
+		newGuidanceCmd(),
 		newRoutingCmd(),
 		newModelValueCmd(),
 		newPredictCmd(),

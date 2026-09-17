@@ -12,7 +12,7 @@ WEB_DIST       := $(WEB_DIR)/dist
 WEB_EMBED_DIST := internal/intelligence/dashboard/webapp/dist
 
 .PHONY: all build test test-race test-invariant lint fmt vet tidy clean run cover \
-        build-observer build-antigravity-bridge \
+        build-observer build-antigravity-bridge build-node-inspection install-node-inspection \
         web-install web-dev web-build web-clean \
         plugins-build verify-plugins-build \
         taxonomy-build verify-taxonomy-build verify-taxonomy-ts \
@@ -62,6 +62,36 @@ build-observer:
 build-antigravity-bridge:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=windows GOARCH=amd64 $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/antigravity-bridge.exe ./cmd/antigravity-bridge
+
+# observer-node-inspection is a DEPLOY-ONLY artifact (docs/security.md
+# ledger row INT-1): a root-owned, read-only Linux process-identity helper
+# (cmd/observer-node-inspection/doc.go) that the managed node-intervention
+# controller dials over a Unix socket. It is deliberately absent from
+# `build` above and from every npm/PyPI distribution channel — it is never
+# something an ordinary `observer` install needs, and shipping a root-
+# privileged helper through a package registry that auto-updates is a
+# different risk posture than shipping bin/observer. Build and install it
+# explicitly on a Linux host you administer; see
+# deploy/supervisor/README.md and deploy/supervisor/observer-node-inspection@.service.
+build-node-inspection:
+	@mkdir -p $(BUILD_DIR)
+ifneq ($(shell uname -s),Linux)
+	$(error build-node-inspection: observer-node-inspection is Linux-only (cross-compile explicitly with GOOS=linux GOARCH=... $(GO) build if you must build it elsewhere))
+endif
+	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/observer-node-inspection ./cmd/observer-node-inspection
+
+# install-node-inspection documents the root install; it does NOT perform
+# it. Installing a root-privileged helper is a deliberate, once-per-host
+# operator action — never something `make` does silently as root.
+install-node-inspection: build-node-inspection
+	@echo "observer-node-inspection is NOT installed automatically by this target."
+	@echo "To install it by hand on the target Linux host:"
+	@echo "  sudo install -o root -g root -m 0755 $(BUILD_DIR)/observer-node-inspection /usr/local/bin/observer-node-inspection"
+	@echo "  sudo cp deploy/supervisor/observer-node-inspection@.service /etc/systemd/system/"
+	@echo "  sudo systemctl daemon-reload"
+	@echo "  sudo systemctl enable --now observer-node-inspection@<enrolled-developer-uid>.service"
+	@echo "See deploy/supervisor/README.md for the full explanation, the socket/permission"
+	@echo "contract, and the hardening notes."
 
 run: build
 	$(BUILD_DIR)/$(BINARY)

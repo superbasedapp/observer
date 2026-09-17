@@ -571,6 +571,64 @@ func (c *Client) Usage(ctx context.Context) (UsageView, error) {
 	return out, nil
 }
 
+// --- job status --------------------------------------------------------------
+
+// JobStatus is the node's read of GET /v1/jobs/{id} (internal/cloudserver/api
+// handleGetJob), which serves the hosted service's store.Job row verbatim.
+// Field names and JSON tags are copied from that type exactly — this mirrors
+// what the server actually returns, not a richer shape it might return later.
+type JobStatus struct {
+	// ID is the job's identifier (the CLOUD job id — e.g. the value
+	// UploadResult.JobID carried at submit time — never the node's own local
+	// outbox id).
+	ID string `json:"id"`
+	// State is the job's current lifecycle state, e.g. "queued", "leased",
+	// "succeeded", "parked".
+	State string `json:"state"`
+	// TerminalReason is set once the job reached a terminal, non-retryable
+	// state (e.g. "parked"); empty while the job is still in flight or on a
+	// server that predates the field.
+	TerminalReason string `json:"terminal_reason,omitempty"`
+	// Feature is the feature this job belongs to (e.g. "session_enrichment").
+	Feature string `json:"feature"`
+	// Attempts is how many times this job has been leased and attempted.
+	Attempts int `json:"attempts"`
+	// CreatedAt is when the job was submitted.
+	CreatedAt time.Time `json:"created_at"`
+	// UpdatedAt is when the job's state last changed.
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ErrJobNotFound means the server returned 404 for a job lookup: either the
+// id is unknown, or it belongs to a different account (GetJob is tenant-
+// scoped, so the two are indistinguishable from the outside — and must stay
+// that way, so a lookup can never be used to probe another account's job ids).
+var ErrJobNotFound = errors.New("cloudclient: job not found")
+
+// Job fetches one hosted enrichment job's status (GET /v1/jobs/{id}) — a plain
+// authenticated read, exactly like Results and Usage: no request body, no new
+// egress path, no consent purpose of its own. A 404 is mapped to
+// ErrJobNotFound so callers can classify it with errors.Is without inspecting
+// the raw APIError status code.
+func (c *Client) Job(ctx context.Context, id string) (JobStatus, error) {
+	path := "/v1/jobs/" + urlQueryEscape(id)
+	raw, err := c.sendAuthed(ctx, nil, nil, func(int) (*http.Request, error) {
+		return c.buildAuthed(ctx, http.MethodGet, path, nil, nil)
+	})
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return JobStatus{}, fmt.Errorf("cloudclient.Job: %w", ErrJobNotFound)
+		}
+		return JobStatus{}, fmt.Errorf("cloudclient.Job: %w", err)
+	}
+	var out JobStatus
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return JobStatus{}, fmt.Errorf("cloudclient.Job: decode response: %w", err)
+	}
+	return out, nil
+}
+
 // --- logout ----------------------------------------------------------------
 
 // Logout revokes THIS device's API token server-side (POST /v1/logout), so a

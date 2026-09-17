@@ -186,10 +186,18 @@ var expectedClassification = map[string]string{
 	// `powershell.exe … Start-Process schtasks.exe -Verb RunAs` in a
 	// local-only setup PTY. A UAC prompt is a LOCAL physical act, so this
 	// must never be reachable by a paired remote device — owner-local only.
-	"/api/process/etw/register":               "L",
-	"/api/process/findings":                   "V",
-	"/api/process/network/":                   "V",
-	"/api/projects":                           "V",
+	"/api/process/etw/register": "L",
+	"/api/process/findings":     "V",
+	"/api/process/network/":     "V",
+	"/api/projects":             "V",
+	// Agent-guidance inventory: metadata reads over already-persisted rows.
+	"/api/projects/guidance":         "V",
+	"/api/projects/guidance/summary": "V",
+	// The guidance file VIEWER returns a project file's scrubbed body. View-
+	// tier like /api/terminal/project/<token>/file, and gated the same way
+	// in-handler: a remote-exposed caller is refused without
+	// [remote].allow_terminal_view.
+	"/api/projects/guidance/file":             "V",
 	"/api/prune/run":                          "L",
 	"/api/remote/add-device":                  "L",
 	"/api/remote/allow-terminal":              "L",

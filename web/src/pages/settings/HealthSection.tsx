@@ -2,8 +2,10 @@ import clsx from "clsx";
 import { Info } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
+  Button,
   ChartShell,
   Pill,
+  Table,
   Tooltip,
   TruncatedPath,
 } from "@/components/primitives";
@@ -11,6 +13,7 @@ import { ChartState } from "@/components/ChartState";
 import { RestartOverlay } from "@/components/RestartOverlay";
 import { useApi } from "@/lib/useApi";
 import { useDaemonRestart } from "@/lib/useDaemonRestart";
+import { integrityHealthRow } from "@/lib/integrity";
 import { isUpdateAvailable, useUpdateCheck } from "@/lib/version";
 import { fmtDateTime } from "@/lib/format";
 import type {
@@ -62,17 +65,16 @@ function DaemonCard() {
       sub="Restart the running daemon to load a freshly-built binary or apply saved config - without dropping to the CLI."
     >
       <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="button"
+        <Button
+          variant="soft"
           onClick={() =>
             restart(
               "Restart the daemon now?\n\nReconnecting takes ~1s; an active proxied coding session may drop one in-flight request.",
             )
           }
-          className="rounded-2 border border-accent/50 bg-accent/15 px-3 py-1.5 text-[12px] font-medium text-accent hover:bg-accent/25"
         >
           Restart daemon
-        </button>
+        </Button>
         <span className="text-[11.5px] text-fg-3">
           Graceful shutdown + self re-exec (~1s). One in-flight proxied request
           may drop.
@@ -112,14 +114,14 @@ function UpdateCard() {
             v{current || "dev"}
           </span>
         </span>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => void checkNow()}
-          disabled={checking}
-          className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3 disabled:opacity-60"
+          loading={checking}
         >
           {checking ? "Checking npm…" : "Check for updates"}
-        </button>
+        </Button>
         {lastCheckedAt && !checking && (
           <span className="text-[11px] text-fg-4">
             last checked {fmtDateTime(new Date(lastCheckedAt).toISOString())}
@@ -247,7 +249,24 @@ function OrgUpdatePosture() {
 
 function DoctorCard() {
   const report = useApi<DoctorReport>("/api/health/doctor");
+  const status = useApi<StatusSnapshot>("/api/status");
   const d = report.data;
+  // The daemon's persisted STARTUP `PRAGMA quick_check` verdict (RES-3,
+  // codebase audit 2026-09-16) is additive to the on-demand `db.integrity`
+  // check above: the doctor check above runs fresh right now; this one is
+  // the daemon's own background probe from when it opened the database.
+  // null when the daemon has never probed (nothing to show).
+  const integrityRow = integrityHealthRow(status.data?.integrity);
+  const rows: DoctorReport["checks"] = integrityRow
+    ? [
+        {
+          name: "db.integrity.startup",
+          status: integrityRow.status,
+          message: integrityRow.message,
+        },
+        ...(d?.checks ?? []),
+      ]
+    : (d?.checks ?? []);
   return (
     <ChartShell
       title="Health"
@@ -256,7 +275,7 @@ function DoctorCard() {
       <ChartState
         loading={report.loading}
         error={report.error}
-        empty={!report.loading && (d?.checks ?? []).length === 0}
+        empty={!report.loading && rows.length === 0}
         emptyHint="No checks returned."
       >
         {/* `=== true` on purpose: the field is absent on the local
@@ -264,10 +283,15 @@ function DoctorCard() {
             feature, and `undefined` must render exactly like `false`. */}
         {d?.local_detail_withheld === true && <RedactionNotice />}
         <div className="space-y-1.5">
-          {(d?.checks ?? []).map((c) => (
+          {rows.map((c) => (
             <div
               key={c.name}
-              className="rounded-2 border border-line-1 bg-bg-2 px-3 py-2"
+              className={clsx(
+                "rounded-2 border border-line-1 px-3 py-2",
+                c.name === "db.integrity.startup" && c.status === "ok"
+                  ? "bg-bg-1 text-fg-3"
+                  : "bg-bg-2",
+              )}
             >
               <div className="flex items-baseline gap-2">
                 <span
@@ -302,13 +326,9 @@ function DoctorCard() {
           ))}
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-line-1 pt-3">
-          <button
-            type="button"
-            onClick={report.reload}
-            className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
-          >
+          <Button variant="secondary" size="sm" onClick={report.reload}>
             Re-run checks
-          </button>
+          </Button>
           {d && (
             <span className="text-[11.5px] text-fg-3">
               {d.ok} ok · {d.warn} warn · {d.fail} fail
@@ -377,67 +397,67 @@ function FailuresCard() {
         empty={!failures.loading && (f?.failures ?? []).length === 0}
         emptyHint="No failures captured in the last 7 days."
       >
-        <table className="w-full border-collapse text-[11.5px]">
-          <thead>
-            <tr className="text-left text-[10px] uppercase tracking-[0.06em] text-fg-3">
+        <Table
+          minWidth={640}
+          head={
+            <tr className="text-left">
               <th className="pb-1.5 pr-3 font-semibold">Command</th>
               <th className="pb-1.5 pr-3 font-semibold">Fails</th>
               <th className="pb-1.5 pr-3 font-semibold">Outcome</th>
               <th className="pb-1.5 pr-3 font-semibold">Project</th>
               <th className="pb-1.5 font-semibold">Last session</th>
             </tr>
-          </thead>
-          <tbody>
-            {(f?.failures ?? []).map((g) => (
-              <tr key={g.command + g.last_at} className="border-t border-line-1">
-                <td className="max-w-[280px] py-1.5 pr-3">
-                  <Tooltip
-                    content={
-                      <span className="whitespace-pre-wrap break-all">
-                        {g.error_message
-                          ? `${g.command}\n\n${g.error_category || "error"}: ${g.error_message}`
-                          : g.command}
-                      </span>
-                    }
-                    maxWidth={460}
-                  >
-                    <code className="block cursor-help truncate font-mono text-fg-1">
-                      {g.command}
-                    </code>
-                  </Tooltip>
-                </td>
-                <td className="py-1.5 pr-3 text-fg-2">
-                  {g.fails}
-                  {g.retries > 0 && (
-                    <span className="text-fg-4"> (+{g.retries} retries)</span>
-                  )}
-                </td>
-                <td className="py-1.5 pr-3">
-                  {g.recovered ? (
-                    <Pill variant="success">recovered</Pill>
-                  ) : (
-                    <Pill variant="warn">unrecovered</Pill>
-                  )}
-                </td>
-                <td className="max-w-[200px] py-1.5 pr-3 text-fg-3">
-                  {g.project ? (
-                    <TruncatedPath value={g.project} className="text-[11px]" />
-                  ) : (
-                    "-"
-                  )}
-                </td>
-                <td className="py-1.5">
-                  <Link
-                    to={`/sessions?session=${encodeURIComponent(g.session_id)}`}
-                    className="text-accent hover:underline"
-                  >
-                    open
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          }
+        >
+          {(f?.failures ?? []).map((g) => (
+            <tr key={g.command + g.last_at} className="border-t border-line-1">
+              <td className="max-w-[280px] py-1.5 pr-3">
+                <Tooltip
+                  content={
+                    <span className="whitespace-pre-wrap break-all">
+                      {g.error_message
+                        ? `${g.command}\n\n${g.error_category || "error"}: ${g.error_message}`
+                        : g.command}
+                    </span>
+                  }
+                  maxWidth={460}
+                >
+                  <code className="block cursor-help truncate font-mono text-fg-1">
+                    {g.command}
+                  </code>
+                </Tooltip>
+              </td>
+              <td className="py-1.5 pr-3 text-fg-2">
+                {g.fails}
+                {g.retries > 0 && (
+                  <span className="text-fg-4"> (+{g.retries} retries)</span>
+                )}
+              </td>
+              <td className="py-1.5 pr-3">
+                {g.recovered ? (
+                  <Pill variant="success">recovered</Pill>
+                ) : (
+                  <Pill variant="warn">unrecovered</Pill>
+                )}
+              </td>
+              <td className="max-w-[200px] py-1.5 pr-3 text-fg-3">
+                {g.project ? (
+                  <TruncatedPath value={g.project} className="text-[11px]" />
+                ) : (
+                  "-"
+                )}
+              </td>
+              <td className="py-1.5">
+                <Link
+                  to={`/sessions?session=${encodeURIComponent(g.session_id)}`}
+                  className="text-accent hover:underline"
+                >
+                  open
+                </Link>
+              </td>
+            </tr>
+          ))}
+        </Table>
         {f && f.total > f.failures.length && (
           <p className="mt-2 text-[11px] text-fg-3">
             {f.total} failure events total in the window; showing the{" "}

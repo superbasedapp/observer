@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/intervention"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
@@ -55,7 +56,7 @@ func TestNodeInterventionBudgetUsesLiveGrantAndFreshCap(t *testing.T) {
 	ctx := context.Background()
 	_, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
 	rewriteBudgetLaunchEnrolment(t, dbPath, func(e *store.Enrolment) { e.UserID = "member-one" })
-	database, err := db.Open(ctx, db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +165,7 @@ func TestNodeInterventionBudgetUsesLiveGrantAndFreshCap(t *testing.T) {
 func TestNodeInterventionAuthorityRequiresManagedMember(t *testing.T) {
 	_, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
 	rewriteBudgetLaunchEnrolment(t, dbPath, func(e *store.Enrolment) { e.UserID = "" })
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +178,7 @@ func TestNodeInterventionAuthorityRequiresManagedMember(t *testing.T) {
 func TestNodeInterventionSignalFenceRejectsReplacedAuthority(t *testing.T) {
 	_, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
 	rewriteBudgetLaunchEnrolment(t, dbPath, func(e *store.Enrolment) { e.UserID = "member-one" })
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +252,7 @@ func TestNodeInterventionSignalFenceRejectsReplacedAuthority(t *testing.T) {
 func TestNodeInterventionSupervisorReleasesFenceBeforeExitWait(t *testing.T) {
 	_, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
 	rewriteBudgetLaunchEnrolment(t, dbPath, func(e *store.Enrolment) { e.UserID = "member-one" })
-	database, err := db.Open(context.Background(), db.Options{Path: dbPath})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +329,7 @@ func TestNodeInterventionSignalFenceRejectsBudgetChangeWithoutGuardApply(t *test
 			rewriteBudgetLaunchEnrolment(t, dbPath, func(e *store.Enrolment) { e.UserID = "member-one" })
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			database, err := db.Open(ctx, db.Options{Path: dbPath})
+			database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -415,7 +416,7 @@ func TestNodeInterventionNilGuardClassifiesDurableBudgetState(t *testing.T) {
 			rewriteBudgetLaunchEnrolment(t, dbPath, func(e *store.Enrolment) { e.UserID = "member-one" })
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			database, err := db.Open(ctx, db.Options{Path: dbPath})
+			database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 			if err != nil {
 				t.Fatal(err)
 			}

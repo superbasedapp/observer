@@ -213,6 +213,24 @@ func nodeInterventionBudget(ctx context.Context, st *store.Store, cfg config.Con
 		}
 		return d, nil
 	}
+	// MODEL IS NOT PASSED, and that is the design, not an omission
+	// (BUD-GUARD-1, docs/audits/codebase-audit-2026-09-16.md). The process
+	// controller knows a surface and a tool; it does not know which model the
+	// running agent is talking to. The ONE resolver of that fact is the
+	// accounting snapshot's SessionModel — the exact sibling of SessionTool —
+	// which the guard applies to the event under the same precedence rule as
+	// the tool: a caller that KNOWS the model (the proxy, from the request
+	// body) keeps its own, and a caller that does not falls back to the
+	// session's own captured rows when they name exactly one. Resolving it a
+	// second time here would be a second owner of one fact and a second
+	// database read per decision, and the two could disagree.
+	//
+	// What that means for the org's per-model caps (B-628/B-629): they reach a
+	// RUNNING session whose captured rows agree on a model, and they reach no
+	// session for which they do not — an empty w.SessionID, a session whose
+	// rows name two models, a session with no rows yet. Those are honest
+	// misses, flagged by the unanimity rule rather than guessed at, and
+	// docs/budgets.md states them.
 	budget := gd.CheckInterventionBudget(guard.InterventionBudgetInput{
 		SessionID: w.SessionID, SourceReady: source.Ready, SourceReason: source.Reason,
 		Tool: source.Tool, Now: now, BudgetBinding: d.BudgetBinding,

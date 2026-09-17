@@ -23,21 +23,30 @@ import (
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+
+	"github.com/marmutapp/superbased-observer/internal/ingest/hostguard"
 )
 
 // maxBodyBytes caps an OTLP/HTTP request body to bound memory on a malformed or
 // hostile request to the loopback listener.
 const maxBodyBytes = 16 << 20 // 16 MiB
 
-// DefaultMaxDecompressedBytes is the finite DECOMPRESSED gzip cap the EDGE sets
-// via Options.MaxDecompressedBytes. The COMPRESSED body is already bounded by
+// DefaultMaxDecompressedBytes is the finite DECOMPRESSED gzip cap every
+// receiver gets unless Options.MaxDecompressedBytes overrides it. The
+// COMPRESSED body is already bounded by
 // http.MaxBytesReader, but the gunzip stream is otherwise io.ReadAll'd unbounded,
 // so a small hostile payload could inflate to exhaust memory (a decompression
 // bomb). Sized generously at 16× maxBodyBytes so a legitimate well-compressible
-// OTLP payload is unaffected. NOTE: this is NOT applied by default — the receiver
-// only bounds the decompressed stream when Options.MaxDecompressedBytes > 0, so a
-// caller that never sets it (the NODE) keeps the legacy unbounded io.ReadAll
-// behavior and is byte-unchanged. The edge opts in to the finite bound.
+// OTLP payload is unaffected.
+//
+// Since NODE-OTLP-1 (codebase audit 2026-09-16) this is the DEFAULT, not an
+// opt-in: a caller that leaves Options.MaxDecompressedBytes unset — the NODE —
+// gets this bound instead of the old unbounded io.ReadAll. The previous
+// "unbounded unless the edge asks" posture meant the node's :4318 listener
+// could be OOM'd by a small hostile gzip payload, and no caller ever wanted
+// that behavior; it was a byte-compatibility carve-out, not a feature. A
+// caller that genuinely wants no bound must now say so with a negative value
+// (see Options.MaxDecompressedBytes).
 const DefaultMaxDecompressedBytes = 256 << 20 // 256 MiB
 
 // HeaderEdgeToken is the HTTP header (and, lower-cased, the gRPC metadata key)
@@ -100,7 +109,14 @@ const (
 // it is derived from the absence of a stats.InPayload event). ReasonAuth is
 // reserved for the Phase-5 token gate.
 const (
-	ReasonAuth      = "auth"
+	ReasonAuth = "auth"
+	// ReasonHost is a request rejected by the Host-header loopback guard
+	// (NODE-OTLP-1): the listener is bound loopback-only, so it is a
+	// same-machine channel, and a request naming any other host is a
+	// DNS-rebinding / cross-origin attempt rather than a local exporter.
+	// Distinct from ReasonAuth so an operator can tell "a page tried to reach
+	// my receiver" from "a collector presented a bad token".
+	ReasonHost      = "host"
 	ReasonMethod    = "method"
 	ReasonGzip      = "gzip"
 	ReasonMalformed = "malformed"
@@ -114,6 +130,41 @@ const (
 	sigLogs    = "logs"
 	sigTraces  = "traces"
 	sigMetrics = "metrics"
+)
+
+// HostGuardMode selects the Host-header loopback guard's posture for a
+// receiver (NODE-OTLP-1). It is a TRI-STATE, not a bool, because "decide from
+// the bind" is a genuinely different answer from "on" and "off", and only the
+// caller knows which of the three it means.
+type HostGuardMode int
+
+const (
+	// HostGuardAuto (the ZERO VALUE) derives the guard from the bind: a
+	// receiver bound loopback-only is a same-machine channel and gets the
+	// guard; one opened with AllowNonLoopback does not, because it must serve
+	// the real host names its remote exporters send. This is the NODE's
+	// posture and it is the zero value so a caller that never thinks about
+	// this field still gets the defense.
+	HostGuardAuto HostGuardMode = iota
+	// HostGuardOn always applies the guard, whatever the bind.
+	HostGuardOn
+	// HostGuardOff never applies it.
+	//
+	// This is the EDGE's setting, and the reason the tri-state exists. The
+	// edge is a collector: it binds loopback in the common sidecar
+	// deployment, so HostGuardAuto would switch the guard ON — and then an
+	// exporter in the same pod configured against a service alias
+	// ("otel-collector:4318", an /etc/hosts or DNS name that resolves to
+	// 127.0.0.1) sends `Host: otel-collector:4318` and is refused 403. That
+	// is a legitimate client, and the alias is not attacker-controlled the
+	// way a rebinding domain is. The edge does not need the guard either: it
+	// has the receiver-token gate (RequireToken), which is a stronger check
+	// than a Host header and is what its threat model already relies on.
+	//
+	// The node cannot make the same trade — it has no token option at all —
+	// which is exactly why the two receivers now say what they want instead
+	// of sharing one inferred answer.
+	HostGuardOff
 )
 
 // OutcomeHook is the accounting callback invoked EXACTLY ONCE per terminal
@@ -132,10 +183,14 @@ type Options struct {
 	HTTPAddr string
 	// AllowNonLoopback permits a non-loopback bind (default false — see §2.2).
 	AllowNonLoopback bool
-	Handler          Handler
-	TraceHandler     TraceHandler
-	MetricHandler    MetricHandler
-	Logger           *slog.Logger
+	// HostGuard selects the Host-header loopback guard's posture
+	// (NODE-OTLP-1). The zero value, HostGuardAuto, derives it from the bind;
+	// see HostGuardMode for why the edge sets HostGuardOff explicitly.
+	HostGuard     HostGuardMode
+	Handler       Handler
+	TraceHandler  TraceHandler
+	MetricHandler MetricHandler
+	Logger        *slog.Logger
 	// OnOutcome, when set, receives one accounting event per terminal request
 	// exit (nil ⇒ no-op; the node leaves it unset). gRPC events are emitted
 	// EXCLUSIVELY from the StatsHandler's HandleRPC(*stats.End), HTTP events
@@ -166,9 +221,13 @@ type Options struct {
 	GRPCMaxRecvBytes int
 
 	// MaxDecompressedBytes, when > 0, bounds the DECOMPRESSED gzip stream to this
-	// many bytes (an over-cap inflate ⇒ 413). Zero = UNBOUNDED (legacy node
-	// behavior — the node never sets it and is byte-unchanged); the edge sets
-	// DefaultMaxDecompressedBytes.
+	// many bytes (an over-cap inflate ⇒ 413).
+	//
+	// ZERO NOW MEANS THE DEFAULT, not unbounded (NODE-OTLP-1, codebase audit
+	// 2026-09-16): an unset value resolves to DefaultMaxDecompressedBytes, so
+	// the node's listener is bounded without having to opt in. A NEGATIVE value
+	// is the explicit "no bound" escape hatch, which nothing in this repo uses
+	// and which no production caller should.
 	MaxDecompressedBytes int
 
 	// maxBody, when > 0, overrides the default HTTP body cap (maxBodyBytes). It
@@ -265,13 +324,13 @@ func New(opts Options) (*Receiver, error) {
 		r.httpLn = ln
 		mux := http.NewServeMux()
 		if opts.Handler != nil {
-			mux.HandleFunc("/v1/logs", r.withTokenGate(sigLogs, r.handleHTTPLogs))
+			mux.HandleFunc("/v1/logs", r.withIngressGuards(sigLogs, r.handleHTTPLogs))
 		}
 		if opts.TraceHandler != nil {
-			mux.HandleFunc("/v1/traces", r.withTokenGate(sigTraces, r.handleHTTPTraces))
+			mux.HandleFunc("/v1/traces", r.withIngressGuards(sigTraces, r.handleHTTPTraces))
 		}
 		if opts.MetricHandler != nil {
-			mux.HandleFunc("/v1/metrics", r.withTokenGate(sigMetrics, r.handleHTTPMetrics))
+			mux.HandleFunc("/v1/metrics", r.withIngressGuards(sigMetrics, r.handleHTTPMetrics))
 		}
 		r.httpServer = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	}
@@ -340,24 +399,40 @@ func (r *Receiver) closeListeners() {
 	}
 }
 
-// withTokenGate wraps an HTTP signal handler with the receiver-token check when
-// RequireToken is set. When it is NOT set the wrapper is a pure pass-through
-// (returns next unchanged), so the node's mux registration is byte-unchanged.
-// The gate runs BEFORE the wrapped handler, so a missing/bad token is rejected
-// with 401 pre-decode — no MaxBytesReader / gunzip / proto.Unmarshal executes —
-// and the auth reject is reported for the request's signal. The token is
-// constant-time compared (crypto/subtle) because this is a security gate.
-func (r *Receiver) withTokenGate(signal string, next http.HandlerFunc) http.HandlerFunc {
-	if !r.opts.RequireToken {
+// withIngressGuards wraps an HTTP signal handler with the two pre-decode
+// ingress checks, in order: the Host-header loopback guard (when this receiver
+// is a same-machine channel — see hostGuardEnabled) and the receiver-token
+// check (when RequireToken is set).
+//
+// Both run BEFORE the wrapped handler, so a rejected request costs no
+// MaxBytesReader / gunzip / proto.Unmarshal, and each reports its own reason
+// for the request's signal (ReasonHost / ReasonAuth). The token is
+// constant-time compared (crypto/subtle) because it is a secret; the host is a
+// plain equality test against a closed vocabulary, which is not.
+//
+// With NEITHER check applicable the wrapper is a pure pass-through, so a
+// receiver that is both non-loopback-bound and token-less keeps its exact old
+// registration — that combination is the one `observer doctor` warns about
+// rather than one this package can silently fix.
+func (r *Receiver) withIngressGuards(signal string, next http.HandlerFunc) http.HandlerFunc {
+	hostGuard := r.hostGuardEnabled()
+	if !hostGuard && !r.opts.RequireToken {
 		return next
 	}
 	want := []byte(r.opts.ReceiverToken)
 	return func(w http.ResponseWriter, req *http.Request) {
-		got := []byte(req.Header.Get(HeaderEdgeToken))
-		if subtle.ConstantTimeCompare(got, want) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			r.report(signal, OutcomeRejected, ReasonAuth)
+		if hostGuard && !hostguard.IsLoopbackHost(req.Host) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			r.report(signal, OutcomeRejected, ReasonHost)
 			return
+		}
+		if r.opts.RequireToken {
+			got := []byte(req.Header.Get(HeaderEdgeToken))
+			if subtle.ConstantTimeCompare(got, want) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				r.report(signal, OutcomeRejected, ReasonAuth)
+				return
+			}
 		}
 		next(w, req)
 	}
@@ -384,8 +459,11 @@ func (r *Receiver) handleHTTPLogs(w http.ResponseWriter, req *http.Request) {
 		// Bound the DECOMPRESSED stream (the compressed body is already bounded
 		// by MaxBytesReader) so a gzip bomb cannot exhaust memory: read at most
 		// cap+1 bytes so an over-cap inflate is detectable without buffering the
-		// whole bomb. Only when the edge set a finite cap; a zero cap (the node)
-		// keeps the legacy unbounded read so the node path is byte-unchanged.
+		// whole bomb. Since NODE-OTLP-1 the cap is finite for EVERY caller — an
+		// unset Options.MaxDecompressedBytes resolves to
+		// DefaultMaxDecompressedBytes — so this is the normal path, not an
+		// edge-only opt-in. Only an explicitly NEGATIVE cap (nothing in this
+		// repo) takes the unbounded else-branch.
 		if capB := r.maxDecompressedCap(); capB > 0 {
 			body = io.LimitReader(gz, capB+1)
 			gzipped = true
@@ -453,8 +531,11 @@ func (r *Receiver) handleHTTPTraces(w http.ResponseWriter, req *http.Request) {
 		// Bound the DECOMPRESSED stream (the compressed body is already bounded
 		// by MaxBytesReader) so a gzip bomb cannot exhaust memory: read at most
 		// cap+1 bytes so an over-cap inflate is detectable without buffering the
-		// whole bomb. Only when the edge set a finite cap; a zero cap (the node)
-		// keeps the legacy unbounded read so the node path is byte-unchanged.
+		// whole bomb. Since NODE-OTLP-1 the cap is finite for EVERY caller — an
+		// unset Options.MaxDecompressedBytes resolves to
+		// DefaultMaxDecompressedBytes — so this is the normal path, not an
+		// edge-only opt-in. Only an explicitly NEGATIVE cap (nothing in this
+		// repo) takes the unbounded else-branch.
 		if capB := r.maxDecompressedCap(); capB > 0 {
 			body = io.LimitReader(gz, capB+1)
 			gzipped = true
@@ -523,8 +604,11 @@ func (r *Receiver) handleHTTPMetrics(w http.ResponseWriter, req *http.Request) {
 		// Bound the DECOMPRESSED stream (the compressed body is already bounded
 		// by MaxBytesReader) so a gzip bomb cannot exhaust memory: read at most
 		// cap+1 bytes so an over-cap inflate is detectable without buffering the
-		// whole bomb. Only when the edge set a finite cap; a zero cap (the node)
-		// keeps the legacy unbounded read so the node path is byte-unchanged.
+		// whole bomb. Since NODE-OTLP-1 the cap is finite for EVERY caller — an
+		// unset Options.MaxDecompressedBytes resolves to
+		// DefaultMaxDecompressedBytes — so this is the normal path, not an
+		// edge-only opt-in. Only an explicitly NEGATIVE cap (nothing in this
+		// repo) takes the unbounded else-branch.
 		if capB := r.maxDecompressedCap(); capB > 0 {
 			body = io.LimitReader(gz, capB+1)
 			gzipped = true
@@ -644,10 +728,41 @@ func (r *Receiver) maxBody() int64 {
 	return maxBodyBytes
 }
 
-// maxDecompressedCap is the effective DECOMPRESSED gzip cap:
-// Options.MaxDecompressedBytes (0 = unbounded — the legacy node behavior).
+// maxDecompressedCap is the effective DECOMPRESSED gzip cap: the opts value
+// when set, DefaultMaxDecompressedBytes when UNSET (NODE-OTLP-1 — the node
+// used to get no bound here at all), and 0 ("unbounded", the caller's explicit
+// choice) when the opts value is negative.
 func (r *Receiver) maxDecompressedCap() int64 {
-	return int64(r.opts.MaxDecompressedBytes)
+	switch {
+	case r.opts.MaxDecompressedBytes > 0:
+		return int64(r.opts.MaxDecompressedBytes)
+	case r.opts.MaxDecompressedBytes < 0:
+		return 0
+	default:
+		return DefaultMaxDecompressedBytes
+	}
+}
+
+// hostGuardEnabled reports whether the Host-header loopback check applies to
+// this receiver (NODE-OTLP-1). Table-driven over HostGuardMode; AUTO branches
+// on the listener's CAPABILITY, never on who constructed it — a receiver bound
+// loopback-only is a SAME-MACHINE channel, so a request naming any other host
+// is a rebinding attempt and is refused (the browser rail's posture, shared
+// through internal/ingest/hostguard), while one opened with AllowNonLoopback
+// must serve the real host names its remote exporters send.
+//
+// See HostGuardMode for why AUTO is not good enough for every caller: a
+// loopback-bound EDGE legitimately receives an /etc/hosts service alias in the
+// Host header and sets HostGuardOff, relying on its token gate instead.
+func (r *Receiver) hostGuardEnabled() bool {
+	switch r.opts.HostGuard {
+	case HostGuardOn:
+		return true
+	case HostGuardOff:
+		return false
+	default: // HostGuardAuto — the zero value.
+		return !r.opts.AllowNonLoopback
+	}
 }
 
 // readReason classifies a body-read error: a MaxBytesReader overflow is a size

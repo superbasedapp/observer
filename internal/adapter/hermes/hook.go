@@ -293,7 +293,14 @@ func buildHookToolCall(raw hookPayload, sc *scrub.Scrubber) models.ToolEvent {
 		evt.Success = success
 		evt.ErrorMessage = errMsg
 		if sc != nil {
-			output = sc.String(output)
+			// parseToolResult's fallback path (no output/content key
+			// found) hands back the WHOLE raw JSON result body, so
+			// scrub with RawJSON — not String's line-oriented regexes,
+			// which can corrupt JSON structure (MHC-4). RawJSON falls
+			// back to the same behavior String had when output is
+			// plain text (the extracted-field case), so this is safe
+			// either way.
+			output = sc.RawJSON([]byte(output))
 		}
 		evt.ToolOutput = contentcap.Cap(output, contentcap.DefaultMaxBytes)
 	}

@@ -18,13 +18,40 @@ import { TodayTreeProvider } from './views/todayTree';
 import { SessionsTreeProvider } from './views/sessionsTree';
 import { DiscoveryTreeProvider } from './views/discoveryTree';
 import { CostsTreeProvider } from './views/costsTree';
+import { shouldDeferActivation, untrustedWorkspaceWarning } from './trust-internals';
 
 let manager: DaemonManager | undefined;
 let statusBar: StatusBarController | undefined;
 let cacheStatusBar: StatusBarController | undefined;
+let trustSubscription: vscode.Disposable | undefined;
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   output.appendLine('SuperBased extension activating');
+
+  // P1-5: refuse to resolve or spawn the observer binary in an untrusted
+  // workspace. A cloned repo's .vscode/settings.json must never be able to
+  // pick the executable this extension runs. observer.binary.path and
+  // observer.binary.preferPathBinary are already machine-scoped and listed
+  // in capabilities.untrustedWorkspaces.restrictedConfigurations
+  // (package.json), so VS Code itself won't apply a workspace-level value
+  // for them here — this is a defense-in-depth check that additionally
+  // defers the whole daemon lifecycle (resolve/spawn/attach) until trust is
+  // granted, rather than relying solely on the setting being ignored.
+  if (shouldDeferActivation(vscode.workspace.isTrusted)) {
+    const message = untrustedWorkspaceWarning();
+    output.appendLine(message);
+    void vscode.window.showWarningMessage(message);
+    trustSubscription?.dispose();
+    trustSubscription = vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      trustSubscription?.dispose();
+      trustSubscription = undefined;
+      output.appendLine('Workspace trust granted — resuming activation.');
+      void activate(ctx);
+    });
+    ctx.subscriptions.push(trustSubscription);
+    return;
+  }
+
   try {
     const bin = await resolveBinary(ctx);
     output.appendLine(

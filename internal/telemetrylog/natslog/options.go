@@ -64,6 +64,16 @@ type Options struct {
 	MaxAge time.Duration
 	// MaxBytes is the storage cap (default DefaultMaxBytes; -1 = unlimited).
 	MaxBytes int64
+	// EmbeddedMaxStore caps the IN-PROCESS server's whole JetStream file-store
+	// pool (Embedded only; ignored by Connect). Zero — the production default —
+	// leaves the server deriving its pool from the host's free disk exactly as
+	// before. It exists so a caller that must be hermetic about its footprint,
+	// above all the test broker, can pin a small explicit pool instead of
+	// inheriting whatever the machine happens to have free: a stream MaxBytes
+	// reservation the host cannot back is refused by the broker at create time
+	// (JetStream 10047), which is precisely how the 10 GiB production default
+	// turned a small CI runner into a total natslog-test failure.
+	EmbeddedMaxStore int64
 	// MaxMsgBytes is the per-record cap (default DefaultMaxMsgBytes).
 	MaxMsgBytes int32
 	// MaxMessages is the ErrFull message-count cap (0 or -1 = unlimited).

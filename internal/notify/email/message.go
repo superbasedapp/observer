@@ -134,13 +134,23 @@ func Compose(p ComposeParams) Message {
 // both Text and HTML are present it emits a multipart/alternative body; a
 // single representation is emitted directly. Line endings are CRLF as SMTP
 // requires. from is the header/envelope From. now is injectable for tests.
-func (m Message) render(from string, now time.Time) []byte {
+func (m Message) render(from string, now time.Time) ([]byte, error) {
 	var b strings.Builder
-	writeHeader(&b, "From", from)
-	writeHeader(&b, "To", strings.Join(m.To, ", "))
-	writeHeader(&b, "Subject", encodeHeaderWord(m.Subject))
-	writeHeader(&b, "Date", now.Format(time.RFC1123Z))
-	writeHeader(&b, "MIME-Version", "1.0")
+	if err := writeHeader(&b, "From", from); err != nil {
+		return nil, err
+	}
+	if err := writeHeader(&b, "To", strings.Join(m.To, ", ")); err != nil {
+		return nil, err
+	}
+	if err := writeHeader(&b, "Subject", encodeHeaderWord(m.Subject)); err != nil {
+		return nil, err
+	}
+	if err := writeHeader(&b, "Date", now.Format(time.RFC1123Z)); err != nil {
+		return nil, err
+	}
+	if err := writeHeader(&b, "MIME-Version", "1.0"); err != nil {
+		return nil, err
+	}
 
 	hasText := strings.TrimSpace(m.Text) != ""
 	hasHTML := strings.TrimSpace(m.HTML) != ""
@@ -148,44 +158,96 @@ func (m Message) render(from string, now time.Time) []byte {
 	switch {
 	case hasText && hasHTML:
 		boundary := "sbo-boundary-" + fmt.Sprintf("%d", now.UnixNano())
-		writeHeader(&b, "Content-Type", `multipart/alternative; boundary="`+boundary+`"`)
+		if err := writeHeader(&b, "Content-Type", `multipart/alternative; boundary="`+boundary+`"`); err != nil {
+			return nil, err
+		}
 		b.WriteString("\r\n")
-		writePart(&b, boundary, "text/plain; charset=UTF-8", m.Text)
-		writePart(&b, boundary, "text/html; charset=UTF-8", m.HTML)
+		if err := writePart(&b, boundary, "text/plain; charset=UTF-8", m.Text); err != nil {
+			return nil, err
+		}
+		if err := writePart(&b, boundary, "text/html; charset=UTF-8", m.HTML); err != nil {
+			return nil, err
+		}
 		b.WriteString("--")
 		b.WriteString(boundary)
 		b.WriteString("--\r\n")
 	case hasHTML:
-		writeHeader(&b, "Content-Type", "text/html; charset=UTF-8")
+		if err := writeHeader(&b, "Content-Type", "text/html; charset=UTF-8"); err != nil {
+			return nil, err
+		}
 		b.WriteString("\r\n")
 		b.WriteString(normalizeCRLF(m.HTML))
 		b.WriteString("\r\n")
 	default:
-		writeHeader(&b, "Content-Type", "text/plain; charset=UTF-8")
+		if err := writeHeader(&b, "Content-Type", "text/plain; charset=UTF-8"); err != nil {
+			return nil, err
+		}
 		b.WriteString("\r\n")
 		b.WriteString(normalizeCRLF(m.Text))
 		b.WriteString("\r\n")
 	}
-	return []byte(b.String())
+	return []byte(b.String()), nil
 }
 
-// writeHeader writes one "Key: value\r\n" header line.
-func writeHeader(b *strings.Builder, key, value string) {
+// writeHeader writes one "Key: value\r\n" header line, or REFUSES.
+//
+// A header field is one line by definition, so a control character in a key
+// or value is never legitimate and always dangerous: a CR or LF would end the
+// field and let the rest of the value be read as another header (an injected
+// Bcc:, or a premature blank line that turns the remainder into body). NUL and
+// the other C0 codes plus DEL have no meaning in a field either, and a TAB is
+// only meaningful as folding whitespace, which nothing here emits.
+//
+// The refusal is structural rather than sanitising: silently stripping would
+// deliver a message whose recipient or subject is not the one the caller
+// asked for. Callers upstream should validate their own inputs; this is the
+// last line, and it fails closed.
+//
+// Nothing written to b before the refusal matters: every caller discards the
+// builder on error.
+func writeHeader(b *strings.Builder, key, value string) error {
+	if i := indexControlChar(key); i >= 0 {
+		return fmt.Errorf("email: header name %q contains a control character at byte %d", key, i)
+	}
+	if i := indexControlChar(value); i >= 0 {
+		// The value is NOT echoed: it may carry the injection payload, and a
+		// header value can be a recipient address. The name and offset are
+		// enough to diagnose.
+		return fmt.Errorf("email: header %s value contains a control character at byte %d", key, i)
+	}
 	b.WriteString(key)
 	b.WriteString(": ")
 	b.WriteString(value)
 	b.WriteString("\r\n")
+	return nil
+}
+
+// indexControlChar returns the byte offset of the first C0 control character
+// (anything below 0x20, including CR, LF and TAB) or DEL (0x7F) in s, or -1.
+// It scans BYTES, not runes: a control character is a single byte in UTF-8 and
+// can never be part of a multi-byte sequence, so this cannot false-positive on
+// non-ASCII text.
+func indexControlChar(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7F {
+			return i
+		}
+	}
+	return -1
 }
 
 // writePart writes one multipart section with its own Content-Type.
-func writePart(b *strings.Builder, boundary, contentType, body string) {
+func writePart(b *strings.Builder, boundary, contentType, body string) error {
 	b.WriteString("--")
 	b.WriteString(boundary)
 	b.WriteString("\r\n")
-	writeHeader(b, "Content-Type", contentType)
+	if err := writeHeader(b, "Content-Type", contentType); err != nil {
+		return err
+	}
 	b.WriteString("\r\n")
 	b.WriteString(normalizeCRLF(body))
 	b.WriteString("\r\n")
+	return nil
 }
 
 // encodeHeaderWord RFC 2047-encodes a header value when it contains non-ASCII,

@@ -224,6 +224,7 @@ var contractRequiredParams = map[string][]string{
 	// experimental (3) — no cross-release promise, pinned so a change is
 	// at least a deliberate edit rather than an accident.
 	"continue_session":       {},
+	"get_project_guidance":   {},
 	"get_output_composition": {"session_id"},
 	"get_session_message":    {"session_id"},
 	"get_session_tasks":      {"session_id"},

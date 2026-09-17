@@ -216,7 +216,7 @@ func (g *Guard) scanProxyRequest(provider string, body []byte, sessionID string,
 	// one engine evaluation). A hard-mode deny short-circuits the
 	// pipeline: the request never reaches the provider, so there is
 	// nothing to egress-scan and no new content enters the session.
-	g.scanBudget(es, &res, sessionID, target, now)
+	g.scanBudget(es, &res, sessionID, target, now, parsed.model)
 	if res.Deny {
 		return res
 	}

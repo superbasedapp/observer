@@ -32,9 +32,19 @@ type orgIntelResultWire struct {
 	TaxonomyTags  []string `json:"taxonomy_tags"`
 	SuggestedTags []string `json:"suggested_tags"`
 	Limitations   []string `json:"limitations"`
-	Confidence    string   `json:"confidence"`
-	SchemaVersion string   `json:"schema_version"`
-	FetchedAt     string   `json:"fetched_at"`
+	// The five NARRATIVE lists the org derived (agent migration 124): what the
+	// session did, whether the stated plans landed, what issues were found,
+	// what failed, what to do next. omitempty, so a row cached before 124 — or
+	// pulled from a server predating server migration 156 — renders as absence
+	// in the shared IntelResultCard rather than as five empty headings.
+	WorkDone         []string `json:"work_done,omitempty"`
+	PlansImplemented []string `json:"plans_implemented,omitempty"`
+	IssuesFound      []string `json:"issues_found,omitempty"`
+	Failures         []string `json:"failures,omitempty"`
+	NextSteps        []string `json:"next_steps,omitempty"`
+	Confidence       string   `json:"confidence"`
+	SchemaVersion    string   `json:"schema_version"`
+	FetchedAt        string   `json:"fetched_at"`
 }
 
 // orgIntelWire is the GET /api/session/<id>/org-intel body. `enriched` is the
@@ -78,8 +88,15 @@ func newOrgIntelResultWire(res store.OrgIntelResult) *orgIntelResultWire {
 		TaxonomyTags:  res.TaxonomyTags,
 		SuggestedTags: res.SuggestedTags,
 		Limitations:   res.Limitations,
-		Confidence:    res.Confidence,
-		SchemaVersion: res.SchemaVersion,
-		FetchedAt:     res.FetchedAt.UTC().Format(time.RFC3339),
+		// The narrative half, carried straight through: the store seam already
+		// decoded each NULLABLE column into a nil slice when it held no prose.
+		WorkDone:         res.WorkDone,
+		PlansImplemented: res.PlansImplemented,
+		IssuesFound:      res.IssuesFound,
+		Failures:         res.Failures,
+		NextSteps:        res.NextSteps,
+		Confidence:       res.Confidence,
+		SchemaVersion:    res.SchemaVersion,
+		FetchedAt:        res.FetchedAt.UTC().Format(time.RFC3339),
 	}
 }

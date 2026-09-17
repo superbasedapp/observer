@@ -63,6 +63,27 @@ func TestNodeInterventionAuditPreservesObservedResultWithoutRawError(t *testing.
 	}
 }
 
+// TestNodeInterventionAuditPersistsRealSessionID pins the other half of
+// P1-7: once a Workload DOES carry a real SessionID (nodeintervention_cycle.go
+// now resolves one via nodeInterventionWorkloadSessionID/session_pid_bridge),
+// the audit row must actually carry it through - not just leave it empty
+// like the fixture above (which pins the honest "nothing known" case).
+func TestNodeInterventionAuditPersistsRealSessionID(t *testing.T) {
+	at := time.Now().UTC()
+	outcome := intervention.Outcome{
+		Workload: intervention.Workload{
+			SurfaceID: "muse/cli", SessionID: "sess-real-1234",
+			Identity: intervention.Identity{PID: 42, UID: 1000},
+		},
+		Status: "terminated", RuleID: "B-602", Reason: "cap exhausted",
+		TermAttempted: true, Stopped: true, ControlVerified: true,
+	}
+	audit := nodeInterventionAudit(outcome, at)
+	if audit.SessionID != "sess-real-1234" {
+		t.Fatalf("audit dropped a real session id: got %q", audit.SessionID)
+	}
+}
+
 func TestNodeInterventionAuditReportsStorageFailure(t *testing.T) {
 	ctx := context.Background()
 	if err := recordNodeInterventionOutcomes(ctx, nil, []intervention.Outcome{{Status: "allowed"}, {Status: "not_authorized"}}); err != nil {

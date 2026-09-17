@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/routing"
 	"github.com/marmutapp/superbased-observer/internal/routingconfig"
@@ -81,7 +82,7 @@ name = "org_v2_bad_reason"
 func reloadFixture(t *testing.T, mode string, seedOrgVersion int64, seedOrgBody string) (*liveRouter, *store.Store) {
 	t.Helper()
 	ctx := context.Background()
-	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "observer.db")})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "observer.db")})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

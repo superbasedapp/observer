@@ -883,10 +883,67 @@ function splitConfigList(value: string): string[] {
   return value.replace(/\r/g, "").split("\n");
 }
 
+// sandboxConfigEqual compares a draft against the last-loaded server config.
+// The block is a flat record of scalars plus four string lists, so a
+// field-order-independent JSON compare over a normalized shape is enough -
+// and it is what lets the card show an "Unsaved changes" marker.
+//
+// Why that marker is load-bearing here rather than a nicety: this card has
+// TWO checkbox-shaped things on it, and only one of them saves. Toggling
+// "Enable sandbox support" edits a local draft and nothing else; the write
+// happens on the separate "Save sandbox configuration" button further down,
+// past a collapsed <details> block. An operator who flipped the switch and
+// walked away had, from the UI's point of view, done nothing at all - which
+// is exactly how "I enabled the sandbox and it is still greyed out" happens.
+function sandboxConfigEqual(
+  a: TerminalSandboxConfig | null,
+  b: TerminalSandboxConfig | null | undefined,
+): boolean {
+  if (!a || !b) return a === b;
+  const norm = (c: TerminalSandboxConfig) => ({
+    ...c,
+    // The list editors keep a trailing empty row while the operator types
+    // (splitConfigList); the server trims on save. Ignore that difference so
+    // an untouched textarea never reads as "unsaved".
+    remote_allowed_hosts: c.remote_allowed_hosts.filter((s) => s.trim() !== ""),
+    mask_paths: c.mask_paths.filter((s) => s.trim() !== ""),
+    extra_ro_binds: c.extra_ro_binds.filter((s) => s.trim() !== ""),
+    extra_rw_binds: c.extra_rw_binds.filter((s) => s.trim() !== ""),
+  });
+  return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
+}
+
+// LOCAL_ONLY_HINT recognizes the CapabilityLocal refusal
+// (internal/intelligence/dashboard/remote.go: "forbidden: route is reachable
+// only from the local dashboard", audited as local_route_refused). The
+// sandbox config route is owner-loopback-only, so a dashboard served over the
+// tailnet 403s on the GET - and the card, which keyed its whole body off
+// `draft`, used to sit on "Loading sandbox configuration…" forever with every
+// control disabled and nothing saying why.
+const LOCAL_ONLY_HINT = /local dashboard|local_route_refused/i;
+
+function isLocalRouteRefusal(err: Error | null): boolean {
+  if (!err) return false;
+  return LOCAL_ONLY_HINT.test(err.message) || / 403 /.test(err.message);
+}
+
+// localDashboardURL is the loopback address of THIS daemon's dashboard. The
+// remote view is the same daemon on the same port, reached over the tailnet,
+// so the port in the current location is the right one to hand back.
+function localDashboardURL(): string {
+  const port =
+    typeof window !== "undefined" && window.location.port
+      ? window.location.port
+      : "8081";
+  return `http://127.0.0.1:${port}`;
+}
+
 // SandboxSettingsCard is the missing dashboard editor for the complete
 // [terminal.sandbox] block. The live probe is intentionally shown alongside
-// the saved config: a save binds only after restart, so the UI never implies
-// that a newly-enabled sandbox is already protecting launches.
+// the saved config, so the UI never implies that a newly-enabled sandbox is
+// already protecting launches: the master switch binds on the next launch
+// (the daemon re-resolves the seam when config.toml changes), while moving
+// the workspaces directory still needs a restart.
 function SandboxSettingsCard() {
   const settings = useApi<TerminalSandboxConfigResponse>(
     "/api/terminal/sandbox/config",
@@ -900,6 +957,9 @@ function SandboxSettingsCard() {
   useEffect(() => {
     if (settings.data?.sandbox) setDraft(settings.data.sandbox);
   }, [settings.data]);
+
+  const localOnly = isLocalRouteRefusal(settings.error);
+  const dirty = !!draft && !sandboxConfigEqual(draft, settings.data?.sandbox);
 
   function update<K extends keyof TerminalSandboxConfig>(
     key: K,
@@ -941,6 +1001,12 @@ function SandboxSettingsCard() {
       if (res.restart_required) markRestartPending("terminal-sandbox");
       setSaved(true);
       settings.reload();
+      // Re-probe: the daemon re-resolves its sandbox seam when config.toml
+      // changes, so the live verdict moves on THIS save, not on a restart.
+      // Without this the card would keep showing the pre-save verdict until
+      // the page was reloaded, which is how "I enabled it and nothing
+      // happened" reads from the operator's side.
+      probe.reload();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -954,14 +1020,28 @@ function SandboxSettingsCard() {
   return (
     <ChartShell
       title="Sandbox isolation"
-      sub="Run supported agents inside bubblewrap with an isolated home and an explicit workspace. Saved settings bind on the next daemon restart."
+      sub="Run supported agents inside bubblewrap with an isolated home and an explicit workspace. The enable switch binds on the next launch; moving the workspaces directory needs a daemon restart."
       right={
-        <Pill variant={live?.available ? "success" : "neutral"}>
-          {live?.available ? "available now" : "not active"}
-        </Pill>
+        <div className="flex items-center gap-2">
+          {dirty && <Pill variant="warn">unsaved changes</Pill>}
+          <Pill variant={live?.available ? "success" : "neutral"}>
+            {live?.available ? "available now" : "not active"}
+          </Pill>
+        </div>
       }
     >
       <div className="space-y-4 p-1 text-[12px]">
+        {localOnly && (
+          <div className="rounded-2 border border-warn/40 bg-warn/10 px-3 py-2 text-warn">
+            This editor is local-only. Open the dashboard at{" "}
+            <code className="text-fg-1">{localDashboardURL()}</code> to change it.
+            <span className="ml-1 text-fg-3">
+              The sandbox settings route is owner-loopback-only, so it is refused
+              over a remote or tailnet view. The live probe below still reports
+              honestly.
+            </span>
+          </div>
+        )}
         {!writable && settings.data && (
           <div className="rounded-2 border border-line-2 bg-bg-2 px-3 py-2 text-fg-3">
             This dashboard has no writable config path. Edit{" "}
@@ -980,15 +1060,35 @@ function SandboxSettingsCard() {
           {live?.available
             ? `${live.backend ?? "bwrap"} ${live.backend_version ?? ""} available; home is ${live.home_mode ?? "isolated"}.`
             : live?.reason ?? "Sandbox probe has not returned yet."}
-          {draft?.enabled && !live?.available && (
+          {/* Three different "not available" stories, three different next
+              steps. A saved enable switch rebinds the daemon's sandbox seam
+              on the next launch, so the old blanket "restart the daemon"
+              line was wrong for the most common case. */}
+          {live && !live.available && dirty && draft?.enabled && (
             <span className="ml-1 text-warn">
-              If you just enabled it, restart the daemon before relying on the boundary.
+              Save below to apply the enable switch; it takes effect on the next
+              launch.
+            </span>
+          )}
+          {live?.verdict === "runtime_init_failed" && (
+            <span className="ml-1 text-warn">
+              The sandbox is enabled but the daemon could not start it - fix the
+              setting named above and save again.
             </span>
           )}
         </div>
 
         {!draft ? (
-          <div className="text-fg-3">Loading sandbox configuration…</div>
+          // Never an eternal "Loading": a refused local-only route and a
+          // genuinely failed load are different facts, and neither is
+          // "still fetching".
+          localOnly ? null : settings.error ? (
+            <div className="rounded-2 border border-danger/40 bg-danger/10 px-3 py-2 text-danger">
+              Could not load the sandbox configuration: {settings.error.message}
+            </div>
+          ) : (
+            <div className="text-fg-3">Loading sandbox configuration…</div>
+          )
         ) : (
           <>
             <div className="grid gap-3 md:grid-cols-2">
@@ -1171,9 +1271,16 @@ function SandboxSettingsCard() {
               >
                 {busy ? "saving…" : "Save sandbox configuration"}
               </button>
-              {saved && <span className="text-[11px] text-ok">Saved.</span>}
+              {dirty && (
+                <span className="text-[11px] text-warn">
+                  Unsaved changes - nothing above is in effect until you save.
+                </span>
+              )}
+              {saved && !dirty && <span className="text-[11px] text-ok">Saved.</span>}
               <span className="text-[11px] text-fg-3">
-                Restart required; active terminals are not retroactively sandboxed.
+                A saved enable switch binds on the next launch; a changed workspaces
+                directory needs a daemon restart. Active terminals are never
+                retroactively sandboxed.
               </span>
             </div>
           </>

@@ -296,6 +296,154 @@ func TestFetchIntelResultsFailedWriteRetainsCursor(t *testing.T) {
 	}
 }
 
+// TestDecideIntelReject is the table over the PURE dead-letter rule. Each row
+// is one (prior attempts, threshold) pair and the verdict it must produce. The
+// two rules that matter: a row is held (cursor retained) while it is still
+// under the threshold, and released exactly once it reaches it — never earlier
+// (which would drop a row a single transient write error would have stored) and
+// never later (which is the freeze the bound exists to prevent).
+func TestDecideIntelReject(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		prior     int
+		threshold int
+		want      intelRejectVerdict
+	}{
+		{"first failure holds", 0, 3, intelRejectVerdict{Attempts: 1, DeadLetter: false, HoldCursor: true}},
+		{"second failure holds", 1, 3, intelRejectVerdict{Attempts: 2, DeadLetter: false, HoldCursor: true}},
+		{"third failure dead-letters", 2, 3, intelRejectVerdict{Attempts: 3, DeadLetter: true, HoldCursor: false}},
+		{"past the threshold stays dead", 7, 3, intelRejectVerdict{Attempts: 8, DeadLetter: true, HoldCursor: false}},
+		{"threshold of one dead-letters immediately", 0, 1, intelRejectVerdict{Attempts: 1, DeadLetter: true, HoldCursor: false}},
+		// A non-positive threshold must NOT mean "dead-letter on sight" — it
+		// falls back to the default, so a mis-wired caller loses no row.
+		{"zero threshold falls back to the default", 0, 0, intelRejectVerdict{Attempts: 1, DeadLetter: false, HoldCursor: true}},
+		{"negative threshold falls back to the default", 2, -5, intelRejectVerdict{Attempts: 3, DeadLetter: true, HoldCursor: false}},
+		{"negative prior count is clamped", -4, 3, intelRejectVerdict{Attempts: 1, DeadLetter: false, HoldCursor: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := decideIntelReject(tc.prior, tc.threshold); got != tc.want {
+				t.Errorf("decideIntelReject(%d, %d) = %+v, want %+v", tc.prior, tc.threshold, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFetchIntelResultsDeadLettersUnpersistableRow pins the bound: a row the
+// node can NEVER persist (here, an ANSI control the SafeText gate refuses on
+// every attempt) must not hold the cursor forever. Without the bound the same
+// page is re-fetched and re-rejected every cycle and the rail FREEZES — the node
+// stops receiving any later result for the daemon's lifetime, which is a strictly
+// worse outcome than not caching the one bad row.
+func TestFetchIntelResultsDeadLettersUnpersistableRow(t *testing.T) {
+	is := newIntelServer(t)
+	is.body = orgcontract.IntelResultsResponse{
+		Results: []orgcontract.IntelResultRow{
+			{SessionID: "s1", JobID: "j1", Title: "clean"},
+			// Permanently unpersistable: an ANSI escape in a narrative item,
+			// which is exactly the surface this wave widened (five lists).
+			{SessionID: "s2", JobID: "j2", Title: "ok", NextSteps: []string{"bad \x1b[31mANSI"}},
+		},
+		NextCursor: "cursor-1",
+	}
+	c, s := enrolledIntelClient(t, is.srv.URL)
+	ctx := context.Background()
+
+	// Cycles 1 and 2: still retryable, so the cursor is held.
+	for i := 1; i <= intelDeadLetterAfter-1; i++ {
+		out, err := c.FetchIntelResults(ctx)
+		if err != nil {
+			t.Fatalf("cycle %d: %v", i, err)
+		}
+		if out.DeadLettered != 0 {
+			t.Fatalf("cycle %d dead-lettered %d rows too early", i, out.DeadLettered)
+		}
+		if c.intelSince != "" {
+			t.Fatalf("cycle %d advanced the cursor to %q while the row was still retryable", i, c.intelSince)
+		}
+	}
+
+	// Cycle 3 reaches the threshold: the row is dead-lettered and the cursor
+	// is released so the rail can keep moving.
+	out, err := c.FetchIntelResults(ctx)
+	if err != nil {
+		t.Fatalf("threshold cycle: %v", err)
+	}
+	if out.DeadLettered != 1 {
+		t.Fatalf("outcome=%+v, want DeadLettered=1 at the threshold", out)
+	}
+	if out.Applied != 1 {
+		t.Fatalf("outcome=%+v, want the good row still applied", out)
+	}
+	if c.intelSince != "cursor-1" || out.NextCursor != "cursor-1" {
+		t.Fatalf("cursor=%q outcome.NextCursor=%q; a dead-lettered row must NOT hold the rail", c.intelSince, out.NextCursor)
+	}
+	// Fail-open: the dead-lettered row is simply absent, never half-stored.
+	if rows, _ := s.OrgIntelResultsForSession(ctx, "s2"); len(rows) != 0 {
+		t.Fatalf("a dead-lettered row was partially cached: %+v", rows)
+	}
+	// The good row from the same page is cached normally.
+	if rows, _ := s.OrgIntelResultsForSession(ctx, "s1"); len(rows) != 1 {
+		t.Fatalf("the good row on a page with a dead-letter was lost: %+v", rows)
+	}
+	// The strike is cleared once the row is given up on, so the bookkeeping
+	// only ever holds rows currently failing.
+	if _, still := c.intelRejects[intelRowKey{SessionID: "s2", JobID: "j2"}]; still {
+		t.Error("a dead-lettered row kept its strike count")
+	}
+}
+
+// TestFetchIntelResultsSuccessClearsRejectionStreak pins the other half of the
+// bound: the count is CONSECUTIVE. A row that fails twice and then persists must
+// start from zero the next time it fails, so an intermittently-failing row is
+// never dead-lettered by accumulated, non-consecutive strikes.
+func TestFetchIntelResultsSuccessClearsRejectionStreak(t *testing.T) {
+	is := newIntelServer(t)
+	bad := orgcontract.IntelResultsResponse{
+		Results:    []orgcontract.IntelResultRow{{SessionID: "s1", JobID: "j1", Title: "bad \x1b[31mANSI"}},
+		NextCursor: "cursor-1",
+	}
+	good := orgcontract.IntelResultsResponse{
+		Results:    []orgcontract.IntelResultRow{{SessionID: "s1", JobID: "j1", Title: "now clean"}},
+		NextCursor: "cursor-1",
+	}
+	c, _ := enrolledIntelClient(t, is.srv.URL)
+	ctx := context.Background()
+	key := intelRowKey{SessionID: "s1", JobID: "j1"}
+
+	is.body = bad
+	for i := 1; i <= intelDeadLetterAfter-1; i++ {
+		if _, err := c.FetchIntelResults(ctx); err != nil {
+			t.Fatalf("cycle %d: %v", i, err)
+		}
+	}
+	if got := c.intelRejects[key]; got != intelDeadLetterAfter-1 {
+		t.Fatalf("strike count = %d, want %d", got, intelDeadLetterAfter-1)
+	}
+
+	is.body = good
+	if _, err := c.FetchIntelResults(ctx); err != nil {
+		t.Fatalf("recovery cycle: %v", err)
+	}
+	if _, still := c.intelRejects[key]; still {
+		t.Fatal("a successful persist did not clear the row's rejection streak")
+	}
+
+	// Failing again starts a FRESH streak: one more failure must still hold the
+	// cursor, not dead-letter on the strength of the earlier strikes.
+	c.intelSince = ""
+	is.body = bad
+	out, err := c.FetchIntelResults(ctx)
+	if err != nil {
+		t.Fatalf("post-recovery failure: %v", err)
+	}
+	if out.DeadLettered != 0 {
+		t.Fatalf("outcome=%+v: non-consecutive strikes dead-lettered the row", out)
+	}
+	if got := c.intelRejects[key]; got != 1 {
+		t.Fatalf("strike count after recovery = %d, want 1 (a fresh streak)", got)
+	}
+}
+
 // TestFetchIntelResultsIdentityChangeResetsCursorAndDropsForeignRows pins
 // finding 6: when the node re-enrols into a DIFFERENT org, the in-memory cursor
 // resets and the previous org's cached rows are dropped, so org A's results can

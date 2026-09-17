@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -196,10 +197,11 @@ func dsnTempStoreAndHeapTerms(tempStore string, hardHeapLimitBytes int64) string
 // SQLITE_BUSY immediately (busy_timeout doesn't kick in on
 // upgrade-deadlocks). BEGIN IMMEDIATE serializes writers through the
 // file lock so busy_timeout's exponential backoff handles contention
-// properly. All four BeginTx callers in this codebase
-// (store.InsertActions, store.InsertTokenEvents, retention.deleteActionsOlder,
-// indexing.EmbedBatch) are write-only, so the IMMEDIATE upgrade is
-// always correct — no read-only tx is being unnecessarily serialized.
+// properly. All five BeginTx callers in this codebase
+// (store.InsertActions, store.InsertTokenEvents, store.UpsertGuidanceScan,
+// retention.deleteActionsOlder, indexing.EmbedBatch) are write-only, so
+// the IMMEDIATE upgrade is always correct — no read-only tx is being
+// unnecessarily serialized.
 func Open(ctx context.Context, opts Options) (*sql.DB, error) {
 	if opts.Path == "" {
 		return nil, errors.New("db.Open: Path is required")
@@ -461,16 +463,120 @@ func RunStartupBackfillOnly(ctx context.Context, database *sql.DB) error {
 	return nil
 }
 
+// Integrity verdict statuses. A CLOSED vocabulary, because the three outcomes
+// are genuinely different and a surface must not flatten them: a probe that
+// could not RUN is not the same as one that ran and found damage, and calling a
+// timeout "corrupt" would send an operator to restore a healthy database.
+const (
+	// IntegrityOK is a completed `PRAGMA quick_check` that reported "ok".
+	IntegrityOK = "ok"
+	// IntegrityCorrupt is a completed probe that reported damage.
+	IntegrityCorrupt = "corrupt"
+	// IntegrityError is a probe that did not complete — a timeout, a locked
+	// or unreadable file. Says nothing about the data either way.
+	IntegrityError = "error"
+)
+
+// integrityVerdictKey is the schema_meta key holding the JSON-encoded verdict
+// of the most recent `PRAGMA quick_check`. schema_meta is the existing
+// node-local key-value store (migration 001), so persisting here adds NO table
+// and NO migration — see RES-3 in docs/audits/codebase-audit-2026-09-16.md.
+const integrityVerdictKey = "integrity_verdict"
+
+// IntegrityVerdict is the persisted outcome of the daemon's background
+// `PRAGMA quick_check` (RES-3, codebase audit 2026-09-16).
+//
+// Before this the probe's only output was one ERROR log line. A daemon runs
+// unattended, its log is usually unread, and nothing on `observer status` or
+// the dashboard said a word — so a corrupt database silently degraded capture
+// until somebody happened to run `observer doctor`. Recording the verdict where
+// the health surfaces already read turns "you had to know to look" into "it is
+// on the screen you were already looking at".
+//
+// Spec §17's quarantine-and-recreate is deliberately still NOT implemented: the
+// safer behavior on a corruption report is to keep the file intact for the
+// operator (and for `observer doctor`) rather than to move it aside
+// automatically. This makes that choice legible instead of silent.
+type IntegrityVerdict struct {
+	// CheckedAt is when the probe finished (UTC).
+	CheckedAt time.Time `json:"checked_at"`
+	// Status is one of IntegrityOK / IntegrityCorrupt / IntegrityError.
+	Status string `json:"status"`
+	// Message is the pragma's own text, or the error's, for a non-ok status.
+	// Empty when Status is IntegrityOK.
+	Message string `json:"message,omitempty"`
+}
+
+// OK reports whether the verdict is a clean completed probe.
+func (v IntegrityVerdict) OK() bool { return v.Status == IntegrityOK }
+
+// LastIntegrityVerdict returns the most recently recorded verdict, and whether
+// one has been recorded at all. A missing verdict (ok=false) means the probe
+// has not run on this database yet — a fresh install, or one where the startup
+// probe is size-gated off by [observer.db].integrity_check_max_gb. That is NOT
+// a failure and callers must not render it as one.
+//
+// A malformed stored value is reported as an error rather than silently
+// treated as absent: the difference between "never checked" and "the record is
+// unreadable" matters to the operator reading it.
+func LastIntegrityVerdict(ctx context.Context, db *sql.DB) (IntegrityVerdict, bool, error) {
+	var raw string
+	err := db.QueryRowContext(ctx,
+		`SELECT value FROM schema_meta WHERE key = ?`, integrityVerdictKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return IntegrityVerdict{}, false, nil
+	}
+	if err != nil {
+		return IntegrityVerdict{}, false, fmt.Errorf("db.LastIntegrityVerdict: %w", err)
+	}
+	var v IntegrityVerdict
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return IntegrityVerdict{}, false, fmt.Errorf("db.LastIntegrityVerdict: decode: %w", err)
+	}
+	return v, true, nil
+}
+
+// recordIntegrityVerdict upserts the verdict into schema_meta.
+//
+// BEST EFFORT BY CONTRACT: the write is attempted on the very database the
+// probe may have just called corrupt, so it can legitimately fail. The caller
+// ignores that error and returns the PROBE's result — a failed bookkeeping
+// write must never mask, or manufacture, an integrity result.
+func recordIntegrityVerdict(ctx context.Context, db *sql.DB, v IntegrityVerdict) error {
+	body, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("db.recordIntegrityVerdict: encode: %w", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO schema_meta(key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		integrityVerdictKey, string(body)); err != nil {
+		return fmt.Errorf("db.recordIntegrityVerdict: %w", err)
+	}
+	return nil
+}
+
 func integrityCheck(ctx context.Context, db *sql.DB) error {
-	ctx, cancel := context.WithTimeout(ctx, integrityCheckTimeout)
+	probeCtx, cancel := context.WithTimeout(ctx, integrityCheckTimeout)
 	defer cancel()
+	// The verdict write uses the PARENT context, not probeCtx: a probe that
+	// exhausted its own deadline has a cancelled probeCtx, and recording
+	// "error" is exactly what we want to do in that case.
+	record := func(status, msg string) {
+		_ = recordIntegrityVerdict(ctx, db, IntegrityVerdict{
+			CheckedAt: time.Now().UTC(), Status: status, Message: msg,
+		})
+	}
 	var result string
-	if err := db.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&result); err != nil {
+	if err := db.QueryRowContext(probeCtx, "PRAGMA quick_check").Scan(&result); err != nil {
+		record(IntegrityError, err.Error())
 		return fmt.Errorf("db.Open: quick_check: %w", err)
 	}
 	if result != "ok" {
+		record(IntegrityCorrupt, result)
 		return fmt.Errorf("db.Open: integrity check failed: %s", result)
 	}
+	record(IntegrityOK, "")
 	return nil
 }
 

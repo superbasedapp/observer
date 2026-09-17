@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 // TestBuildRemoteControllerWiresSessionAudit pins the seam that made a live
@@ -52,7 +53,7 @@ func TestBuildRemoteControllerWiresSessionAudit(t *testing.T) {
 		t.Fatalf("write secret: %v", err)
 	}
 
-	database, err := db.Open(ctx, db.Options{Path: cfg.Observer.DBPath})
+	database, err := dbtemplate.Open(ctx, db.Options{Path: cfg.Observer.DBPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

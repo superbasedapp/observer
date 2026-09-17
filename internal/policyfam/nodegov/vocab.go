@@ -13,9 +13,9 @@ package nodegov
 // organization hid" reads the way the sidebar does.
 
 // NavSectionIDs is the closed set of hideable/lockable node-dashboard nav
-// sections (22 today).
+// sections (23 today).
 var NavSectionIDs = []string{
-	"overview", "live", "sessions", "actions", "security", "egress", "search",
+	"overview", "live", "sessions", "actions", "projects", "security", "egress", "search",
 	"cost", "analysis", "tools",
 	"compression", "cache", "suggestions", "routing", "benchmarks", "discovery", "patterns",
 	"policies", "privacy", "terminals", "remote", "settings",

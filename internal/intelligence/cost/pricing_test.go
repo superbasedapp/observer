@@ -2305,3 +2305,44 @@ func TestTable_20260907Sweep(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveModelKey pins the ladder ResolveModelKey shares with
+// LookupWithSourceAt — it is the product's only answer to "are these two model
+// strings the same model?", which the per-model BUDGET caps depend on.
+func TestResolveModelKey(t *testing.T) {
+	tbl := NewTable()
+	cases := []struct {
+		name  string
+		model string
+		want  string
+		ok    bool
+	}{
+		{name: "empty resolves to nothing", model: ""},
+		{name: "an exact key is itself", model: "claude-sonnet-4-5", want: "claude-sonnet-4-5", ok: true},
+		{
+			name:  "a dated id folds onto the same key as its family",
+			model: "claude-sonnet-4-5-20250929", want: "claude-sonnet-4-5", ok: true,
+		},
+		{name: "a free tier is one $0 subject", model: "Some-Model:Free", want: "some-model:free", ok: true},
+		{name: "an unknown model keeps no key", model: "big-pickle-9000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := tbl.ResolveModelKey(tc.model)
+			if ok != tc.ok || (tc.ok && got != tc.want) {
+				t.Fatalf("ResolveModelKey(%q) = (%q, %v), want (%q, %v)", tc.model, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+	// THE PROPERTY THAT MATTERS: the family id and its dated sibling resolve to
+	// ONE key, which is what makes an org cap on either spelling bite on both.
+	family, fok := tbl.ResolveModelKey("claude-sonnet-4-5")
+	dated, dok := tbl.ResolveModelKey("claude-sonnet-4-5-20250929")
+	if !fok || !dok || family != dated {
+		t.Fatalf("alias pair resolved to %q / %q", family, dated)
+	}
+	// A nil table never invents a key.
+	if _, ok := (*Table)(nil).ResolveModelKey("claude-sonnet-4-5"); ok {
+		t.Errorf("a nil table resolved a key")
+	}
+}

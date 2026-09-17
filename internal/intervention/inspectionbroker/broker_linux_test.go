@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,7 +17,11 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/intervention"
 )
 
-func TestClientServerReturnsStableIdentityAndReauthorizes(t *testing.T) {
+// TestClientServerReturnsStableIdentityAndAuthorizesOnce pins the P1-7/INT-1
+// fix: AuthorizePeer runs exactly ONCE per request (immediately before the
+// response, not also before target inspection) — a request that
+// authorizes and inspects cleanly still gets exactly one call, never two.
+func TestClientServerReturnsStableIdentityAndAuthorizesOnce(t *testing.T) {
 	identity := testIdentity(os.Getuid())
 	var authorized atomic.Int32
 	server := testServer(identity.UID, func(_ context.Context, peer Peer) error {
@@ -41,8 +46,8 @@ func TestClientServerReturnsStableIdentityAndReauthorizes(t *testing.T) {
 	if got != identity {
 		t.Fatalf("Inspect identity = %+v, want %+v", got, identity)
 	}
-	if got := authorized.Load(); got != 2 {
-		t.Fatalf("AuthorizePeer calls = %d, want 2", got)
+	if got := authorized.Load(); got != 1 {
+		t.Fatalf("AuthorizePeer calls = %d, want 1", got)
 	}
 }
 
@@ -72,6 +77,15 @@ func TestServerRejectsSpoofedPeerUIDBeforeInspection(t *testing.T) {
 	stopTestServer(t, listener, done)
 }
 
+// TestServerRejectsSameUIDPeerWithoutControllerAuthorization pins the
+// disclosure gate: a same-UID peer that fails the (single, now
+// end-of-request) controller-authorization check never gets a successful
+// response, however far target inspection got. Since AuthorizePeer runs
+// once, immediately before the response (P1-7/INT-1), target inspection now
+// runs BEFORE that check is known to fail — that is an accepted, purely
+// local cost (a same-UID-but-wrong-controller caller can make the root
+// process read /proc for an arbitrary pid it names), never a disclosure:
+// nothing observed is sent back unless AuthorizePeer approves.
 func TestServerRejectsSameUIDPeerWithoutControllerAuthorization(t *testing.T) {
 	identity := testIdentity(os.Getuid())
 	var inspectCalled atomic.Bool
@@ -87,8 +101,8 @@ func TestServerRejectsSameUIDPeerWithoutControllerAuthorization(t *testing.T) {
 	if _, err := client.Inspect(context.Background(), identity.PID, identity.StartTicks, identity.BootID); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Inspect error = %v, want ErrUnauthorized", err)
 	}
-	if inspectCalled.Load() {
-		t.Fatal("same-UID unauthorized peer reached Inspect")
+	if !inspectCalled.Load() {
+		t.Fatal("expected target inspection to run before the single end-of-request authorization check")
 	}
 }
 
@@ -131,23 +145,38 @@ func TestServerRejectsTargetPIDReuseAndUIDMismatch(t *testing.T) {
 	}
 }
 
-func TestServerReauthorizationFencesControllerReplacement(t *testing.T) {
+// TestServerAuthorizationFencesControllerReplacementDuringInspection pins
+// the security property the removed early AuthorizePeer call used to share:
+// a controller that stops being authorized WHILE target inspection is under
+// way (a real race, since inspection does two /proc reads bracketing a
+// stability check and can take real wall-clock time) is still refused, even
+// though AuthorizePeer now runs exactly once, AFTER inspection rather than
+// once before it and once after.
+func TestServerAuthorizationFencesControllerReplacementDuringInspection(t *testing.T) {
 	identity := testIdentity(os.Getuid())
-	var calls atomic.Int32
+	var replaced atomic.Bool
+	var authorizeCalls atomic.Int32
 	server := testServer(identity.UID, func(context.Context, Peer) error {
-		if calls.Add(1) == 2 {
+		authorizeCalls.Add(1)
+		if replaced.Load() {
 			return errors.New("fixture controller replaced")
 		}
 		return nil
-	}, func(context.Context, int) (intervention.Identity, error) { return identity, nil })
+	}, func(context.Context, int) (intervention.Identity, error) {
+		// The controller is "replaced" while this request's target
+		// inspection is in flight - exactly the window the single,
+		// end-of-request AuthorizePeer call must still observe fresh.
+		replaced.Store(true)
+		return identity, nil
+	})
 	client, stop := startTestBroker(t, server)
 	defer stop()
 
 	if _, err := client.Inspect(context.Background(), identity.PID, identity.StartTicks, identity.BootID); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("Inspect error = %v, want ErrUnauthorized", err)
 	}
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("AuthorizePeer calls = %d, want 2", got)
+	if got := authorizeCalls.Load(); got != 1 {
+		t.Fatalf("AuthorizePeer calls = %d, want 1", got)
 	}
 }
 
@@ -275,6 +304,49 @@ func TestClientAllowsGroupWritableSocketAndRejectsWorldWritableSocket(t *testing
 	client = testClient(path, identity.UID)
 	if _, err := client.Inspect(context.Background(), identity.PID, identity.StartTicks, identity.BootID); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("world-writable socket Inspect error = %v, want ErrUnavailable", err)
+	}
+}
+
+// TestServerServesConnectionsConcurrently pins the other half of INT-1: the
+// accept loop no longer serves one connection to completion before starting
+// the next. Several clients that each block inside Inspect must all be
+// in flight on the server at once, not queued serially behind each other.
+func TestServerServesConnectionsConcurrently(t *testing.T) {
+	identity := testIdentity(os.Getuid())
+	const clients = 5
+	var inFlight atomic.Int32
+	release := make(chan struct{})
+	server := testServer(identity.UID, allowPeer, func(context.Context, int) (intervention.Identity, error) {
+		inFlight.Add(1)
+		<-release
+		return identity, nil
+	})
+	client, stop := startTestBroker(t, server)
+	defer stop()
+
+	var wg sync.WaitGroup
+	results := make([]error, clients)
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, results[i] = client.Inspect(context.Background(), identity.PID, identity.StartTicks, identity.BootID)
+		}(i)
+	}
+	deadline := time.After(2 * time.Second)
+	for inFlight.Load() < clients {
+		select {
+		case <-deadline:
+			t.Fatalf("only %d/%d requests ever ran concurrently - accept loop is still serial", inFlight.Load(), clients)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	close(release)
+	wg.Wait()
+	for i, err := range results {
+		if err != nil {
+			t.Fatalf("client %d: %v", i, err)
+		}
 	}
 }
 

@@ -6,11 +6,12 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 )
 
 func newTermTestStore(t *testing.T) *Store {
 	t.Helper()
-	database, err := db.Open(context.Background(), db.Options{Path: t.TempDir() + "/t.db"})
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: t.TempDir() + "/t.db"})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

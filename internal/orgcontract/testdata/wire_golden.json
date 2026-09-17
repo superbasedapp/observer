@@ -45,6 +45,21 @@
     "limitations": [
       "no test run observed"
     ],
+    "work_done": [
+      "Traced the blind cursor save to the re-enrol path."
+    ],
+    "plans_implemented": [
+      "The cursor CAS landed; the backfill sweep was left."
+    ],
+    "issues_found": [
+      "A cached page could be attributed to the wrong enrolment."
+    ],
+    "failures": [
+      "The regression test for the re-enrol race was not run."
+    ],
+    "next_steps": [
+      "Run the enrolment race suite before the next roll."
+    ],
     "schema_version": "session_enrichment.v2-candidate",
     "generated_at": "2026-09-11T10:00:00Z"
   },

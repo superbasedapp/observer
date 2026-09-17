@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Pill } from "@/components/primitives";
+import { Button, Pill } from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
 import { cloudFmtWhen } from "@/lib/cloud";
 import { fmtDateRange } from "@/lib/format";
@@ -80,14 +80,16 @@ function CloudDigestLockedCard() {
         Themes, cost and token trend, recurring error classes, unfinished
         threads and a suggested next session for this project, every week.
       </p>
-      <a
+      <Button
         href={CLOUD_PORTAL_BILLING_URL}
         target="_blank"
         rel="noreferrer"
-        className="mt-2 inline-flex rounded-2 border border-accent/60 bg-accent px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-accent/90"
+        variant="primary"
+        size="sm"
+        className="mt-2"
       >
         Part of Plus - USD 15/month, 7-day trial
-      </a>
+      </Button>
     </section>
   );
 }

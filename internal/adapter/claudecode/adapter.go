@@ -1479,6 +1479,14 @@ func (a *Adapter) extractTarget(toolName string, rawInput []byte, projectRoot st
 		return pick("query")
 	case "WebFetch":
 		return pick("url")
+	case "Skill":
+		// The Skill tool's input is {"skill":"<name>","args":"…"}. The
+		// NAME is the whole point: it is the token guidance.SkillKey
+		// joins a scanned `.claude/skills/<name>/SKILL.md` row on, and
+		// without it a skill_invoke action carries an empty target and
+		// the name survives only inside raw_tool_input. `args` is free
+		// user text and deliberately stays out of the target.
+		return strings.TrimSpace(pick("skill"))
 	}
 	return ""
 }

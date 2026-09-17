@@ -52,11 +52,14 @@ type terminalStack struct {
 	svc    *termsvc.Service
 	mgr    *termsession.Manager
 	status dashboard.TerminalStatusProvider
-	// sandboxProber is the B9 dashboard.SandboxProber (the SAME *sandboxRuntime
-	// wired as termsvc.Options.Sandboxer). Nil when [terminal.sandbox].enabled
-	// is false → the /api/terminal/sandbox endpoint reports disabled and the
-	// fail-closed launch validation 501s. Held as the interface so the surfaces
-	// pass a nil interface (not a nil pointer) to the dashboard when absent.
+	// sandboxProber is the B9 dashboard.SandboxProber (the SAME *sandboxHolder
+	// wired as termsvc.Options.Sandboxer — one hot-swappable seam, two
+	// surfaces). It is non-nil whenever a stack was built, even with
+	// [terminal.sandbox].enabled = false: the holder then reports
+	// disabled_by_config and fails Prepare closed, and it picks the feature
+	// up WITHOUT a restart once the operator saves the enable switch. Held
+	// as the interface so the surfaces hand the dashboard a value, never a
+	// non-nil interface over a nil pointer.
 	sandboxProber dashboard.SandboxProber
 	// attachAudit records the metadata-only terminal_attach spawn-audit row (F4,
 	// session-attach design §3.5). Nil when no DB is wired (auditing disabled).
@@ -135,25 +138,29 @@ type terminalStack struct {
 // Fresh-agent launch (F1) is a SEPARATE, default-off opt-in resolved into the
 // termsvc.Policy from [terminal] + [terminal.launch]; building the stack never
 // widens it (that stays gated on [terminal.launch].allow_fresh_agent).
-// resolveTerminalSandbox builds the B9 sandbox runtime (the ONE cmd-side type
-// implementing both the termsvc.Sandboxer and dashboard.SandboxProber seams
-// over internal/sandbox + internal/workspace) when [terminal.sandbox].enabled,
-// and returns the two termsvc inputs plus the dashboard prober. Every return is
-// the zero value when the feature is off OR the runtime fails to initialize (a
-// nil interface, not a non-nil interface over a nil pointer), so termsvc's
-// `sandboxer == nil` and the dashboard's nil-prober checks both fail closed.
-// Extracted from buildTerminalStack to keep that function under the gocyclo
-// bound.
+// resolveTerminalSandbox builds the B9 sandbox seam: ONE long-lived
+// sandboxHolder implementing both termsvc.Sandboxer and
+// dashboard.SandboxProber over a hot-swappable *sandboxRuntime
+// (cmd/observer/terminal_sandbox.go), plus the managed-workspaces root
+// termsvc validates prepared workspaces against. Extracted from
+// buildTerminalStack to keep that function under the gocyclo bound.
+//
+// The holder is returned UNCONDITIONALLY — including when
+// [terminal.sandbox].enabled is false. That is the change that makes the
+// feature hot-reloadable: the old code resolved enabled-ness once and
+// returned nil seams when it was off, which pinned the dashboard to
+// "disabled_by_config" until the daemon restarted even after the operator
+// enabled the sandbox from Terminals → Settings. Fail-closed behaviour is
+// unchanged — a holder with no live runtime returns
+// termsvc.ErrSandboxUnavailable from Prepare (exactly what a nil Sandboxer
+// produces) and reports disabled_by_config from the probe (exactly what a
+// nil prober produces), so nothing a sandboxed launch may do has widened.
 func resolveTerminalSandbox(cfg config.Config, binPath string, logger *slog.Logger) (termsvc.Sandboxer, string, dashboard.SandboxProber) {
-	if !cfg.Terminal.Sandbox.Enabled {
-		return nil, "", nil
-	}
-	rt, err := newSandboxRuntime(cfg.Terminal.Sandbox, cfg.Launch.Tools, filepath.Dir(cfg.Observer.DBPath), binPath, logger)
-	if err != nil {
-		logger.Warn("terminal sandbox disabled — could not initialize the sandbox runtime", "err", err)
-		return nil, "", nil
-	}
-	return rt, rt.workspacesDir(), sandboxSeamProber(rt)
+	// The path the holder stats to notice a [terminal.sandbox] save. Empty
+	// (unresolvable) simply pins the holder to its boot-time resolve.
+	cfgPath, _ := config.ResolveGlobalPath(daemonConfigPath())
+	h := newSandboxHolder(cfg, cfgPath, filepath.Dir(cfg.Observer.DBPath), binPath, logger)
+	return h, h.workspacesDir(), h
 }
 
 func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB, logger *slog.Logger, nf *nodeFeaturesHandle) (*terminalStack, error) {
@@ -274,17 +281,21 @@ func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB
 	mgr := termsession.NewManager(opts)
 	launcher := &ptyLauncher{mgr: mgr, binPath: binPath, feed: feed, logger: logger}
 
-	// B9 sandbox runtime (plan §1/§9 U5): the ONE cmd-side type implementing
-	// BOTH the termsvc.Sandboxer (Prepare) and dashboard.SandboxProber
-	// (ProbeSandbox) seams over internal/sandbox + internal/workspace. Built
-	// ONLY when [terminal.sandbox].enabled — a nil runtime leaves both seams
-	// nil, which is the fail-closed "feature absent" state U4/U6 enforce
-	// (termsvc → ErrSandboxUnavailable; dashboard → 501 / disabled_by_config).
-	// A construction error (e.g. an unwritable workspaces_dir) is logged and
-	// leaves the feature off rather than failing the whole terminal stack.
-	// B9 sandbox seams, resolved out-of-line to keep buildTerminalStack under
-	// the gocyclo bound. All three are the zero value (nil interface / "") when
-	// [terminal.sandbox] is disabled, so termsvc + dashboard fail closed.
+	// B9 sandbox seam (plan §1/§9 U5): ONE cmd-side sandboxHolder implementing
+	// BOTH termsvc.Sandboxer (Prepare) and dashboard.SandboxProber
+	// (ProbeSandbox) over internal/sandbox + internal/workspace, holding the
+	// live runtime behind an atomic pointer so a [terminal.sandbox] save takes
+	// effect on the next launch instead of the next restart. Resolved
+	// out-of-line to keep buildTerminalStack under the gocyclo bound.
+	//
+	// Fail-closed is unchanged: with the feature off (or a runtime that will
+	// not initialize) Prepare returns termsvc.ErrSandboxUnavailable and the
+	// probe reports disabled_by_config / runtime_init_failed — the U4/U6
+	// states, now told apart instead of flattened into one string.
+	//
+	// sandboxWorkspacesDir is the ONE managed-workspace root termsvc holds for
+	// the daemon's life; moving workspaces_dir at runtime is the one knob that
+	// still needs a restart (the holder logs a warning when it sees that).
 	sandboxSeam, sandboxWorkspacesDir, sandboxProber := resolveTerminalSandbox(cfg, binPath, logger)
 
 	svc = termsvc.New(termsvc.Options{
@@ -710,11 +721,14 @@ type terminalSurfaces struct {
 	// otherwise, which is the honest "nothing to show" seam state.
 	policyStop dashboard.PolicyStopProvider
 	attachHost attachsock.Host
-	// sandboxProber is the B9 dashboard.SandboxProber (nil unless
-	// [terminal.sandbox].enabled and the runtime initialized). start.go /
-	// dashboard.go wire it into dashboard.Options.SandboxProber; a nil value is
-	// the honest "sandbox feature absent" state (endpoint reports disabled,
-	// launch validation 501s).
+	// sandboxProber is the B9 dashboard.SandboxProber (nil only when NO
+	// terminal stack was built at all — no PTY backend, or neither surface
+	// requested). start.go / dashboard.go wire it into
+	// dashboard.Options.SandboxProber; a nil value is the honest "sandbox
+	// feature absent" state (endpoint reports disabled, launch validation
+	// 501s), and a non-nil holder with the feature switched off reports the
+	// same disabled_by_config verdict while staying able to pick a later
+	// save up without a restart.
 	sandboxProber dashboard.SandboxProber
 	// mgr is the concrete one-owner session manager (nil when no stack was
 	// built). Exposed so start.go can register post-construction hooks that
