@@ -7,7 +7,7 @@
   },
   "name": "SuperBased Observer",
   "description": "Token, cost and cache observability for OpenClaw. Wires the SuperBased Observer MCP server. Requires the `observer` binary already on your PATH (npm i -g @superbased/observer, or pipx install superbased-observer) — this plugin is wiring only and installs no binary.",
-  "version": "1.34.0-rc.3",
+  "version": "1.34.0-rc.4",
   "activation": {
     "onStartup": true
   },

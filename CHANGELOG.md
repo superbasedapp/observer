@@ -4,6 +4,36 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+- Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1) — the dated
+  three-cloud price snapshot every `observer-org deploy plan` estimate in this release is
+  computed from (plan v2.1 6.9; `scripts/verify-price-snapshot.sh --line` prints this line and
+  `scripts/release.sh` requires it in a final tag's section).
+
+## [1.34.0-rc.4] — 2026-09-18
+
+Pre-release on the `edge` channel; rc.3 plus the enterprise-deployment Phase 1 and Phase 2
+work. Cut so that the Phase 2 attended acceptance has CI-built, cosign-signed images to boot
+from (first boot pins the release workflow's signing identity; the `observer-postgres` image
+had never been published):
+
+- `observer-org deploy plan` (Phase 1): the deployment catalog (axes, constraint table,
+  developer-count size map, eleven reference architectures), the bill of materials, the dated
+  three-cloud price snapshot with confidence letters and the 90-day stale gate (DR-17), the
+  alternatives block, honest ceilings (D2), and the rendered bundle (`config.production.toml`,
+  `.env`, compose override, `nats.conf`, RUNBOOK/ESTIMATE); `deploy export` ships the catalog.
+- Azure OpenTofu modules (Phase 2): six thin roots (`compact`/`appliance` x
+  `bootstrap`/`data`/`app`) over shared child modules under `deploy/modules/`, embedded and
+  exported as the bundle's `modules/` row; tfvars rendered from the answer set's sizing and the
+  catalog's provision SKU names; cloud-init + on-box units (Key Vault secrets flow, private
+  bundle container, pgBackRest timers, restore drill); the `observer-postgres` image
+  (postgres 16 + pgBackRest, DR-51) built, signed and pushed beside `observer-org` under the
+  same tag.
+- `[metrics]` listener + `/metrics` (DR-12) and `observer-org support-bundle` (DR-20);
+  `doctor` gains the object-store probe and the SAS-expiry warning.
+- The air-gap kit ships the Sigstore trusted root and `VERIFY.md` verifies with
+  `--trusted-root`; `release.sh` pre-flight asserts the chart and harness-gateway versions.
+- Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
 ## [1.34.0-rc.3] — 2026-09-18
 
 Pre-release on the `edge` channel; rc.2 plus three release-pipeline fixes found by running

@@ -1,0 +1,51 @@
+# observer-postgres: the self-hosted PostgreSQL runtime for the Enterprise
+# Phase 2 Azure OpenTofu modules (plan of record
+# docs/plans/enterprise-deployment-phase-2-implementation-plan-2026-09-18.md,
+# decision P2-D3, register row DR-51).
+#
+# postgres:16 + Debian pgbackrest in ONE image so `archive_command` can run
+# `pgbackrest archive-push` from INSIDE the database container (the official
+# postgres image ships neither pgbackrest nor a place to configure it). Built
+# and cosign-signed beside observer-org under the SAME release tag by
+# npm-release.yml's docker_image_postgres job. Patching = bump the pinned
+# minor tag below and recreate the container; there is no in-place apt-upgrade
+# story for a running instance (plan 4.4 "recreate the container").
+#
+# Minor tag: 16.15-bookworm, the current postgres:16-bookworm head on Docker
+# Hub as of 2026-09-18 (queried via the registry API — see the implementer's
+# report; no web browsing tool was used, `curl
+# https://registry.hub.docker.com/v2/repositories/library/postgres/tags` was).
+FROM postgres:16.15-bookworm
+
+ARG VERSION=dev
+
+LABEL org.opencontainers.image.source="https://github.com/marmutapp/superbased-observer-private" \
+      org.opencontainers.image.title="observer-postgres" \
+      org.opencontainers.image.description="postgres:16 + pgBackRest — the self-hosted PostgreSQL runtime for SuperBased Observer's Enterprise Azure/appliance deployments (CONTRACT.md C7)" \
+      org.opencontainers.image.version="${VERSION}"
+
+# pgbackrest: Debian's own package (present since bullseye; no extra apt
+# source needed). curl + ca-certificates: the storage/host healthchecks and
+# the Azure Blob repo1 REST calls pgbackrest itself makes. --no-install-
+# recommends keeps the image close to the base postgres image's size (plan
+# 4.4's "~15 MB on top of the base").
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        pgbackrest \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# /etc/pgbackrest/pgbackrest.conf is bind-mounted read-only by the compose
+# override (C7: ./secrets/pgbackrest.conf -> /etc/pgbackrest/pgbackrest.conf:ro,
+# written by observer-env-sync.sh, mode 0600) — the directory itself must
+# still be owned by postgres (uid 999, the base image's user) so pgbackrest's
+# own lock/spool files under /etc/pgbackrest/... and its log directory can be
+# created without root.
+RUN mkdir -p /etc/pgbackrest /var/log/pgbackrest \
+    && chown -R postgres:postgres /etc/pgbackrest /var/log/pgbackrest
+
+# Entrypoint, USER and postgres uid (999) are unchanged from the base image —
+# C7's compose override supplies POSTGRES_USER/POSTGRES_DB/POSTGRES_PASSWORD
+# and the `command` that turns on SSL + WAL archiving; this image only adds
+# the pgbackrest binary and its directories.

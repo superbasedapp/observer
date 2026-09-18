@@ -162,6 +162,13 @@ model-pricing/scripts/extract-cache/
 # sessions into the repo root; never part of a release and never committed.
 /scratchpad/
 
+# OpenTofu/Terraform provider + module caches (deploy/modules roots); lock files ARE committed
+.terraform/
+
+# The compact app root's tofu test fixtures: placeholder-only .env files (CHANGEME / a
+# labelled fake value); the global .env rule above must not hide them from git or CI.
+!deploy/modules/**/tests/bundles/*/.env
+
 # Internal docs — kept locally on the private repo for development
 # context, untracked from the public repo. The dashboard's runtime
 # walkthrough asset under internal/intelligence/dashboard/static/ is

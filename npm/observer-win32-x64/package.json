@@ -1,6 +1,6 @@
 {
   "name": "@superbased/observer-win32-x64",
-  "version": "1.34.0-rc.3",
+  "version": "1.34.0-rc.4",
   "description": "Windows x64 binary for @superbased/observer.",
   "homepage": "https://superbased.app/",
   "repository": {

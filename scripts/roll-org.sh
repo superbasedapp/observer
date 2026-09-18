@@ -80,7 +80,7 @@ build_image() {
     echo "== building observer-org:$VERSION from committed HEAD ($source_rev) =="
     git archive HEAD | tar -x -C "$build_work"
     [ -f "$build_work/Dockerfile.observer-org" ] || die "Dockerfile.observer-org missing from HEAD archive"
-    (cd "$build_work" && az acr build -r "$ACR" -f Dockerfile.observer-org -t "observer-org:$VERSION" .)
+    (cd "$build_work" && az acr build -r "$ACR" -f Dockerfile.observer-org --build-arg VERSION="$VERSION" -t "observer-org:$VERSION" .)
     case "$build_work" in /tmp/sbo-org-image.*) rm -rf -- "$build_work" ;; *) die "unexpected build directory" ;; esac
 }
 
