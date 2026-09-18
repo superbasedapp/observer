@@ -2,7 +2,7 @@
   "name": "superbased-observer",
   "displayName": "SuperBased",
   "description": "Claude Code cost tracking, Cursor token usage, Codex spend — AI coding agent observability across 40 adapters (Claude Code, Codex, Cursor, Cline + Cline CLI, Copilot, Gemini CLI, Hermes Agent, Kilo Code, Aider, Goose, Devin, and more), proxy-accurate. No telemetry. No cloud.",
-  "version": "1.34.0-rc.2",
+  "version": "1.34.0-rc.3",
   "publisher": "superbased",
   "license": "Apache-2.0",
   "author": "Santosh Kathira <contact@superbased.app>",

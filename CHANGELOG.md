@@ -4,6 +4,23 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.34.0-rc.3] — 2026-09-18
+
+Pre-release on the `edge` channel; rc.2 plus three release-pipeline fixes found by running
+rc.2 (the second pre-release tag; every fix is pinned by an executed test):
+
+- cosign is installed by the pipeline's own retried, sha256-pinned script at all three signing
+  sites (`COSIGN_VERSION` / `COSIGN_SHA256`); on rc.2 one un-retried download inside the
+  installer action failed after the observer-org image had been pushed, leaving the tag
+  unsigned and the private release skipped.
+- The release-archive filename rule has one owner, `internal/update.ParseArtifactName`, used by
+  both the org server's `update import` and the pipeline's manifest producer; rc.1's fix had
+  patched the importer's copy while the pipeline ran its own, so rc.2's public release failed
+  with the same "no agent archives".
+- The private GitHub release is created and its assets attached with `gh release create` /
+  `gh release upload --clobber`, the mechanism the public release has always used; the
+  third-party release action aborted its parallel upload batch on both rc attempts.
+
 ## [1.34.0-rc.2] — 2026-09-18
 
 Pre-release on the `edge` channel; rc.1 plus four release-pipeline fixes found by

@@ -5,10 +5,10 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -35,19 +35,6 @@ const SumsFileName = "SHA256SUMS"
 // entries the extractor SKIPS", which is exactly the treatment it needs:
 // an update replaces the daemon binary and nothing else.
 const CompanionBridge = "antigravity-bridge.exe"
-
-// artifactNameRe parses a release archive name into version / os / arch
-// / extension: `observer-v1.33.0-linux-x64.tar.gz`,
-// `observer-v1.33.0-win32-x64.zip`.
-//
-// It is the same expression internal/orgserver/updateartifact uses, and
-// it is duplicated rather than imported because a scripts/ tool must
-// not import the org server (that package is stripped from the public
-// tree). The shapes it must NOT match matter as much as the ones it
-// does: `observer-org-v1.33.0-linux-x64.tar.gz` fails at the `v[0-9]`
-// group, which is what keeps the org-server archives out of the agent
-// manifest.
-var artifactNameRe = regexp.MustCompile(`^observer-(v[0-9][^-]*)-([a-z0-9]+)-([a-z0-9_]+)\.(tar\.gz|zip)$`)
 
 // BuildOptions is one release-manifest build.
 type BuildOptions struct {
@@ -184,14 +171,22 @@ func collectArtifacts(dir, version string, sums map[string]string) ([]update.Art
 			continue
 		}
 		name := de.Name()
-		m := artifactNameRe.FindStringSubmatch(name)
-		if m == nil {
-			continue // SHA256SUMS, provenance, SBOMs, observer-org archives
+		// One parser for archive names, shared with the org server's
+		// importer (internal/update.ParseArtifactName). A foreign file
+		// (SHA256SUMS, provenance, SBOMs, the observer-org archives) is
+		// skipped; an agent archive with the wrong archive type for its
+		// target is a mis-built release and fails loudly.
+		ver, goos, goarch, archiveType, perr := update.ParseArtifactName(name)
+		if errors.Is(perr, update.ErrArchiveTypeMismatch) {
+			return nil, fmt.Errorf("vendorsign: %w", perr)
 		}
-		if m[1] != version {
-			return nil, fmt.Errorf("vendorsign: %s is version %s but this manifest is for %s", name, m[1], version)
+		if perr != nil {
+			continue
 		}
-		a, aerr := buildArtifact(dir, name, m[2], m[3], m[4], sums)
+		if ver != version {
+			return nil, fmt.Errorf("vendorsign: %s is version %s but this manifest is for %s", name, ver, version)
+		}
+		a, aerr := buildArtifact(dir, name, goos, goarch, archiveType, sums)
 		if aerr != nil {
 			return nil, aerr
 		}

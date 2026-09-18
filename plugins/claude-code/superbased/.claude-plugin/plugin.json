@@ -1,7 +1,7 @@
 {
   "name": "superbased",
   "displayName": "SuperBased Observer",
-  "version": "1.34.0-rc.2",
+  "version": "1.34.0-rc.3",
   "description": "Token, cost and cache observability for Claude Code. Wires the SuperBased Observer MCP server plus its session/tool lifecycle hooks. Requires the `observer` binary already on your PATH (npm i -g @superbased/observer, or pipx install superbased-observer) — this plugin is wiring only and installs no binary.",
   "author": {
     "name": "Santosh Kathira",

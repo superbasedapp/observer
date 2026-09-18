@@ -128,6 +128,13 @@ func testKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 // alias, SHA256SUMS, and a `.sig` beside each archive.
 func fixtureRelease(t *testing.T, priv ed25519.PrivateKey) string {
 	t.Helper()
+	return fixtureReleaseFor(t, priv, fixtureVersion)
+}
+
+// fixtureReleaseFor is fixtureRelease for an arbitrary version tag (a
+// pre-release one is the case that broke two real releases).
+func fixtureReleaseFor(t *testing.T, priv ed25519.PrivateKey, fixtureVersion string) string {
+	t.Helper()
 	dir := t.TempDir()
 	writeTarGz(t, filepath.Join(dir, "observer-"+fixtureVersion+"-linux-x64.tar.gz"), []tarMember{
 		{name: "observer", kind: tar.TypeReg, content: "the linux daemon"},
@@ -685,5 +692,53 @@ func TestSchemaVersionVerbPrintsOnlyTheNumber(t *testing.T) {
 	}
 	if n <= 0 {
 		t.Fatalf("schema-version printed %d, want the migration high-water mark", n)
+	}
+}
+
+// TestBuildManifestAcceptsPreReleaseArchives is the v1.34.0-rc.2 regression:
+// the pipeline's own copy of the archive-name rule read
+// `observer-v1.34.0-rc.2-linux-x64.tar.gz` as os "rc.2", found "no agent
+// archives" right after signing five, and failed the public release for the
+// second rc in a row (the first rc's fix had landed in the importer's copy).
+// The rule now has one owner and this test drives THIS producer through it.
+func TestBuildManifestAcceptsPreReleaseArchives(t *testing.T) {
+	t.Parallel()
+	pub, priv := testKey(t)
+	const rc = "v1.34.0-rc.2"
+	dir := fixtureReleaseFor(t, priv, rc)
+	env, m, err := buildManifest(BuildOptions{
+		Dir: dir, Version: rc, Channel: "edge",
+		ReleasedAt: time.Date(2026, 9, 17, 20, 0, 0, 0, time.UTC),
+		Key:        priv,
+	})
+	if err != nil {
+		t.Fatalf("buildManifest(%s): %v", rc, err)
+	}
+	if m.Version != rc {
+		t.Errorf("manifest version = %q, want %q", m.Version, rc)
+	}
+	if len(m.Artifacts) != 2 {
+		t.Fatalf("manifest carries %d artifacts, want 2 (linux tarball + win32 zip; the org archive excluded)", len(m.Artifacts))
+	}
+	for _, a := range m.Artifacts {
+		if strings.Contains(a.Filename, "observer-org-") {
+			t.Errorf("org-server archive leaked into the agent manifest: %+v", a)
+		}
+		if a.OS == "rc.2" || a.OS == "" {
+			t.Errorf("artifact os = %q; the pre-release suffix was parsed as the os", a.OS)
+		}
+	}
+	res, err := update.Verify(update.VerifyInput{
+		Envelope:         env,
+		PinnedPublicKey:  base64.StdEncoding.EncodeToString(pub),
+		InstalledVersion: "v1.33.0",
+		Now:              time.Date(2026, 9, 17, 20, 1, 0, 0, time.UTC),
+		GOOS:             "linux", GOARCH: "amd64",
+	})
+	if err != nil {
+		t.Fatalf("update.Verify rejected the rc manifest at rule %s: %v", res.Rule, err)
+	}
+	if res.Artifact.Filename != "observer-"+rc+"-linux-x64.tar.gz" {
+		t.Errorf("selected artifact = %q", res.Artifact.Filename)
 	}
 }
