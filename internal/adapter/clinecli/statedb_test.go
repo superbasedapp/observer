@@ -10,6 +10,9 @@ import (
 	"testing"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/scrub"
 )
 
 // sqliteSequenceRe matches the `CREATE TABLE sqlite_sequence(name,seq);`
@@ -462,6 +465,215 @@ func TestScanStateDB_MissingMessagesJSON(t *testing.T) {
 	tools, _, _ := buildEvents(context.Background(), sessions, dbPath, nil, nil)
 	if len(tools) < 2 {
 		t.Errorf("len(tools) = %d; want >=2 (session_start + session_end)", len(tools))
+	}
+}
+
+// fixtureDesktopSessionID is the session ID in the synthetic desktop
+// fixture (testdata/clinecli/sample-session-meta-desktop.json +
+// sample-session-messages-desktop.json). The live Phase 0 capture only
+// ever grounded `source='cli'` rows (buildFixtureCLineDataDir above),
+// so this fixture is hand-authored — anonymised, no env/secrets — to
+// exercise the `source='desktop'` path end to end (surface stamping +
+// token capture), which prior tests never touched.
+const fixtureDesktopSessionID = "1780900000000_dsk01"
+
+// buildFixtureCLineDesktopDataDir is buildFixtureCLineDataDir's sibling
+// for the desktop fixture pair. Same data-dir layout, same schema,
+// different session row (source='desktop') and messages file.
+func buildFixtureCLineDesktopDataDir(t *testing.T) string {
+	t.Helper()
+
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	dbDir := filepath.Join(dataDir, "db")
+	sessionsDir := filepath.Join(dataDir, "sessions", fixtureDesktopSessionID)
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("mkdir db: %v", err)
+	}
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions/<id>: %v", err)
+	}
+
+	dbPath := filepath.Join(dbDir, "sessions.db")
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	schemaPath := filepath.Join("..", "..", "..", "testdata", "clinecli", "sessions.sql")
+	schema, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	cleaned := stripSQLiteSequenceCreate(string(schema))
+	if _, err := db.Exec(cleaned); err != nil {
+		t.Fatalf("exec schema: %v", err)
+	}
+
+	metaPath := filepath.Join("..", "..", "..", "testdata", "clinecli", "sample-session-meta-desktop.json")
+	metaBody, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read desktop meta: %v", err)
+	}
+	var meta struct {
+		SessionID     string          `json:"session_id"`
+		Source        string          `json:"source"`
+		PID           int64           `json:"pid"`
+		StartedAt     string          `json:"started_at"`
+		EndedAt       *string         `json:"ended_at"`
+		ExitCode      *int64          `json:"exit_code"`
+		Status        string          `json:"status"`
+		Interactive   bool            `json:"interactive"`
+		Provider      string          `json:"provider"`
+		Model         string          `json:"model"`
+		CWD           string          `json:"cwd"`
+		WorkspaceRoot string          `json:"workspace_root"`
+		TeamName      *string         `json:"team_name"`
+		EnableTools   bool            `json:"enable_tools"`
+		EnableSpawn   bool            `json:"enable_spawn"`
+		EnableTeams   bool            `json:"enable_teams"`
+		Prompt        string          `json:"prompt"`
+		Metadata      json.RawMessage `json:"metadata"`
+		MessagesPath  string          `json:"messages_path"`
+	}
+	if err := json.Unmarshal(metaBody, &meta); err != nil {
+		t.Fatalf("unmarshal desktop meta: %v", err)
+	}
+	if meta.SessionID != fixtureDesktopSessionID {
+		t.Fatalf("desktop fixture session id drift: got %q want %q", meta.SessionID, fixtureDesktopSessionID)
+	}
+	if meta.Source != "desktop" {
+		t.Fatalf("desktop fixture source drift: got %q want %q", meta.Source, "desktop")
+	}
+
+	// Same rationale as buildFixtureCLineDataDir: point messages_path at
+	// this test's own temp-dir copy rather than the fixture's recorded
+	// (non-existent-on-runner) path.
+	relativeMessagesPath := filepath.Join(sessionsDir, fixtureDesktopSessionID+".messages.json")
+
+	insert := `
+		INSERT INTO sessions (
+			session_id, source, pid, started_at, ended_at, exit_code, status,
+			status_lock, interactive, provider, model, cwd, workspace_root,
+			team_name, enable_tools, enable_spawn, enable_teams,
+			parent_session_id, parent_agent_id, agent_id, conversation_id,
+			is_subagent, prompt, metadata_json, transcript_path, hook_path,
+			messages_path, updated_at
+		) VALUES (
+			?, ?, ?, ?, ?, ?, ?,
+			0, ?, ?, ?, ?, ?,
+			?, ?, ?, ?,
+			NULL, NULL, NULL, NULL,
+			0, ?, ?, '', '',
+			?, ?
+		)`
+	if _, err := db.Exec(
+		insert,
+		meta.SessionID, meta.Source, meta.PID, meta.StartedAt, meta.EndedAt, meta.ExitCode, meta.Status,
+		boolInt(meta.Interactive), meta.Provider, meta.Model, meta.CWD, meta.WorkspaceRoot,
+		nullableString(meta.TeamName), boolInt(meta.EnableTools), boolInt(meta.EnableSpawn), boolInt(meta.EnableTeams),
+		meta.Prompt, string(meta.Metadata),
+		relativeMessagesPath, "2026-06-10T10:02:00.000Z",
+	); err != nil {
+		t.Fatalf("insert desktop session: %v", err)
+	}
+
+	msgPath := filepath.Join("..", "..", "..", "testdata", "clinecli", "sample-session-messages-desktop.json")
+	msgBody, err := os.ReadFile(msgPath)
+	if err != nil {
+		t.Fatalf("read desktop messages.json fixture: %v", err)
+	}
+	if err := os.WriteFile(relativeMessagesPath, msgBody, 0o600); err != nil {
+		t.Fatalf("write desktop messages.json: %v", err)
+	}
+	return dbPath
+}
+
+// TestScanStateDB_DesktopSurfaceEndToEnd exercises the clinecli desktop
+// path (`sessions.source='desktop'`) through the REAL scan pipeline —
+// scanStateDB -> buildSessionSurfaces / buildEvents — which prior
+// coverage never touched (existing statedb tests only insert
+// `source='cli'` rows; the desktop surface mapping itself was only
+// unit-tested in isolation at surfaceForSource, surface_test.go).
+//
+// Asserts the full chain: the session row scans with
+// surface=desktop/surface_host=cline-desktop, model/provider/cwd are
+// captured from the sessions row, and token events are parsed from the
+// paired messages.json's per-message usage blocks.
+func TestScanStateDB_DesktopSurfaceEndToEnd(t *testing.T) {
+	t.Parallel()
+	dbPath := buildFixtureCLineDesktopDataDir(t)
+
+	sessions, maxOffset, err := scanStateDB(context.Background(), dbPath, 0)
+	if err != nil {
+		t.Fatalf("scanStateDB: %v", err)
+	}
+	if got, want := len(sessions), 1; got != want {
+		t.Fatalf("len(sessions) = %d, want %d", got, want)
+	}
+	if maxOffset == 0 {
+		t.Error("maxOffset = 0; want > 0 (UnixMilli of updated_at)")
+	}
+
+	s := sessions[0]
+	if s.ID != fixtureDesktopSessionID {
+		t.Errorf("session_id = %q; want %q", s.ID, fixtureDesktopSessionID)
+	}
+	if s.Source != "desktop" {
+		t.Fatalf("source = %q; want desktop", s.Source)
+	}
+	if s.Provider != "cline" {
+		t.Errorf("provider = %q; want cline", s.Provider)
+	}
+	if s.Model != "deepseek/deepseek-v4-flash" {
+		t.Errorf("model = %q; want deepseek/deepseek-v4-flash", s.Model)
+	}
+	wantCWD := filepath.ToSlash("/home/dev/desktop-proj")
+	if filepath.ToSlash(s.CWD) != wantCWD {
+		t.Errorf("cwd = %q; want %q", s.CWD, wantCWD)
+	}
+	if got, want := len(s.Messages.Messages), 4; got != want {
+		t.Fatalf("len(messages) = %d; want %d", got, want)
+	}
+
+	// --- surface stamping: scanStateDB's output feeds buildSessionSurfaces
+	// exactly as ParseSessionFile wires it (adapter.go::ParseSessionFile).
+	surfaces := buildSessionSurfaces(sessions)
+	if len(surfaces) != 1 {
+		t.Fatalf("len(surfaces) = %d; want 1", len(surfaces))
+	}
+	if surfaces[0].SessionID != fixtureDesktopSessionID {
+		t.Errorf("surface session_id = %q; want %q", surfaces[0].SessionID, fixtureDesktopSessionID)
+	}
+	if surfaces[0].Surface != models.SurfaceDesktop {
+		t.Errorf("surface = %q; want %q", surfaces[0].Surface, models.SurfaceDesktop)
+	}
+	if surfaces[0].SurfaceHost != "cline-desktop" {
+		t.Errorf("surface_host = %q; want cline-desktop", surfaces[0].SurfaceHost)
+	}
+
+	// --- token events: buildEvents walks the loaded messages.json and
+	// emits one TokenEvent per assistant message carrying a metrics
+	// block (perMessageTokenEvent) — two assistant messages in the
+	// desktop fixture, matching sample-session-messages-desktop.json.
+	_, tokenEvents, warnings := buildEvents(context.Background(), sessions, dbPath, scrub.New(), nil)
+	if len(warnings) != 0 {
+		t.Errorf("buildEvents warnings = %v; want none", warnings)
+	}
+	if got, want := len(tokenEvents), 2; got != want {
+		t.Fatalf("len(tokenEvents) = %d; want %d", got, want)
+	}
+	for _, te := range tokenEvents {
+		if te.SessionID != fixtureDesktopSessionID {
+			t.Errorf("token event session_id = %q; want %q", te.SessionID, fixtureDesktopSessionID)
+		}
+		if te.InputTokens != 600 || te.OutputTokens != 40 && te.OutputTokens != 44 {
+			t.Errorf("token event input/output = %d/%d; want input=600, output in {40,44}", te.InputTokens, te.OutputTokens)
+		}
+		if te.CacheReadTokens != 200 {
+			t.Errorf("token event cache_read = %d; want 200", te.CacheReadTokens)
+		}
 	}
 }
 

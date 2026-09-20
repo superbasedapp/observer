@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "updated_at": "2026-06-10T10:02:00.000Z",
+  "agent": "lead",
+  "sessionId": "1780900000000_dsk01",
+  "messages": [
+    {
+      "id": "msg_desk_1",
+      "role": "user",
+      "ts": 1780900000500,
+      "content": [
+        {
+          "type": "text",
+          "text": "<user_input mode=\"act\">List the files here</user_input>"
+        }
+      ]
+    },
+    {
+      "id": "msg_desk_2",
+      "role": "assistant",
+      "ts": 1780900004000,
+      "modelInfo": {
+        "id": "deepseek/deepseek-v4-flash",
+        "provider": "cline"
+      },
+      "metrics": {
+        "inputTokens": 600,
+        "outputTokens": 40,
+        "cacheReadTokens": 200,
+        "cacheWriteTokens": 0,
+        "cost": 0.00006
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Sure — here are the files in the current directory."
+        },
+        {
+          "type": "tool_use",
+          "id": "call_desk_list_files",
+          "name": "list_files",
+          "input": {
+            "path": "."
+          }
+        }
+      ]
+    },
+    {
+      "id": "msg_desk_3_tool_call_desk_list_files",
+      "role": "user",
+      "ts": 1780900004500,
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_desk_list_files",
+          "name": "list_files",
+          "content": [
+            {
+              "query": ".",
+              "result": "README.md\nmain.go\ngo.mod",
+              "success": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "msg_desk_4",
+      "role": "assistant",
+      "ts": 1780900006000,
+      "modelInfo": {
+        "id": "deepseek/deepseek-v4-flash",
+        "provider": "cline"
+      },
+      "metrics": {
+        "inputTokens": 600,
+        "outputTokens": 44,
+        "cacheReadTokens": 200,
+        "cacheWriteTokens": 0,
+        "cost": 0.00006
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "This directory contains README.md, main.go, and go.mod."
+        }
+      ]
+    }
+  ]
+}

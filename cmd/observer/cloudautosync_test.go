@@ -111,7 +111,7 @@ func TestCloudAutoSyncLoopSpawnsAndStops(t *testing.T) {
 		mu     sync.Mutex
 		calls  int
 		fired  = make(chan struct{}, 1)
-		errOut bytes.Buffer
+		errOut lockedBuffer
 	)
 	spawn := func(ctx context.Context, cfgPath string) ([]byte, error) {
 		mu.Lock()
@@ -139,6 +139,14 @@ func TestCloudAutoSyncLoopSpawnsAndStops(t *testing.T) {
 		cancel()
 		t.Fatal("loop never spawned")
 	}
+	// The loop deliberately treats a context cancelled while a spawn was in
+	// flight as shutdown noise and logs nothing for it, so wait for the
+	// failure line to land BEFORE cancelling; a fixed sleep here raced the
+	// log write on CI (shard 0, 2026-09-19).
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(errOut.String(), "failed") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	cancel()
 	select {
 	case <-done:
@@ -154,6 +162,25 @@ func TestCloudAutoSyncLoopSpawnsAndStops(t *testing.T) {
 	if !strings.Contains(errOut.String(), "failed") {
 		t.Errorf("a failing spawn must be logged, got %q", errOut.String())
 	}
+}
+
+// lockedBuffer is a bytes.Buffer the loop goroutine writes and the test
+// goroutine polls, guarded so the race detector stays quiet.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // TestCloudAutoSyncSpawnGetsPerCallTimeout pins the per-spawn ceiling

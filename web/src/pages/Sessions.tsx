@@ -12,6 +12,8 @@ import {
   Pill,
   SegmentedControl,
   SlideOver,
+  SurfaceBadge,
+  type SurfaceKind,
   ToolBadge,
   Tooltip,
   TruncatedPath,
@@ -84,6 +86,22 @@ const SORT_OPTIONS: SortOption[] = [
 ];
 
 type View = "table" | "calendar";
+
+// SURFACE_FILTER_OPTIONS backs the toolbar's Client dropdown — one row per
+// value of the closed capture-surface vocabulary (SurfaceBadge's
+// SurfaceKind), walked as data rather than hand-written <option>s so a new
+// kind is one row here. "" = no filter. The filter is SERVER-side
+// (`surface=` on /api/sessions), like tags/favorites and unlike the drawer:
+// the drawer only sees the loaded page, and a client filter there would
+// silently hide matching sessions on other pages.
+const SURFACE_FILTER_OPTIONS: ReadonlyArray<{ value: SurfaceKind | ""; label: string }> = [
+  { value: "", label: "Client: any" },
+  { value: "cli", label: "cli — terminal" },
+  { value: "ide", label: "ide — editor / plugin" },
+  { value: "desktop", label: "desktop — desktop app" },
+  { value: "sdk", label: "sdk — programmatic" },
+  { value: "web", label: "web — browser" },
+];
 
 export function SessionsPage() {
   const { win, customRange, tool, project, query: globalQuery } = useFilters();
@@ -175,6 +193,10 @@ export function SessionsPage() {
   // transient view choice.
   const [tagFilters, setTagFilters] = useState<string[]>([]);
   const [favoriteOnly, setFavoriteOnly] = useState(false);
+  // surfaceFilter is the Client dropdown's value: one closed-vocabulary kind
+  // or "" for any. Server-side (all pages) and transient, exactly like
+  // favoriteOnly — the stamp is the server's fact, the filter a view choice.
+  const [surfaceFilter, setSurfaceFilter] = useState<SurfaceKind | "">("");
   const tagKey = tagFilters.join(",");
   // annotations holds per-session optimistic overrides for the
   // classification fields, merged over the fetched rows. Each entry is
@@ -202,7 +224,7 @@ export function SessionsPage() {
   };
 
   // Reset page when filters change (incl. picked calendar day).
-  const filterKey = `${win}|${tool}|${project}|${pickedDay ?? ""}|${sortBy}|${sortDir}|${tagKey}|${favoriteOnly}`;
+  const filterKey = `${win}|${tool}|${project}|${pickedDay ?? ""}|${sortBy}|${sortDir}|${tagKey}|${favoriteOnly}|${surfaceFilter}`;
   const lastKey = useMemo(() => filterKey, [filterKey]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useMemo(() => setPage(1), [lastKey]);
@@ -222,6 +244,9 @@ export function SessionsPage() {
       // Repeated `tag=` params (AND semantics, server-side) + favorite=1.
       tag: tagFilters.length > 0 ? tagFilters : undefined,
       favorite: favoriteOnly ? 1 : undefined,
+      // Capture-surface kind, exact match server-side; "" is dropped by
+      // buildUrl so "any" sends nothing.
+      surface: surfaceFilter || undefined,
     },
     [
       page,
@@ -234,6 +259,7 @@ export function SessionsPage() {
       sortDir,
       tagKey,
       favoriteOnly,
+      surfaceFilter,
     ],
     // Live-capture refresh: 5s while the tab is visible. Lets fresh
     // Antigravity-CLI .pb files (and any other in-progress session)
@@ -563,9 +589,16 @@ export function SessionsPage() {
         onClear: () => setTagFilters((cur) => cur.filter((x) => x !== t)),
       });
     }
+    if (surfaceFilter) {
+      c.push({
+        label: `client: ${surfaceFilter}`,
+        title: "Show sessions from every client again",
+        onClear: () => setSurfaceFilter(""),
+      });
+    }
     return c;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [favoriteOnly, tagKey]);
+  }, [favoriteOnly, tagKey, surfaceFilter]);
 
   const showScoring = (sessions.data?.scored_count ?? 0) > 0;
   const columns = useMemo<ColumnDef<SessionRow, unknown>[]>(
@@ -636,6 +669,31 @@ export function SessionsPage() {
               onChange={(e) => setLocalQuery(e.target.value)}
               className="h-7 w-[240px] rounded-2 border border-line-2 bg-bg-2 px-2 font-mono text-[11px] text-fg-1 placeholder:text-fg-4 focus:border-accent focus:outline-none"
             />
+            <Tooltip
+              content={
+                surfaceFilter
+                  ? `Showing ${surfaceFilter} sessions only - pick "any" to show all`
+                  : "Filter by how the tool was driven: terminal, editor, desktop app, SDK, or browser (server-side, all pages)"
+              }
+              maxWidth={320}
+            >
+              <select
+                aria-label="Filter sessions by client"
+                value={surfaceFilter}
+                onChange={(e) => setSurfaceFilter(e.target.value as SurfaceKind | "")}
+                className={
+                  surfaceFilter
+                    ? "h-7 rounded-2 border border-accent/50 bg-accent-soft px-2 text-[11px] text-accent focus:outline-none"
+                    : "h-7 rounded-2 border border-line-2 bg-bg-2 px-2 text-[11px] text-fg-2 hover:bg-bg-3 focus:border-accent focus:outline-none"
+                }
+              >
+                {SURFACE_FILTER_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
             <Tooltip
               content={
                 favoriteOnly
@@ -774,6 +832,7 @@ export function SessionsPage() {
               setFilters(EMPTY_FILTERS);
               setTagFilters([]);
               setFavoriteOnly(false);
+              setSurfaceFilter("");
             }}
           />
         )}
@@ -1307,6 +1366,10 @@ const COL_W = {
   // "Antigravity CLI") still read; longer ones ellipsize with the badge's
   // own tooltip carrying the full name.
   tool: 120,
+  // Client: one small pill, "desktop · claude-desktop" being the widest
+  // common value. Deliberately narrow; the pill's own tooltip carries the
+  // full gloss + host, and the cell truncates rather than growing.
+  client: 96,
   project: 132,
   tags: 116,
   models: 108,
@@ -1334,6 +1397,7 @@ const SESSIONS_MIN_WIDTH =
   COL_W.favorite +
   COL_W.session +
   COL_W.tool +
+  COL_W.client +
   COL_W.project +
   COL_W.tags +
   COL_W.models +
@@ -1476,10 +1540,11 @@ function buildColumns(
   tagsCtx: TagsCtx,
   onEnrich: (session: SessionRow) => void,
 ): ColumnDef<SessionRow, unknown>[] {
-  // Column order matches design/page-sessions.jsx exactly:
-  // Session / Tool / Project / Model(s) / Started / Elapsed / Actions /
-  // Sub / Input / Cache R / Cache W / Output / API $ / Tool $ / Total $
-  // Reliability and scoring (optional) come after.
+  // Column order matches design/page-sessions.jsx exactly (Client, the
+  // capture-surface pill, was added beside Tool after the design snapshot):
+  // Session / Tool / Client / Project / Model(s) / Started / Elapsed /
+  // Actions / Sub / Input / Cache R / Cache W / Output / API $ / Tool $ /
+  // Total $. Reliability and scoring (optional) come after.
   const cols: ColumnDef<SessionRow, unknown>[] = [
     {
       // Favorite star + a compact rating trigger sharing one narrow column.
@@ -1611,6 +1676,28 @@ function buildColumns(
           <ToolBadge
             tool={row.original.tool}
             className="min-w-0 [&>span:last-child]:min-w-0 [&>span:last-child]:truncate"
+          />
+        </span>
+      ),
+    },
+    {
+      // Client: the capture-surface pill (cli / ide / desktop / sdk / web +
+      // host). SurfaceBadge renders NOTHING when neither field is present —
+      // absent is unknown, never "cli" — so an unstamped row shows a blank
+      // cell rather than a fabricated default. Not sortable: there is no
+      // server sort key for it, and the table is manualSorting, so a header
+      // click would otherwise send a sort_by the server ignores.
+      id: "client",
+      header: () => <>Client<HelpInd id="column.sessions.client" /></>,
+      accessorFn: (r) => r.surface ?? "",
+      enableSorting: false,
+      meta: { width: COL_W.client, truncate: true },
+      cell: ({ row }) => (
+        <span className="flex min-w-0">
+          <SurfaceBadge
+            surface={row.original.surface}
+            host={row.original.surface_host}
+            className="min-w-0 max-w-full [&>span:last-child]:min-w-0 [&>span:last-child]:truncate"
           />
         </span>
       ),
@@ -2016,6 +2103,8 @@ function exportSessionsCsv(rows: SessionRow[]) {
   const header = [
     "session_id",
     "tool",
+    "surface",
+    "surface_host",
     "project",
     "started_at",
     "duration_seconds",
@@ -2034,6 +2123,8 @@ function exportSessionsCsv(rows: SessionRow[]) {
     [
       escapeCsv(r.id),
       escapeCsv(r.tool),
+      escapeCsv(r.surface),
+      escapeCsv(r.surface_host),
       escapeCsv(r.project),
       escapeCsv(r.started_at),
       r.duration_seconds,

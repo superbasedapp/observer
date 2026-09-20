@@ -2048,6 +2048,42 @@ func sessionsSQLOrderClause(sortBy string, desc bool) string {
 	return expr + " " + dir + ", s.started_at DESC, s.id ASC"
 }
 
+// maxSurfaceHostFilterLen bounds the `surface_host` list filter. Host
+// tokens adapters mint are short lowercase identifiers ("vscode",
+// "jetbrains-idea", "freebuff-desktop"); anything longer is not a token
+// the store could hold and is dropped rather than bound into the query.
+const maxSurfaceHostFilterLen = 64
+
+// sessionSurfaceFilter resolves the `surface=<kind>` query param of
+// GET /api/sessions to a value safe to bind as an exact match, or "" for
+// "no filter". Only the closed models.Surface* vocabulary passes
+// (models.KnownSurface is the single authority on it); an unknown or
+// empty value FAILS OPEN to no filter — a stale bookmark must still
+// render the list, and the closed vocabulary means a typo can never be a
+// legitimate "match nothing". Matching is case-insensitive on input; the
+// stored kind is lowercase by construction (SetSessionSurface validates).
+func sessionSurfaceFilter(r *http.Request) string {
+	kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("surface")))
+	if kind == "" || !models.KnownSurface(kind) {
+		return ""
+	}
+	return kind
+}
+
+// sessionSurfaceHostFilter resolves the `surface_host=<token>` query
+// param to a lowercase token safe to bind as an exact match, or "" for
+// "no filter". The host vocabulary is deliberately OPEN (each adapter
+// mints its own token, so there is no table to validate against); the
+// only shape rule is "one bare token": whitespace inside the value or a
+// length past maxSurfaceHostFilterLen fails open to no filter.
+func sessionSurfaceHostFilter(r *http.Request) string {
+	host := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("surface_host")))
+	if host == "" || len(host) > maxSurfaceHostFilterLen || strings.ContainsAny(host, " \t\r\n") {
+		return ""
+	}
+	return host
+}
+
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	limit := intArg(r, "limit", 20, 1, 500)
 	page := intArg(r, "page", 1, 1, 1_000_000)
@@ -2137,6 +2173,22 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("favorite")); v == "1" || strings.EqualFold(v, "true") {
 		where = append(where, "EXISTS (SELECT 1 FROM session_annotations sa WHERE sa.session_id = s.id AND sa.favorite = 1)")
+	}
+	// Capture-surface filters (migration 107, node-local). `surface` is an
+	// exact match on the closed models.Surface* vocabulary; a value outside
+	// it is IGNORED (fail-open: no filter), never a 400 and never a no-match
+	// — an old bookmark carrying a kind that was later retired should still
+	// show the list. `surface_host` is a free-form token by design (adapters
+	// mint their own), so it is matched verbatim after lowercasing; the
+	// stored token is lowercase by convention. Both go into the SHARED
+	// `where` slice so total / scored_count agree with the page.
+	if kind := sessionSurfaceFilter(r); kind != "" {
+		where = append(where, "s.surface = ?")
+		args = append(args, kind)
+	}
+	if host := sessionSurfaceHostFilter(r); host != "" {
+		where = append(where, "s.surface_host = ?")
+		args = append(args, host)
 	}
 	if !since.IsZero() {
 		sinceStr := since.Format(time.RFC3339Nano)
@@ -2273,7 +2325,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		        -- the lower id made the list and the card report different
 		        -- numbers for one session. One owner, one rule.
 		        s.quality_score, s.error_rate, s.redundancy_ratio,
-		        s.redundancy_ratio_wasteful, s.stale_reads_wasteful, s.stale_reads_necessary
+		        s.redundancy_ratio_wasteful, s.stale_reads_wasteful, s.stale_reads_necessary,
+		        -- Capture surface (migration 107): plain columns on the row,
+		        -- read in the same pass as the rest — no per-row
+		        -- store.LoadSessionSurface round trip. '' = unstamped.
+		        COALESCE(s.surface, ''), COALESCE(s.surface_host, '')
 		 FROM sessions s
 		 LEFT JOIN projects p ON p.id = s.project_id
 		 `+whereClause+` `+orderAndLimit, dataArgs...)
@@ -2400,6 +2456,16 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		CloudEnriched   bool                           `json:"cloud_enriched,omitempty"`
 		CloudTitle      string                         `json:"cloud_title,omitempty"`
 		CloudEnrichment *store.CloudEnrichmentProgress `json:"cloud_enrichment,omitempty"`
+		// Surface / SurfaceHost are the capture-surface attribution
+		// (migration 107, NODE-LOCAL): the closed kind vocabulary
+		// (models.SurfaceCLI..SurfaceWeb) and the free-form host token
+		// ("vscode", "claude-desktop", "jetbrains-idea", ...). Both carry
+		// omitempty and ABSENT MEANS UNSTAMPED — the list never fabricates
+		// a "cli" default; the SurfaceBadge renders nothing for it. Same
+		// two fields the detail response exposes, so list and slide-over
+		// cannot disagree about one session.
+		Surface     string `json:"surface,omitempty"`
+		SurfaceHost string `json:"surface_host,omitempty"`
 	}
 	var out []sessRow
 	for rows.Next() {
@@ -2410,7 +2476,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&sr.ID, &sr.Tool, &sr.Project, &sr.StartedAt, &sr.LastSeenAt,
 			&sr.TotalActions, &sr.SidechainActionCount,
 			&q, &er, &rr,
-			&rrWasteful, &stWasteful, &stNecessary); err != nil {
+			&rrWasteful, &stWasteful, &stNecessary,
+			&sr.Surface, &sr.SurfaceHost); err != nil {
 			writeErr(w, err)
 			return
 		}

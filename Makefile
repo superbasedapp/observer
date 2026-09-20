@@ -11,7 +11,7 @@ WEB_DIR        := web
 WEB_DIST       := $(WEB_DIR)/dist
 WEB_EMBED_DIST := internal/intelligence/dashboard/webapp/dist
 
-.PHONY: all build test test-race test-invariant lint fmt vet tidy clean run cover \
+.PHONY: all build test test-race test-invariant render-module-fixtures lint fmt vet tidy clean run cover \
         build-observer build-antigravity-bridge build-node-inspection install-node-inspection \
         web-install web-dev web-build web-clean \
         plugins-build verify-plugins-build \
@@ -116,6 +116,17 @@ test-race:
 # the goldens intentionally with `go test ./tests/invariant -update`.
 test-invariant:
 	$(GO) test $(GOFLAGS) ./tests/invariant/...
+
+# Regenerates the OpenTofu module fixtures the render tests pin byte-for-
+# byte: deploy/modules/{compact,appliance}/{azure,aws}/<layer>/tests/
+# fixtures/<id>.tfvars, one file per CONTRACT.md fixture row per cloud
+# (RA-0/RA-1a/RA-1b compact; RA-2/RA-2-selfhosted/RA-3/RA-3-selfhosted
+# appliance), each the SAME bytes `observer-org deploy plan` renders for
+# that answer set. `tofu test` reads them; TestModuleFixturesMatchRender
+# fails on any drift and names this target. Run it after a deliberate
+# change to the render or the catalog, then commit the files.
+render-module-fixtures:
+	UPDATE_FIXTURES=1 $(GO) test $(GOFLAGS) ./deploy/catalog/render/ -run TestModuleFixturesMatchRender
 
 cover:
 	$(GO) test $(GOFLAGS) -race -coverprofile=$(COVER_OUT) -covermode=atomic ./...

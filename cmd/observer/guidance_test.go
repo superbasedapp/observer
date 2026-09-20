@@ -39,6 +39,21 @@ type fakeGuidanceSeams struct {
 	// hang, when set for a root, makes that root's scan block until its
 	// ctx is done — the slow-DrvFs shape, without a slow filesystem.
 	hang map[string]bool
+	// incomplete, when set for a root, returns an incomplete Result
+	// IMMEDIATELY (no blocking) — the adaptive-budget shape without any real
+	// wall-clock waiting: the row is still reported Incomplete and not
+	// persisted, exactly as a time-budget overrun would be.
+	incomplete map[string]bool
+	// scanOutcomes scripts a root's outcome pass-by-pass: each entry is
+	// "incomplete" or "ok" (anything else / exhausted -> the default healthy
+	// scan). It exists so a test can drive overrun -> persist -> overrun
+	// across passes of a single blocking guidanceRunLoop call.
+	scanOutcomes map[string][]string
+	// budgets records, per root, the per-root time budget the pass granted it
+	// on each scan — the raw remaining time read from the scan ctx's
+	// deadline. This is how the adaptive-budget growth is asserted (via
+	// guidanceBudgetInBand, which tolerates a few ms of overhead).
+	budgets map[string][]time.Duration
 	// skip is the injected root filter.
 	skip map[string]string
 	// clock advances one second per read so per-root stamps differ.
@@ -53,8 +68,15 @@ func (f *fakeGuidanceSeams) seams() guidanceSeams {
 	f.scanErr = orEmptyErrMap(f.scanErr)
 	f.persErr = orEmptyErrMap(f.persErr)
 	f.hang = orEmptyBoolMap(f.hang)
+	f.incomplete = orEmptyBoolMap(f.incomplete)
 	if f.stampedAt == nil {
 		f.stampedAt = map[string]time.Time{}
+	}
+	if f.scanOutcomes == nil {
+		f.scanOutcomes = map[string][]string{}
+	}
+	if f.budgets == nil {
+		f.budgets = map[string][]time.Duration{}
 	}
 	f.clock = guidanceFakeEpoch
 	return guidanceSeams{
@@ -68,11 +90,33 @@ func (f *fakeGuidanceSeams) seams() guidanceSeams {
 		},
 		Scan: func(ctx context.Context, root string) (guidance.Result, error) {
 			f.scanned = append(f.scanned, root)
+			// Record the budget this pass granted (the ctx deadline's remaining
+			// time), so the adaptive growth is observable without any real
+			// waiting. Stored RAW — the tests assert a tolerance band rather
+			// than an exact value, so a few microseconds of scheduling
+			// overhead between context.WithTimeout and this read never flakes.
+			if d, ok := ctx.Deadline(); ok {
+				f.budgets[root] = append(f.budgets[root], time.Until(d))
+			}
+			// A scripted outcome takes precedence, so a single loop can drive
+			// overrun -> persist -> overrun across passes.
+			if outs := f.scanOutcomes[root]; len(outs) > 0 {
+				o := outs[0]
+				f.scanOutcomes[root] = outs[1:]
+				if o == "incomplete" {
+					return guidance.Result{Incomplete: true}, nil
+				}
+			}
 			if f.hang[root] {
 				// The live shape: a root on a slow mount that keeps
 				// walking until something stops it.
 				<-ctx.Done()
 				return guidance.Result{Incomplete: true}, ctx.Err()
+			}
+			if f.incomplete[root] {
+				// Overruns every pass, but returns at once so the test does
+				// no real waiting.
+				return guidance.Result{Incomplete: true}, nil
 			}
 			if err := f.scanErr[root]; err != nil {
 				return guidance.Result{}, err
@@ -113,6 +157,16 @@ func orEmptyErrMap(m map[string]error) map[string]error {
 		return map[string]error{}
 	}
 	return m
+}
+
+// guidanceBudgetInBand reports whether a recorded per-root budget (the ctx
+// deadline's REMAINING time at scan start) matches the expected grant. The
+// remaining is always <= want and at most a few ms below it (the overhead
+// between context.WithTimeout and the read); a 40ms band absorbs even a slow
+// Windows scheduler while staying well clear of the next budget step (the
+// grants differ by a factor of two, i.e. >= want itself apart).
+func guidanceBudgetInBand(got, want time.Duration) bool {
+	return got <= want && got > want-40*time.Millisecond
 }
 
 // TestGuidanceScanPass is the table-driven pin over the pass's orchestration:
@@ -793,52 +847,67 @@ func TestGuidanceRunLoopAdvancesRotation(t *testing.T) {
 // an unbounded root is the failure these budgets exist to prevent.
 func TestGuidanceBudgetsResolveDefaults(t *testing.T) {
 	cases := []struct {
-		name      string
-		cfg       config.GuidanceConfig
-		wantRoots int
-		wantRoot  time.Duration
-		wantPass  time.Duration
+		name       string
+		cfg        config.GuidanceConfig
+		wantRoots  int
+		wantRoot   time.Duration
+		wantPass   time.Duration
+		wantRootMx time.Duration
 	}{
 		{
-			name:      "zero value falls back to the seeded budgets",
-			cfg:       config.GuidanceConfig{},
-			wantRoots: guidanceDefaultMaxRootsPerPass,
-			wantRoot:  guidanceDefaultRootTimeout,
-			wantPass:  guidanceDefaultPassTimeout,
+			name:       "zero value falls back to the seeded budgets",
+			cfg:        config.GuidanceConfig{},
+			wantRoots:  guidanceDefaultMaxRootsPerPass,
+			wantRoot:   guidanceDefaultRootTimeout,
+			wantPass:   guidanceDefaultPassTimeout,
+			wantRootMx: guidanceDefaultRootTimeoutMax,
 		},
 		{
-			name:      "the shipped seed",
-			cfg:       config.Default().Guidance,
-			wantRoots: 50,
-			wantRoot:  20 * time.Second,
-			wantPass:  10 * time.Minute,
+			name:       "the shipped seed",
+			cfg:        config.Default().Guidance,
+			wantRoots:  50,
+			wantRoot:   20 * time.Second,
+			wantPass:   10 * time.Minute,
+			wantRootMx: 180 * time.Second,
 		},
 		{
 			name: "operator overrides",
 			cfg: config.GuidanceConfig{
-				MaxRootsPerPass: 5, RootTimeoutSeconds: 3, PassTimeoutMinutes: 2,
+				MaxRootsPerPass: 5, RootTimeoutSeconds: 3, PassTimeoutMinutes: 2, RootTimeoutMaxSeconds: 60,
 			},
-			wantRoots: 5,
-			wantRoot:  3 * time.Second,
-			wantPass:  2 * time.Minute,
+			wantRoots:  5,
+			wantRoot:   3 * time.Second,
+			wantPass:   2 * time.Minute,
+			wantRootMx: 60 * time.Second,
 		},
 		{
 			name: "negatives are clamped, not honoured as unbounded",
 			cfg: config.GuidanceConfig{
-				MaxRootsPerPass: -1, RootTimeoutSeconds: -1, PassTimeoutMinutes: -1,
+				MaxRootsPerPass: -1, RootTimeoutSeconds: -1, PassTimeoutMinutes: -1, RootTimeoutMaxSeconds: -1,
 			},
-			wantRoots: guidanceDefaultMaxRootsPerPass,
-			wantRoot:  guidanceDefaultRootTimeout,
-			wantPass:  guidanceDefaultPassTimeout,
+			wantRoots:  guidanceDefaultMaxRootsPerPass,
+			wantRoot:   guidanceDefaultRootTimeout,
+			wantPass:   guidanceDefaultPassTimeout,
+			wantRootMx: guidanceDefaultRootTimeoutMax,
+		},
+		{
+			name: "a ceiling below the base is clamped up to the base",
+			cfg: config.GuidanceConfig{
+				RootTimeoutSeconds: 30, RootTimeoutMaxSeconds: 5,
+			},
+			wantRoots:  guidanceDefaultMaxRootsPerPass,
+			wantRoot:   30 * time.Second,
+			wantPass:   guidanceDefaultPassTimeout,
+			wantRootMx: 30 * time.Second, // never below where growth starts
 		},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			roots, rootTO, passTO := guidanceBudgets(tc.cfg)
-			if roots != tc.wantRoots || rootTO != tc.wantRoot || passTO != tc.wantPass {
-				t.Errorf("guidanceBudgets = (%d, %v, %v), want (%d, %v, %v)",
-					roots, rootTO, passTO, tc.wantRoots, tc.wantRoot, tc.wantPass)
+			roots, rootTO, passTO, rootMx := guidanceBudgets(tc.cfg)
+			if roots != tc.wantRoots || rootTO != tc.wantRoot || passTO != tc.wantPass || rootMx != tc.wantRootMx {
+				t.Errorf("guidanceBudgets = (%d, %v, %v, %v), want (%d, %v, %v, %v)",
+					roots, rootTO, passTO, rootMx, tc.wantRoots, tc.wantRoot, tc.wantPass, tc.wantRootMx)
 			}
 		})
 	}
@@ -1063,6 +1132,244 @@ func TestGuidanceRunLoopFirstScanPoll(t *testing.T) {
 	}
 	if lines != 1 {
 		t.Errorf("got %d first-scan log lines, want exactly 1:\n%s", lines, buf.String())
+	}
+}
+
+// TestGuidanceAdaptiveRootTimeout is the pure escalation curve: a healthy root
+// gets the base, each consecutive overrun doubles it, and growth saturates at
+// the ceiling — monotonic and overflow-safe.
+func TestGuidanceAdaptiveRootTimeout(t *testing.T) {
+	const base = 20 * time.Second
+	const ceiling = 180 * time.Second
+	cases := []struct {
+		streak int
+		want   time.Duration
+	}{
+		{0, base},              // healthy root
+		{1, 40 * time.Second},  // base << 1
+		{2, 80 * time.Second},  // base << 2
+		{3, 160 * time.Second}, // base << 3
+		{4, ceiling},           // base << 4 == 320 -> capped
+		{5, ceiling},           // stays capped
+		{100, ceiling},         // no overflow at a large streak
+	}
+	for _, c := range cases {
+		if got := guidanceAdaptiveRootTimeout(base, ceiling, c.streak); got != c.want {
+			t.Errorf("guidanceAdaptiveRootTimeout(base, ceiling, %d) = %v, want %v", c.streak, got, c.want)
+		}
+	}
+
+	// Growth is strictly monotonic non-decreasing up to the ceiling.
+	prev := guidanceAdaptiveRootTimeout(base, ceiling, 0)
+	for n := 1; n <= 10; n++ {
+		cur := guidanceAdaptiveRootTimeout(base, ceiling, n)
+		if cur < prev {
+			t.Errorf("budget went DOWN at streak %d: %v < %v", n, cur, prev)
+		}
+		if cur > ceiling {
+			t.Errorf("budget exceeded the ceiling at streak %d: %v", n, cur)
+		}
+		prev = cur
+	}
+
+	// An unbounded base (0 => no per-root timeout) stays unbounded — a root
+	// that never overruns by time must not be handed a suddenly-bounded ctx.
+	if got := guidanceAdaptiveRootTimeout(0, ceiling, 3); got != 0 {
+		t.Errorf("an unbounded base must stay unbounded, got %v", got)
+	}
+	// base == ceiling disables adaptation: the root never gets more than base.
+	if got := guidanceAdaptiveRootTimeout(base, base, 5); got != base {
+		t.Errorf("base==ceiling must return base, got %v", got)
+	}
+}
+
+// TestGuidanceUpdateOverrunState pins the loud, deduped warning cadence and the
+// streak bookkeeping directly, feeding the helper synthetic pass results.
+func TestGuidanceUpdateOverrunState(t *testing.T) {
+	const base = 100 * time.Millisecond
+	const ceiling = 400 * time.Millisecond // steps: 100, 200, 400 (then capped)
+
+	overrun := map[string]int{}
+	terminalWarned := map[string]int{}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	incompletePass := guidancePassResult{Roots: []guidanceRootResult{{Root: "/slow", Incomplete: true}}}
+
+	countLines := func(needle string) int {
+		n := 0
+		for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+			if l != "" && strings.Contains(l, needle) {
+				n++
+			}
+		}
+		return n
+	}
+
+	const escalate = "granting it a larger scan budget"
+	const terminal = "cannot be inventoried within the max budget"
+
+	// Four consecutive overruns.
+	//   n=1: ran under 100, next 200  -> escalate
+	//   n=2: ran under 200, next 400  -> escalate
+	//   n=3: ran under 400 (==ceiling), next 400 -> terminal (fires once)
+	//   n=4: ran under 400, next 400  -> terminal already warned -> silent
+	for i := 0; i < 4; i++ {
+		guidanceUpdateOverrunState(incompletePass, overrun, terminalWarned, base, ceiling, logger)
+	}
+	if overrun["/slow"] != 4 {
+		t.Errorf("streak = %d, want 4", overrun["/slow"])
+	}
+	if got := countLines(escalate); got != 2 {
+		t.Errorf("escalation warnings = %d, want 2 (one per growth step):\n%s", got, buf.String())
+	}
+	if got := countLines(terminal); got != 1 {
+		t.Errorf("terminal warnings = %d, want exactly 1 (deduped across passes):\n%s", got, buf.String())
+	}
+
+	// A clean persist resets the streak and the terminal flag.
+	persistPass := guidancePassResult{Roots: []guidanceRootResult{{Root: "/slow", ScannedAt: "2026-09-15T12:00:00Z"}}}
+	guidanceUpdateOverrunState(persistPass, overrun, terminalWarned, base, ceiling, logger)
+	if _, ok := overrun["/slow"]; ok {
+		t.Errorf("a persisted root must clear its overrun streak: %v", overrun)
+	}
+	if _, ok := terminalWarned["/slow"]; ok {
+		t.Errorf("a persisted root must clear its terminal-warned flag: %v", terminalWarned)
+	}
+
+	// After the reset a fresh overrun escalates AGAIN from the base — proof
+	// the budget returned to base rather than jumping back to the ceiling.
+	guidanceUpdateOverrunState(incompletePass, overrun, terminalWarned, base, ceiling, logger)
+	if overrun["/slow"] != 1 {
+		t.Errorf("streak after reset+overrun = %d, want 1", overrun["/slow"])
+	}
+	if got := countLines(escalate); got != 3 {
+		t.Errorf("escalation warnings after reset = %d, want 3 (a new step fired):\n%s", got, buf.String())
+	}
+}
+
+// TestGuidanceRunLoopAdaptiveBudget is the whole feature end to end through the
+// daemon loop: a root that overruns every pass is granted a strictly growing
+// per-root budget across passes, capped at the ceiling, and an incomplete walk
+// is NEVER persisted regardless of how big its budget grows.
+func TestGuidanceRunLoopAdaptiveBudget(t *testing.T) {
+	// The pass cleans root spellings (filepath.Clean), and the fake consults
+	// its maps with that cleaned spelling — so key everything by the cleaned
+	// form to stay host-independent ("\slow" on Windows, "/slow" on unix).
+	slow := filepath.Clean("/slow")
+	fake := fakeGuidanceSeams{
+		roots:      []string{slow},
+		incomplete: map[string]bool{slow: true}, // overruns every pass, returns at once
+	}
+	seams := fake.seams()
+	seams.RootTimeout = 100 * time.Millisecond // base
+	seams.PassTimeout = time.Hour
+
+	// Five passes total (startup + 4 rescans): the After seam delivers on the
+	// first four rescan-arming calls, then cancels.
+	calls := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	after := func(time.Duration) <-chan time.Time {
+		calls++
+		if calls > 4 {
+			cancel()
+			return make(chan time.Time)
+		}
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
+
+	guidanceRunLoop(ctx, guidanceLoopDeps{
+		Seams:          seams,
+		Rescan:         time.Minute,
+		RootTimeoutMax: 800 * time.Millisecond, // ceiling == base << 3
+		After:          after,
+	})
+
+	got := fake.budgets[slow]
+	want := []time.Duration{
+		100 * time.Millisecond, // startup, streak 0
+		200 * time.Millisecond, // streak 1
+		400 * time.Millisecond, // streak 2
+		800 * time.Millisecond, // streak 3 -> ceiling
+		800 * time.Millisecond, // streak 4 -> stays capped
+	}
+	if len(got) != len(want) {
+		t.Fatalf("granted budgets = %v, want %d passes %v", got, len(want), want)
+	}
+	for i := range want {
+		if !guidanceBudgetInBand(got[i], want[i]) {
+			t.Errorf("pass %d budget = %v, want ~%v (full: %v)", i, got[i], want[i], got)
+		}
+	}
+	// The bands (100/200/400/800) do not overlap, so matching them already
+	// proves the strictly-growing-then-capped curve.
+	//
+	// The load-bearing invariant: no matter how large the budget grew, an
+	// incomplete walk is never persisted (a partial inventory would tombstone
+	// real files).
+	if len(fake.persisted) != 0 {
+		t.Errorf("an incomplete root was persisted: %v", fake.persisted)
+	}
+}
+
+// TestGuidanceRunLoopAdaptiveResetsOnPersist proves a root that finally
+// persists drops back to the base budget: its scripted outcomes are
+// overrun, overrun, persist, overrun — and the budget granted on the fourth
+// pass is the base again, not the escalated value.
+func TestGuidanceRunLoopAdaptiveResetsOnPersist(t *testing.T) {
+	// Key by the cleaned root spelling (see TestGuidanceRunLoopAdaptiveBudget).
+	slow := filepath.Clean("/slow")
+	fake := fakeGuidanceSeams{
+		roots:        []string{slow},
+		scanOutcomes: map[string][]string{slow: {"incomplete", "incomplete", "ok", "incomplete"}},
+	}
+	seams := fake.seams()
+	seams.RootTimeout = 100 * time.Millisecond
+	seams.PassTimeout = time.Hour
+
+	// Four passes: startup + 3 rescans.
+	calls := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	after := func(time.Duration) <-chan time.Time {
+		calls++
+		if calls > 3 {
+			cancel()
+			return make(chan time.Time)
+		}
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
+
+	guidanceRunLoop(ctx, guidanceLoopDeps{
+		Seams:          seams,
+		Rescan:         time.Minute,
+		RootTimeoutMax: 800 * time.Millisecond,
+		After:          after,
+	})
+
+	got := fake.budgets[slow]
+	want := []time.Duration{
+		100 * time.Millisecond, // streak 0, overrun -> streak 1
+		200 * time.Millisecond, // streak 1, overrun -> streak 2
+		400 * time.Millisecond, // streak 2, OK -> persist -> streak reset
+		100 * time.Millisecond, // streak 0 again -> BACK TO BASE
+	}
+	if len(got) != len(want) {
+		t.Fatalf("granted budgets = %v, want %v", got, want)
+	}
+	for i := range want {
+		if !guidanceBudgetInBand(got[i], want[i]) {
+			t.Errorf("pass %d budget = %v, want ~%v (full: %v)", i, got[i], want[i], got)
+		}
+	}
+	// The one healthy pass persisted; the incomplete ones did not.
+	if strings.Join(fake.persisted, ",") != slow {
+		t.Errorf("persisted = %v, want exactly the one healthy pass", fake.persisted)
 	}
 }
 

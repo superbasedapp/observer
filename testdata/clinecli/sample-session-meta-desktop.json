@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "session_id": "1780900000000_dsk01",
+  "source": "desktop",
+  "pid": 51234,
+  "started_at": "2026-06-10T10:00:00.000Z",
+  "exit_code": null,
+  "status": "idle",
+  "interactive": true,
+  "provider": "cline",
+  "model": "deepseek/deepseek-v4-flash",
+  "cwd": "/home/dev/desktop-proj",
+  "workspace_root": "/home/dev/desktop-proj",
+  "team_name": null,
+  "enable_tools": true,
+  "enable_spawn": false,
+  "enable_teams": false,
+  "prompt": "<user_input mode=\"act\">List the files here</user_input>",
+  "metadata": {
+    "title": "List the files here",
+    "totalCost": 0.0012,
+    "aggregatedAgentsCost": 0.0012,
+    "usage": {
+      "inputTokens": 1200,
+      "outputTokens": 84,
+      "cacheReadTokens": 400,
+      "cacheWriteTokens": 0,
+      "totalCost": 0.0012
+    },
+    "aggregateUsage": {
+      "inputTokens": 1200,
+      "outputTokens": 84,
+      "cacheReadTokens": 400,
+      "cacheWriteTokens": 0,
+      "totalCost": 0.0012
+    }
+  },
+  "messages_path": "/home/dev/.cline/data/sessions/1780900000000_dsk01/1780900000000_dsk01.messages.json"
+}

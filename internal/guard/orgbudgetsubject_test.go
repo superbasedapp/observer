@@ -220,8 +220,17 @@ func TestCheckInterventionBudget_CarriesTheSubject(t *testing.T) {
 // numbers and the authority provenance come out of ONE composition and must
 // reach the live engine in ONE publication. Two applies meant an intermediate
 // engine holding new caps against old protection.
+//
+// Deliberately NOT t.Parallel(): the "exactly one rebuild" assertion below
+// reads engineRevision, a package-global atomic.Uint64 (engineset.go) that
+// every Guard in the process shares to stamp its own engineSet.revision. A
+// sibling test's guard rebuilding between this test's before/after snapshots
+// moves the shared counter too, so `g.set.Load().revision` can advance by
+// more than 1 for THIS guard even though it rebuilt exactly once — that's
+// what made this test flaky under -race with other parallel tests in the
+// package (moved by 2, not a bug in ApplyOrgComposedBudget). Running serially
+// makes the global-delta assertion trustworthy again.
 func TestApplyOrgComposedBudget_IsOneRebuild(t *testing.T) {
-	t.Parallel()
 	cfg := guardCfg()
 	cfg.Mode = "enforce"
 	g := newTestGuard(t, cfg, nil)
@@ -236,12 +245,20 @@ func TestApplyOrgComposedBudget_IsOneRebuild(t *testing.T) {
 	protection := policy.BudgetProtection{ToolUSD: true, DailyUSD: true}
 
 	before := g.set.Load().revision
+	p0 := g.set.Load()
 	if err := g.ApplyOrgComposedBudget(numbers, nil, false, protection, "bind",
 		BudgetDocumentWitness{Known: true}, baseline, true, caps); err != nil {
 		t.Fatalf("ApplyOrgComposedBudget: %v", err)
 	}
-	// ONE rebuild, not two.
-	if got := g.set.Load().revision; got != before+1 {
+	// ONE rebuild, not two: the engineSet pointer swapped exactly once (a
+	// second, intermediate publication would still leave p1 != p0 here, so
+	// this alone doesn't prove "exactly one" — the revision delta below
+	// does, and is trustworthy because this test is not t.Parallel()).
+	p1 := g.set.Load()
+	if p1 == p0 {
+		t.Fatalf("engineSet pointer did not change — no rebuild published")
+	}
+	if got := p1.revision; got != before+1 {
 		t.Errorf("revision moved by %d, want exactly 1 rebuild", got-before)
 	}
 	// Every half landed, together.

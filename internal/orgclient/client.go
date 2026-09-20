@@ -1442,7 +1442,7 @@ func (c *Client) PushLoop(ctx context.Context) error {
 	// logged directly here rather than through runLoop's own switch, so
 	// runLoop's local dedupers (scoped to ITS invocation) can't cover
 	// them.
-	var enrolReadDeduper, routingDeduper, announcementDeduper failureDeduper
+	state := &pushCycleState{}
 	// RUN THE FIRST CYCLE IMMEDIATELY (org-observer fundamentals finding H3b).
 	// Every cycle carries the governance rails — routing, BUDGET, pricing,
 	// announcements — and sleeping a full interval before the first one meant
@@ -1455,135 +1455,190 @@ func (c *Client) PushLoop(ctx context.Context) error {
 	kick := make(chan struct{}, 1)
 	kick <- struct{}{}
 	return c.runLoopKick(ctx, c.pushInterval(), kick, func(ctx context.Context) error {
-		enr, err := c.store.LoadEnrolment(ctx)
-		if err != nil {
-			warnOnce(c.logger, &enrolReadDeduper, err, "org push: enrolment read failed")
-			return errIdle
-		}
-		enrolReadDeduper.observe("")
-		if enr == nil {
-			return errIdle // not enrolled (yet, or unenrolled while running)
-		}
-		_, err = c.PushOnce(ctx)
-		if errors.Is(err, ErrNotEnrolled) {
-			return errIdle
-		}
-		// Oversized-batch circuit bookkeeping lives HERE, not in runLoop's
-		// timing switch: runLoop is shared with the policy-poll loops, and a
-		// poll succeeding while the push is parked must not close the push
-		// circuit. This is the one owner of that state.
-		switch {
-		case errors.Is(err, ErrBatchTooLarge):
-			c.noteOversizedBatch(ctx, err)
-		case err == nil:
-			if cerr := c.store.ClearPushBreaker(ctx); cerr != nil {
-				c.logger.Warn("org push: could not clear the oversized-batch pause record", "err", cerr)
-			}
-		}
-		// Best-effort §R19.1 policy sync rides the same cycle: a fetch
-		// failure never affects push health (P1 — the policy cache
-		// just stays at its last verified version).
-		_, routingOutcome, perr := c.FetchRoutingPolicy(ctx)
-		// Forward the TOTAL typed outcome (§2.5b) to the P0-6 reporter. A nil
-		// outcome is a skip (context.Canceled — a shutdown, not a verdict); a
-		// nil sink (the default) is today's exact no-op (R6-1).
-		if routingOutcome != nil && c.routingOutcomeSink != nil {
-			c.routingOutcomeSink(*routingOutcome)
-		}
-		switch {
-		case perr != nil && !errors.Is(perr, ErrNotEnrolled):
-			warnOnce(c.logger, &routingDeduper, perr,
-				"org routing policy fetch failed — if this persists, check the org server, or run `observer unenroll` / set [org_client].enabled = false to stop trying")
-		default:
-			routingDeduper.observe("")
-		}
-		// The org BUDGET rail (org-budget plan §3.3c) rides the SAME cycle,
-		// for the same reason as routing above: no new timer, no new host, no
-		// new connection. It is a conditional GET (If-None-Match over the
-		// document digest, not the version — a team-membership change moves a
-		// cap without moving the version), so the steady state is a 304. Every
-		// failure is FAIL-OPEN: the sink is poked with the typed state and the
-		// guard keeps the node's own [guard.budget] numbers.
-		budgetOutcome, berr := c.FetchBudgetPolicy(ctx)
-		// The cadence this loop is actually ticking at rides with every
-		// outcome (bundle BUD-N): the composition boundary derives the
-		// cross-machine baseline's staleness window from it, and the loop is
-		// the one place that resolves it.
-		budgetOutcome.PushInterval = c.pushInterval()
-		if c.budgetSink != nil && !errors.Is(berr, context.Canceled) {
-			c.budgetSink(budgetOutcome)
-		}
-		if berr != nil && !errors.Is(berr, ErrNotEnrolled) && !errors.Is(berr, context.Canceled) {
-			c.logger.Warn("org budget policy fetch failed", "state", budgetOutcome.State, "err", berr)
-		}
-		// The org PRICING rail (enterprise-pricing plan §3.3) rides the SAME
-		// cycle, immediately after the budget rail and for the same reasons:
-		// no new timer, no new host, no new connection, and a conditional GET
-		// whose steady state is a 304.
-		//
-		// It is polled BESIDE the budget rather than on its own schedule
-		// because the two are one governance fact: a cap and the rate it is
-		// measured in. A node that refreshed one without the other would spend
-		// the gap enforcing this quarter's cap against last quarter's prices.
-		// Ruling R2 gates both on the same [guard.budget].from_org switch, and
-		// a disabled rail makes no request at all.
-		//
-		// The SINK is notified by FetchPricingPolicy itself, not here — the
-		// one place this rail's wiring diverges from the budget rail's, and
-		// deliberately. The pricing sink must also fire on the COLD-START
-		// path (LoadPersistedPricing, minutes before the first poll), and a
-		// loop that owned the notification would leave that path silently
-		// un-notified: the engine would hold the persisted rates while the
-		// posture said nothing had been applied.
-		pricingOutcome, prerr := c.FetchPricingPolicy(ctx)
-		if prerr != nil && !errors.Is(prerr, ErrNotEnrolled) && !errors.Is(prerr, context.Canceled) {
-			c.logger.Warn("org pricing policy fetch failed", "state", pricingOutcome.State, "err", prerr)
-		}
-		// The org-served Cloud Intelligence RESULT rail (org-served-cloud-
-		// intelligence plan §2.4, W3) rides the SAME cycle for the same reason:
-		// no new timer, no new host, no new connection. It is a PULL (the org's
-		// derived results coming back), gated internally by
-		// [intelligence].org_enrichment — a node that has not opted in makes no
-		// request at all, so this call is inert on every individual/unopted
-		// node. Every failure is FAIL-OPEN: the node keeps its cached results.
-		intelOutcome, ierr := c.FetchIntelResults(ctx)
-		if ierr != nil && !errors.Is(ierr, ErrNotEnrolled) && !errors.Is(ierr, context.Canceled) {
-			c.logger.Warn("org intelligence results fetch failed", "state", intelOutcome.State, "err", ierr)
-		}
-		// Rail R3 of the dashboard-announcements plan (§4) rides the
-		// SAME cycle for the same reason: no new timer, no new host, no
-		// new connection — and a fetch failure never affects push
-		// health (P1), it just leaves the banner at its last verified
-		// version.
-		_, aerr := c.FetchOrgAnnouncement(ctx)
-		switch {
-		case aerr != nil && !errors.Is(aerr, ErrNotEnrolled):
-			warnOnce(c.logger, &announcementDeduper, aerr,
-				"org announcement fetch failed — if this persists, check the org server, or run `observer unenroll` / set [org_client].enabled = false to stop trying")
-		default:
-			announcementDeduper.observe("")
-		}
-		// Arc 4 P6b managed-integrity probe rides the SAME cycle (plan §9,
-		// announce.go discipline: no new timer/host/connection). MANAGED nodes
-		// only — an individual node never computes a fingerprint or a signal, so
-		// the individual plane is untouched by construction. A report failure
-		// never affects push health (P1).
-		// Enterprise Update Management (§3.5) rides the SAME cycle, for the
-		// same reason as rail R3 above: no new timer, no new host, no new
-		// connection. It fetches ONLY the channels the push acknowledgment
-		// just said the server is ahead on, so a fleet with nothing published
-		// makes no extra request at all. A fetch failure never affects push
-		// health — it leaves the update card at its last verified manifest.
-		c.FetchPendingUpdateManifests(ctx)
-		if c.integrityCollector != nil && enr.IsManaged() {
-			report := c.integrityCollector()
-			if _, ierr := c.ReportIntegrity(ctx, report); ierr != nil &&
-				!errors.Is(ierr, ErrNotEnrolled) && !errors.Is(ierr, ErrManagedIntegrityUnbound) {
-				c.logger.Warn("org managed-integrity report failed", "err", ierr)
-			}
-		}
-		return err
+		return c.pushCycle(ctx, state)
 	})
+}
+
+// pushCycleState is the per-PushLoop failure-dedup state one cycle threads to
+// the next: one failureDeduper PER independent failure stream, so a routing
+// fetch recovering cannot re-arm the announcement fetch's WARN and vice versa.
+// A fresh set per PushLoop invocation (same lifetime as the loop).
+type pushCycleState struct {
+	enrolRead, routing, announcement failureDeduper
+}
+
+// pushCycle is ONE push-loop cycle: enrolment read, the budget + pricing rails,
+// the push, then the remaining governance rails. It is the loop's body, split
+// out so a test can drive exactly one cycle and read the envelope it produced.
+// The ORDER is the contract - see the comment above refreshBudgetRails.
+func (c *Client) pushCycle(ctx context.Context, state *pushCycleState) error {
+	enr, err := c.store.LoadEnrolment(ctx)
+	if err != nil {
+		warnOnce(c.logger, &state.enrolRead, err, "org push: enrolment read failed")
+		return errIdle
+	}
+	state.enrolRead.observe("")
+	if enr == nil {
+		return errIdle // not enrolled (yet, or unenrolled while running)
+	}
+	// The budget + pricing rails run BEFORE the push, not after it
+	// (demo-estate finding 2026-09-20): the envelope carries the node's
+	// budget POSTURE, composed at push time from the LAST fetch outcome,
+	// so a cycle that pushed first shipped the previous cycle's state -
+	// and on the first cycle after a restart that was the primed
+	// `unreachable` posture, one second before the fetch succeeded. The
+	// org then read `budget_required` over a node whose proxy was passing
+	// requests until the next interval. See refreshBudgetRails.
+	c.refreshBudgetRails(ctx)
+	_, err = c.PushOnce(ctx)
+	if errors.Is(err, ErrNotEnrolled) {
+		return errIdle
+	}
+	// Oversized-batch circuit bookkeeping lives HERE, not in runLoop's
+	// timing switch: runLoop is shared with the policy-poll loops, and a
+	// poll succeeding while the push is parked must not close the push
+	// circuit. This is the one owner of that state.
+	switch {
+	case errors.Is(err, ErrBatchTooLarge):
+		c.noteOversizedBatch(ctx, err)
+	case err == nil:
+		if cerr := c.store.ClearPushBreaker(ctx); cerr != nil {
+			c.logger.Warn("org push: could not clear the oversized-batch pause record", "err", cerr)
+		}
+	}
+	// Best-effort §R19.1 policy sync rides the same cycle: a fetch
+	// failure never affects push health (P1 - the policy cache
+	// just stays at its last verified version).
+	_, routingOutcome, perr := c.FetchRoutingPolicy(ctx)
+	// Forward the TOTAL typed outcome (§2.5b) to the P0-6 reporter. A nil
+	// outcome is a skip (context.Canceled - a shutdown, not a verdict); a
+	// nil sink (the default) is today's exact no-op (R6-1).
+	if routingOutcome != nil && c.routingOutcomeSink != nil {
+		c.routingOutcomeSink(*routingOutcome)
+	}
+	switch {
+	case perr != nil && !errors.Is(perr, ErrNotEnrolled):
+		warnOnce(c.logger, &state.routing, perr,
+			"org routing policy fetch failed - if this persists, check the org server, or run `observer unenroll` / set [org_client].enabled = false to stop trying")
+	default:
+		state.routing.observe("")
+	}
+	// The org-served Cloud Intelligence RESULT rail (org-served-cloud-
+	// intelligence plan §2.4, W3) rides the SAME cycle for the same reason:
+	// no new timer, no new host, no new connection. It is a PULL (the org's
+	// derived results coming back), gated internally by
+	// [intelligence].org_enrichment - a node that has not opted in makes no
+	// request at all, so this call is inert on every individual/unopted
+	// node. Every failure is FAIL-OPEN: the node keeps its cached results.
+	intelOutcome, ierr := c.FetchIntelResults(ctx)
+	if ierr != nil && !errors.Is(ierr, ErrNotEnrolled) && !errors.Is(ierr, context.Canceled) {
+		c.logger.Warn("org intelligence results fetch failed", "state", intelOutcome.State, "err", ierr)
+	}
+	// Rail R3 of the dashboard-announcements plan (§4) rides the
+	// SAME cycle for the same reason: no new timer, no new host, no
+	// new connection - and a fetch failure never affects push
+	// health (P1), it just leaves the banner at its last verified
+	// version.
+	_, aerr := c.FetchOrgAnnouncement(ctx)
+	switch {
+	case aerr != nil && !errors.Is(aerr, ErrNotEnrolled):
+		warnOnce(c.logger, &state.announcement, aerr,
+			"org announcement fetch failed - if this persists, check the org server, or run `observer unenroll` / set [org_client].enabled = false to stop trying")
+	default:
+		state.announcement.observe("")
+	}
+	// Arc 4 P6b managed-integrity probe rides the SAME cycle (plan §9,
+	// announce.go discipline: no new timer/host/connection). MANAGED nodes
+	// only - an individual node never computes a fingerprint or a signal, so
+	// the individual plane is untouched by construction. A report failure
+	// never affects push health (P1).
+	// Enterprise Update Management (§3.5) rides the SAME cycle, for the
+	// same reason as rail R3 above: no new timer, no new host, no new
+	// connection. It fetches ONLY the channels the push acknowledgment
+	// just said the server is ahead on, so a fleet with nothing published
+	// makes no extra request at all. A fetch failure never affects push
+	// health - it leaves the update card at its last verified manifest.
+	c.FetchPendingUpdateManifests(ctx)
+	if c.integrityCollector != nil && enr.IsManaged() {
+		report := c.integrityCollector()
+		if _, ierr := c.ReportIntegrity(ctx, report); ierr != nil &&
+			!errors.Is(ierr, ErrNotEnrolled) && !errors.Is(ierr, ErrManagedIntegrityUnbound) {
+			c.logger.Warn("org managed-integrity report failed", "err", ierr)
+		}
+	}
+	return err
+}
+
+// refreshBudgetRails polls the org BUDGET rail and, beside it, the org
+// PRICING rail. It is called by every push cycle immediately BEFORE PushOnce,
+// and by PushNow, so the posture the envelope carries (composed through the
+// store's BudgetPostureProvider at SELECT time) describes the fetch this
+// cycle just made rather than the one before it.
+//
+// The org BUDGET rail (org-budget plan §3.3c) rides the push cycle for the
+// same reason as routing: no new timer, no new host, no new connection. It is
+// a conditional GET (If-None-Match over the document digest, not the version
+// - a team-membership change moves a cap without moving the version), so the
+// steady state is a 304. Every failure is FAIL-OPEN: the sink is poked with
+// the typed state and the guard keeps the node's own [guard.budget] numbers.
+//
+// The org PRICING rail (enterprise-pricing plan §3.3) rides the SAME cycle,
+// immediately after the budget rail and for the same reasons. It is polled
+// BESIDE the budget rather than on its own schedule because the two are one
+// governance fact: a cap and the rate it is measured in. A node that
+// refreshed one without the other would spend the gap enforcing this
+// quarter's cap against last quarter's prices. Ruling R2 gates both on the
+// same [guard.budget].from_org switch, and a disabled rail makes no request
+// at all.
+//
+// The pricing SINK is notified by FetchPricingPolicy itself, not here - the
+// one place this rail's wiring diverges from the budget rail's, and
+// deliberately. The pricing sink must also fire on the COLD-START path
+// (LoadPersistedPricing, minutes before the first poll), and a caller that
+// owned the notification would leave that path silently un-notified: the
+// engine would hold the persisted rates while the posture said nothing had
+// been applied.
+func (c *Client) refreshBudgetRails(ctx context.Context) {
+	budgetOutcome, berr := c.FetchBudgetPolicy(ctx)
+	// The cadence the push loop is actually ticking at rides with every
+	// outcome (bundle BUD-N): the composition boundary derives the
+	// cross-machine baseline's staleness window from it, and the client is
+	// the one place that resolves it.
+	budgetOutcome.PushInterval = c.pushInterval()
+	if c.budgetSink != nil && !errors.Is(berr, context.Canceled) {
+		c.budgetSink(budgetOutcome)
+	}
+	if berr != nil && !errors.Is(berr, ErrNotEnrolled) && !errors.Is(berr, context.Canceled) {
+		c.logger.Warn("org budget policy fetch failed", "state", budgetOutcome.State, "err", berr)
+	}
+	pricingOutcome, prerr := c.FetchPricingPolicy(ctx)
+	if prerr != nil && !errors.Is(prerr, ErrNotEnrolled) && !errors.Is(prerr, context.Canceled) {
+		c.logger.Warn("org pricing policy fetch failed", "state", pricingOutcome.State, "err", prerr)
+	}
+}
+
+// PushNow runs ONE push exactly the way a loop cycle does: the budget and
+// pricing rails are refreshed first, then the envelope is built and shipped.
+// It is what `observer org push-now` calls, so an operator-triggered push
+// carries the node's CURRENT budget posture rather than whatever the process
+// last composed - a CLI process, which has made no fetch of its own, would
+// otherwise push a posture from its cold cache (demo-estate finding
+// 2026-09-20).
+//
+// It returns ErrNotEnrolled without touching either rail when the node is not
+// enrolled, so the sinks never see a not_enrolled outcome the loop would not
+// have produced either. PushOnce alone remains the bare envelope push for
+// callers that own their own rail cadence.
+func (c *Client) PushNow(ctx context.Context) (PushResult, error) {
+	enr, err := c.store.LoadEnrolment(ctx)
+	if err != nil {
+		return PushResult{}, fmt.Errorf("orgclient.PushNow: %w", err)
+	}
+	if enr == nil {
+		return PushResult{}, ErrNotEnrolled
+	}
+	c.refreshBudgetRails(ctx)
+	return c.PushOnce(ctx)
 }
 
 // noteOversizedBatch is the ONE owner of the ErrBatchTooLarge circuit state. It

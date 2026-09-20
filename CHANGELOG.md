@@ -9,6 +9,32 @@ All notable changes to SuperBased Observer are documented here.
   computed from (plan v2.1 6.9; `scripts/verify-price-snapshot.sh --line` prints this line and
   `scripts/release.sh` requires it in a final tag's section).
 
+## [1.34.0-rc.5] — 2026-09-20
+
+Pre-release on the `edge` channel; rc.4 plus the demo-estate rebuild waves and two org-dashboard
+fixes found on the first fresh org that booted from rc.4. Cut so the demo estate can run a
+cosign-signed image carrying them (first boot pins the release workflow's signing identity):
+
+- Org dashboard: Settings no longer crashes on a fresh org (`GET /api/org/plane-b/mode` served
+  `"pending": null` for a fleet with no capability acks and the page read `.length` on it; the
+  activate endpoint's Node-Mode downgrade result seeded the same way), and the People
+  leaderboard's TOP TOOL / TOP MODEL are derived by count from every substrate (actions ->
+  sessions -> token rows for the tool; the deduped proxied-turn ∪ token-row union -> sessions for
+  the model) instead of the cost-ranked proxied-turns-joined-to-sessions query that left every
+  developer on a free-tier model, or without a joinable proxy session, at "-".
+- Azure appliance modules: `lb_nodes = 1` (single HAProxy, stated full-outage replace window,
+  DR-63) and `nats_placement = dedicated` (the nats-single broker on its own VM); the org POLICY
+  signing key is now minted beside the bearer key (`policy-signing-key`, both clouds), landed by
+  env-sync and rendered as `[policy]` in every production config - without it every managed
+  node's `GET /api/agent/budget` answered 409 and `observer <tool>` refused to launch;
+  `restore-drill.sh --pgbackrest-conf` for the separate-PostgreSQL topology; the app NSG
+  metrics rule admits the VNet; env-sync's PFX converter fails loudly and keeps SAS values out
+  of comment lines.
+- `budgetsigningcheck` warns on managed tokens / managed nodes without a policy key and
+  `new-enrolment-token --managed` warns at mint time; node posture (budget + pricing) is fetched
+  before every push and `observer org push-now` carries it.
+- Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
 ## [1.34.0-rc.4] — 2026-09-18
 
 Pre-release on the `edge` channel; rc.3 plus the enterprise-deployment Phase 1 and Phase 2

@@ -1,6 +1,6 @@
 {
   "name": "superbased",
-  "version": "1.34.0-rc.4",
+  "version": "1.34.0-rc.5",
   "description": "Token, cost and cache observability for Kimi Code. Wires the SuperBased Observer MCP server. Requires the `observer` binary already on your PATH (npm i -g @superbased/observer, or pipx install superbased-observer) — this plugin is wiring only and installs no binary.",
   "keywords": [
     "cost",

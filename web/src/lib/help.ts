@@ -1064,6 +1064,14 @@ export const HELP_REGISTRY: HelpEntry[] = [
     related: ["glossary.tool"],
   },
   {
+    id: "column.sessions.client",
+    category: "column",
+    title: "Sessions › Client",
+    oneLiner: "How the tool was driven: a terminal (cli), an editor (ide), a desktop app, a programmatic embedding (sdk), or a browser (web) — plus the host that ran it when known.",
+    detail: "Read from the session's capture-surface stamp (sessions.surface / surface_host), which the adapter derives from the transcript's own discriminators (Claude Code entrypoint, Codex originator, an IDE's task record, …). Blank means no adapter stamped one — unknown, not a terminal run. The Client dropdown in the toolbar filters on the kind server-side across every page. Node-local; never shipped to an org server.",
+    related: ["column.sessions.tool"],
+  },
+  {
     id: "column.tools.actions",
     category: "column",
     title: "Tools › Actions",

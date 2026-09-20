@@ -36,6 +36,12 @@ func TestGuidanceDefaults(t *testing.T) {
 	if d.Guidance.RootTimeoutSeconds != 20 {
 		t.Errorf("guidance.root_timeout_seconds = %d, want 20", d.Guidance.RootTimeoutSeconds)
 	}
+	// The adaptive ceiling: a slow-but-real root doubles its budget up to
+	// this before it is finally granted enough time to persist. 180s clears
+	// the ~106s live DrvFs walk with headroom while still bounding a runaway.
+	if d.Guidance.RootTimeoutMaxSeconds != 180 {
+		t.Errorf("guidance.root_timeout_max_seconds = %d, want 180", d.Guidance.RootTimeoutMaxSeconds)
+	}
 	if d.Guidance.PassTimeoutMinutes != 10 {
 		t.Errorf("guidance.pass_timeout_minutes = %d, want 10", d.Guidance.PassTimeoutMinutes)
 	}
@@ -58,10 +64,11 @@ func TestGuidancePartialMerge(t *testing.T) {
 		// Budget expectations. Zero means "the seeded default"; -1 means
 		// "explicitly zero", which for startup_delay_seconds is a real
 		// setting ("scan now") rather than an unset key.
-		wantMaxRoots int
-		wantRootTO   int
-		wantPassTO   int
-		wantStartup  int
+		wantMaxRoots  int
+		wantRootTO    int
+		wantRootTOMax int
+		wantPassTO    int
+		wantStartup   int
 	}{
 		{
 			name:    "no section at all",
@@ -107,15 +114,16 @@ func TestGuidancePartialMerge(t *testing.T) {
 			wantRootTO: 5,
 		},
 		{
-			name:         "every budget overridden",
-			toml:         "[guidance]\nmax_roots_per_pass = 10\nroot_timeout_seconds = 7\npass_timeout_minutes = 3\nstartup_delay_seconds = 0\n",
-			wantOn:       true,
-			wantMin:      15,
-			wantDep:      4,
-			wantMaxRoots: 10,
-			wantRootTO:   7,
-			wantPassTO:   3,
-			wantStartup:  -1,
+			name:          "every budget overridden",
+			toml:          "[guidance]\nmax_roots_per_pass = 10\nroot_timeout_seconds = 7\nroot_timeout_max_seconds = 120\npass_timeout_minutes = 3\nstartup_delay_seconds = 0\n",
+			wantOn:        true,
+			wantMin:       15,
+			wantDep:       4,
+			wantMaxRoots:  10,
+			wantRootTO:    7,
+			wantRootTOMax: 120,
+			wantPassTO:    3,
+			wantStartup:   -1,
 		},
 	}
 	for _, tc := range cases {
@@ -150,6 +158,7 @@ func TestGuidancePartialMerge(t *testing.T) {
 			}
 			checkGuidanceBudget(t, "max_roots_per_pass", cfg.Guidance.MaxRootsPerPass, tc.wantMaxRoots, 50)
 			checkGuidanceBudget(t, "root_timeout_seconds", cfg.Guidance.RootTimeoutSeconds, tc.wantRootTO, 20)
+			checkGuidanceBudget(t, "root_timeout_max_seconds", cfg.Guidance.RootTimeoutMaxSeconds, tc.wantRootTOMax, 180)
 			checkGuidanceBudget(t, "pass_timeout_minutes", cfg.Guidance.PassTimeoutMinutes, tc.wantPassTO, 10)
 			checkGuidanceBudget(t, "startup_delay_seconds", cfg.Guidance.StartupDelaySeconds, tc.wantStartup, 90)
 		})
@@ -216,5 +225,41 @@ func TestGuidanceFirstScanPollKey(t *testing.T) {
 	cfg.Guidance.FirstScanPollSeconds = 0
 	if err := Validate(cfg); err != nil {
 		t.Errorf("Validate rejected first_scan_poll_seconds = 0 (a real setting): %v", err)
+	}
+}
+
+// TestGuidanceRootTimeoutMaxValidate pins the ceiling's one rule: a positive
+// value below root_timeout_seconds is refused (the adaptive ceiling can never
+// sit below the base it grows from), while <= 0 stays "use the seeded default"
+// exactly like root_timeout_seconds itself.
+func TestGuidanceRootTimeoutMaxValidate(t *testing.T) {
+	// The shipped seed (base 20, ceiling 180) validates.
+	if err := Validate(Default()); err != nil {
+		t.Fatalf("Validate rejected the seeded [guidance] budgets: %v", err)
+	}
+
+	// A positive ceiling below the positive base is a mistake, not a runaway.
+	cfg := Default()
+	cfg.Guidance.RootTimeoutSeconds = 30
+	cfg.Guidance.RootTimeoutMaxSeconds = 10
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate accepted root_timeout_max_seconds < root_timeout_seconds")
+	}
+
+	// Equal is fine (adaptation is simply disabled — the root never gets more
+	// than the base).
+	cfg.Guidance.RootTimeoutMaxSeconds = 30
+	if err := Validate(cfg); err != nil {
+		t.Errorf("Validate rejected an equal ceiling/base: %v", err)
+	}
+
+	// <= 0 means "use the default", so it must not be read as "below the base".
+	cfg.Guidance.RootTimeoutMaxSeconds = 0
+	if err := Validate(cfg); err != nil {
+		t.Errorf("Validate rejected root_timeout_max_seconds = 0 (means the seeded default): %v", err)
+	}
+	cfg.Guidance.RootTimeoutMaxSeconds = -1
+	if err := Validate(cfg); err != nil {
+		t.Errorf("Validate rejected a negative root_timeout_max_seconds (means the seeded default): %v", err)
 	}
 }

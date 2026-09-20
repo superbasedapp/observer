@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,8 +33,11 @@ import (
 // resolved config so commands can render share-mode + scope. cleanup
 // closes the DB; it is non-nil only when err is nil.
 type orgBundle struct {
-	client  *orgclient.Client
-	store   *store.Store
+	client *orgclient.Client
+	store  *store.Store
+	// db is the SAME handle store wraps, kept for the CLI seams that take a
+	// *sql.DB (the governance-grant resolver, the process cost engine).
+	db      *sql.DB
 	cfg     config.Config
 	cleanup func()
 }
@@ -199,6 +203,7 @@ func buildOrgBundle(ctx context.Context, configPath string) (orgBundle, error) {
 	return orgBundle{
 		client:  client,
 		store:   st,
+		db:      database,
 		cfg:     cfg,
 		cleanup: func() { _ = database.Close() },
 	}, nil
@@ -1170,6 +1175,13 @@ func newOrgPushNowCmd() *cobra.Command {
 		Long: `Runs one push cycle now instead of waiting for the interval. Useful to
 verify enrolment end to end or to flush before shutting down.
 
+The push carries this machine's CURRENT budget posture: the command fetches
+the org budget policy first (the same verified, fail-open fetch the daemon
+runs) and persists the verified document. While a daemon is running this is
+a second writer of that cache, so a fenced daemon intervention (TERM/KILL
+under an org cap) can be refused as "witness changed" until the daemon's own
+next fetch (default 120 s) - a bounded window, documented in docs/budgets.md.
+
 When nothing is queued the command reports the current cursor state
 and the last push so the operator can tell why nothing happened —
 "cursor up to date" vs "the auto-loop just pushed in the previous
@@ -1181,7 +1193,14 @@ interval".`,
 				return err
 			}
 			defer b.cleanup()
-			res, err := b.client.PushOnce(cmd.Context())
+			// The envelope carries the node's budget POSTURE, and this is a
+			// separate process from the daemon: with nothing wired it would
+			// ship no posture at all, and with the daemon's cold-cache shape
+			// it would ship a primed `unreachable`. Wire the same boundary
+			// the daemon runs, then push the way a loop cycle does - rails
+			// first, envelope second (demo-estate finding 2026-09-20).
+			wireCLIBudgetPosture(cmd.Context(), b, newLogger("warn"))
+			res, err := b.client.PushNow(cmd.Context())
 			if errors.Is(err, orgclient.ErrNotEnrolled) {
 				return errors.New("not enrolled; run `observer enroll <org-url> <token>` first")
 			}

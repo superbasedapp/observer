@@ -2202,4 +2202,23 @@ var defaultPricing = map[string]Pricing{
 	// Defaults to Sonnet 4 family rates per the Gateway's published
 	// 2026-06 routing baseline (the typical paid tier surface).
 	"kilo-auto": {Input: 3, Output: 15, CacheRead: 0.30, CacheCreation: 3.75, CacheCreation1h: 6, WebSearchPerRequest: 0.01},
+
+	// Cline free gateway tier, vendor-reported $0 (kilo-auto/free
+	// precedent above). Cline's bundled desktop gateway routes a free
+	// tier under `cline-free/<model>` (e.g. cline-free/deepseek-v4.1-flash)
+	// and reports cost 0 on every message regardless of tokens. Without
+	// an explicit row, LookupWithSourceAt's last-resort normalization
+	// strips the `cline-free/` segment (normalizeUnpricedModel drops
+	// everything up to the last "/") leaving "deepseek-v4.1-flash", which
+	// then family-prefix-matches the PAID "deepseek-v4" row above and
+	// silently re-prices a free session at that rate. Pinning the exact
+	// model AND the `cline-free` family prefix here short-circuits both
+	// the exact-match rung and the family-prefix rung in
+	// LookupWithSourceAt before normalizeUnpricedModel ever runs, so any
+	// `cline-free/*` model resolves to known-$0 (PricingSourceExact or
+	// PricingSourceFamily) rather than falling through to a paid family.
+	"cline-free/deepseek-v4.1-flash": {Input: 0, Output: 0, CacheRead: 0},
+	// cline-free family prefix — catches every other model Cline may
+	// route under the free tier (e.g. cline-free/qwen3-coder-flash).
+	"cline-free": {Input: 0, Output: 0, CacheRead: 0},
 }

@@ -340,6 +340,13 @@ export type SessionRow = {
   cloud_enriched?: boolean;
   cloud_enrichment?: CloudEnrichmentProgress;
   cloud_title?: string;
+  // Capture surface (node migration 107): `surface` is the closed kind
+  // vocabulary (cli / ide / desktop / sdk / web), `surface_host` the
+  // free-form host token ("vscode", "claude-desktop", "jetbrains-idea").
+  // Both omitempty — ABSENT MEANS UNSTAMPED, never "cli". Render through
+  // SurfaceBadge, which draws nothing for an absent pair; never default.
+  surface?: string;
+  surface_host?: string;
 };
 
 export type SessionsResponse = {

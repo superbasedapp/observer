@@ -79,8 +79,17 @@ type guidanceSeams struct {
 	// that persisted nothing because every root shared one end-of-pass
 	// timestamp).
 	Now func() time.Time
-	// RootTimeout bounds ONE root. Zero means unbounded.
+	// RootTimeout bounds ONE root. Zero means unbounded. It is the BASE
+	// budget; when RootTimeoutFor is nil every root gets exactly this.
 	RootTimeout time.Duration
+	// RootTimeoutFor, when set, returns the per-root budget for THIS pass —
+	// the adaptive-budget seam. It lets the daemon loop grant a
+	// chronically-overrunning root more time (up to a ceiling) without the
+	// pure pass ever reading a clock or owning the streak state: the loop
+	// closes over its own in-memory streak map and hands the resolved
+	// duration in. Nil falls back to RootTimeout, so the one-shot CLI pass
+	// (which has no cross-pass state) is unchanged.
+	RootTimeoutFor func(root string) time.Duration
 	// PassTimeout bounds the WHOLE pass. Roots not reached inside it are
 	// left for the next tick, which is why the start offset rotates.
 	// Zero means unbounded.
@@ -115,6 +124,12 @@ type guidanceRootResult struct {
 	// ScannedAt is THIS root's own scan timestamp, empty when the root
 	// was not persisted.
 	ScannedAt string `json:"scanned_at,omitempty"`
+	// BudgetMS is the per-root time budget this root was actually granted,
+	// in milliseconds — the base budget for a healthy root, or the larger
+	// adapted budget the loop handed a root that has overrun before. It is
+	// recorded on every row so the honest pass log and the JSON output
+	// reflect the adaptive budget rather than an operator having to infer it.
+	BudgetMS int64 `json:"budget_ms,omitempty"`
 	// Incomplete means the root's walk ran out of time budget. Its
 	// inventory is partial and was deliberately NOT persisted: the
 	// store's upsert tombstones every row a scan did not re-see, so
@@ -259,10 +274,20 @@ func guidanceScanOneRoot(
 ) guidanceRootResult {
 	row := guidanceRootResult{Root: root}
 
+	// The per-root budget is either the fixed base or, when the loop has
+	// wired the adaptive seam, the larger budget this root has earned by
+	// overrunning before. The pure pass only reads the resolved duration —
+	// it never sees the streak state that produced it.
+	budget := seams.RootTimeout
+	if seams.RootTimeoutFor != nil {
+		budget = seams.RootTimeoutFor(root)
+	}
+	row.BudgetMS = budget.Milliseconds()
+
 	rootCtx := passCtx
-	if seams.RootTimeout > 0 {
+	if budget > 0 {
 		var cancel context.CancelFunc
-		rootCtx, cancel = context.WithTimeout(passCtx, seams.RootTimeout)
+		rootCtx, cancel = context.WithTimeout(passCtx, budget)
 		defer cancel()
 	}
 	scanned, err := seams.Scan(rootCtx, root)
@@ -276,8 +301,14 @@ func guidanceScanOneRoot(
 	if scanned.Incomplete || (err != nil && rootCtx.Err() != nil && parent.Err() == nil) {
 		row.Incomplete = true
 		row.Err = "time budget exceeded; not persisted, retried next pass"
+		// Debug, not Warn: the loud, actionable, deduped signal for a
+		// chronically-overrunning root is emitted ONCE PER ESCALATION STEP by
+		// the daemon loop (guidanceUpdateOverrunState), not once per pass here
+		// — reprinting the same line every 15-minute pass is the low-signal
+		// noise this feature replaces.
 		if seams.Logger != nil {
-			seams.Logger.Warn("guidance scan ran out of time budget", "root", root, "files_seen", row.Files)
+			seams.Logger.Debug("guidance scan ran out of time budget",
+				"root", root, "files_seen", row.Files, "budget_ms", row.BudgetMS)
 		}
 		return row
 	}
@@ -390,8 +421,14 @@ func guidanceOptions(cfg config.GuidanceConfig) guidance.Options {
 const (
 	guidanceDefaultMaxRootsPerPass = 50
 	guidanceDefaultRootTimeout     = 20 * time.Second
-	guidanceDefaultPassTimeout     = 10 * time.Minute
-	guidanceDefaultStartupDelay    = 90 * time.Second
+	// guidanceDefaultRootTimeoutMax is the adaptive CEILING a root's budget
+	// grows toward. 180s: the live DrvFs walk that motivated this took
+	// ~106s, so 180 gives real headroom to finally persist while still
+	// bounding a genuine runaway (nine doublings of the 20s base saturate
+	// here long before overflow).
+	guidanceDefaultRootTimeoutMax = 180 * time.Second
+	guidanceDefaultPassTimeout    = 10 * time.Minute
+	guidanceDefaultStartupDelay   = 90 * time.Second
 	// guidancePauseBetweenRoots keeps a pass a background trickle. It is
 	// not a config key: it is small enough that no operator needs to tune
 	// it, and the real bounds are the two timeouts.
@@ -422,8 +459,11 @@ func guidanceFirstScanPoll(cfg config.GuidanceConfig) time.Duration {
 }
 
 // guidanceBudgets resolves the [guidance] time/size budgets, substituting the
-// seeded default for any value the operator left at zero.
-func guidanceBudgets(cfg config.GuidanceConfig) (maxRoots int, rootTimeout, passTimeout time.Duration) {
+// seeded default for any value the operator left at zero. rootTimeoutMax is the
+// adaptive CEILING; it is clamped up to the base so a runtime that skipped
+// Validate (a directly-constructed config) can never end up with a ceiling
+// below the base budget.
+func guidanceBudgets(cfg config.GuidanceConfig) (maxRoots int, rootTimeout, passTimeout, rootTimeoutMax time.Duration) {
 	maxRoots = cfg.MaxRootsPerPass
 	if maxRoots <= 0 {
 		maxRoots = guidanceDefaultMaxRootsPerPass
@@ -436,7 +476,91 @@ func guidanceBudgets(cfg config.GuidanceConfig) (maxRoots int, rootTimeout, pass
 	if passTimeout <= 0 {
 		passTimeout = guidanceDefaultPassTimeout
 	}
-	return maxRoots, rootTimeout, passTimeout
+	rootTimeoutMax = time.Duration(cfg.RootTimeoutMaxSeconds) * time.Second
+	if rootTimeoutMax <= 0 {
+		rootTimeoutMax = guidanceDefaultRootTimeoutMax
+	}
+	if rootTimeoutMax < rootTimeout {
+		rootTimeoutMax = rootTimeout
+	}
+	return maxRoots, rootTimeout, passTimeout, rootTimeoutMax
+}
+
+// guidanceAdaptiveRootTimeout is the pure escalation curve: a root that has
+// overrun `streak` consecutive passes is granted base doubled once per
+// overrun, capped at the ceiling — min(base<<streak, ceiling), computed by
+// repeated doubling so a large streak can never overflow time.Duration. streak
+// 0 (or an unbounded base) returns base unchanged.
+func guidanceAdaptiveRootTimeout(base, ceiling time.Duration, streak int) time.Duration {
+	if streak <= 0 || base <= 0 {
+		return base
+	}
+	d := base
+	for i := 0; i < streak; i++ {
+		if d >= ceiling {
+			return ceiling
+		}
+		d *= 2
+	}
+	if d > ceiling {
+		return ceiling
+	}
+	return d
+}
+
+// guidanceUpdateOverrunState folds ONE pass's results into the per-root
+// consecutive-overrun streaks and emits the loud, actionable, DEDUPED warning.
+// It is the daemon loop's own bookkeeping — the pure pass never sees these
+// maps, and this helper touches nothing but the maps and the logger.
+//
+// A root that overran gets its streak bumped and, while its budget is still
+// growing, one WARN per escalation step (each names a distinct new budget, so
+// the growth phase is self-deduping). Once the root has run under the ceiling
+// and STILL overran, a single distinct terminal WARN says it can never persist
+// as-is — recorded in `terminalWarned` so it is not reprinted every pass. A
+// root that finally persists has its streak (and terminal flag) cleared, so a
+// future overrun starts again from the base budget.
+func guidanceUpdateOverrunState(
+	res guidancePassResult,
+	overrun, terminalWarned map[string]int,
+	base, ceiling time.Duration,
+	logger *slog.Logger,
+) {
+	for _, r := range res.Roots {
+		switch {
+		case r.Incomplete:
+			overrun[r.Root]++
+			n := overrun[r.Root]
+			if logger == nil {
+				continue
+			}
+			ranUnder := guidanceAdaptiveRootTimeout(base, ceiling, n-1)
+			next := guidanceAdaptiveRootTimeout(base, ceiling, n)
+			switch {
+			case next > ranUnder:
+				logger.Warn("guidance root keeps overrunning; granting it a larger scan budget next pass",
+					"root", r.Root,
+					"consecutive_overruns", n,
+					"budget_ran_under", ranUnder.String(),
+					"next_budget", next.String(),
+					"remedy", "raise [guidance].root_timeout_seconds if this root is legitimately large")
+			case ranUnder >= ceiling && terminalWarned[r.Root] == 0:
+				terminalWarned[r.Root] = n
+				logger.Warn("guidance root cannot be inventoried within the max budget; it will never persist until the walk is faster or [guidance].root_timeout_max_seconds is raised",
+					"root", r.Root,
+					"consecutive_overruns", n,
+					"max_budget", ceiling.String())
+			}
+		case r.Persisted():
+			// A clean persist ends the streak: drop the bookkeeping so a
+			// later overrun re-escalates from the base rather than jumping
+			// straight back to the ceiling.
+			if _, ok := overrun[r.Root]; ok {
+				delete(overrun, r.Root)
+				delete(terminalWarned, r.Root)
+			}
+		}
+	}
 }
 
 // guidanceStartupDelay is how long the daemon waits before its FIRST pass.
@@ -467,7 +591,12 @@ func guidanceRootFilter() guidance.RootFilter {
 // guidanceSeamsFor builds the production seams over a live store.
 func guidanceSeamsFor(st *store.Store, cfg config.GuidanceConfig, logger *slog.Logger) guidanceSeams {
 	opts := guidanceOptions(cfg)
-	maxRoots, rootTimeout, passTimeout := guidanceBudgets(cfg)
+	// The ceiling is resolved by the loop (guidanceScanLoop), which owns the
+	// adaptive budget; the seams carry only the base. A one-shot CLI pass
+	// through these seams leaves RootTimeoutFor nil and so runs every root at
+	// the base budget, which is correct — there is no cross-pass streak to
+	// escalate against.
+	maxRoots, rootTimeout, passTimeout, _ := guidanceBudgets(cfg)
 	filter := guidanceRootFilter()
 	// One scrubber for the whole pass. It runs at THIS boundary rather
 	// than inside internal/guidance so the scanner stays pure: everything
@@ -569,7 +698,12 @@ type guidanceLoopDeps struct {
 	Seams        guidanceSeams
 	StartupDelay time.Duration
 	Rescan       time.Duration
-	Logger       *slog.Logger
+	// RootTimeoutMax is the adaptive CEILING a chronically-overrunning
+	// root's budget grows toward, starting from Seams.RootTimeout (the
+	// base). Zero (or any value below the base) is treated as the base, so
+	// the ceiling can never sit below where growth starts.
+	RootTimeoutMax time.Duration
+	Logger         *slog.Logger
 	// FirstScanPoll is how often the loop looks for NEVER-scanned roots and
 	// inventories just those. Zero disables the poll; so does a nil
 	// Seams.NeverScannedRoots.
@@ -706,9 +840,28 @@ func guidanceRunLoop(ctx context.Context, deps guidanceLoopDeps) {
 	}
 	offset := 0
 
+	// Daemon-lifetime, in-memory, single-owner state for the adaptive budget
+	// — the same shape as `offset` and the first-scan `attempted` map. The
+	// pure pass never sees either map: `overrun` tracks each root's
+	// consecutive-overrun streak (drives the budget it is granted next pass),
+	// and `terminalWarned` dedupes the once-only "cannot inventory within the
+	// max budget" warning.
+	base := deps.Seams.RootTimeout
+	ceiling := deps.RootTimeoutMax
+	if ceiling < base {
+		ceiling = base
+	}
+	overrun := map[string]int{}
+	terminalWarned := map[string]int{}
+
 	runOnce := func() {
 		seams := deps.Seams
 		seams.StartOffset = offset
+		// Hand each root its adapted budget IN, computed from the streak this
+		// loop owns — the pass stays clock- and state-free.
+		seams.RootTimeoutFor = func(root string) time.Duration {
+			return guidanceAdaptiveRootTimeout(base, ceiling, overrun[root])
+		}
 		res, err := guidanceScanPass(ctx, seams, nil)
 		if err != nil {
 			if ctx.Err() == nil && deps.Logger != nil {
@@ -719,8 +872,13 @@ func guidanceRunLoop(ctx context.Context, deps guidanceLoopDeps) {
 		if res.Total > 0 {
 			offset = (offset + res.Consumed) % res.Total
 		}
+		// Fold this pass into the streaks and emit the deduped escalation /
+		// terminal warnings BEFORE the summary line, so the summary's
+		// chronic-overrun count reflects the state just updated.
+		guidanceUpdateOverrunState(res, overrun, terminalWarned, base, ceiling, deps.Logger)
 		if deps.Logger != nil {
-			deps.Logger.Info("guidance scan pass", guidancePassLogArgs(res)...)
+			args := append(guidancePassLogArgs(res), "chronic_overruns", len(overrun))
+			deps.Logger.Info("guidance scan pass", args...)
 		}
 	}
 
@@ -798,12 +956,14 @@ func guidanceScanLoop(ctx context.Context, configPath string) {
 		return
 	}
 	logger := newLogger(cfg.Observer.LogLevel)
+	_, _, _, rootTimeoutMax := guidanceBudgets(cfg.Guidance)
 	guidanceRunLoop(ctx, guidanceLoopDeps{
-		Seams:         guidanceSeamsFor(store.New(database), cfg.Guidance, logger),
-		StartupDelay:  guidanceStartupDelay(cfg.Guidance),
-		Rescan:        time.Duration(cfg.Guidance.RescanMinutes) * time.Minute,
-		FirstScanPoll: guidanceFirstScanPoll(cfg.Guidance),
-		Logger:        logger,
+		Seams:          guidanceSeamsFor(store.New(database), cfg.Guidance, logger),
+		StartupDelay:   guidanceStartupDelay(cfg.Guidance),
+		Rescan:         time.Duration(cfg.Guidance.RescanMinutes) * time.Minute,
+		RootTimeoutMax: rootTimeoutMax,
+		FirstScanPoll:  guidanceFirstScanPoll(cfg.Guidance),
+		Logger:         logger,
 	})
 }
 

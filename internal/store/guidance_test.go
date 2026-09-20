@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -797,7 +798,7 @@ func TestGuidanceNeverScannedRootsNoStarvation(t *testing.T) {
 
 	const total = 25 // > the pollLimit below, which is the shape that starved
 	want := map[string]bool{}
-	for i := 0; i < total; i++ {
+	for i := range total {
 		root := fmt.Sprintf("/repo/p%02d", i)
 		if _, err := s.UpsertProject(ctx, root, ""); err != nil {
 			t.Fatalf("UpsertProject(%s): %v", root, err)
@@ -810,7 +811,7 @@ func TestGuidanceNeverScannedRootsNoStarvation(t *testing.T) {
 	// candidate set on its own).
 	const pollLimit = 20
 	attempted := map[string]bool{}
-	for poll := 0; poll < total+5; poll++ {
+	for poll := range total + 5 {
 		exclude := make([]string, 0, len(attempted))
 		for r := range attempted {
 			exclude = append(exclude, r)
@@ -838,5 +839,179 @@ func TestGuidanceNeverScannedRootsNoStarvation(t *testing.T) {
 	}
 	if len(attempted) != total {
 		t.Errorf("offered %d distinct roots, want %d", len(attempted), total)
+	}
+}
+
+// ----------------------------------------------------------- root normalization
+
+// TestNormalizeGuidanceRoot pins the cases that must hold on EVERY host,
+// independent of whether pathnorm's Windows-drive translation is active
+// on this OS (that host-gated case is TestNormalizeGuidanceRoot_WindowsDriveToWSLMnt
+// below). The sentinel and the empty string are special-cased in
+// normalizeGuidanceRoot itself — crossmount.TranslateForeignPath would
+// otherwise expand "~" to the home directory and corrupt the sentinel.
+func TestNormalizeGuidanceRoot(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"sentinel unchanged", GuidanceUserScopeRoot, GuidanceUserScopeRoot},
+		{"empty unchanged", "", ""},
+		{"native linux path unchanged", "/home/u/proj", "/home/u/proj"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeGuidanceRoot(tt.in); got != tt.want {
+				t.Errorf("normalizeGuidanceRoot(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeGuidanceRootIdempotent pins that normalizing an
+// already-normalized root is a no-op. This matters because the helper
+// flows to BOTH writes (UpsertGuidanceScan) and reads (ListGuidance /
+// GuidanceUsage / GuidanceKnownFiles) — applying it twice, directly or
+// through a caller that already normalized, must never re-mangle the
+// root on a second pass.
+func TestNormalizeGuidanceRootIdempotent(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{
+		GuidanceUserScopeRoot,
+		"",
+		"/home/u/proj",
+		"/mnt/d/repo/demo",
+		`D:\repo\demo`,
+	} {
+		once := normalizeGuidanceRoot(in)
+		twice := normalizeGuidanceRoot(once)
+		if once != twice {
+			t.Errorf("normalizeGuidanceRoot not idempotent for %q: once=%q twice=%q", in, once, twice)
+		}
+	}
+}
+
+// TestNormalizeGuidanceRoot_WindowsDriveToWSLMnt pins the headline fix
+// from chip task_f11f1a8d: a Windows-spelled root folds onto the
+// WSL-mount spelling a Linux/WSL daemon can actually os.Stat.
+//
+// pathnorm's drive-letter rewrite (windowsToWSLMnt) is itself gated on
+// `runtime.GOOS != "windows"` (internal/platform/pathnorm/pathnorm.go),
+// so this equivalence only holds when the test BINARY runs on a
+// non-Windows host — pathnorm's own suite applies the identical skip
+// (pathnorm_test.go's TestNormalize_FormatMatrix). This repo's test
+// suite is routinely run from a Windows host against Linux/WSL daemon
+// behavior (see CLAUDE.md / project memory), so this assertion is
+// gated rather than asserted unconditionally.
+func TestNormalizeGuidanceRoot_WindowsDriveToWSLMnt(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("pathnorm's Windows-drive translation only runs on GOOS=linux (windowsToWSLMnt short-circuits elsewhere)")
+	}
+	t.Parallel()
+	got := normalizeGuidanceRoot(`D:\programsx\superbased-observer`)
+	want := "/mnt/d/programsx/superbased-observer"
+	if got != want {
+		t.Errorf(`normalizeGuidanceRoot(D:\...) = %q, want %q`, got, want)
+	}
+}
+
+// TestDedupeGuidanceRoots pins the order-preserving, first-occurrence-wins
+// dedupe that GuidanceScanRoots / GuidanceNeverScannedRoots apply to their
+// output after normalizing each element.
+func TestDedupeGuidanceRoots(t *testing.T) {
+	t.Parallel()
+	in := []string{"/repo/a", "/repo/b", "/repo/a", "/repo/c", "/repo/b"}
+	got := dedupeGuidanceRoots(in)
+	want := []string{"/repo/a", "/repo/b", "/repo/c"}
+	if len(got) != len(want) {
+		t.Fatalf("dedupeGuidanceRoots(%v) = %v, want %v", in, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("dedupeGuidanceRoots(%v) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestListGuidance_ReadsEitherSpelling is the end-to-end pin: a scan
+// persisted under the Windows spelling of a project root is found via
+// ListGuidance under the WSL-mount spelling, and vice versa, because both
+// input sites fold onto the same normalized root. Gated to GOOS=linux for
+// the same reason as TestNormalizeGuidanceRoot_WindowsDriveToWSLMnt — on
+// any other host pathnorm leaves the Windows spelling untouched, so the
+// two spellings are genuinely different strings there and the bug this
+// chip fixes (daemon-side) doesn't reproduce.
+func TestListGuidance_ReadsEitherSpelling(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cross-spelling fold only reproduces on GOOS=linux; see TestNormalizeGuidanceRoot_WindowsDriveToWSLMnt")
+	}
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	winRoot := `D:\repo\demo`
+	wslRoot := "/mnt/d/repo/demo"
+
+	if _, err := s.UpsertGuidanceScan(ctx, winRoot,
+		[]guidance.File{guidanceFile("claude-code", "CLAUDE.md", guidance.KindInstructions, "hash-a")},
+		guidanceAt(t)); err != nil {
+		t.Fatalf("scan under Windows spelling: %v", err)
+	}
+
+	byWSL, err := s.ListGuidance(ctx, wslRoot, false)
+	if err != nil {
+		t.Fatalf("ListGuidance(wsl spelling): %v", err)
+	}
+	if len(byWSL) != 1 || byWSL[0].ProjectRoot != wslRoot {
+		t.Fatalf("ListGuidance(%q) = %+v, want the row persisted under the normalized spelling", wslRoot, byWSL)
+	}
+
+	byWin, err := s.ListGuidance(ctx, winRoot, false)
+	if err != nil {
+		t.Fatalf("ListGuidance(windows spelling): %v", err)
+	}
+	if len(byWin) != 1 || byWin[0].ProjectRoot != wslRoot {
+		t.Fatalf("ListGuidance(%q) = %+v, want the same row (normalized to %q)", winRoot, byWin, wslRoot)
+	}
+}
+
+// TestGuidanceScanRootsFoldsCrossSpellings pins that a repo recorded twice
+// in the projects table — once per OS spelling, the exact split described
+// in chip task_f11f1a8d — is offered to a scan pass exactly ONCE, under
+// the process-reachable spelling. That fold is what makes the daemon
+// actually os.Stat the directory instead of silently skipping the foreign
+// spelling as "not a directory". Gated to GOOS=linux for the same reason
+// as the other cross-spelling tests.
+func TestGuidanceScanRootsFoldsCrossSpellings(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cross-spelling fold only reproduces on GOOS=linux")
+	}
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	winRoot := `D:\repo\demo`
+	wslRoot := "/mnt/d/repo/demo"
+	if _, err := s.UpsertProject(ctx, winRoot, ""); err != nil {
+		t.Fatalf("UpsertProject(win): %v", err)
+	}
+	if _, err := s.UpsertProject(ctx, wslRoot, ""); err != nil {
+		t.Fatalf("UpsertProject(wsl): %v", err)
+	}
+
+	roots, err := s.GuidanceScanRoots(ctx, 0)
+	if err != nil {
+		t.Fatalf("GuidanceScanRoots: %v", err)
+	}
+	var hits int
+	for _, r := range roots {
+		if r == wslRoot {
+			hits++
+		}
+	}
+	if hits != 1 {
+		t.Errorf("GuidanceScanRoots offered %q %d times, want exactly 1 (folded from two spellings): %v", wslRoot, hits, roots)
 	}
 }

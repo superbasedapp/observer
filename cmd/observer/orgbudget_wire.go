@@ -67,6 +67,12 @@ type orgBudgetHandle struct {
 	identityStore *store.Store
 	logger        *slog.Logger
 	posture       atomic.Pointer[orgcontract.BudgetPostureRow]
+	// modeOverride is the guard mode a GUARD-LESS process reports. The daemon
+	// reads the live guard; a CLI one-shot (`observer org push-now`) has no
+	// guard in-process but is describing the same node, whose guard runs at
+	// the configured [guard].mode - so it reports that, exactly as `observer
+	// guard status` composes from cfg.Guard.Mode. Empty = read the guard.
+	modeOverride string
 }
 
 // newOrgBudgetHandle wires the boundary. g may be nil (the guard is off or
@@ -277,9 +283,56 @@ func (h *orgBudgetHandle) bindOutcomeToCurrentIdentity(o orgclient.BudgetFetchOu
 // "off" — there is no enforcement point at all.
 func (h *orgBudgetHandle) guardMode() string {
 	if h.guard == nil {
+		if h.modeOverride != "" {
+			return h.modeOverride
+		}
 		return "off"
 	}
 	return string(h.guard.Mode())
+}
+
+// wireCLIBudgetPosture installs, on a CLI-owned org bundle, the same budget
+// and pricing boundary `observer start` wires - minus the live guard, which
+// does not exist in this process - so a push made from the CLI carries a
+// posture composed from the node's durable evidence plus the fetch the push
+// itself makes (Client.PushNow), rather than no posture or a cold-cache one.
+//
+// It mirrors start.go's wiring order: pricing handle + cold-start load first
+// (the budget posture stamps the pricing source it reads, so the pricing
+// posture must be published before the first budget composition), then the
+// budget handle, primed from the persisted document exactly as the daemon
+// primes. The governance grant is resolved ONCE through the durable
+// last-known-good path (budgetEnforcementGranted) because a one-shot has no
+// live identity loader to poll. Every degradation is fail-open and logged; the
+// push itself never depends on this succeeding.
+func wireCLIBudgetPosture(ctx context.Context, b orgBundle, logger *slog.Logger) {
+	if b.client == nil || b.store == nil || b.db == nil {
+		return
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	granted := budgetEnforcementGranted(ctx, b.cfg, b.db, logger)
+	dbPath := b.cfg.Observer.DBPath
+
+	pricingWire := newOrgPricingHandle(acquireProcessCostEngine(ctx, b.cfg, b.db, logger), b.cfg, logger, b.store)
+	b.client.SetPricingAuthoritative(func() bool { return granted })
+	b.client.SetPricingRail(func() bool { return b.cfg.Guard.Budget.FromOrg }, pricingWire.onPricingFetch)
+	if _, err := b.client.LoadPersistedPricing(ctx); err != nil {
+		logger.Warn("org pricing: could not load the persisted document", "err", err)
+	}
+
+	budgetWire := newOrgBudgetHandle(nil, b.cfg.Guard.Budget, func() bool { return granted }, b.store, logger)
+	budgetWire.modeOverride = b.cfg.Guard.Mode
+	b.client.SetBudgetSink(budgetWire.onBudgetFetch)
+	b.client.SetBudgetPostureProvider(nodeInterventionPostureProvider(ctx, b.store, dbPath,
+		nodeBudgetPricingPostureProvider(dbPath, budgetWire.postureProvider())))
+	b.client.SetBudgetMaxDocumentAge(budgetDocumentMaxAge(b.cfg.Guard.Budget, logger))
+	primed, err := b.client.LoadPersistedBudget(ctx)
+	if err != nil {
+		logger.Warn("org budget: could not load the persisted document", "err", err)
+	}
+	budgetWire.Prime(primed)
 }
 
 // postureProvider is the store seam: the last published posture, or ok=false

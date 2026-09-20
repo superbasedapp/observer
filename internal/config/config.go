@@ -1238,6 +1238,17 @@ type GuidanceConfig struct {
 	// deliberately no "unbounded" setting, because an unbounded root is
 	// exactly the failure this bounds.
 	RootTimeoutSeconds int `toml:"root_timeout_seconds"`
+	// RootTimeoutMaxSeconds is the ADAPTIVE CEILING for a root's walk. A
+	// root that overruns RootTimeoutSeconds is granted a larger budget on
+	// its next pass (doubling per consecutive overrun) up to this ceiling,
+	// so a legitimately slow-but-real root — e.g. a large repo on a slow
+	// DrvFs mount — is given the time to finish and finally persist, rather
+	// than overrunning the same fixed budget forever and never landing its
+	// inventory. Default 180. <= 0 means the seeded default; a positive
+	// value below RootTimeoutSeconds is refused by Validate (the ceiling can
+	// never be below the base). 180s gives real headroom over the ~106s a
+	// live DrvFs walk took while still bounding a runaway.
+	RootTimeoutMaxSeconds int `toml:"root_timeout_max_seconds"`
 	// PassTimeoutMinutes bounds a WHOLE pass. Roots not reached inside it
 	// are simply picked up next tick. Default 10. <= 0 means the seeded
 	// default.
@@ -4306,16 +4317,17 @@ func Default() Config {
 		// Enabled=true here, and a section that sets only rescan_minutes
 		// must not silently downgrade Enabled to a zero-valued false.
 		Guidance: GuidanceConfig{
-			Enabled:              true,
-			RescanMinutes:        15,
-			MaxFileBytes:         512 * 1024,
-			MaxDepth:             4,
-			IncludeUserScope:     true,
-			MaxRootsPerPass:      50,
-			RootTimeoutSeconds:   20,
-			PassTimeoutMinutes:   10,
-			StartupDelaySeconds:  90,
-			FirstScanPollSeconds: 60,
+			Enabled:               true,
+			RescanMinutes:         15,
+			MaxFileBytes:          512 * 1024,
+			MaxDepth:              4,
+			IncludeUserScope:      true,
+			MaxRootsPerPass:       50,
+			RootTimeoutSeconds:    20,
+			RootTimeoutMaxSeconds: 180,
+			PassTimeoutMinutes:    10,
+			StartupDelaySeconds:   90,
+			FirstScanPollSeconds:  60,
 		},
 		// Pricing feed (standalone-node pricing sync) is OPT-IN and OFF by
 		// default — the zero-egress-by-default invariant (D3). The seed sets
@@ -6070,6 +6082,15 @@ func validateGuidance(g GuidanceConfig) error {
 	if g.FirstScanPollSeconds < 0 {
 		return fmt.Errorf("config: guidance.first_scan_poll_seconds %d must be >= 0 (0 disables the poll)",
 			g.FirstScanPollSeconds)
+	}
+	// The adaptive ceiling can never sit below the base budget: a max below
+	// the base would mean the very first grant already exceeds the cap. <= 0
+	// stays "use the seeded default" (resolved in guidanceBudgets), exactly
+	// like root_timeout_seconds itself, so only a positive-but-too-small
+	// value is a mistake worth refusing.
+	if g.RootTimeoutMaxSeconds > 0 && g.RootTimeoutSeconds > 0 && g.RootTimeoutMaxSeconds < g.RootTimeoutSeconds {
+		return fmt.Errorf("config: guidance.root_timeout_max_seconds %d must be >= root_timeout_seconds %d (the adaptive ceiling cannot be below the base budget)",
+			g.RootTimeoutMaxSeconds, g.RootTimeoutSeconds)
 	}
 	return nil
 }

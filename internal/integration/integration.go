@@ -1113,6 +1113,63 @@ var registry = map[string]Capability{
 		// reattaches the real session; id is raw (e.g. `1782548283719_prf8j`).
 		// The `observer cline-cli` launcher maps `--resume <id>` to it.
 		Resume: ResumeSpec{Kind: ResumeNative, Subcommand: "cline-cli", IDMechanism: "flag:--id"},
+		// GUI launch row: the standalone Cline DESKTOP app (Electron IDE,
+		// grounded on this box 2026-09-20). DISTINCT from the cline-cli
+		// terminal (this row's adapter) and the `cline` VS Code extension:
+		// it is a plain UNPACKAGED exe at %LOCALAPPDATA%\Cline\cline-app.exe
+		// (Electron GUI + a code-sidecar.exe backend + a Cline.lnk Start
+		// Menu shortcut) — NOT a packaged MSIX/AUMID app. It writes the
+		// SAME ~/.cline/data sessions.db with source='desktop', which the
+		// clinecli adapter already stamps surface=desktop /
+		// surface_host=cline-desktop (internal/adapter/clinecli/surface.go)
+		// — capture is free; this row is launch-only. It rides cline-cli's
+		// lifecycle and its sessions (Hosts=["cline-cli"]).
+		GUI: &GUILaunchSpec{
+			ID:      "cline-desktop",
+			Label:   "Cline",
+			Surface: "desktop",
+			Binary: BinaryResolveSpec{
+				// Plain Electron exe; no collision with this row's CLI Names
+				// above (`cline`/`cline.cmd`), but ProbeOnly below resolves it
+				// through the install dir only (factory-desktop precedent).
+				Names: BinaryNames{
+					Windows: []string{"cline-app.exe"},
+				},
+				ProbeDirs: []ProbeDir{
+					{OS: ProbeWindows, Rel: "AppData/Local/Cline"},
+				},
+				// Conservative InstallNote (no invented URL): the standalone
+				// desktop download channel is not grounded from a repo doc or
+				// an existing row, so name the app without guessing a URL
+				// (honesty rule; required because this grounded row ships no
+				// Installs — TestGUIInstallHintsUseClosedVocabulary).
+				InstallNote: "no grounded install channel: the standalone Cline desktop app has no verified " +
+					"winget/brew id and no repo-grounded download URL, so no install command is offered; once " +
+					"installed it launches from %LOCALAPPDATA%\\Cline\\cline-app.exe.",
+			},
+			// PATH walk disabled: resolve through the ProbeDirs only, the
+			// desktop convention here (factory-desktop / zcode-desktop).
+			ProbeOnly:      true,
+			ProjectDirArgv: false,
+			Wrap: WrapSpec{
+				Kind: WrapNone,
+				Reason: "the standalone desktop app routes through Cline's OWN hosted gateway (the cline-free " +
+					"provider), not the openai-compatible baseUrl in ~/.cline/data/settings/providers.json that " +
+					"the `observer cline-cli` launcher rewrites; a detached GUI launch cannot re-point that " +
+					"account/gateway selection, so there is nothing to inject. Launch yes, wrap no.",
+			},
+			Hosts:    []string{"cline-cli"},
+			Grounded: true,
+			// Windows-only: the exe spelling was grounded live on this Windows
+			// box 2026-09-20. No macOS .app bundle name or Linux path is
+			// grounded, so DarwinApp is left empty and no Unix spelling is
+			// fabricated (factory-desktop precedent — a desktop app is not
+			// required to ship everywhere).
+			Note: "Windows layout grounded on this box 2026-09-20: %LOCALAPPDATA%\\Cline\\cline-app.exe " +
+				"(Electron GUI) alongside a code-sidecar.exe backend and a Cline.lnk shortcut. macOS/Linux " +
+				"spellings NOT grounded — Windows-only for now. Sessions land in ~/.cline/data with " +
+				"source='desktop', captured by the clinecli adapter (surface_host=cline-desktop).",
+		},
 		// AuthEnv zero: cline-cli reads provider keys from its providers.json
 		// file store (`cline auth … -k`), not an env var — file auth, no
 		// grounded credential-env to forward.

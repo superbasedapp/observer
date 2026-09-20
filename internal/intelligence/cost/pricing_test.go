@@ -2346,3 +2346,62 @@ func TestResolveModelKey(t *testing.T) {
 		t.Errorf("a nil table resolved a key")
 	}
 }
+
+// TestTable_ClineFreeGatewayTier pins the Cline free gateway tier fix: a
+// captured Cline desktop session with model `cline-free/deepseek-v4.1-flash`
+// reports vendor cost 0, but before this fix there was no `cline-free/*`
+// pricing row, so LookupWithSourceAt fell through to
+// normalizeUnpricedModel's last-resort router-prefix strip
+// (`cline-free/deepseek-v4.1-flash` -> `deepseek-v4.1-flash`), which then
+// family-prefix-matched the PAID `deepseek-v4` row ($0.22 in / $0.66 out
+// per M) and silently repriced a free session. Mirrors the kilo-auto/free
+// precedent: an explicit known-$0 row with a real (non-miss) reliability
+// tag, so the free tier reads as known-priced rather than unknown.
+func TestTable_ClineFreeGatewayTier(t *testing.T) {
+	tb := NewTable()
+
+	for _, tc := range []struct {
+		name  string
+		model string
+	}{
+		{name: "the exact captured model", model: "cline-free/deepseek-v4.1-flash"},
+		{name: "another model under the same free family", model: "cline-free/qwen3-coder-flash"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, src, ok := tb.LookupWithSource(tc.model)
+			if !ok {
+				t.Fatalf("LookupWithSource(%q) ok=false; want known-$0 (not a MISS)", tc.model)
+			}
+			if src == PricingSourceMiss {
+				t.Errorf("LookupWithSource(%q) source=miss; want exact/family known-$0", tc.model)
+			}
+			if p.Input != 0 || p.Output != 0 || p.CacheRead != 0 {
+				t.Errorf("LookupWithSource(%q) rates non-zero: %+v (Cline free tier is vendor-reported $0)", tc.model, p)
+			}
+		})
+	}
+
+	// Reliability tag pin: the exact captured model resolves via the exact
+	// rung, not the family rung, because it has its own explicit row.
+	if _, src, ok := tb.LookupWithSource("cline-free/deepseek-v4.1-flash"); !ok || src != PricingSourceExact {
+		t.Errorf("LookupWithSource(cline-free/deepseek-v4.1-flash) source=%q ok=%v; want exact/true", src, ok)
+	}
+	// A sibling model under the same free family resolves via the family
+	// rung (its own row doesn't exist, only the `cline-free` prefix does).
+	if _, src, ok := tb.LookupWithSource("cline-free/qwen3-coder-flash"); !ok || src != PricingSourceFamily {
+		t.Errorf("LookupWithSource(cline-free/qwen3-coder-flash) source=%q ok=%v; want family/true", src, ok)
+	}
+
+	// NO REGRESSION: a bare (non-free) deepseek-v4 model must still resolve
+	// to its paid family rate — this fix must not touch the paid ladder.
+	paid, paidSrc, paidOK := tb.LookupWithSource("deepseek-v4-flash")
+	if !paidOK {
+		t.Fatalf("LookupWithSource(deepseek-v4-flash) ok=false; want paid rate")
+	}
+	if paid.Input != 0.22 || paid.Output != 0.66 {
+		t.Errorf("LookupWithSource(deepseek-v4-flash) = input %v output %v; want 0.22/0.66 (paid, unaffected by the cline-free fix)", paid.Input, paid.Output)
+	}
+	if paidSrc != PricingSourceExact {
+		t.Errorf("LookupWithSource(deepseek-v4-flash) source=%q; want exact", paidSrc)
+	}
+}

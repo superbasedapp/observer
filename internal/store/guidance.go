@@ -12,6 +12,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/guidance"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 )
 
 // This file is the ONE owner of the project_guidance_files table
@@ -36,6 +37,39 @@ import (
 // sentinel can never collide with one — not even with the home
 // directory itself being a project.
 const GuidanceUserScopeRoot = "~"
+
+// normalizeGuidanceRoot folds a project-root spelling onto the one
+// reachable from this process (a Windows-spelled `D:\x` recorded by a
+// Windows session becomes `/mnt/d/x` on the WSL daemon), so both
+// spellings of one repo share a single guidance inventory. The sentinel
+// user-scope root is returned unchanged: crossmount would expand "~".
+func normalizeGuidanceRoot(root string) string {
+	if root == "" || root == GuidanceUserScopeRoot {
+		return root
+	}
+	return crossmount.TranslateForeignPath(root)
+}
+
+// dedupeGuidanceRoots normalizes each root and drops duplicates,
+// keeping the first occurrence — the caller's own ordering (most
+// recently active first) — so two spellings of one repo collapse to a
+// single scan target instead of walking the same directory twice.
+func dedupeGuidanceRoots(roots []string) []string {
+	if len(roots) == 0 {
+		return roots
+	}
+	seen := make(map[string]bool, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, r := range roots {
+		norm := normalizeGuidanceRoot(r)
+		if norm == "" || seen[norm] {
+			continue
+		}
+		seen[norm] = true
+		out = append(out, norm)
+	}
+	return out
+}
 
 // GuidanceRow is one stored guidance file. The json tags are the wire
 // shape the dashboard API (GUID-B) and the panel (GUID-C) consume.
@@ -128,6 +162,7 @@ func (s *Store) UpsertGuidanceScan(
 	if projectRoot == "" {
 		return sum, errors.New("store.UpsertGuidanceScan: empty project root")
 	}
+	projectRoot = normalizeGuidanceRoot(projectRoot)
 	if scannedAt.IsZero() {
 		scannedAt = time.Now()
 	}
@@ -286,6 +321,7 @@ func (s *Store) ListGuidance(ctx context.Context, projectRoot string, includeAbs
 	if projectRoot == "" {
 		return nil, errors.New("store.ListGuidance: empty project root")
 	}
+	projectRoot = normalizeGuidanceRoot(projectRoot)
 	args := []any{projectRoot}
 	where := `project_root = ?`
 	if projectRoot != GuidanceUserScopeRoot {
@@ -431,7 +467,13 @@ SELECT root_path
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store.GuidanceScanRoots: iterate: %w", err)
 	}
-	return out, nil
+	// Two projects.id rows can record the same repo under two OS
+	// spellings (a Windows session's `D:\x` vs a WSL session's
+	// `/mnt/d/x`). Normalizing + deduping here is what makes the scan
+	// pass walk that repo once, as the process-reachable spelling,
+	// instead of skipping the foreign one as "not a directory" or
+	// scanning it twice under two identities.
+	return dedupeGuidanceRoots(out), nil
 }
 
 // GuidanceUsageWindowDays is the default lookback for [Store.GuidanceUsage].
@@ -517,6 +559,7 @@ func (s *Store) GuidanceUsage(ctx context.Context, projectRoot string, since tim
 	if projectRoot == "" {
 		return out, errors.New("store.GuidanceUsage: empty project root")
 	}
+	projectRoot = normalizeGuidanceRoot(projectRoot)
 	if since.IsZero() {
 		since = time.Now().UTC().AddDate(0, 0, -GuidanceUsageWindowDays)
 	}
@@ -529,6 +572,16 @@ func (s *Store) GuidanceUsage(ctx context.Context, projectRoot string, since tim
 		return out, nil
 	}
 
+	// NOTE: this resolves projects.id from the NORMALIZED root_path, but
+	// a project row is created at ingest time under whatever spelling
+	// that session self-reported — so a repo captured under both the
+	// Windows and the WSL-mount spelling still has TWO distinct
+	// projects.id rows here, and their usage counts are not merged.
+	// That merge is an ingest-time PROJECT IDENTITY matter (owned by the
+	// Project Identity Resolver v2, docs/plans/project-identity-resolver-v2-plan-2026-09-06.md),
+	// not this normalization: normalizing here only folds the GUIDANCE
+	// INVENTORY (UpsertGuidanceScan/ListGuidance) onto one spelling so it
+	// is written once and found by either spelling.
 	var projectID int64
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id FROM projects WHERE root_path = ?`, projectRoot).Scan(&projectID)
@@ -667,7 +720,10 @@ SELECT p.root_path
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store.GuidanceNeverScannedRoots: iterate: %w", err)
 	}
-	return out, nil
+	// Same fold as GuidanceScanRoots: normalize each candidate onto its
+	// process-reachable spelling and dedupe, so a repo recorded under
+	// two OS spellings is offered to the first-scan trigger once.
+	return dedupeGuidanceRoots(out), nil
 }
 
 // GuidanceKnownFiles is the [guidance.Options.Known] cache seam, filled
@@ -675,6 +731,11 @@ SELECT p.root_path
 // derived record. A scanner that finds the same size and mtime reuses
 // the row instead of re-reading and re-hashing the file.
 func (s *Store) GuidanceKnownFiles(ctx context.Context, projectRoot string) (map[string]guidance.KnownFile, error) {
+	// ListGuidance normalizes projectRoot itself; normalizing again here
+	// is a harmless no-op (normalizeGuidanceRoot is idempotent) kept so
+	// this input site reads the same as the others rather than relying
+	// on the callee.
+	projectRoot = normalizeGuidanceRoot(projectRoot)
 	rows, err := s.ListGuidance(ctx, projectRoot, false)
 	if err != nil {
 		return nil, err
