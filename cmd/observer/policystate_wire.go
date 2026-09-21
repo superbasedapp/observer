@@ -935,6 +935,12 @@ func projectGen1(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow
 		row.AcceptedAuthority = nil
 		row.ExtractionEffective = nil
 		row.DroppedClasses = nil
+		// Track C item 3 rides the SAME gen2 latch: a pre-gen2 server
+		// validates the row against a closed field set and 400s the whole
+		// report on an unknown key, so the gen1 projection must strip this
+		// too. (In practice a gen1 server also ignores unknown JSON keys,
+		// but the projection's contract is "emit exactly the gen1 shape".)
+		row.EffectivePins = nil
 		switch row.Reason {
 		case orgcontract.ReasonFamilyNotAccepted:
 			row.Reason = orgcontract.ReasonCapabilityMismatch

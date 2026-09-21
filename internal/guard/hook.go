@@ -62,6 +62,7 @@ func (g *Guard) EvaluateHook(ev policy.Event) (ActionVerdict, bool) {
 		TaintOrigin: taintOriginFor(verdict, ev.Taint),
 		GuardError:  guardErr != nil,
 	}
+	g.stampOrgOverride(es, &av)
 	if approved {
 		// The grant is an audited exception: the row records what the
 		// verdict WAS downgraded from (§14.4 exception register).
@@ -109,14 +110,14 @@ type Emission struct {
 //
 // The verdict's Decision already encodes mode + per-rule enforcement
 // (the engine resolved it); this function only reconciles it with the
-// channel.
+// channel — plus the ONE org-granted softening below.
 func ResolveEmission(v policy.Verdict, caps policy.Capabilities) Emission {
 	reason := v.Reason
 	if v.Advice != "" {
 		reason += " " + v.Advice
 	}
 	em := Emission{Permission: "allow", Reason: reason}
-	switch v.Decision {
+	switch emissionDecision(v) {
 	case policy.DecisionDeny:
 		if caps.CanBlock {
 			em.Permission = "deny"
@@ -140,4 +141,22 @@ func ResolveEmission(v policy.Verdict, caps policy.Capabilities) Emission {
 		// allow stands.
 	}
 	return em
+}
+
+// emissionDecision is the org-granted-override softening applied
+// BEFORE the capability table above (Track B, override.go): a deny on
+// a rule the organization marked `overridable` is emitted as an ASK,
+// so a channel that can prompt asks the human instead of hard-blocking
+// them. Everything downstream is then the EXISTING, already-correct
+// ask row of the §6.2 table — on a no-ask/can-block channel (the proxy
+// lane, a hook without ask) it degrades right back to deny with
+// DegradedFrom="ask", which is what reporting reads.
+//
+// A hard (non-overridable) deny, and every verdict on a node with no
+// org bundle, returns unchanged.
+func emissionDecision(v policy.Verdict) policy.Decision {
+	if v.Decision == policy.DecisionDeny && v.Overridable {
+		return policy.DecisionAsk
+	}
+	return v.Decision
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -521,3 +522,41 @@ func (c *Client) checkOrgKeyIdentity(ctx context.Context, ownRail, offered strin
 // bare io.LimitReader caps the read, not the document, and says nothing
 // about what follows the value).
 const maxOrgDocBytes = 1 << 20
+
+// OrgPolicyPublicKeyFor returns the org distribution public key this node
+// recorded at enrolment for orgURL, as raw Ed25519 key bytes.
+//
+// It is the EXPORTED sibling of enrolmentKeyPin, for callers outside the push
+// client that need the KEY rather than its pin hash — the runtime grant
+// re-verification at cmd/observer/nodegov_wire.go is the first
+// (Track C item 1, docs/plans/org-guardrail-control-wave-2026-09-21.md).
+//
+// ok=false means "this node holds no usable key material": never enrolled, a
+// server that delivered no policy key, a pre-2026-09-13 enrolment that
+// predates the material row, or a row that does not agree with its own
+// content hash (materialFromStates treats a self-contradicting row as
+// ABSENT). Callers MUST treat that as "could not check", never as a failure
+// — the difference is the whole point of the tri-state in
+// govern.GrantIntegrity.
+//
+// A store read failure is an ERROR, not a silent absence (the M5 rule this
+// file already applies to enrolmentKeyPin).
+func OrgPolicyPublicKeyFor(ctx context.Context, st *store.Store, orgURL string) (ed25519.PublicKey, bool, error) {
+	if st == nil || strings.TrimSpace(orgURL) == "" {
+		return nil, false, nil
+	}
+	states, err := st.LatestGuardPolicyStates(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("orgclient.OrgPolicyPublicKeyFor: %w", err)
+	}
+	keyStd := materialFromStates(states, orgKeyMaterialPath(strings.TrimRight(strings.TrimSpace(orgURL), "/")))
+	if keyStd == "" {
+		return nil, false, nil
+	}
+	raw, derr := base64.StdEncoding.DecodeString(keyStd)
+	if derr != nil || len(raw) != ed25519.PublicKeySize {
+		// materialFromStates already validated both; belt and braces.
+		return nil, false, nil
+	}
+	return ed25519.PublicKey(raw), true, nil
+}

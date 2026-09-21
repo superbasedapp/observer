@@ -4741,7 +4741,7 @@ func TestUpdatePostureRowWireShapeIsEnumOnly(t *testing.T) {
 
 // TestPolicyStateRowWireShapeIsHashOnly pins the P0-6 effective-state row
 // (docs/plans/plane-a-p0-6-effective-policy-state-plan.md §2.1/§5.1): the
-// PolicyStateRow that rides POST /api/agent/policy-ack may carry ONLY the 15
+// PolicyStateRow that rides POST /api/agent/policy-ack may carry ONLY the 16
 // allow-listed hash/version/enum/timestamp fields — no Body/TOML/Path/Detail/
 // Message/Excerpt/Tenant/EndUser/Prompt or any free-text field, forever. A new
 // field fails loudly. Modeled on TestRoutingSummaryWireShapeIsAggregateOnly.
@@ -4751,6 +4751,13 @@ func TestUpdatePostureRowWireShapeIsEnumOnly(t *testing.T) {
 // govern.ExtractionAuthority token slices, and DroppedClasses is a closed
 // directive-class-name -> closed drop-reason map — still enum shape, never
 // free text.
+//
+// Track C of the org guardrail control wave added a FOURTH
+// (docs/plans/org-guardrail-control-wave-2026-09-21.md item 3): EffectivePins,
+// a closed pinnable-key -> closed-value map. It rides this rail rather than
+// the PushEnvelope precisely so the orgpush.go sentinel above stays untouched;
+// see its allow-list entry for why its shape makes a content leak structural
+// rather than promised.
 func TestPolicyStateRowWireShapeIsHashOnly(t *testing.T) {
 	t.Parallel()
 	allowed := map[string]bool{
@@ -4764,10 +4771,21 @@ func TestPolicyStateRowWireShapeIsHashOnly(t *testing.T) {
 		"AcceptedAuthority":   true, // gen2 — closed authority-token slice
 		"ExtractionEffective": true, // gen2 — closed authority-token slice
 		"DroppedClasses":      true, // gen2 — closed class-name -> closed reason map
+		// Track C item 3 (org guardrail control wave): a closed
+		// pinnable-key-name -> closed-value map. The value vocabulary is
+		// enforced by internal/policyfam/nodegov.ReportedValueAllowed on BOTH
+		// sides, and the KEY vocabulary admits only a bool or a
+		// closed-enum string — nodegov.ReportableKeys structurally refuses an
+		// int (a threshold the developer chose) and a string_list (paths,
+		// action names), so no free text can enter through this field. The
+		// value spellings are exactly "true" / "false" / an enum member /
+		// "other"; even a config value outside its own enum collapses to the
+		// fixed "other" token rather than travelling.
+		"EffectivePins": true,
 	}
 	typ := reflect.TypeOf(orgcontract.PolicyStateRow{})
 	if typ.NumField() != len(allowed) {
-		t.Errorf("PolicyStateRow has %d fields, want exactly %d (§2.1 allow-list + gen2 P4-2 widening)", typ.NumField(), len(allowed))
+		t.Errorf("PolicyStateRow has %d fields, want exactly %d (§2.1 allow-list + the gen2 P4-2 and Track C widenings)", typ.NumField(), len(allowed))
 	}
 	for i := 0; i < typ.NumField(); i++ {
 		name := typ.Field(i).Name

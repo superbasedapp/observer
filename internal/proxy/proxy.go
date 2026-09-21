@@ -2373,7 +2373,7 @@ func (p *Proxy) serveGuardDeny(w http.ResponseWriter, r *http.Request, provider 
 	if status == 0 {
 		status = http.StatusForbidden
 	}
-	body := guardDenyBody(provider, gr.RuleID, gr.Reason, status)
+	body := guardDenyBody(provider, gr.RuleID, gr.Reason, gr.HumanLine, status)
 	p.writeGuardErrorTurn(w, r, provider, body, status, reqShapeBody, sessionID, "proxy: write guard-deny body", "proxy: insert guard-denied api_turn")
 }
 

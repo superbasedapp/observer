@@ -1,6 +1,7 @@
 package guard
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -18,7 +19,11 @@ import (
 // Parsing is STRICT (unknown keys, unknown matcher fields, missing
 // required fields, invalid regexes are all errors) — `observer guard
 // lint` (G5) calls the same parser, and a policy file that parses
-// here is a policy file that loads. Go's regexp is RE2: linear-time,
+// here is a policy file that loads. The one asymmetry is the ORG
+// layer's unknown keys: the LOADER ignores + notes them so a bundle
+// from a newer server cannot disarm an older node's org floor (see
+// parsePolicyFile), while Lint still reports them so the authoring/
+// publish gate refuses a typo. Go's regexp is RE2: linear-time,
 // no catastrophic backtracking class to lint for (a documented selling
 // point vs PCRE-based competitors).
 
@@ -37,6 +42,12 @@ type policyFile struct {
 	layer     string
 	rules     []policy.Rule
 	overrides []rawOverride
+	// notes are non-fatal parse notes: the TOML key paths this binary
+	// did not understand and IGNORED. Only the org layer ever fills
+	// this (user/project files stay strict — see parsePolicyFile).
+	// File order, no de-duplication (the decoder reports each path
+	// once).
+	notes []string
 }
 
 // rawOverride is a parsed [[override]] entry, kept pre-merge so the
@@ -47,7 +58,14 @@ type rawOverride struct {
 	Decision policy.Decision
 	HasDec   bool
 	Enforced bool
-	Layer    string
+	// Overridable is the §14.2 org-granted override grant
+	// (`overridable = true` on an [[override]] row). It is PARSED on
+	// every layer so the key never trips the strict unknown-key check,
+	// but only the ORG layer may act on it — merge.go drops it
+	// elsewhere with a load issue, and `observer guard lint` reports
+	// the same issue against a user/project file.
+	Overridable bool
+	Layer       string
 }
 
 // tomlPolicyFile is the on-disk shape.
@@ -72,6 +90,8 @@ type tomlOverride struct {
 	Rule     string `toml:"rule"`
 	Decision string `toml:"decision"`
 	Enforce  bool   `toml:"enforce"`
+	// Overridable is org-layer-only (see rawOverride.Overridable).
+	Overridable bool `toml:"overridable"`
 }
 
 // tomlMatchers is the §4.4 matcher vocabulary v1. Fields are AND-ed.
@@ -135,11 +155,78 @@ var validSinks = map[string]struct {
 // `observer guard lint` (G5) and `observer-org policy publish` (G13)
 // are the callers; a file that lints clean is a file that loads with
 // zero LoadIssues.
+//
+// Lint is the AUTHORING half of a pair: AcceptOrgBundleTOML is the
+// CONSUMER half a node runs over a bundle a possibly-NEWER server
+// signed, and it alone tolerates unknown keys (GUARD-FWD-1 in
+// docs/security.md). Both share lintParsed, so what counts as a FATAL
+// problem is defined once.
 func Lint(raw []byte, layer string) []string {
 	pf, err := parsePolicyFile(raw, layer)
 	if err != nil {
 		return []string{err.Error()}
 	}
+	// Lint stays STRICT on every layer, including org — it is the
+	// AUTHORING gate (see AcceptOrgBundleTOML for the consumer one).
+	// Re-reporting the parse notes here, and short-circuiting on them,
+	// keeps the publish gate byte-identical to the pre-tolerance
+	// behaviour: the same wording, the same single-problem result, and
+	// "fix the typo first" before any downstream problem it caused.
+	if len(pf.notes) > 0 {
+		return []string{unknownKeysProblem(pf.notes)}
+	}
+	return lintParsed(pf, layer)
+}
+
+// AcceptOrgBundleTOML is the CONSUMER gate for a signed org bundle:
+// the check a NODE runs before it caches and loads one. It returns the
+// FATAL problems only — everything Lint reports (syntax, bad rule ids,
+// invalid decisions/severities/matchers, §4.6 floor violations, engine
+// construction) EXCEPT the unknown-key report, which comes back as
+// notes instead. Empty problems = accept; notes name the TOML key
+// paths this binary did not understand and ignored.
+//
+// The asymmetry with Lint is deliberate and is the fix for GUARD-FWD-1
+// (docs/security.md): tolerance belongs at CONSUMPTION, strictness at
+// AUTHORING.
+//
+//   - AUTHORING (Lint, layer "org"): the SERVER defines the bundle
+//     vocabulary, so an unknown key there is a typo — `overidable` —
+//     and must be refused before the bundle is signed, stored and
+//     shipped to a fleet. api.LintOrgBundle is that gate.
+//   - CONSUMPTION (this function + parseOrgBundle): the node may be
+//     running an OLDER binary than the server that signed the bundle,
+//     so an unknown key is simply a key from the future. Refusing it
+//     was fail-OPEN — the org layer is escalate-only, so dropping it
+//     can only LOOSEN policy, and one new key would have silently
+//     disarmed every older node's org guardrails.
+//
+// Both gates share lintParsed, so their fatal-problem sets cannot
+// drift. Callers: internal/orgclient's fetch gate (before the cache is
+// written) — the loader half is internal/guard/bundle.go, which
+// surfaces the same notes on PolicyState.Notes.
+func AcceptOrgBundleTOML(raw []byte) (problems, notes []string) {
+	pf, err := parsePolicyFile(raw, layerOrg)
+	if err != nil {
+		return []string{err.Error()}, nil
+	}
+	return lintParsed(pf, layerOrg), pf.notes
+}
+
+// unknownKeysProblem is the one wording for an undecoded-key report,
+// shared by the strict parse error and Lint so the two can never
+// disagree about how an unknown key reads.
+func unknownKeysProblem(keys []string) string {
+	return fmt.Sprintf("unknown keys: %s", strings.Join(keys, ", "))
+}
+
+// lintParsed runs the post-parse half of the checks — the §4.6 merge
+// pass for the layer plus a throwaway engine construction so override
+// targets resolve — over an already-parsed file, and returns the FATAL
+// problems. It is the ONE definition of "fatal" that Lint and
+// AcceptOrgBundleTOML both call, which is what keeps the authoring and
+// consumer gates from drifting apart. Returns nil when clean.
+func lintParsed(pf *policyFile, layer string) []string {
 	var problems []string
 	var extra []policy.Rule
 	var overrides []policy.Override
@@ -153,7 +240,14 @@ func Lint(raw []byte, layer string) []string {
 		extra, overrides, mergeIssues = mergeLayers(pf, nil, nil)
 		problems = append(problems, mergeIssues...)
 	default:
-		extra, overrides, _ = mergeLayers(nil, pf, nil)
+		// The user layer has no relaxation check to fail in isolation
+		// (its only one is against an org floor, which lint has no
+		// bundle for), but it CAN carry an authoring mistake the merge
+		// reports — an `overridable` key only the org may grant. Take
+		// the issues so lint says what loading would record.
+		var mergeIssues []string
+		extra, overrides, mergeIssues = mergeLayers(nil, pf, nil)
+		problems = append(problems, mergeIssues...)
 	}
 	if _, err := policy.New(policy.Config{
 		ExtraRules: extra,
@@ -166,21 +260,38 @@ func Lint(raw []byte, layer string) []string {
 
 // parsePolicyFile parses + compiles one policy source. Strict: any
 // problem is an error naming the offending entry.
+//
+// ONE deliberate exception, the org layer's forward-compatibility
+// rule: an unknown key in a SIGNED org bundle is IGNORED and recorded
+// on policyFile.notes instead of failing the parse. Strictness there
+// was fail-OPEN in the worst way — bundle.go turns a parse error into
+// "running without the org layer", so the first bundle using a key a
+// newer server knows would silently disarm the org guard floor on
+// every older node. User and project files stay strict: they are
+// hand-edited locally, and a typo there must fail loudly. Lint
+// re-reports pf.notes as a problem on EVERY layer, so this tolerance
+// reaches only the two CONSUMER gates — AcceptOrgBundleTOML (the
+// node's fetch gate) and parseOrgBundle (the loader) — and never an
+// authoring surface.
 func parsePolicyFile(raw []byte, layer string) (*policyFile, error) {
 	var f tomlPolicyFile
 	meta, err := toml.Decode(string(raw), &f)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
+	var ignored []string
 	if undec := meta.Undecoded(); len(undec) > 0 {
 		keys := make([]string, 0, len(undec))
 		for _, k := range undec {
 			keys = append(keys, k.String())
 		}
-		return nil, fmt.Errorf("unknown keys: %s", strings.Join(keys, ", "))
+		if layer != layerOrg {
+			return nil, errors.New(unknownKeysProblem(keys))
+		}
+		ignored = keys
 	}
 
-	pf := &policyFile{layer: layer}
+	pf := &policyFile{layer: layer, notes: ignored}
 	seen := map[string]bool{}
 	for i := range f.Rule {
 		r, err := compileRule(&f.Rule[i], layer)
@@ -197,7 +308,7 @@ func parsePolicyFile(raw []byte, layer string) (*policyFile, error) {
 		if ov.Rule == "" {
 			return nil, fmt.Errorf("override %d: missing rule id", i+1)
 		}
-		ro := rawOverride{RuleID: ov.Rule, Enforced: ov.Enforce, Layer: layer}
+		ro := rawOverride{RuleID: ov.Rule, Enforced: ov.Enforce, Overridable: ov.Overridable, Layer: layer}
 		if ov.Decision != "" {
 			d, err := policy.ParseDecision(ov.Decision)
 			if err != nil {

@@ -2,6 +2,9 @@ package dashboard
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -10,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -333,5 +337,92 @@ func TestAPIGuardPolicyProjectLayer(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("project layer row missing: %+v", view.Layers)
+	}
+}
+
+// TestAPIGuardPolicyOrgLayerNotes: an org bundle carrying a key this
+// binary predates is LOADED (the org floor stays armed) and the
+// ignored key rides the layers card as a `notes` entry — never as a
+// `problems` entry, which would read as "your org policy is broken".
+func TestAPIGuardPolicyOrgLayerNotes(t *testing.T) {
+	t.Parallel()
+	tdir := t.TempDir()
+	bundlePath := filepath.Join(tdir, "org-policy-bundle.json")
+	cfgPath := filepath.Join(tdir, "config.toml")
+	cfgToml := "[guard]\nenabled = true\nmode = \"observe\"\n" +
+		"[guard.rules]\nuser_policy = '" + filepath.ToSlash(filepath.Join(tdir, "guard-policy.toml")) + "'\n" +
+		"org_bundle = '" + filepath.ToSlash(bundlePath) + "'\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgToml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const bundleTOML = "[[override]]\nrule = \"R-110\"\ndecision = \"deny\"\nenforce = true\nquarantine = true\n"
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	env, err := json.Marshal(orgcontract.PolicyBundle{
+		Version:    11,
+		BundleTOML: bundleTOML,
+		Signature:  orgcontract.SignPolicyBundle(priv, 11, []byte(bundleTOML)),
+		PublicKey:  base64.RawURLEncoding.EncodeToString(pub),
+		SignedAt:   "2026-09-21T09:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	if err := os.WriteFile(bundlePath, env, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err := openTestDB(context.Background(), db.Options{Path: filepath.Join(tdir, "d.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	s, err := New(Options{DB: database, ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := doGuardPolicy(t, s, "GET", "/api/guard/policy", "")
+	if rec.Code != 200 {
+		t.Fatalf("GET status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var view struct {
+		LoadIssues []string `json:"load_issues"`
+		Layers     []struct {
+			Layer    string   `json:"layer"`
+			Version  string   `json:"version"`
+			Notes    []string `json:"notes"`
+			Problems []string `json:"problems"`
+		} `json:"layers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode view: %v", err)
+	}
+	var found bool
+	for _, l := range view.Layers {
+		if l.Layer != "org" {
+			continue
+		}
+		found = true
+		if l.Version != "11" {
+			t.Errorf("org version = %q, want 11 (the bundle was dropped?)", l.Version)
+		}
+		if len(l.Notes) != 1 || !strings.Contains(l.Notes[0], "override.quarantine") {
+			t.Errorf("org notes = %q, want one line naming override.quarantine", l.Notes)
+		}
+		if len(l.Problems) != 0 {
+			t.Errorf("org problems = %q, want none (a note is not a load issue)", l.Problems)
+		}
+	}
+	if !found {
+		t.Fatal("layers missing the org row")
+	}
+	for _, issue := range view.LoadIssues {
+		if strings.Contains(issue, "org bundle") {
+			t.Errorf("load issue for a loadable bundle: %q", issue)
+		}
 	}
 }

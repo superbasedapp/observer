@@ -347,6 +347,13 @@ func New(cfg Config) (*Engine, error) {
 			if ov.Enforced {
 				rules[i].Enforced = true
 			}
+			// Org-granted override (Track B): additive-only, "false
+			// wins". A row only ever GAINS overridability, and only
+			// from an org-layer override (guard/merge.go is the one
+			// place that lets the key through).
+			if ov.Overridable {
+				rules[i].Overridable = true
+			}
 			if ov.Source != "" {
 				rules[i].Source = ov.Source
 			}
@@ -679,12 +686,13 @@ func (e *Engine) verdictFor(r *Rule, detail string) Verdict {
 		source = SourceBuiltin
 	}
 	return Verdict{
-		Decision: d,
-		RuleID:   r.ID,
-		Severity: r.Severity,
-		Reason:   reason,
-		Advice:   r.Advice,
-		Source:   source,
+		Decision:    d,
+		RuleID:      r.ID,
+		Severity:    r.Severity,
+		Reason:      reason,
+		Advice:      r.Advice,
+		Source:      source,
+		Overridable: r.Overridable,
 	}
 }
 

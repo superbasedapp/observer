@@ -144,6 +144,7 @@ func (m *mergeState) applyUser(user *policyFile) {
 		m.effective[s.ID] = &stance{observe: s.Observe, enforce: s.Enforce, enforced: s.Enforced}
 	}
 	for _, ov := range user.overrides {
+		m.noteUngrantableOverridable(ov)
 		s := m.effective[ov.RuleID]
 		if s == nil {
 			m.overrides = append(m.overrides, toPolicyOverride(ov))
@@ -171,6 +172,7 @@ func (m *mergeState) applyProject(project *policyFile) {
 	}
 	m.extra = append(m.extra, project.rules...)
 	for _, ov := range project.overrides {
+		m.noteUngrantableOverridable(ov)
 		s := m.effective[ov.RuleID]
 		if s == nil {
 			m.overrides = append(m.overrides, toPolicyOverride(ov))
@@ -187,6 +189,24 @@ func (m *mergeState) applyProject(project *policyFile) {
 	}
 }
 
+// noteUngrantableOverridable records the load issue for an
+// `overridable = true` key on a layer that cannot grant it. ONLY the
+// org layer grants overridability (the org bundle is the authority
+// that withheld or allowed the block in the first place); a user or
+// project file asking for it is a policy-authoring mistake, reported
+// the same way a dropped relaxation is — loudly, without failing the
+// rest of the file. `observer guard lint` surfaces the identical
+// string.
+func (m *mergeState) noteUngrantableOverridable(ov rawOverride) {
+	if !ov.Overridable {
+		return
+	}
+	m.issues = append(m.issues, fmt.Sprintf(
+		"%s override on %s: `overridable` ignored — only the org policy bundle grants a per-rule override (spec §4.6/§14.2)",
+		ov.Layer, ov.RuleID,
+	))
+}
+
 // apply commits an accepted override to the stance reference and the
 // engine input list.
 func (m *mergeState) apply(s *stance, ov rawOverride) {
@@ -200,7 +220,15 @@ func (m *mergeState) apply(s *stance, ov rawOverride) {
 // toPolicyOverride converts a parsed override into the engine's
 // mechanical form.
 func toPolicyOverride(ov rawOverride) policy.Override {
-	out := policy.Override{RuleID: ov.RuleID, Enforced: ov.Enforced, Source: ov.Layer}
+	out := policy.Override{
+		RuleID:   ov.RuleID,
+		Enforced: ov.Enforced,
+		Source:   ov.Layer,
+		// Structural gate, not a caller courtesy: overridability is
+		// carried ONLY off the org layer, so no other call path can
+		// grant it even by mistake.
+		Overridable: ov.Overridable && ov.Layer == layerOrg,
+	}
 	if ov.HasDec {
 		d := ov.Decision
 		out.Decision = &d

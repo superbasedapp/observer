@@ -194,6 +194,17 @@ func TestFetchPolicyBundle_Rejections(t *testing.T) {
 			},
 			wantDetail: "does not lint as an org policy file",
 		},
+		{
+			// GUARD-FWD-1 boundary: an unknown KEY is tolerated (see
+			// TestFetchPolicyBundle_UnknownKeyIsAcceptedWithNotes), but a
+			// genuinely bad rule id is still fatal — the consumer gate
+			// dropped the unknown-key report, not the real checks.
+			name: "override on an unknown rule id is still fatal",
+			bundle: func(t *testing.T) orgcontract.PolicyBundle {
+				return signedTestBundle(t, priv, pub, 3, "[[override]]\nrule = \"R-999\"\ndecision = \"deny\"\n")
+			},
+			wantDetail: "does not lint as an org policy file",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -772,5 +783,66 @@ func TestApplyBundleGates_EqualVersionGate(t *testing.T) {
 				t.Fatalf("CachedVersion = %d, want %d", res.CachedVersion, tc.want.cachedVersion)
 			}
 		})
+	}
+}
+
+// TestFetchPolicyBundle_UnknownKeyIsAcceptedWithNotes closes the fetch
+// half of GUARD-FWD-1: a validly signed bundle whose TOML carries a key
+// this (older) binary does not know is ACCEPTED and cached verbatim,
+// not rejected. Running the authoring lint at this gate used to refuse
+// it before the cache was ever written — fail-OPEN, since the org layer
+// is escalate-only, so a stale-or-absent org layer can only loosen
+// policy. The unknown key is a WARN, and the known override still lands.
+func TestFetchPolicyBundle_UnknownKeyIsAcceptedWithNotes(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	const futureTOML = "[[override]]\nrule = \"R-110\"\ndecision = \"deny\"\nenforce = true\nquarantine = true\n"
+
+	// Sanity: the AUTHORING gate still refuses this body, so the
+	// asymmetry under test is real and not a vacuous pass.
+	if problems := guard.Lint([]byte(futureTOML), "org"); len(problems) == 0 {
+		t.Fatal("guard.Lint(org) accepted an unknown key — the publish gate must stay strict")
+	}
+
+	ps := newPolicyBundleServer(t)
+	b := signedTestBundle(t, priv, pub, 4, futureTOML)
+	ps.bundle = &b
+
+	c, s, cachePath := enrolledClient(t, ps.srv.URL)
+	res, err := c.FetchPolicyBundle(context.Background(), cachePath)
+	if err != nil {
+		t.Fatalf("FetchPolicyBundle: %v", err)
+	}
+	if res.Status != PolicyApplied || res.Version != 4 {
+		t.Fatalf("result = %+v, want applied v4 (an unknown key must not reject)", res)
+	}
+
+	// Cached verbatim — the node hands the ORIGINAL bytes to the
+	// loader, which re-verifies the signature over them.
+	raw, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("cache not written: %v", err)
+	}
+	var cached orgcontract.PolicyBundle
+	if err := json.Unmarshal(raw, &cached); err != nil {
+		t.Fatalf("decode cache: %v", err)
+	}
+	if cached.BundleTOML != futureTOML || cached.Version != 4 {
+		t.Fatalf("cache mismatch: %+v", cached)
+	}
+
+	// The version row landed, so the node converges instead of sitting
+	// on an older bundle forever.
+	if st := orgStateRow(t, s, ps.srv.URL+"/api/v1/policy-bundle"); st == nil || st.Version != "4" {
+		t.Fatalf("bundle state row = %+v, want version 4", st)
+	}
+
+	// And the loader's consumer gate agrees: accept, with the ignored
+	// key named.
+	problems, notes := guard.AcceptOrgBundleTOML([]byte(cached.BundleTOML))
+	if len(problems) != 0 {
+		t.Fatalf("AcceptOrgBundleTOML problems = %v, want accept", problems)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "override.quarantine") {
+		t.Errorf("notes = %q, want one naming override.quarantine", notes)
 	}
 }

@@ -143,6 +143,19 @@ type Rule struct {
 	// observe. Set via Override (the [[override]] enforce key) or on
 	// compiled user rules with enforce = true.
 	Enforced bool
+	// Overridable marks the rule ORG-GRANTED OVERRIDABLE (org
+	// guardrail control wave, Track B): the organization published a
+	// bundle that explicitly allows a developer to override this
+	// rule's block on their own node, so the emission seam softens a
+	// deny into an ask wherever the channel can prompt, and the
+	// §6.3 approvals register accepts a scoped grant for it.
+	//
+	// Only the ORG layer may set it (guard/merge.go drops the key on
+	// the user/project layers with a load issue). The zero value —
+	// every rule on an individual, un-enrolled node — means "not
+	// org-granted", which is byte-identical to the pre-wave behaviour:
+	// a deny stays a deny and nothing consults it.
+	Overridable bool
 }
 
 // Override tunes rule rows by public ID without redefining them (spec
@@ -160,6 +173,13 @@ type Override struct {
 	Decision *Decision
 	// Enforced sets Rule.Enforced — the per-rule enforce upgrade.
 	Enforced bool
+	// Overridable sets Rule.Overridable — the org-granted override
+	// grant. Only an ORG-layer [[override]] row ever sets it true
+	// (the guard merge drops it elsewhere); true never turns back to
+	// false through a later override, because the composition rule is
+	// "false wins" and a lower-trust layer cannot grant what the org
+	// withheld.
+	Overridable bool
 	// Source labels the layer the override came from ("user",
 	// "project", "org") so the verdict attributes to the layer that
 	// last tuned the rule.

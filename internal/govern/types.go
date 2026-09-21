@@ -444,7 +444,37 @@ type Grant struct {
 	// at write time against the pinned key, not re-verified on every Resolve.
 	Signature   string
 	ReceiptHash string
+	// Integrity is the boundary's verdict on whether the STORED grant
+	// document still verifies under the org distribution key this node
+	// holds (Track C item 1). internal/govern does no crypto — the check
+	// runs once per identity refresh at the cmd boundary
+	// (cmd/observer/nodegov_wire.go::governanceIdentityLoader) and is
+	// resolved into this plain enum, exactly as CLAUDE.md #3 requires.
+	//
+	// The ZERO value is GrantIntegrityUnchecked, which keeps a caller that
+	// does not (or cannot) verify on today's behaviour — that is what makes
+	// this additive.
+	Integrity GrantIntegrity
 }
+
+// GrantIntegrity is the tri-state verdict of the runtime re-verification of
+// a STORED grant. Tri-state, not a bool, because "we could not check" and
+// "we checked and it failed" are different facts and only the second one may
+// be loud: a node that never recorded the org key material (a pre-2026-09-13
+// enrolment, or a server that delivered no key) must not be reported as
+// tampered with.
+type GrantIntegrity string
+
+const (
+	// GrantIntegrityUnchecked — no verification was attempted or none was
+	// possible (no key material on this node). The zero value.
+	GrantIntegrityUnchecked GrantIntegrity = ""
+	// GrantIntegrityValid — the stored document verified under the key.
+	GrantIntegrityValid GrantIntegrity = "valid"
+	// GrantIntegrityInvalid — the stored document did NOT verify: it is not
+	// the document the organization signed.
+	GrantIntegrityInvalid GrantIntegrity = "invalid"
+)
 
 // LiveIdentity is the node's CURRENT enrolment identity plus its live org
 // policy key pin — the facts a grant is checked against on every resolve, so
@@ -494,6 +524,17 @@ const (
 	// StateKeyPinMismatch — the grant was bound to an org signing key the
 	// node no longer pins (adversarial review A2 / spec §3.7 row 3b).
 	StateKeyPinMismatch State = "key_pin_mismatch"
+	// StateGrantSignatureInvalid — the STORED grant document no longer
+	// verifies under the org signing key this node holds (Track C item 1,
+	// docs/plans/org-guardrail-control-wave-2026-09-21.md). Same class as
+	// StateKeyPinMismatch: the authority record on disk is not the one the
+	// organization signed, so nothing in it may be believed — including its
+	// own expiry, which is why this row is resolved BEFORE the TTL row.
+	//
+	// It is reachable only when the node could actually CHECK (it holds the
+	// org distribution key material and the caller set
+	// Grant.Integrity). An unchecked grant keeps today's behaviour.
+	StateGrantSignatureInvalid State = "grant_signature_invalid"
 	// StateNoPolicy — a live grant, but the org has published no governance.
 	StateNoPolicy State = "no_policy"
 	// StateInert — a live grant and a delivered body, but nothing was
@@ -514,6 +555,12 @@ const (
 	ReasonGrantExpired     = "grant_expired"
 	ReasonIdentityChanged  = "identity_changed"
 	ReasonKeyPinMismatch   = "key_pin_mismatch"
+	// ReasonGrantSignatureInvalid is the node-local drop reason paired with
+	// StateGrantSignatureInvalid. Like ReasonAuthorityRetired it is
+	// node-local BY CONSTRUCTION — cmd/observer's governanceFacts collapses
+	// every non-applied resolution to not_preauthorized before the ack wire,
+	// and the server 400s the whole report on an unknown reason.
+	ReasonGrantSignatureInvalid = "grant_signature_invalid"
 	// ReasonAuthorityRetired records a directive dropped because the only
 	// authority the grant carries for it is a RETIRED token (capture.raise).
 	//
@@ -841,6 +888,23 @@ func (e Effective) GrantsEgressEnforcement() bool {
 // mode replace the local ones.
 func (e Effective) GrantsBudgetEnforcement() bool {
 	return e.grantsExtraction(AuthorityEnforceBudget)
+}
+
+// GrantsAnyEnforcement reports whether this node is MANAGED and holds any of
+// the four enforce.* authorities — i.e. whether the organization is
+// authoritative over some enforcement point on this machine, rather than
+// merely advisory.
+//
+// It is a capability question, not an authority-token question: the callers
+// that need it (Track C item 2's route-drift posture) do not care WHICH
+// enforcement point the org drives, only that it drives one, because that is
+// what makes "this developer's AI tool is no longer routed through the
+// managed proxy" a finding rather than a configuration choice.
+func (e Effective) GrantsAnyEnforcement() bool {
+	return e.GrantsRoutingEnforcement() ||
+		e.GrantsAdmissionEnforcement() ||
+		e.GrantsEgressEnforcement() ||
+		e.GrantsBudgetEnforcement()
 }
 
 // grantsExtractionOrManaged is the shared gate behind every HEADLINE

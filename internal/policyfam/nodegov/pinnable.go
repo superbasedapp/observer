@@ -367,3 +367,124 @@ func PinnableKeyPaths() []string {
 	sort.Strings(out)
 	return out
 }
+
+// --- Effective-value reporting (Track C item 3) ---
+//
+// docs/plans/org-guardrail-control-wave-2026-09-21.md: a node reports, beside
+// the pins it ACKED, the EFFECTIVE value of every pinnable key it honours, so
+// the organization can tell "the pin was delivered and acked" from "the pin is
+// actually in force on that machine". The two can differ without any tampering
+// (a restart-bound key, a config the node's own Validate refused), and they
+// can differ BECAUSE of tampering — the org server decides which, this table
+// only decides what may be said.
+//
+// THE CONTENT FLOOR IS STRUCTURAL, not a promise. A key's value may be
+// reported only when its shape makes a content leak impossible: a bool, or a
+// string with a CLOSED Enum. An int (a threshold a developer chose) or a
+// string_list (paths, action names) is never reported, because those carry
+// information about the developer's own configuration rather than a posture
+// the org authored.
+
+// ReportableValue reports whether this key's effective value may cross the
+// org wire. True for bools and closed-enum strings only.
+func (k PinnableKey) ReportableValue() bool {
+	switch k.Kind {
+	case "bool":
+		return true
+	case "string":
+		return len(k.Enum) > 0
+	default:
+		return false
+	}
+}
+
+// ReportedValueOther is the value a closed-enum key reports when the live
+// value is outside its enum — which is possible on a node whose config was
+// hand-edited to something config.Validate would refuse. It is deliberately
+// a fixed token, not the value: reporting the unknown string is exactly the
+// content leak this table exists to prevent.
+const ReportedValueOther = "other"
+
+// NormalizeReportedValue maps a live config value onto the closed wire
+// spelling for this key, or ok=false when the key is not reportable at all
+// or the value's Go type does not match the key's declared Kind (a
+// mismatched type is a bug on the reader's side; reporting nothing is the
+// safe direction).
+func (k PinnableKey) NormalizeReportedValue(v any) (string, bool) {
+	if !k.ReportableValue() {
+		return "", false
+	}
+	switch k.Kind {
+	case "bool":
+		b, ok := v.(bool)
+		if !ok {
+			return "", false
+		}
+		if b {
+			return "true", true
+		}
+		return "false", true
+	case "string":
+		s, ok := v.(string)
+		if !ok {
+			return "", false
+		}
+		for _, allowed := range k.Enum {
+			if as, isString := allowed.(string); isString && as == s {
+				return s, true
+			}
+		}
+		return ReportedValueOther, true
+	default:
+		return "", false
+	}
+}
+
+// ReportableKeys returns the pinnable keys whose effective value may be
+// reported, in table order. It is the vocabulary the org server validates
+// the effective_pins map against.
+func ReportableKeys() []PinnableKey {
+	out := make([]PinnableKey, 0, len(PinnableKeys))
+	for _, k := range PinnableKeys {
+		if k.ReportableValue() {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// ReportableKeyNames returns just the dotted paths of ReportableKeys, sorted.
+func ReportableKeyNames() []string {
+	out := make([]string, 0, len(PinnableKeys))
+	for _, k := range ReportableKeys() {
+		out = append(out, k.Key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ReportedValueAllowed reports whether (key, value) is an acceptable
+// effective_pins entry: the key must be reportable and the value must be one
+// of the closed spellings that key can produce.
+func ReportedValueAllowed(key, value string) bool {
+	for _, k := range ReportableKeys() {
+		if k.Key != key {
+			continue
+		}
+		switch k.Kind {
+		case "bool":
+			return value == "true" || value == "false"
+		case "string":
+			if value == ReportedValueOther {
+				return true
+			}
+			for _, allowed := range k.Enum {
+				if as, ok := allowed.(string); ok && as == value {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
+}

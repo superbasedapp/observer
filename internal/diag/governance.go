@@ -99,6 +99,25 @@ func checkGovernance(ctx context.Context, database *sql.DB, cfg config.Config, h
 	// record. hasGrant is true and grantExpired is false.
 	details = append(details, fmt.Sprintf("sidecar path: %s", path), expiryDetail(grantExpiresAt))
 
+	// Track C item 1: re-verify the STORED grant document. A grant that no
+	// longer verifies is a FAIL and returns immediately — it outranks every
+	// sidecar question below, because a rewritten authority record makes the
+	// posture this node is pinning meaningless. "Unchecked" is only a
+	// detail line: it is the honest answer for a node with no key material,
+	// not a finding.
+	integrity, integrityDetail := checkStoredGrantIntegrity(ctx, database)
+	if integrityDetail != "" {
+		details = append(details, integrityDetail)
+	}
+	if integrity == grantIntegrityInvalid {
+		return Check{
+			Name: name, Status: StatusFail,
+			Message: "the recorded organisation grant does NOT verify against this machine's pinned organisation key — " +
+				"the stored authority record has been altered; re-enrol (`observer unenroll` then `observer enroll`) to re-establish it",
+			Details: details,
+		}
+	}
+
 	// §1.4.1: probe writability whenever governed, regardless of whether a
 	// sidecar currently exists. doctor runs OUT of the daemon's process and
 	// cannot read its in-memory write-failure state (nodegov_wire.go's

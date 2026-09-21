@@ -114,6 +114,45 @@ Policy edits bind at daemon restart (the dashboard's restart banner
 is honest about this); hook processes read config per invocation and
 follow immediately.
 
+### On an enrolled node: org-granted overrides
+
+If your machine carries an org policy bundle, the enforce ramp is not
+entirely yours to run: the bundle is a strictness FLOOR you cannot
+lower, and the exception register now answers to it.
+
+- A rule the organization marked `overridable = true` still blocks,
+  but presents as a native **ask** where the client supports one
+  (Claude Code, Cursor) and names the exact grant command everywhere
+  else. `observer guard approve <rule> --session <id>` works as
+  documented, and the grant is reported to the organization.
+- A locked rule is **org-locked**: `observer guard approve` refuses
+  with `locked by org policy: <rule>`, and any grant you created
+  BEFORE enrolment is ignored at evaluation time (the audit reason
+  records `[org_locked: ...]` so the refusal is visible, not silent).
+  Ask your admin to mark the rule overridable.
+- **How many rules are locked depends on your node's tenancy**, not on
+  the bundle alone:
+  - a **managed** node (Enterprise-Managed Tenancy) is org-authoritative,
+    so *every* rule the bundle did not mark `overridable` is locked,
+    including built-ins the bundle never mentions;
+  - an **individual** node treats the bundle as a floor: it locks the
+    rules the bundle NAMES (an `[[override]]` target or a rule the
+    bundle defines) and leaves every other rule's local approvals
+    working exactly as before enrolment.
+- Check which is which with `observer guard rules --effective` and the
+  Security page's **Organization guardrails** card.
+- **A block with no session id cannot be overridden from the CLI.**
+  Approvals are scoped to a session, or to the project root resolved
+  from that session; a proxy-routed client that sends no
+  `prompt_cache_key` / `Session-Id` (and that the pidbridge did not
+  recognise) gives the daemon nothing to scope a grant to. The deny
+  text says so rather than printing an uncallable command - use the
+  dashboard Security page, or re-run through a session-identified
+  client.
+
+On a node with no org bundle none of this applies and the ramp above
+is unchanged.
+
 ## Step 4 — Enable enforce
 
 - **Dashboard**: Security → **Mode** card → Enforce. The consent step

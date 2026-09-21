@@ -4,6 +4,7 @@ import { HeroStat, PageHeader, Pill, SegmentedControl, Tooltip } from "@/compone
 import { HelpInd } from "@/components/HelpInd";
 import { CopyOnClick } from "@/components/CopyOnClick";
 import { ShieldIcon } from "@/components/icons";
+import { GuardOverrideCard } from "@/components/GuardOverrideCard";
 import { useApi, type ApiState } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
 import { markRestartPending } from "@/lib/restartPending";
@@ -49,6 +50,11 @@ type GuardEvent = {
   reason?: string;
   target_excerpt?: string;
   taint_origin?: string;
+  // Org-granted override posture of this row's RULE under the org
+  // policy bundle currently on disk (Track B). Absent on an
+  // un-enrolled node and on older daemons.
+  overridable?: boolean;
+  org_locked?: boolean;
 };
 
 type GuardEventsResponse = { events: GuardEvent[] | null; count: number };
@@ -320,6 +326,10 @@ export function SecurityPage() {
       />
 
       <GuardBudgetCard />
+
+      {/* Org-granted override (Track B). Renders nothing unless an
+          org policy bundle is active on this node. */}
+      <GuardOverrideCard />
 
       <PromptGuardCard />
 

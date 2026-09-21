@@ -497,6 +497,22 @@ func newOrgGrantShowCmd() *cobra.Command {
 					short(grant.KeyPinSHA256), short(live.KeyPinSHA256))
 				fmt.Fprintln(out, "              The grant is NOT being honoured. Re-enrol to re-establish it.")
 			}
+			// Track C item 1: the RUNTIME re-verification verdict. The
+			// "Signing key" line above answers "is this grant bound to the
+			// key I pin?"; this one answers the question that was never
+			// asked again after enrolment — "is this still the document the
+			// organisation signed?".
+			switch grant.Integrity {
+			case govern.GrantIntegrityValid:
+				fmt.Fprintln(out, "Signature:    re-verified just now against the organisation key recorded at enrolment")
+			case govern.GrantIntegrityInvalid:
+				fmt.Fprintln(out, "Signature:    DOES NOT VERIFY - the stored grant is not the document the organisation signed.")
+				fmt.Fprintln(out, "              This machine's authority record has been altered. The grant is NOT being")
+				fmt.Fprintln(out, "              honoured. Re-enrol to re-establish it; the organisation can see this too.")
+			default:
+				fmt.Fprintln(out, "Signature:    NOT RE-CHECKED - this machine holds no organisation signing key material")
+				fmt.Fprintln(out, "              (an older enrolment, or a server that delivered no policy key). Re-enrol to record it.")
+			}
 			if grant.Generation != live.Generation {
 				fmt.Fprintf(out, "Enrolment:    STALE - grant recorded for enrolment %d, this machine is on %d.\n",
 					grant.Generation, live.Generation)

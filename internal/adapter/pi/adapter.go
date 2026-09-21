@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
@@ -133,6 +134,57 @@ type sessionContext struct {
 	ProjectRoot string
 	Provider    string
 	Model       string
+	// GitBranch / GitIdentity are resolved once from the `session` line's
+	// cwd (see applySessionCwd) — pure file reads via git.ResolveIdentity,
+	// never a forked git process (RootCommit stays nil, matching every
+	// other hot-path adapter — goose, crush, primeagent). Empty/zero when
+	// the cwd isn't inside a git working tree, exactly like every field
+	// on git.Identity. GitIdentity.Remote already carries the normalized
+	// "origin" remote (see stampToolEventIdentity's GitRemote sibling)
+	// and is applied to every emitted event via adapter.ApplyProjectIdentity
+	// before ParseSessionFile returns.
+	GitBranch   string
+	GitIdentity git.Identity
+}
+
+// applySessionCwd records cwd as the session's project root and resolves
+// its git identity (branch + the full Project Identity Resolver v2
+// bundle), used both by the main scan loop's `session` line and by
+// recoverSessionState's pre-scan of an incremental reparse's already-
+// consumed prefix — the ONLY two places Pi's `session` line is observed.
+func applySessionCwd(cwd string, state *sessionContext) {
+	if cwd == "" {
+		return
+	}
+	state.ProjectRoot = cwd
+	id := resolveGitIdentity(cwd)
+	state.GitIdentity = id
+	state.GitBranch = id.Branch
+}
+
+// resolveGitIdentity resolves the git project identity for a Pi session's
+// raw cwd. Mirrors goose.Adapter.resolveProjectRoot / crush.Adapter.
+// resolveProjectRoot: translate a foreign-mount path first, stat-gate it
+// (a foreign path that isn't locally reachable is left alone — git.
+// ResolveIdentity's internal filepath.Abs would otherwise CWD-prefix the
+// observer's own repo onto it), then resolve. RootCommit stays nil: this
+// runs on the hot parse path and must never fork a git process. Returns
+// a zero Identity (never fabricated) when cwd is empty, unreachable, or
+// not inside a git working tree.
+func resolveGitIdentity(cwd string) git.Identity {
+	wd := strings.TrimSpace(cwd)
+	if wd == "" {
+		return git.Identity{}
+	}
+	wd = crossmount.TranslateForeignPath(wd)
+	if _, err := os.Stat(wd); err != nil {
+		return git.Identity{}
+	}
+	identity, err := git.ResolveIdentity(wd, git.IdentityOptions{})
+	if err != nil {
+		return git.Identity{}
+	}
+	return identity
 }
 
 // ParseSessionFile implements adapter.Adapter.
@@ -173,6 +225,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	lineNum := 0
 	for scanner.Scan() {
 		if ctx.Err() != nil {
+			adapter.ApplyProjectIdentity(&res, state.GitIdentity)
 			return res, ctx.Err()
 		}
 		raw := scanner.Bytes()
@@ -197,9 +250,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			// do NOT adopt line.ID here. It equals the path's UUID anyway, and
 			// adopting it is exactly what split appended turns into a second
 			// filename-keyed session.
-			if line.Cwd != "" {
-				state.ProjectRoot = line.Cwd
-			}
+			applySessionCwd(line.Cwd, &state)
 		case "model_change":
 			state.Provider = line.Provider
 			state.Model = line.ModelID
@@ -208,8 +259,10 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		adapter.ApplyProjectIdentity(&res, state.GitIdentity)
 		return res, fmt.Errorf("pi.ParseSessionFile: scan: %w", err)
 	}
+	adapter.ApplyProjectIdentity(&res, state.GitIdentity)
 	return res, nil
 }
 
@@ -236,6 +289,8 @@ func (a *Adapter) parseMessageLine(sourceFile string, line rawLine, lineNum int,
 			SourceEventID:      firstNonEmpty(line.ID, fmt.Sprintf("user:L%d", lineNum)),
 			SessionID:          state.SessionID,
 			ProjectRoot:        state.ProjectRoot,
+			GitBranch:          state.GitBranch,
+			GitRemote:          state.GitIdentity.Remote,
 			Timestamp:          ts,
 			Model:              modelName(state),
 			Tool:               models.ToolPi,
@@ -289,6 +344,8 @@ func (a *Adapter) parseMessageLine(sourceFile string, line rawLine, lineNum int,
 				SourceEventID:      firstNonEmpty("complete:"+line.ID, fmt.Sprintf("complete:L%d", lineNum)),
 				SessionID:          state.SessionID,
 				ProjectRoot:        state.ProjectRoot,
+				GitBranch:          state.GitBranch,
+				GitRemote:          state.GitIdentity.Remote,
 				Timestamp:          ts,
 				Model:              modelName(state),
 				Tool:               models.ToolPi,
@@ -308,6 +365,8 @@ func (a *Adapter) parseMessageLine(sourceFile string, line rawLine, lineNum int,
 				SourceEventID:       firstNonEmpty("usage:"+line.ID, fmt.Sprintf("usage:L%d", lineNum)),
 				SessionID:           state.SessionID,
 				ProjectRoot:         state.ProjectRoot,
+				GitBranch:           state.GitBranch,
+				GitRemote:           state.GitIdentity.Remote,
 				Timestamp:           ts,
 				Tool:                models.ToolPi,
 				Model:               modelName(state),
@@ -344,6 +403,8 @@ func (a *Adapter) toolCallEvent(sourceFile string, line rawLine, lineNum int, ts
 		SourceEventID:      firstNonEmpty(content.ID, fmt.Sprintf("tool:%s:L%d", content.Name, lineNum)),
 		SessionID:          state.SessionID,
 		ProjectRoot:        state.ProjectRoot,
+		GitBranch:          state.GitBranch,
+		GitRemote:          state.GitIdentity.Remote,
 		Timestamp:          ts,
 		Model:              modelName(&state),
 		Tool:               models.ToolPi,
@@ -377,6 +438,8 @@ func (a *Adapter) bashExecutionEvent(sourceFile string, line rawLine, lineNum in
 		SourceEventID: firstNonEmpty("bash:"+line.ID, fmt.Sprintf("bash:L%d", lineNum)),
 		SessionID:     state.SessionID,
 		ProjectRoot:   state.ProjectRoot,
+		GitBranch:     state.GitBranch,
+		GitRemote:     state.GitIdentity.Remote,
 		Timestamp:     ts,
 		Model:         modelName(&state),
 		Tool:          models.ToolPi,
@@ -512,12 +575,13 @@ func looksLikeUUID(s string) bool {
 
 // recoverSessionState pre-scans the already-consumed prefix [0, until) of an
 // incrementally-parsed Pi session file to recover the session-level state the
-// header lines carry: the working directory (`session`.cwd → ProjectRoot) and
-// the active model (`model_change` → Provider/Model). Without it, turns
-// appended after the first parse land under the "[pi]" placeholder root. The
-// scan stops at `until` so a model_change AFTER the cursor is left to the main
-// loop (which applies it in order). Best-effort: any open/parse error leaves
-// state at its defaults.
+// header lines carry: the working directory (`session`.cwd → ProjectRoot,
+// resolved to a git identity via applySessionCwd) and the active model
+// (`model_change` → Provider/Model). Without it, turns appended after the
+// first parse land under the "[pi]" placeholder root with no git identity.
+// The scan stops at `until` so a model_change AFTER the cursor is left to
+// the main loop (which applies it in order). Best-effort: any open/parse
+// error leaves state at its defaults.
 func recoverSessionState(path string, until int64, state *sessionContext) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -538,9 +602,7 @@ func recoverSessionState(path string, until int64, state *sessionContext) {
 			if json.Unmarshal(raw, &line) == nil {
 				switch line.Type {
 				case "session":
-					if line.Cwd != "" {
-						state.ProjectRoot = line.Cwd
-					}
+					applySessionCwd(line.Cwd, state)
 				case "model_change":
 					state.Provider = line.Provider
 					state.Model = line.ModelID

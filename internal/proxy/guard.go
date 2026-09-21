@@ -82,6 +82,14 @@ type GuardRequestResult struct {
 	// see guardPromptDenyBody's doc comment).
 	RuleID string
 	Reason string
+	// HumanLine is the ONE human-first sentence rendered ABOVE the
+	// agent-facing "[observer-guard ...]" framing on a "deny" (the org
+	// guardrail control wave, Track B): what was blocked and whether
+	// the organization allows an override. The scanner leaves it EMPTY
+	// whenever no org policy bundle applies, so an individual node's
+	// deny body stays byte-identical to the pre-wave body. Ignored for
+	// "prompt_deny", whose Reason is already a complete human message.
+	HumanLine string
 	// Status is the HTTP status to write for "deny"/"prompt_deny".
 	// Zero means "unspecified" — serveGuardDeny/serveGuardPromptDeny
 	// both default an unset Status to 403, so a caller that never sets
@@ -114,8 +122,14 @@ type GuardToolUse struct {
 // {"code",...} field never disagrees with the HTTP status line
 // actually sent (a NIT the phase-3b review flagged: geminiErrorBody
 // used to hardcode 400/INVALID_ARGUMENT regardless of the real status).
-func guardDenyBody(provider, ruleID, reason string, status int) []byte {
+func guardDenyBody(provider, ruleID, reason, humanLine string, status int) []byte {
 	msg := fmt.Sprintf("[observer-guard %s] request blocked by Observer policy: %s", ruleID, reason)
+	if humanLine != "" {
+		// Human first, agent second (Track B): the developer reading a
+		// 403 in their terminal gets one plain sentence naming the
+		// override command before the machine-readable framing.
+		msg = humanLine + "\n\n" + msg
+	}
 	type errObj struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`

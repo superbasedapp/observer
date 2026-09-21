@@ -154,4 +154,12 @@ type Verdict struct {
 	// "builtin" | "user" | "project" | "org" | "llm_judge". G1 emits
 	// only SourceBuiltin.
 	Source string
+	// Overridable carries Rule.Overridable onto the verdict: the
+	// organization published a bundle that lets a developer override
+	// THIS rule on their own node. It is read by the emission seam
+	// (an overridable deny presents as an ask where the channel can
+	// prompt) and by the §6.3 approvals register (a grant for a
+	// non-overridable rule under an org bundle is inert). False on
+	// every individual node — nothing consults it there.
+	Overridable bool
 }

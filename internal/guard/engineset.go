@@ -38,6 +38,15 @@ type engineSet struct {
 	budgetCalendars BudgetCalendars
 	budgetWitness   BudgetDocumentWitness
 
+	// orgNamedRules is the set of rule IDs the ORG layer actually
+	// NAMES: every [[override]] row's target plus every rule the org
+	// bundle itself defines. It is the blast radius of the org lock on
+	// an INDIVIDUAL node (override.go: an individual node keeps local
+	// approvals for every rule the org never mentioned), sealed with
+	// the snapshot so a reload cannot tear it from orgLayer. nil when
+	// no org bundle applies.
+	orgNamedRules map[string]bool
+
 	// states are the org+user layer descriptors (builtins carry no
 	// state entry), in New's insertion order (org, then user).
 	states []PolicyState
@@ -66,6 +75,7 @@ func newEngineSet(base *policy.Engine, org, user *policyFile, states []PolicySta
 		revision:        engineRevision.Add(1),
 		base:            base,
 		orgLayer:        org,
+		orgNamedRules:   namedRuleIDs(org),
 		userLayer:       user,
 		budgetBinding:   budgetBinding,
 		budgetCalendars: normalizedBudgetCalendars(calendars),
@@ -153,6 +163,61 @@ func (es *engineSet) categoryFor(ruleID string) string {
 	c := es.projectCats[ruleID]
 	es.pmu.Unlock()
 	return string(c)
+}
+
+// orgApplies reports whether an org policy bundle is part of THIS
+// snapshot. With no bundle the node is an individual, un-enrolled node
+// and the whole Track B mechanism is inert (byte-identical pre-wave
+// behaviour).
+//
+// It is NOT on its own the org-lock predicate — that is orgLocksRule,
+// which additionally asks how far the bundle's authority reaches on
+// THIS node (P2-8: an individual node's bundle is a floor over the
+// rules it names, not a lock over the whole catalog).
+func (es *engineSet) orgApplies() bool { return es.orgLayer != nil }
+
+// orgLocksRule reports whether the org layer LOCKS ruleID on this node
+// — the question "may a local approval ever apply here", asked before
+// the per-rule `overridable` grant is consulted.
+//
+// lockAll is the tenancy half, resolved by the Guard (Guard.orgLocksEveryRule):
+//
+//   - managed node (or a process that could not resolve its tenancy,
+//     which keeps the conservative pre-fix answer): the organization is
+//     authoritative over the whole catalog, so every rule is locked.
+//   - individual node: the org bundle is a FLOOR. It locks exactly the
+//     rules it names; a built-in or user-layer rule the bundle never
+//     mentions keeps the node's own approvals, per CLAUDE.md's
+//     lowering-only posture for the individual plane.
+func (es *engineSet) orgLocksRule(ruleID string, lockAll bool) bool {
+	if !es.orgApplies() {
+		return false
+	}
+	if lockAll {
+		return true
+	}
+	return es.orgNamedRules[ruleID]
+}
+
+// namedRuleIDs collects every rule ID an org policy layer names: the
+// target of each [[override]] row and the ID of each rule the layer
+// defines itself. nil in, nil out.
+func namedRuleIDs(pf *policyFile) map[string]bool {
+	if pf == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(pf.overrides)+len(pf.rules))
+	for _, ov := range pf.overrides {
+		if ov.RuleID != "" {
+			out[ov.RuleID] = true
+		}
+	}
+	for i := range pf.rules {
+		if pf.rules[i].ID != "" {
+			out[pf.rules[i].ID] = true
+		}
+	}
+	return out
 }
 
 // orgState returns the snapshot's org-layer state (ok=false when the

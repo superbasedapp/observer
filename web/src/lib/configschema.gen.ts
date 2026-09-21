@@ -226,6 +226,7 @@ export type ConfigKeyPath =
   "guidance.include_user_scope" |
   "guidance.max_roots_per_pass" |
   "guidance.root_timeout_seconds" |
+  "guidance.root_timeout_max_seconds" |
   "guidance.pass_timeout_minutes" |
   "guidance.startup_delay_seconds" |
   "guidance.first_scan_poll_seconds" |

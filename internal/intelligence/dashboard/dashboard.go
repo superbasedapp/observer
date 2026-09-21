@@ -503,6 +503,12 @@ type Server struct {
 	correlateMu   sync.Mutex
 	lastCorrelate map[string]time.Time
 
+	// orgOverride caches the org-granted per-rule override posture
+	// read off the on-disk org policy bundle (guard_override.go,
+	// Track B of the org guardrail control wave). Empty and inert on
+	// an un-enrolled node.
+	orgOverride orgOverrideCache
+
 	// configWriteMu serializes EVERY dashboard-driven config.toml write so two
 	// concurrent PUTs can never lose one another's changes. Each write handler
 	// does load-from-disk → patch-one-section → validate → write-full-struct;

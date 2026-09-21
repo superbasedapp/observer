@@ -23,22 +23,31 @@ import (
 // the label lengths; only these labels cross (the §9 content-floor). It reads
 // the live crossmount homes; the pure inner collectIntegritySignalsFrom takes
 // them injected so the assembly is testable without the host environment.
-func collectManagedIntegritySignals(dbPath, homeDir, binaryPath string) orgcontract.ManagedIntegrityReport {
-	return collectIntegritySignalsFrom(dbPath, homeDir, binaryPath, crossmount.AllHomes())
+func collectManagedIntegritySignals(dbPath, homeDir, binaryPath string, absentRouteIsDrift bool) orgcontract.ManagedIntegrityReport {
+	return collectIntegritySignalsFrom(dbPath, homeDir, binaryPath, crossmount.AllHomes(), absentRouteIsDrift)
 }
 
 // collectIntegritySignalsFrom is the injected-homes core of
 // collectManagedIntegritySignals.
-func collectIntegritySignalsFrom(dbPath, homeDir, binaryPath string, homes []crossmount.HomeRoot) orgcontract.ManagedIntegrityReport {
+//
+// absentRouteIsDrift is a CAPABILITY flag resolved by the caller from the
+// live governance posture (govern.Effective.GrantsAnyEnforcement), never a
+// tenancy or tool name (CLAUDE.md #3). See proxyroute.DriftedTools for what
+// it changes and why.
+//
+// It is a PERMISSION to read an absent route strictly, not an instruction to:
+// proxyroute only counts an absent route when the tool's own config artifact
+// is actually on the host (RouteStatus.ArtifactPresent). A tool the developer
+// never installed leaves nothing behind and is never reported as drift under
+// any tenancy — otherwise a Claude-Code-only developer on a managed node
+// would report four drifted tools and open a fleet-wide integrity_risk
+// finding for having a plain single-tool install.
+func collectIntegritySignalsFrom(dbPath, homeDir, binaryPath string, homes []crossmount.HomeRoot, absentRouteIsDrift bool) orgcontract.ManagedIntegrityReport {
 	report := orgcontract.ManagedIntegrityReport{CaptureCheckVersion: orgcontract.ManagedCaptureCheckVersion}
 	for _, s := range diag.DetectSiblingObservers(dbPath, homes) {
 		report.SiblingDetail = append(report.SiblingDetail, coarseSiblingLabel(s.Origin, s.OS))
 	}
-	for _, rs := range proxyroute.InspectRoutes(homeDir) {
-		if rs.State == proxyroute.RouteDrifted {
-			report.DriftedTools = append(report.DriftedTools, rs.Tool)
-		}
-	}
+	report.DriftedTools = proxyroute.DriftedTools(proxyroute.InspectRoutes(homeDir), absentRouteIsDrift)
 	checks := diag.InspectCaptureIntegrity(homeDir, binaryPath)
 	report.CaptureRisks = checks.Risks
 	report.UnknownChecks = checks.Unknown

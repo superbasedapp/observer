@@ -75,6 +75,34 @@ type Options struct {
 	// cache, so a hook process only ever reads a file that already
 	// passed the full check once.
 	OrgKeyPinHash string
+	// ManagedTenancy, when non-nil, reports whether this node runs
+	// under Enterprise-Managed Tenancy (govern.Effective.Managed -
+	// managed-class consent on the org's SIGNED enrolment grant). It
+	// is the tenancy half of the org lock (override.go / engineSet.
+	// orgLocksRule):
+	//
+	//   - true  - the organization is authoritative here, so every
+	//     rule an applied org bundle does not mark `overridable` is
+	//     org-locked, named by the bundle or not (the enterprise
+	//     ruling).
+	//   - false - an individual node. An org bundle is a FLOOR: it
+	//     locks the rules it NAMES, and every other rule keeps the
+	//     node's own §6.3 approvals (CLAUDE.md's lowering-only posture
+	//     for the individual plane).
+	//   - nil   - tenancy UNRESOLVED in this process. The lock stays
+	//     as wide as it was before this seam existed (every rule under
+	//     an applied bundle): a short-lived process that cannot afford
+	//     the read must never be the one that WIDENS what a developer
+	//     may approve. Wire it wherever the answer is cheap - the
+	//     daemon composition (cmd/observer/guardwire.go) and the node
+	//     dashboard both do.
+	//
+	// It is a func, not a bool, because tenancy is durable state that
+	// can change under a long-lived daemon (an enrolment mid-run), so
+	// implementations are expected to cache rather than to be cheap.
+	// Called only on the rare blocking path and on read surfaces,
+	// never on the allow path.
+	ManagedTenancy func() bool
 }
 
 // Notifier is the alert channel seam (guard spec §3.1: notify owns
@@ -103,6 +131,10 @@ type PolicyState struct {
 	// so the hash lines up with the fetch-time row the org client
 	// records.
 	ContentHash string
+	// Notes are non-fatal parse notes, e.g. org-bundle keys this
+	// binary does not understand and ignored. The layer IS loaded and
+	// in force — a note is not a LoadIssue. Empty for a clean layer.
+	Notes []string
 }
 
 // Guard is the composition root: engines + taint tracker + failure
@@ -113,6 +145,18 @@ type Guard struct {
 	home     string
 	roots    []string
 	readFile func(string) ([]byte, error)
+
+	// managedTenancy is Options.ManagedTenancy behind an
+	// atomic.Pointer so SetManagedTenancy can wire (or re-wire) it
+	// after construction without racing the hot paths that read it.
+	// A nil pointer means "tenancy unresolved in this process" - see
+	// Options.ManagedTenancy for what that deliberately implies.
+	managedTenancy atomic.Pointer[func() bool]
+
+	// projectRootForSession is the injected session-to-project
+	// resolver (approvals.go: SessionProjectRootLookup). nil on every
+	// lane that already carries a ProjectRoot on its events.
+	projectRootForSession SessionProjectRootLookup
 
 	// onPolicyState is Options.OnPolicyState (may be nil).
 	onPolicyState func(PolicyState)
@@ -306,6 +350,9 @@ func New(opts Options) (*Guard, error) {
 	}
 	if g.readFile == nil {
 		g.readFile = os.ReadFile
+	}
+	if opts.ManagedTenancy != nil {
+		g.SetManagedTenancy(opts.ManagedTenancy)
 	}
 	// [guard.alerts].min_severity: parse once; an empty/unknown value
 	// falls back to the documented "high" default (the config loader
@@ -558,7 +605,11 @@ func (g *Guard) MaybeAlert(v ActionVerdict) {
 		if v.SuppressAlert {
 			return
 		}
-		if v.Verdict.Severity < g.alertMin {
+		// Track B: an ENFORCED deny of an org-OVERRIDABLE rule always
+		// interrupts, whatever its severity — the developer can take
+		// this one, but only if they are told it happened and how. A
+		// hard deny keeps today's severity gate.
+		if !alertsRegardlessOfSeverity(v) && v.Verdict.Severity < g.alertMin {
 			return
 		}
 	}
@@ -567,7 +618,19 @@ func (g *Guard) MaybeAlert(v ActionVerdict) {
 	if v.Input.Tool != "" {
 		body = v.Input.Tool + ": " + body
 	}
+	if line := HumanBlockLine(v, v.Input.SessionID); line != "" {
+		body = line
+	}
 	g.notifier.Notify(title, body)
+}
+
+// alertsRegardlessOfSeverity is the one-row exception table to the
+// [guard.alerts].min_severity gate: an enforced deny of a rule the
+// organization marked overridable. Every other verdict — including a
+// hard org-locked deny and every verdict on an individual node —
+// returns false and keeps the configured threshold.
+func alertsRegardlessOfSeverity(v ActionVerdict) bool {
+	return v.Enforced && v.Overridable && v.Verdict.Decision == policy.DecisionDeny
 }
 
 // EffectiveRules returns the BASE engine's effective rule rows

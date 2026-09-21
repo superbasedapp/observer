@@ -43,6 +43,13 @@ type guardPolicyLayerJSON struct {
 	Rules       int      `json:"rules"`
 	Overrides   int      `json:"overrides"`
 	Problems    []string `json:"problems,omitempty"`
+	// Notes are NON-FATAL parse notes for a layer that IS loaded and in
+	// force — today the org-bundle keys this binary does not understand
+	// and ignored (a newer server published them). Deliberately NOT
+	// folded into Problems: a note is not a load issue, and rendering
+	// it as one would read as "your org policy is broken" when the org
+	// floor is fully armed.
+	Notes       []string `json:"notes,omitempty"`
 	ProjectRoot string   `json:"project_root,omitempty"`
 }
 
@@ -110,6 +117,7 @@ func (s *Server) serveGuardPolicyView(w http.ResponseWriter, r *http.Request) {
 		}
 		row.Version = orgState.Version
 		row.ContentHash = stateHash["org"]
+		row.Notes = orgState.Notes
 		layers = append(layers, row)
 	}
 

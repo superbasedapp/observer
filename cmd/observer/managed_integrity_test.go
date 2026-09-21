@@ -49,7 +49,7 @@ func TestCollectIntegritySignals(t *testing.T) {
 		{Path: nativeHome, OS: "linux", Origin: "native"},
 		{Path: foreignHome, OS: "windows", Origin: "wsl-mnt:marmu"},
 	}
-	report := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes)
+	report := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, false)
 
 	if len(report.SiblingDetail) != 1 || report.SiblingDetail[0] != "wsl-mnt/windows" {
 		t.Errorf("siblings = %v, want [wsl-mnt/windows]", report.SiblingDetail)
@@ -75,6 +75,13 @@ func TestCollectIntegritySignals(t *testing.T) {
 // route yields no evidence.
 func TestCollectIntegritySignals_Clean(t *testing.T) {
 	nativeHome := t.TempDir()
+	// The kimi-code / qwen-code / crush readers resolve their config path
+	// through env vars; pin them at this fixture host so the RUNNING
+	// developer's own configs can never be inspected by this test.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(nativeHome, ".config"))
+	t.Setenv("CRUSH_CONFIG", "")
+	t.Setenv("KIMI_CODE_HOME", "")
+	t.Setenv("QWEN_HOME", "")
 	daemonDir := filepath.Join(nativeHome, ".observer")
 	if err := os.MkdirAll(daemonDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -93,8 +100,42 @@ func TestCollectIntegritySignals_Clean(t *testing.T) {
 	}
 
 	homes := []crossmount.HomeRoot{{Path: nativeHome, OS: "linux", Origin: "native"}}
-	report := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes)
+	report := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, false)
 	if len(report.SiblingDetail) != 0 || len(report.DriftedTools) != 0 {
 		t.Errorf("clean host produced evidence: siblings=%v drifted=%v", report.SiblingDetail, report.DriftedTools)
+	}
+
+	// Track C item 2, corrected by adversarial finding P1-2: the SAME clean
+	// host, read under an org that is authoritative over an enforcement point
+	// here. claude-code is routed, and NO OTHER inspected tool is installed on
+	// this fixture host — so there is still nothing to report. A single-tool
+	// developer must not light up as a four-tool bypass the moment the
+	// stricter reading ships.
+	managed := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, true)
+	if len(managed.DriftedTools) != 0 {
+		t.Errorf("managed+enforce host reported drift for tools that are not installed: %v", managed.DriftedTools)
+	}
+
+	// Install codex — its config is now ON the host and names no route. THAT
+	// is the shape an enforcing managed node reads as drift.
+	codexDir := filepath.Join(nativeHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"),
+		[]byte("model = \"gpt-5\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	managed = collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, true)
+	if len(managed.DriftedTools) != 1 || managed.DriftedTools[0] != "codex" {
+		t.Errorf("drifted = %v, want [codex] (config present, route key gone)", managed.DriftedTools)
+	}
+	if managed.RouteDrift != len(managed.DriftedTools) {
+		t.Errorf("RouteDrift = %d, want %d", managed.RouteDrift, len(managed.DriftedTools))
+	}
+	// The individual-node reading of the identical host is unchanged: an
+	// absent route key is not drift there.
+	if indiv := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, false); len(indiv.DriftedTools) != 0 {
+		t.Errorf("individual node reported drift for an absent route key: %v", indiv.DriftedTools)
 	}
 }

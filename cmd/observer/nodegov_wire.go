@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -166,6 +167,72 @@ type nodeGovernanceHandle struct {
 	lastWrittenAt   time.Time
 	// startup is the posture the RUNNING process was built from (§1.6).
 	startup startupSidecar
+
+	// effectivePins is the Track C item 3 reader: the effective value of
+	// every reportable pinnable key in the config THIS PROCESS is running.
+	// Injected (never a config field on the handle) for the same reason
+	// loadIdentity is: the handle stays testable without a config tree, and
+	// nil simply reports nothing — which is the correct behaviour for every
+	// short-lived CLI process that builds a handle to read a posture.
+	effectivePins func() map[string]string
+}
+
+// SetEffectivePinReader installs the Track C item 3 effective-pin reader.
+// Only the DAEMON sets it: it is the only process that reports policy-ack,
+// and the only one whose config is the one actually in force.
+func (h *nodeGovernanceHandle) SetEffectivePinReader(fn func() map[string]string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.effectivePins = fn
+}
+
+// readEffectivePins runs the injected reader, or returns nil when none is
+// installed. Nil means "not reported", never "nothing is pinned".
+func (h *nodeGovernanceHandle) readEffectivePins() map[string]string {
+	h.mu.Lock()
+	fn := h.effectivePins
+	h.mu.Unlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
+}
+
+// effectivePinValues reads the live value of every REPORTABLE pinnable key
+// (internal/policyfam/nodegov.ReportableKeys — bools and closed-enum strings
+// only) out of cfg and renders it in the closed wire spelling.
+//
+// It is the ONE place the two halves meet: internal/config owns "what a
+// dotted key means" (PinnableEffectiveValues) and nodegov owns "what may be
+// said about it" (NormalizeReportedValue). Neither half can widen the wire
+// on its own.
+func effectivePinValues(cfg config.Config) map[string]string {
+	keys := nodegov.ReportableKeys()
+	names := make([]string, 0, len(keys))
+	for _, k := range keys {
+		names = append(names, k.Key)
+	}
+	live := config.PinnableEffectiveValues(cfg, names)
+	if len(live) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(live))
+	for _, k := range keys {
+		v, ok := live[k.Key]
+		if !ok {
+			continue
+		}
+		if spelled, ok := k.NormalizeReportedValue(v); ok {
+			out[k.Key] = spelled
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // SetSidecar attaches the sidecar writer. Calling it is what makes this
@@ -495,6 +562,36 @@ type governanceFacts struct {
 	// depend on a sidecar write that then failed (the writeErr != nil
 	// case). Nil when nothing was dropped.
 	DroppedClasses map[string]string
+
+	// GrantUnverified is TRUE when the resolver reported
+	// govern.StateGrantSignatureInvalid: the stored grant document no longer
+	// verifies under the organisation key this node holds (Track C item 1).
+	//
+	// WHICH WIRE FIELD CARRIES IT, AND WHY. It maps onto the node.governance
+	// row's EXISTING (delivered_unaccepted, sig_invalid) pair — the field
+	// that already carries this point's governance state — rather than onto a
+	// new reason code. Two reasons, and the second is decisive:
+	//
+	//   - It is true as stated: a signature this node required did not
+	//     verify, so nothing was installed. The pair's existing prose is
+	//     about the BODY's signature and this is the GRANT's, which is a
+	//     loss of precision the ledger records (docs/security.md TAMPER-1);
+	//     the node-local surfaces (`observer org status`, `observer org grant
+	//     show`, `observer doctor`) name the exact cause.
+	//   - The server validates ack reasons against a CLOSED set and 400s the
+	//     WHOLE report on an unknown one. A new reason code would therefore
+	//     take fleet reporting down on every server older than this release —
+	//     the exact trap ReasonAuthorityRetired's comment in internal/govern
+	//     warns about. Reusing an existing pair is wire-safe in both
+	//     directions with no negotiation.
+	GrantUnverified bool
+
+	// EffectivePins is the Track C item 3 map — the effective value of every
+	// reportable pinnable key on THIS machine right now, read from the
+	// config this process is actually running, not from the delivered body.
+	// That is the whole point: a pin the org published and this node acked
+	// can still fail to be in force, and only the live value says so.
+	EffectivePins map[string]string
 }
 
 // Facts snapshots the handle for the P0-6 reader. The resolved posture
@@ -541,14 +638,20 @@ func (h *nodeGovernanceHandle) Facts(ctx context.Context) governanceFacts {
 		RunningVersion: startup.Version,
 		RunningHash:    startup.Hash,
 	}
+	// Resolve BEFORE the not-delivered early return: a tampered grant must be
+	// reported whether or not the organisation has published a body, and the
+	// resolver answers StateGrantSignatureInvalid in both cases (the
+	// integrity row precedes the no-policy row in the §3.7 table).
+	eff := h.Effective(ctx)
+	f.GrantUnverified = eff.State == govern.StateGrantSignatureInvalid
 	if !d.Present {
 		f.PinnedConverged = true
 		return f
 	}
-	eff := h.Effective(ctx)
 	h.mu.Lock()
 	grant := h.grant
 	h.mu.Unlock()
+	f.EffectivePins = h.readEffectivePins()
 	f.AcceptedAuthority = govern.HonoredAuthority(grant)
 	f.ExtractionEffective = govern.ExtractionTokensInForce(eff, f.AcceptedAuthority)
 	f.PinnedConverged = governancePinnedHash(eff.Pinned) == startup.PinnedHash
@@ -651,6 +754,14 @@ func newNodeGovernancePointReader(
 			o = lastFetch()
 		}
 		reject := wirePolicyResourceRejectReason(o.RejectCode)
+		if g.GrantUnverified {
+			// Track C item 1: a grant that no longer verifies outranks
+			// whatever the last FETCH did — nothing this rail delivered can
+			// be in force when the authority record behind it is not the one
+			// the organisation signed. See governanceFacts.GrantUnverified
+			// for why this pair and not a new reason code.
+			reject = orgcontract.ReasonSigInvalid
+		}
 		f := policystate.PointFacts{
 			HasOrgRail:          g.HasOrgRail,
 			InertReason:         g.InertReason,
@@ -662,6 +773,7 @@ func newNodeGovernancePointReader(
 			AcceptedAuthority:   g.AcceptedAuthority,
 			ExtractionEffective: g.ExtractionEffective,
 			DroppedClasses:      g.DroppedClasses,
+			EffectivePins:       g.EffectivePins,
 		}
 		switch {
 		case g.HasOrgRail && g.InertReason != "":
@@ -748,8 +860,73 @@ func governanceIdentityLoader(st *store.Store) func(ctx context.Context) (*gover
 		if !ok {
 			return nil, live, nil
 		}
-		return grantFromStore(row), live, nil
+		grant := grantFromStore(row)
+		// Track C item 1: RE-VERIFY the stored grant on every identity
+		// refresh, not only at enrolment. A key-material read failure is
+		// "unchecked", never "invalid" — see verifyStoredGrantIntegrity.
+		grant.Integrity = verifyStoredGrantIntegrity(ctx, st, enr.OrgServerURL, row)
+		return grant, live, nil
 	}
+}
+
+// verifyStoredGrantIntegrity re-verifies the grant row against the org
+// distribution public key this node recorded at enrolment, and resolves the
+// result into the plain govern.GrantIntegrity enum.
+//
+// This is THE seam for Track C item 1 (docs/plans/
+// org-guardrail-control-wave-2026-09-21.md): internal/govern does no crypto
+// and no I/O, so the check runs here, once per identity refresh (every
+// governanceGrantRefreshInterval), and travels into the resolver as data.
+//
+// It is deliberately CONSERVATIVE about what it calls invalid. Every path
+// that means "this node cannot check" — no key material, an unreadable pin
+// store, a grant row that predates key binding — returns Unchecked, which is
+// the zero value and leaves the resolver on exactly its pre-Track-C
+// behaviour. Only a document that is PRESENT, checkable, and fails to verify
+// returns Invalid.
+//
+// Note which expiry is verified: SignedExpiresAt, the value the organization
+// actually signed. RenewEnrolmentGrant moves the WORKING expires_at forward
+// inside that window and leaves the signature untouched, so verifying
+// against the working clock would make every renewed grant look tampered.
+func verifyStoredGrantIntegrity(ctx context.Context, st *store.Store, orgURL string, row store.EnrolmentGrant) govern.GrantIntegrity {
+	pub, ok, err := orgclient.OrgPolicyPublicKeyFor(ctx, st, orgURL)
+	if err != nil || !ok {
+		return govern.GrantIntegrityUnchecked
+	}
+	doc := orgcontract.StoredGrantDocument{
+		OrgID:                 row.OrgID,
+		OrgServerURL:          row.OrgServerURL,
+		KeyPinSHA256:          row.KeyPinSHA256,
+		Authority:             row.Authority,
+		GrantedAt:             formatStoredGrantTime(row.GrantedAt),
+		ExpiresAt:             formatStoredGrantTime(row.SignedExpiresAt),
+		ConsentMode:           row.ConsentMode,
+		ConsentActor:          row.ConsentActor,
+		Signature:             row.Signature,
+		ReplacementGeneration: row.ReplacementGeneration,
+	}
+	switch err := orgcontract.VerifyStoredGrant(doc, pub); {
+	case err == nil:
+		return govern.GrantIntegrityValid
+	case errors.Is(err, orgcontract.ErrStoredGrantUncheckable):
+		return govern.GrantIntegrityUnchecked
+	default:
+		return govern.GrantIntegrityInvalid
+	}
+}
+
+// formatStoredGrantTime renders a stored grant timestamp back into the exact
+// RFC3339 spelling the signer used. Every mint site formats
+// now.UTC().Format(time.RFC3339) (api/handlers.go, posture/posture.go,
+// breakglass), and the store round-trips through time.Parse + .UTC(), so
+// this reproduces the signed bytes rather than approximating them. The zero
+// time renders empty, which is what an absent wire field signed as.
+func formatStoredGrantTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // grantFromStore maps the store row onto the resolver's plain struct. One

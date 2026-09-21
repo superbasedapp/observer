@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/guard/notify"
 	"github.com/marmutapp/superbased-observer/internal/orgbudget"
@@ -116,6 +117,12 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 		KnownProjectRoots: roots,
 		Notifier:          notify.NewDesktop(),
 		OrgKeyPinHash:     orgKeyPin,
+		// Tenancy half of the org lock (adversarial review P2-8):
+		// org-authoritative over the whole catalog on a MANAGED node,
+		// a floor over the rules the bundle names on an individual
+		// one. Resolved from the org's SIGNED enrolment grant, the
+		// same input `observer org status` reports.
+		ManagedTenancy: managedTenancyLookup(st),
 		OnPolicyState: func(ps guard.PolicyState) {
 			// Project layers load lazily mid-run; use a fresh
 			// short-lived context rather than the (possibly long-gone)
@@ -145,6 +152,25 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 		lctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		return st.ApprovalActiveFor(lctx, ruleID, sessionID, rootHash, time.Now().UTC())
+	})
+	// §6.3 project scope on the PROXY lane (adversarial review P2-7).
+	// A proxy egress/injection/budget event is built from a request
+	// body, which carries no path, so scope='project' grants could
+	// never match there. Resolve the root from the session id through
+	// THE existing resolver - the one the dashboard's approvals POST
+	// already anchors a project grant with - so both lanes agree on
+	// what project a session belongs to. Guard calls it only on the
+	// blocking path, and only for an event that carries no root of its
+	// own (the hook lane always does).
+	g.SetSessionProjectRootLookup(func(sessionID string) string {
+		lctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		root, err := st.ProjectRootForSession(lctx, sessionID)
+		if err != nil {
+			logger.Debug("guard: project root for session unavailable", "session_id", sessionID, "err", err)
+			return ""
+		}
+		return root
 	})
 	// ONE SUBJECT IDENTITY for the org's per-tool / per-model caps (bundle
 	// BUD-N, adversarial review P1-3). The cap's id, the accounting key and the
@@ -361,6 +387,85 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 	return g
 }
 
+// managedTenancyLookup resolves Enterprise-Managed Tenancy for the guard's
+// org-lock seam (guard.Options.ManagedTenancy) off the node's own durable
+// enrolment + SIGNED grant, through the SAME loader + govern.Resolve pair
+// every other tenancy consumer uses (budgetlaunch.go, the node governance
+// handle) - never a second definition of "this node is managed".
+//
+// Two properties the caller depends on:
+//
+//   - It is CACHED (60s) because tenancy is durable state read on a blocking
+//     decision path, and it is a FUNC rather than a construction-time bool
+//     because a node can enrol under a running daemon.
+//   - A read ERROR keeps the last known answer rather than reporting
+//     "individual": a transient DB failure must never be what widens the set
+//     of rules a developer may locally approve. With no answer yet, an error
+//     reports managed (the conservative default the guard also applies to an
+//     unwired process).
+//
+// The read itself runs with NO lock held (the dashboard's orgOverrides
+// precedent): the mutex only guards the cached tuple, so a stale-but-known
+// answer is served immediately to every caller while one refresh is in
+// flight, and a blocking decision never queues behind a DB read.
+func managedTenancyLookup(st *store.Store) func() bool {
+	if st == nil {
+		return nil
+	}
+	loader := governanceIdentityLoader(st)
+	if loader == nil {
+		return nil
+	}
+	var (
+		mu      sync.Mutex
+		at      time.Time
+		known   bool
+		val     bool
+		loading bool
+	)
+	const ttl = 60 * time.Second
+	return func() bool {
+		mu.Lock()
+		fresh := known && time.Since(at) < ttl
+		switch {
+		case fresh, known && loading:
+			// Fresh, or a refresh is already in flight and we have a
+			// previous answer: serve it rather than pile on.
+			cached := val
+			mu.Unlock()
+			return cached
+		}
+		loading = true
+		mu.Unlock()
+
+		resolved, ok := true, false // an unreadable identity stays conservative
+		lctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		grant, live, err := loader(lctx)
+		cancel()
+		switch {
+		case err != nil:
+			// Keep the last known answer below; with none, stay conservative.
+		case grant == nil:
+			// Unenrolled, or a tombstoned generation: an individual node.
+			resolved, ok = false, true
+		default:
+			resolved, ok = govern.Resolve(govern.Delivered{}, grant, live, time.Now().UTC()).Managed, true
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		loading = false
+		if !ok {
+			if known {
+				return val
+			}
+			return resolved
+		}
+		at, known, val = time.Now(), true, resolved
+		return val
+	}
+}
+
 // budgetSubjectResolver builds the ONE identity rule a per-tool / per-model
 // budget cap is compared under.
 //
@@ -494,6 +599,8 @@ func (a guardScannerAdapter) finishScan(res guard.ProxyRequestResult) proxy.Guar
 		out.Action = "deny"
 		out.RuleID = res.DenyRuleID
 		out.Reason = res.DenyReason
+		// Track B: empty unless an org bundle applies.
+		out.HumanLine = res.DenyHumanLine
 	case res.MaskedBody != nil:
 		out.Action = "mask"
 		out.Body = res.MaskedBody

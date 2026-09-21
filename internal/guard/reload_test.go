@@ -9,6 +9,7 @@ import (
 	"fmt"
 	mrand "math/rand"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -175,7 +176,7 @@ func TestGuardReloadOrgLayer_VersionOnlyBumpConverges(t *testing.T) {
 		t.Fatalf("ReloadOrgLayer(idempotent v2): %v", err)
 	}
 	v2b, ok := orgStateOf(g)
-	if !ok || v2b != v2 {
+	if !ok || !reflect.DeepEqual(v2b, v2) {
 		t.Fatalf("idempotent reload mutated state: before=%+v after=%+v (ok=%v)", v2, v2b, ok)
 	}
 }
@@ -224,7 +225,7 @@ func TestGuardReloadOrgLayer_BadBundleIsNoOp(t *testing.T) {
 			}
 
 			after, ok := orgStateOf(g)
-			if !ok || after != before {
+			if !ok || !reflect.DeepEqual(after, before) {
 				t.Fatalf("org state changed on failed reload: before=%+v after=%+v (ok=%v)", before, after, ok)
 			}
 			// The v1 rule must still be live; the v2 rule must not.

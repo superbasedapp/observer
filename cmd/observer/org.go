@@ -133,6 +133,40 @@ func enterpriseContentGranted(ctx context.Context, cfg config.Config, st *store.
 	return ngov.Effective(ctx).GrantsEnterpriseContent()
 }
 
+// governancePostureLine returns a one-line WARNING for `observer org status`
+// when this node's governance posture is one of the loud states, and ""
+// otherwise.
+//
+// It resolves through the SAME loader + resolver the daemon uses
+// (governanceIdentityLoader -> govern.Resolve), so status can never disagree
+// with what the node actually applies. It fails SILENT on a read error: a
+// status command must not invent a tamper claim out of a transient SQLite
+// error.
+func governancePostureLine(ctx context.Context, st *store.Store) string {
+	if st == nil {
+		return ""
+	}
+	grant, live, err := governanceIdentityLoader(st)(ctx)
+	if err != nil || grant == nil {
+		return ""
+	}
+	switch govern.Resolve(govern.Delivered{}, grant, live, time.Now().UTC()).State {
+	case govern.StateGrantSignatureInvalid:
+		return "Governance:       ALTERED - the organisation grant stored on this machine does not verify." +
+			"\n                  Organisation governance is NOT being applied. Run `observer org grant show`."
+	case govern.StateKeyPinMismatch:
+		return "Governance:       KEY MISMATCH - the grant is bound to a signing key this machine no longer pins." +
+			"\n                  Organisation governance is NOT being applied. Run `observer org grant show`."
+	case govern.StateIdentityChanged:
+		return "Governance:       STALE - the grant belongs to an enrolment this machine no longer holds." +
+			"\n                  Organisation governance is NOT being applied. Re-enrol to re-establish it."
+	case govern.StateGrantExpired:
+		return "Governance:       EXPIRED - the organisation grant has lapsed; local settings apply again."
+	default:
+		return ""
+	}
+}
+
 // buildOrgClient assembles an orgclient.Client from config: the agent DB
 // (store) plus the OS-keychain bearer store (0600-file fallback rooted next to
 // the DB). It also reports whether the push loop is enabled in config (for
@@ -967,6 +1001,15 @@ func newOrgStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "Credential store: %s\n", st.Backend)
 			fmt.Fprintf(out, "Pushing enabled:  %t\n", b.cfg.OrgClient.Enabled)
 			fmt.Fprintln(out)
+
+			// Governance posture — LOUD states only (Track C item 1). A
+			// healthy or ungoverned node prints nothing here, so the line's
+			// presence is itself the signal; `observer org grant show`
+			// prints the full picture either way.
+			if line := governancePostureLine(cmd.Context(), b.store); line != "" {
+				fmt.Fprintln(out, line)
+				fmt.Fprintln(out)
+			}
 
 			// Share mode — the v1.8.0 per-node opt-in, read through the
 			// SAME predicate the push seam uses (SF-12).

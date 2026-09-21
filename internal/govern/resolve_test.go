@@ -49,6 +49,21 @@ func TestResolveTableRows(t *testing.T) {
 	wrongPin := testGrant()
 	wrongPin.KeyPinSHA256 = "pin-other"
 
+	// Track C item 1. The tampered fixture is ALSO expired and on a stale
+	// generation, which is the ordering assertion: the integrity row must
+	// win over both, because a document that does not verify has no
+	// trustworthy expiry or generation to judge it by.
+	tampered := testGrant()
+	tampered.Integrity = GrantIntegrityInvalid
+	tampered.ExpiresAt = testNow.Add(-time.Minute)
+	tampered.Generation = 2
+
+	// The untouched grant explicitly marked VALID must resolve exactly as
+	// the unchecked one does — verification adds a loud state, it never
+	// changes the happy path.
+	verified := testGrant()
+	verified.Integrity = GrantIntegrityValid
+
 	// capture.raise is RETIRED and grants nothing, so a grant carrying only
 	// it is a grant with no authority for any directive class — which is
 	// exactly why it is still a useful fixture for the "class dropped"
@@ -71,6 +86,8 @@ func TestResolveTableRows(t *testing.T) {
 		{"row 3: generation changed", testDelivered(), wrongGen, testLive(), StateIdentityChanged, false, 0, ""},
 		{"row 3: unenrolled", testDelivered(), testGrant(), LiveIdentity{}, StateIdentityChanged, false, 0, ""},
 		{"row 3b: key pin mismatch", testDelivered(), wrongPin, testLive(), StateKeyPinMismatch, false, 0, ""},
+		{"row 1b: tampered grant outranks expiry and identity", testDelivered(), tampered, testLive(), StateGrantSignatureInvalid, false, 0, ""},
+		{"row 1b: an explicitly verified grant applies exactly as today", testDelivered(), verified, testLive(), StateApplied, true, 2, ""},
 		{"row 5: grant but nothing published", Delivered{}, testGrant(), testLive(), StateNoPolicy, false, 0, ""},
 		{"row 6a: authority missing drops the class", testDelivered(), noAuthority, testLive(), StateInert, true, 0, ReasonNotPreauthorized},
 		{"row 6b: accept-path inert verdict is carried through", Delivered{Present: true, Version: 14, Spec: testSpec(), InertReason: "not_preauthorized"}, testGrant(), testLive(), StateInert, true, 0, "not_preauthorized"},

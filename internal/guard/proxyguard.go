@@ -110,6 +110,12 @@ type ProxyRequestResult struct {
 	Deny       bool
 	DenyRuleID string
 	DenyReason string
+	// DenyHumanLine is the ONE human-first sentence (Track B,
+	// override.go::HumanBlockLine) the proxy prints above the
+	// agent-facing deny body when an org bundle applies: whether the
+	// organization allows an override and the exact command to take
+	// it. Empty whenever no org bundle applies.
+	DenyHumanLine string
 	// PromptDeny/PromptStatus/PromptRuleID/PromptReason (contract §3,
 	// prompt-submit intervention PROXY LANE) carry the SAME decision as
 	// Deny/DenyRuleID/DenyReason above — scanPrompt sets both pairs
@@ -353,6 +359,7 @@ func (g *Guard) scanEgress(es *engineSet, res *ProxyRequestResult, body []byte, 
 		Verdict:    verdict,
 		GuardError: guardErr != nil,
 	}
+	g.stampOrgOverride(es, &av)
 	if approved {
 		av.DegradedFrom = "approved"
 	}
@@ -365,6 +372,10 @@ func (g *Guard) scanEgress(es *engineSet, res *ProxyRequestResult, body []byte, 
 		res.Deny = true
 		res.DenyRuleID = verdict.RuleID
 		res.DenyReason = verdict.Reason
+		// Track B: the human-first line the proxy renders ABOVE the
+		// agent-facing "[observer-guard ...]" framing. Empty on an
+		// individual node, so that body is byte-identical to today.
+		res.DenyHumanLine = HumanBlockLine(av, sessionID)
 	case proxyActionMask:
 		av.Enforced = true
 		av.ProxyAction = proxyActionMask
@@ -1212,6 +1223,7 @@ func (g *Guard) InspectProxyResponse(sessionID string, tools []ProxyToolUse, now
 			TaintOrigin: taintOriginFor(verdict, ev.Taint),
 			GuardError:  guardErr != nil,
 		}
+		g.stampOrgOverride(es, &av)
 		if approved {
 			av.DegradedFrom = "approved"
 		}

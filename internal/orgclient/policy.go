@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -44,9 +45,13 @@ import (
 //  3. The bundle version is not lower than the last verified version
 //     (downgrade protection — rollback is publishing old content as a
 //     NEW version).
-//  4. The TOML lints as an org-layer policy file (guard.Lint with the
-//     escalate-only floor checks), so a malformed or floor-violating
-//     bundle never evicts a good cache.
+//  4. The TOML passes the CONSUMER check for an org-layer policy file
+//     (guard.AcceptOrgBundleTOML, with the escalate-only floor
+//     checks), so a malformed or floor-violating bundle never evicts a
+//     good cache. Keys this binary does not understand are NOT fatal
+//     here — they are logged and the bundle is accepted, because the
+//     server may be newer than the node (GUARD-FWD-1); the publish
+//     gate is the strict one.
 //
 // A rejection is a RESULT, not an error: the caller (cmd layer) turns
 // PolicyRejected into an R-205 guard event; transport failures return
@@ -486,13 +491,33 @@ func (c *Client) applyBundleGates(ctx context.Context, b gen.PolicyBundle, enr *
 		// rewritten).
 	}
 
-	// Gate 4: the TOML must lint as an org-layer policy file so a
-	// malformed or floor-violating bundle never evicts a good cache.
-	if problems := guard.Lint([]byte(b.BundleTOML), "org"); len(problems) > 0 {
+	// Gate 4: the TOML must pass the CONSUMER check for an org-layer
+	// policy file so a malformed or floor-violating bundle never evicts
+	// a good cache.
+	//
+	// guard.AcceptOrgBundleTOML, NOT guard.Lint — this is a consumer
+	// gate, and running the authoring lint here was the fetch-side half
+	// of GUARD-FWD-1 (docs/security.md). A node may be older than the
+	// server that signed the bundle, so a key it does not know is a key
+	// from the FUTURE, not a defect: refusing it here rejected the
+	// bundle before it was ever cached, which left a node with an old
+	// cache permanently stale and a freshly enrolled node with no org
+	// layer at all — fail-OPEN, since the org layer is escalate-only.
+	// The server still refuses an unknown key at publish
+	// (api.LintOrgBundle → guard.Lint("org")), which is where a typo
+	// belongs. Accepted-with-notes is a WARN, never a rejection.
+	problems, notes := guard.AcceptOrgBundleTOML([]byte(b.BundleTOML))
+	if len(problems) > 0 {
 		return PolicyResult{
 			Status: PolicyRejected, Version: b.Version, RejectCode: RejectLintFailed,
 			Detail: fmt.Sprintf("bundle does not lint as an org policy file: %s", problems[0]),
 		}, true, nil
+	}
+	if len(notes) > 0 {
+		// Same wording as the loader's PolicyState.Notes line, so the
+		// daemon log and `observer guard status` say the same thing.
+		c.logger.Warn(fmt.Sprintf("org bundle: ignored %d unknown key(s): %s (newer server; update the node binary)",
+			len(notes), strings.Join(notes, ", ")), "version", b.Version)
 	}
 
 	return PolicyResult{}, false, nil

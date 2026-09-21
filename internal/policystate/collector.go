@@ -154,6 +154,12 @@ type PointFacts struct {
 	// (orgcontract.ReasonNotPreauthorized / ReasonSidecarUnwritable). Nil
 	// when nothing was dropped.
 	DroppedClasses map[string]string
+	// EffectivePins is the Track C item 3 map: the effective value, on this
+	// machine right now, of every pinnable config key whose value may cross
+	// the wire (internal/policyfam/nodegov.ReportableKeys). Keys are dotted
+	// config paths; values are closed spellings. Nil on a node with nothing
+	// to report. See orgcontract.PolicyStateRow.EffectivePins.
+	EffectivePins map[string]string
 }
 
 // PointReader resolves the live PointFacts for one enforcement point. It is the
@@ -332,7 +338,7 @@ func Resolve(point, family string, f PointFacts) orgcontract.PolicyStateRow {
 		RestartRequired: f.HasOrgRail && f.CachedAcceptedVersion > 0 && f.RunningVersion < f.CachedAcceptedVersion,
 		LastSeen:        f.LastSeen.UTC().Format(time.RFC3339),
 	}
-	// gen2 (P4-2): these three fields are meaningful only on the
+	// gen2 (P4-2, extended by Track C item 3): these fields are meaningful only on the
 	// node-dashboard row — the server 400s a report that populates them on
 	// any other family/point, so the copy is gated here, in the one place
 	// every point's row is built, rather than trusted to every PointReader.
@@ -340,6 +346,7 @@ func Resolve(point, family string, f PointFacts) orgcontract.PolicyStateRow {
 		row.AcceptedAuthority = f.AcceptedAuthority
 		row.ExtractionEffective = f.ExtractionEffective
 		row.DroppedClasses = f.DroppedClasses
+		row.EffectivePins = f.EffectivePins
 	}
 	for _, rule := range resolveTable {
 		if rule.match(c) {

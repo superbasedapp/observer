@@ -127,7 +127,7 @@ func resolveBudgetLaunchAuthority(ctx context.Context, st *store.Store) (bool, e
 			return false, errors.New("budget launch authority: managed enrolment grant is expired")
 		}
 		return false, nil
-	case govern.StateIdentityChanged, govern.StateKeyPinMismatch:
+	case govern.StateIdentityChanged, govern.StateKeyPinMismatch, govern.StateGrantSignatureInvalid:
 		if enrolment.IsManaged() {
 			return false, fmt.Errorf("budget launch authority: managed identity is not verifiable (%s)", effective.State)
 		}

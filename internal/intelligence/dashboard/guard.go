@@ -112,6 +112,15 @@ type guardEventJSON struct {
 	Reason        string `json:"reason,omitempty"`
 	TargetExcerpt string `json:"target_excerpt,omitempty"`
 	TaintOrigin   string `json:"taint_origin,omitempty"`
+	// Overridable / OrgLocked are the ORG-GRANTED OVERRIDE posture of
+	// this row's rule under the org policy bundle currently on disk
+	// (Track B, guard_override.go). They describe the RULE now, not
+	// the historical event: "can this still be overridden", which is
+	// what the Security page's "Allow for this session" button needs.
+	// Both false on an un-enrolled node, where the page renders
+	// exactly as it did before the wave.
+	Overridable bool `json:"overridable,omitempty"`
+	OrgLocked   bool `json:"org_locked,omitempty"`
 }
 
 // handleGuardEvents serves GET /api/guard/events — the verdict
@@ -151,6 +160,9 @@ func (s *Server) handleGuardEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("guard events: %v", err), http.StatusInternalServerError)
 		return
 	}
+	// One org-bundle read for the whole page (cached, TTL-bounded),
+	// never one per row.
+	orgOverride := s.orgOverrides(r.Context())
 	out := make([]guardEventJSON, 0, len(rows))
 	for i := range rows {
 		row := &rows[i]
@@ -162,7 +174,7 @@ func (s *Server) handleGuardEvents(w http.ResponseWriter, r *http.Request) {
 			(wantSession != "" && row.SessionID != wantSession) {
 			continue
 		}
-		out = append(out, guardEventJSON{
+		ev := guardEventJSON{
 			ID: row.ID, Ts: row.TS.UTC().Format(time.RFC3339),
 			SessionID: row.SessionID, ActionID: row.ActionID,
 			Tool: row.Tool, EventKind: row.EventKind,
@@ -171,7 +183,9 @@ func (s *Server) handleGuardEvents(w http.ResponseWriter, r *http.Request) {
 			DegradedFrom: row.DegradedFrom, Enforced: row.Enforced,
 			Source: row.Source, Reason: row.Reason,
 			TargetExcerpt: row.TargetExcerpt, TaintOrigin: row.TaintOrigin,
-		})
+		}
+		ev.Overridable, ev.OrgLocked = orgOverride.For(row.RuleID)
+		out = append(out, ev)
 		if len(out) >= limit {
 			break
 		}
@@ -454,6 +468,15 @@ func (s *Server) handleGuardApprovals(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.RuleID == "" {
 			http.Error(w, "rule_id required", http.StatusBadRequest)
+			return
+		}
+		// Org-lock gate (Track B): under an org policy bundle only a
+		// rule the organization marked `overridable` may be granted a
+		// local exception. Refused at CREATION with the reason, so the
+		// register never fills with grants that applyApprovals would
+		// silently ignore. No bundle = no gate.
+		if _, orgLocked := s.orgOverrideFor(r.Context(), req.RuleID); orgLocked {
+			http.Error(w, "locked by org policy: "+req.RuleID, http.StatusForbidden)
 			return
 		}
 		now := s.now()

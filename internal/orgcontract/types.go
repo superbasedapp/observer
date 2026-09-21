@@ -1782,6 +1782,32 @@ type PolicyStateRow struct {
 	// ReasonSidecarUnwritable, or ReasonFamilyNotAccepted. A class present
 	// and accepted is simply absent from this map.
 	DroppedClasses map[string]string `json:"dropped_classes,omitempty"`
+
+	// EffectivePins is the Track C item 3 field
+	// (docs/plans/org-guardrail-control-wave-2026-09-21.md): the EFFECTIVE
+	// value, on this machine right now, of every pinnable config key whose
+	// shape makes a content leak impossible — a bool, or a string with a
+	// CLOSED enum (internal/policyfam/nodegov.ReportableKeys is the
+	// vocabulary, and nodegov.ReportedValueAllowed is the value check the
+	// server applies). Keys are dotted config paths; values are the closed
+	// spellings "true" / "false" / an enum member / "other".
+	//
+	// It answers the question the acked pins cannot: "is the pin the
+	// organization published actually IN FORCE on that machine?" — a
+	// question with legitimate non-tamper answers (a restart-bound key, a
+	// value this node's own config.Validate refused) as well as the tamper
+	// one. The server resolves which through internal/orgserver/fleethealth;
+	// the node only states the fact.
+	//
+	// It is NEVER content: no int (a threshold the developer chose) and no
+	// string_list (paths, action names) is reportable, structurally, in the
+	// vocabulary table rather than by a promise here.
+	//
+	// Like the other gen2 fields it is meaningful ONLY on the
+	// family="node.governance" row, omitted entirely by a gen1 agent, and
+	// carried on the policy-ack rail — NOT on the PushEnvelope, so the
+	// orgpush.go privacy sentinel is untouched.
+	EffectivePins map[string]string `json:"effective_pins,omitempty"`
 }
 
 // PolicyStateReport is the POST /api/agent/policy-ack body. AgentVersion is

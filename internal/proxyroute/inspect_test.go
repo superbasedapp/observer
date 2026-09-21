@@ -84,8 +84,11 @@ func TestInspectRoutes(t *testing.T) {
 	writeFile(t, filepath.Join(home, ".claude"), "settings.json",
 		`{"env":{"ANTHROPIC_BASE_URL":"https://api.anthropic.com"}}`)
 	got := InspectRoutes(home)
-	if len(got) != 2 {
-		t.Fatalf("want 2 statuses, got %d", len(got))
+	// One status per inspection-table row (Track C item 2 widened this from
+	// the original hard-coded claude+codex pair to every tool whose
+	// persisted route proxyroute writes).
+	if len(got) != len(InspectedTools()) {
+		t.Fatalf("want %d statuses, got %d", len(InspectedTools()), len(got))
 	}
 	var drift int
 	for _, s := range got {

@@ -93,6 +93,12 @@ func newGuardStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "Alerts:       desktop=%s min_severity=%s\n", onOff(cfg.Guard.Alerts.Desktop), cfg.Guard.Alerts.MinSeverity)
 			for _, ps := range g.PolicyStates() {
 				fmt.Fprintf(out, "Policy layer: %-7s %s (sha256 %.12s…)\n", ps.Layer, ps.Path, ps.ContentHash)
+				// Non-fatal parse notes (org-bundle keys this binary
+				// predates and ignored). The layer IS loaded — this is
+				// deliberately NOT a LOAD ISSUE line.
+				for _, note := range ps.Notes {
+					fmt.Fprintf(out, "NOTE:         %s\n", note)
+				}
 			}
 			for _, issue := range g.LoadIssues() {
 				fmt.Fprintf(out, "LOAD ISSUE:   %s\n", issue)

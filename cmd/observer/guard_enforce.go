@@ -205,6 +205,16 @@ func newGuardApproveCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
+			// Org-lock gate (org guardrail control wave, Track B): under
+			// an org policy bundle only a rule the organization marked
+			// `overridable` may be granted a local exception. Refused
+			// HERE, at creation, so the register never fills with grants
+			// applyApprovals would ignore at evaluation time. A node with
+			// no bundle takes the zero-cost path below and behaves
+			// exactly as before the wave.
+			if err := refuseOrgLockedApproval(cfg, ruleID); err != nil {
+				return err
+			}
 			database, err := db.Open(cmd.Context(), db.Options{Path: cfg.Observer.DBPath})
 			if err != nil {
 				return fmt.Errorf("open db: %w", err)
@@ -237,6 +247,24 @@ func newGuardApproveCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&global, "global", false, "grant everywhere on this node")
 	cmd.Flags().DurationVar(&ttl, "ttl", 24*time.Hour, "grant lifetime (0 = never expires)")
 	return cmd
+}
+
+// refuseOrgLockedApproval reports the "locked by org policy" refusal
+// when the node's org bundle does NOT mark ruleID overridable. A
+// guard that cannot be constructed degrades to "no bundle applies"
+// (fail-open toward today's behaviour, like every guard CLI surface)
+// — the evaluation-time gate in guard.applyApprovals is the backstop
+// that actually keeps a locked rule hard.
+func refuseOrgLockedApproval(cfg config.Config, ruleID string) error {
+	home, _ := os.UserHomeDir()
+	g, err := guard.New(guard.Options{Config: cfg.Guard, Home: home})
+	if err != nil {
+		return nil
+	}
+	if _, orgLocked := g.OrgOverrideStatus(ruleID); orgLocked {
+		return fmt.Errorf("locked by org policy: %s (your organisation did not mark this rule overridable; ask your admin)", ruleID)
+	}
+	return nil
 }
 
 func newGuardApprovalsCmd() *cobra.Command {

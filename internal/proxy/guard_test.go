@@ -417,7 +417,7 @@ func TestExtractToolUses(t *testing.T) {
 // TestGuardDenyBody pins both provider error shapes.
 func TestGuardDenyBody(t *testing.T) {
 	t.Parallel()
-	anth := guardDenyBody(models.ProviderAnthropic, "R-172", "reason text", 403)
+	anth := guardDenyBody(models.ProviderAnthropic, "R-172", "reason text", "", 403)
 	var a struct {
 		Type  string `json:"type"`
 		Error struct {
@@ -428,7 +428,7 @@ func TestGuardDenyBody(t *testing.T) {
 	if err := json.Unmarshal(anth, &a); err != nil || a.Type != "error" || a.Error.Type != "invalid_request_error" {
 		t.Fatalf("anthropic deny body = %s (err %v)", anth, err)
 	}
-	oai := guardDenyBody(models.ProviderOpenAI, "R-172", "reason text", 403)
+	oai := guardDenyBody(models.ProviderOpenAI, "R-172", "reason text", "", 403)
 	var o struct {
 		Error struct {
 			Message string `json:"message"`
@@ -456,7 +456,7 @@ func TestGuardDenyBody(t *testing.T) {
 // so 403 is what this test exercises.
 func TestGuardDenyBody_GeminiShape(t *testing.T) {
 	t.Parallel()
-	body := guardDenyBody(models.ProviderGoogle, "R-172", "reason text", 403)
+	body := guardDenyBody(models.ProviderGoogle, "R-172", "reason text", "", 403)
 	var g struct {
 		Error struct {
 			Code    int    `json:"code"`

@@ -4340,6 +4340,22 @@
       "doc": "RootTimeoutSeconds bounds ONE root's walk. A root that overruns is\nreported incomplete and NOT persisted — a partial inventory would\ntombstone guidance files that are still there — and is retried on\nthe next pass. Default 20. <= 0 means the seeded default; there is\ndeliberately no \"unbounded\" setting, because an unbounded root is\nexactly the failure this bounds."
     },
     {
+      "path": "guidance.root_timeout_max_seconds",
+      "field_path": "Guidance.RootTimeoutMaxSeconds",
+      "kind": "int",
+      "go_type": "int",
+      "owner": "github.com/marmutapp/superbased-observer/internal/config.GuidanceConfig",
+      "field": "RootTimeoutMaxSeconds",
+      "block": "guidance",
+      "table": "guidance",
+      "tier": "plain",
+      "restart": "restart",
+      "section": "intelligence",
+      "prominence": "advanced",
+      "secret": false,
+      "doc": "RootTimeoutMaxSeconds is the ADAPTIVE CEILING for a root's walk. A\nroot that overruns RootTimeoutSeconds is granted a larger budget on\nits next pass (doubling per consecutive overrun) up to this ceiling,\nso a legitimately slow-but-real root — e.g. a large repo on a slow\nDrvFs mount — is given the time to finish and finally persist, rather\nthan overrunning the same fixed budget forever and never landing its\ninventory. Default 180. <= 0 means the seeded default; a positive\nvalue below RootTimeoutSeconds is refused by Validate (the ceiling can\nnever be below the base). 180s gives real headroom over the ~106s a\nlive DrvFs walk took while still bounding a runaway."
+    },
+    {
       "path": "guidance.pass_timeout_minutes",
       "field_path": "Guidance.PassTimeoutMinutes",
       "kind": "int",

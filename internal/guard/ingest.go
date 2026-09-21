@@ -99,6 +99,24 @@ type ActionVerdict struct {
 	// value) — MaybeAlert's existing severity-threshold behavior is
 	// unchanged for them.
 	SuppressAlert bool
+	// Overridable / OrgLocked are the ORG-GRANTED OVERRIDE posture of
+	// the winning rule at evaluation time (Track B, override.go).
+	// Overridable: the org bundle marked this rule overridable, so the
+	// developer may grant themselves a scoped exception and the
+	// emission seam presents the deny as an ask where the channel can
+	// prompt. OrgLocked: an org bundle applies and did NOT mark it, so
+	// a local approval is inert. Both false on every individual node
+	// (no bundle) and on flag-class verdicts, which never blocked.
+	//
+	// They are DERIVED state, not columns: guard_events is a
+	// hash-CHAINED audit log whose row shape is fixed, so these ride
+	// the in-memory verdict (alerts, emission text) and the node
+	// dashboard re-derives them per rule from the live bundle. The
+	// permanent record of an EXERCISED override stays the existing
+	// degraded_from="approved" marker, and the permanent record of an
+	// IGNORED one is the reason suffix applyApprovals writes.
+	Overridable bool
+	OrgLocked   bool
 }
 
 // watcherCaps are the post-hoc channel capabilities (spec §3.3): the
@@ -201,6 +219,7 @@ func (g *Guard) EvaluateActions(inputs []ActionInput) []ActionVerdict {
 				TaintOrigin: taintOriginFor(verdict, taint),
 				GuardError:  guardErr != nil,
 			}
+			g.stampOrgOverride(es, &av)
 			if approved {
 				av.DegradedFrom = "approved"
 			}

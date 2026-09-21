@@ -46,6 +46,12 @@ func HandleGuarded(
 	}
 	verdict, recordWorthy := ev.EvaluateHook(pe)
 	em := guard.ResolveEmission(verdict.Verdict, pe.Caps)
+	// Human first, agent second (org guardrail control wave, Track B):
+	// under an org bundle a blocking reason leads with one plain
+	// sentence naming the override command (or saying the rule is
+	// locked). A no-op on an individual node, so the wire reply stays
+	// byte-identical there.
+	em = guard.HumanizeEmission(em, verdict, pe.SessionID)
 	verdict.Enforced = em.Enforced
 	if em.DegradedFrom != "" {
 		// Don't clobber a marker EvaluateHook already set (the §6.3

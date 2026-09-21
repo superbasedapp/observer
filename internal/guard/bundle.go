@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 )
@@ -79,6 +80,22 @@ func (g *Guard) parseOrgBundle(path, pinHash string) (pf *policyFile, st PolicyS
 		Path:        path,
 		Version:     strconv.FormatInt(b.Version, 10),
 		ContentHash: sha256hex([]byte(b.BundleTOML)),
+		Notes:       orgParseNotes(parsed.notes),
 	}
 	return parsed, st, "", true
+}
+
+// orgParseNotes turns the ignored-key paths parsePolicyFile collected
+// for the org layer into the one human line every status surface
+// prints. Nil in, nil out — a clean bundle carries no notes, and the
+// note is deliberately NOT a LoadIssue: the layer loaded and is in
+// force, only the keys this binary predates were skipped.
+func orgParseNotes(ignored []string) []string {
+	if len(ignored) == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"org bundle: ignored %d unknown key(s): %s (newer server; update the node binary)",
+		len(ignored), strings.Join(ignored, ", "),
+	)}
 }

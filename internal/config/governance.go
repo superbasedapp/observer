@@ -451,3 +451,45 @@ func governanceValuesEqual(a, b any) bool {
 	}
 	return false
 }
+
+// PinnableEffectiveValues returns the LIVE value of each dotted config path
+// in keys, as an `any` typed by the field's Go kind (bool / string / int /
+// []string). A path that does not resolve is absent from the map rather than
+// zero-valued: "this build has no such key" and "this key is false" are
+// different facts.
+//
+// It exists for the Track C item 3 effective-pin report
+// (docs/plans/org-guardrail-control-wave-2026-09-21.md): the org needs to
+// know what a governed key is ACTUALLY set to on a node, not only what the
+// node acked. It reuses resolveGovernanceField so "what a dotted key means"
+// keeps exactly one definition — the reason that helper carries its own
+// mirror-applyEnvToStruct note.
+//
+// It is READ-ONLY and takes cfg by value; callers get values, never a handle
+// into the config tree.
+func PinnableEffectiveValues(cfg Config, keys []string) map[string]any {
+	if len(keys) == 0 {
+		return nil
+	}
+	root := reflect.ValueOf(&cfg).Elem()
+	out := make(map[string]any, len(keys))
+	for _, key := range keys {
+		fv, ok := resolveGovernanceField(root, key)
+		if !ok || !fv.IsValid() {
+			continue
+		}
+		switch fv.Kind() {
+		case reflect.Bool:
+			out[key] = fv.Bool()
+		case reflect.String:
+			out[key] = fv.String()
+		case reflect.Int, reflect.Int32, reflect.Int64:
+			out[key] = int(fv.Int())
+		case reflect.Slice:
+			if fv.Type().Elem().Kind() == reflect.String {
+				out[key] = append([]string{}, fv.Interface().([]string)...)
+			}
+		}
+	}
+	return out
+}

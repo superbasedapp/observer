@@ -346,6 +346,15 @@ func newStartCmd() *cobra.Command {
 					version,
 					startupSidecarFrom(govOutcome),
 				)
+				// Track C item 3: report the EFFECTIVE value of every
+				// reportable pinnable key. cfgForLock is the config this
+				// daemon process is actually running — including whatever
+				// the governance sidecar applied at load — which is
+				// precisely the fact the organization cannot otherwise
+				// learn from an ack that only says "accepted".
+				ngov.SetEffectivePinReader(func() map[string]string {
+					return effectivePinValues(cfgForLock)
+				})
 			}
 			// The renewal latch is per-daemon-run and in-memory (§4.3): a
 			// persisted deny latch would be a second, node-local revocation
@@ -376,7 +385,20 @@ func newStartCmd() *cobra.Command {
 					if home, herr := os.UserHomeDir(); herr == nil {
 						binaryPath, _ := absoluteBinaryPath()
 						orgClient.SetIntegrityCollector(func() orgcontract.ManagedIntegrityReport {
-							return collectManagedIntegritySignals(dbPath, home, binaryPath)
+							// Track C item 2: on a managed node the org is
+							// authoritative over an enforcement point for, a
+							// proxy route whose config is STILL ON THE HOST
+							// but no longer names the proxy is drift, not
+							// "this tool is simply not routed" — a tool that
+							// was never installed here still never counts
+							// (proxyroute.RouteStatus.ArtifactPresent).
+							// Resolved LIVE from the
+							// governance handle on every cycle (the
+							// SetManagedEnforce precedent), so a revoked
+							// authority stops the stricter reading at the
+							// next push rather than at the next restart.
+							absentIsDrift := ngov.Effective(ctx).GrantsAnyEnforcement()
+							return collectManagedIntegritySignals(dbPath, home, binaryPath, absentIsDrift)
 						})
 					}
 					// Org BUDGET rail (org-budget plan §3.3c/§3.3d). The

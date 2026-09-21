@@ -9,6 +9,40 @@ All notable changes to SuperBased Observer are documented here.
   computed from (plan v2.1 6.9; `scripts/verify-price-snapshot.sh --line` prints this line and
   `scripts/release.sh` requires it in a final tag's section).
 
+## [1.34.0-rc.7] — 2026-09-21
+
+Pre-release on the `edge` channel; rc.6 plus the org guardrail control wave (plan of record
+`docs/plans/org-guardrail-control-wave-2026-09-21.md`, one adversarial review folded) and three
+adapter/posture fixes found on the demo estate. Server migrations 157 + 158 (run `observer-org migrate`
+before starting the new image). Node-side changes need the node binaries updated too:
+
+- Org policy: team-scoped guard bundles and node-governance targeting (`teams` resolved server-side from
+  the bearer, one composed bundle per developer, strictest-wins across teams, served version = bundle
+  sequence + roster epoch so joining or leaving a team converges); per-rule `overridable` on the org
+  bundle (the developer may consent on ask-capable channels or grant a scoped, reported approval;
+  otherwise the rule is hard and local approvals are inert on a managed node); publish-time warnings.
+- Node guard: human-first deny text naming the rule, what was blocked and the exact override step;
+  node dashboard "Organization guardrails" card; desktop toast on every enforced overridable deny;
+  proxy-lane approvals resolve the project root through the session.
+- Tamper detection: the stored enrolment grant is re-verified on every identity refresh; proxy-route
+  drift is inspected per registry route kind and an absent route is drift on a managed node when the
+  tool's config is present; nodes report effective pinned values; org-side fleet findings
+  (`authority_divergence`, `integrity_risk`, `no_contact`, `governance_lapsed`) with four new alert rule
+  kinds and a Control Center panel; `GET /api/org/fleet-findings`.
+- Posture: the teams -> enterprise flip widens authority and never drops it (D-DEMO-10; gateway-class
+  authorities are withheld from the fleet-wide replacement and those members are named).
+- Posture, second pass (pre-tag review): `POST /api/org/posture/reissue` signs a new fleet replacement
+  generation on an already-enterprise org (no activation needed) and `GET /api/org/posture` says when one
+  is due; withheld (service-account) members are excluded from the fleet document by construction, at
+  issue time and at enrolment-token redemption, so re-enrolling one with its own token now sticks; a member
+  enrolled later with a developer-class grant wider than the live generation is parked until the next
+  reissue lifts it, and a developer-class re-enrolment lifts a structural exclusion; activate
+  on an already-active org is a no-op; flip and reissue share one issue path. Node: the org guard layer
+  ignores bundle keys a newer server adds instead of running without the org layer (`observer guard
+  status` names them); nodes older than rc.7 still drop the org layer on such a bundle - update them first.
+- pi adapter: git identity (remote, branch, owner) resolved from the session cwd (D-DEMO-9).
+- Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
 ## [1.34.0-rc.6] — 2026-09-21
 
 Pre-release on the `edge` channel; rc.5 plus two org-dashboard fixes found on the demo estate

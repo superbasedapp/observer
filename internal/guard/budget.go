@@ -618,6 +618,7 @@ func (g *Guard) scanBudget(es *engineSet, res *ProxyRequestResult, sessionID, ta
 		Verdict:    verdict,
 		GuardError: guardErr != nil,
 	}
+	g.stampOrgOverride(es, &av)
 	if approved {
 		av.DegradedFrom = "approved"
 	}
@@ -627,6 +628,7 @@ func (g *Guard) scanBudget(es *engineSet, res *ProxyRequestResult, sessionID, ta
 		res.Deny = true
 		res.DenyRuleID = verdict.RuleID
 		res.DenyReason = verdict.Reason
+		res.DenyHumanLine = HumanBlockLine(av, sessionID)
 		res.Verdicts = append(res.Verdicts, av)
 		return
 	}

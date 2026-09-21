@@ -45,6 +45,28 @@ func resolveTable() []resolveRule {
 			},
 		},
 		{
+			// Row 1b (Track C item 1): the STORED grant document does not
+			// verify under the org distribution key this node holds. It is
+			// resolved HERE — ahead of the TTL and identity rows — because
+			// a document we cannot trust must not be interpreted at all:
+			// its expiry, its generation and its key-pin binding are all
+			// fields of the same untrusted blob, so checking them first
+			// would let a rewritten expiry decide which loud state the
+			// node reports.
+			//
+			// Only GrantIntegrityInvalid fires. GrantIntegrityUnchecked (the
+			// zero value) falls through, which is what keeps every caller
+			// that cannot verify — and every pre-Track-C caller — on exactly
+			// today's behaviour.
+			name: "grant signature invalid",
+			match: func(in resolveInput) bool {
+				return in.grant.Integrity == GrantIntegrityInvalid
+			},
+			result: func(in resolveInput) Effective {
+				return Effective{State: StateGrantSignatureInvalid, OrgName: in.grant.OrgName}
+			},
+		},
+		{
 			// Row 2: the grant's TTL lapsed. This is the offboarding
 			// backstop (§5.3): an org that stops authorizing a node stops
 			// governing it, without needing the node to be reachable.

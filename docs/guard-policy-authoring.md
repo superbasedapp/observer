@@ -110,6 +110,49 @@ enforce  = true        # and block it even in observe mode
 set `enforce`). The full catalog with IDs is
 [`guard-rules.md`](guard-rules.md) or `observer guard rules`.
 
+### `overridable` — let the developer grant themselves an exception
+
+On an ORG bundle an override row may also carry `overridable`:
+
+```toml
+[[override]]
+rule        = "R-171"   # upload of file contents to a remote destination
+decision    = "deny"
+enforce     = true
+overridable = true      # the developer may grant a scoped, reported exception
+```
+
+`overridable` defaults to **false**: silence means the rule is hard
+and a local approval for it is inert. Setting it true does not weaken
+the rule - the deny still fires. It changes what the developer can do
+about it: on a tool that can prompt, the deny reaches them as an ask;
+where it cannot, the refusal names the `observer guard approve`
+command. Every exercised override is reported to the org.
+
+**Read that again for a rule whose decision is `deny`.** This is the
+only shape where the flag does anything, and it is what the flag is
+for: a `deny` marked `overridable` no longer denies outright on an
+ask-capable channel - the node emits it as an **ask**, and the
+developer can grant themselves a scoped, time-boxed, reported
+approval past it. `overridable` on an `ask`, a `flag` or an `allow`
+is inert. Publishing a bundle that grants latitude over a deny is
+therefore legal and intended, and the publish emits a **warning**
+(never a refusal) naming each such rule, which is also recorded in
+the publish audit row. If you did not mean to hand that rule back to
+developers, drop the key - do not drop the escalation.
+
+`overridable` is an `[[override]]` key and nowhere else. Written
+inside a `[[rule]]` table it is refused at publish with a message
+saying exactly that. (It used to be silently stripped, which signed a
+body the agent's own parser then rejected - leaving that node with no
+org policy at all.)
+
+Composition across bundles is **false-wins**. If the org-wide bundle
+grants latitude on a rule and a team bundle mentions the same rule
+without granting it, the developer gets the hard deny - a grant is
+latitude, and latitude composes by intersection. A bundle that says
+nothing at all about a rule does not withdraw another bundle's grant.
+
 ## Layering rules (§4.6 — one-way strictness)
 
 - **User** rules apply as written (your machine, your call) — except
@@ -126,6 +169,54 @@ set `enforce`). The full catalog with IDs is
 Inspect the merged result with `observer guard rules --effective`;
 load problems surface in `observer guard status` as `LOAD ISSUE`
 lines and via `observer guard lint`.
+
+## Targeting a bundle at a team
+
+A published bundle carries an optional audience. With no audience it
+is **org-wide** - what every bundle published before targeting existed
+is, and what the Guard tab publishes unless you add a team.
+
+A team-scoped bundle is **never delivered on its own**. Each
+developer's node receives its own effective bundle: the org-wide
+bundle merged with every team bundle that developer belongs to, folded
+by STRICTEST-WINS per rule (decision escalates, `enforce` true-wins,
+`overridable` false-wins). Team membership is resolved on the server
+from the enrolled identity - a node never names its team on the wire,
+so it can never pick a laxer team's policy.
+
+Three consequences worth knowing before you publish:
+
+- **The version you see is not the component's.** Every node is
+  served `MAX(published bundle version) + the org's roster counter`,
+  whatever composed it. That is deliberate: a node refuses a bundle
+  whose version went backwards, and a version derived from "the
+  components that happened to apply" would go backwards the moment a
+  developer left a team. A sum, not a maximum, so that publishing a
+  bundle and editing a roster each move it on their own.
+- **Changing a developer's TEAMS converges their node by itself.**
+  Adding a member to a team, removing one, or deleting a team moves
+  the roster counter, so the developer's next poll carries a higher
+  version and their new composition is applied. One exception, stated
+  honestly: a roster edit pushed by an **IdP through SCIM** does not
+  move the counter (it does not go through the dashboard's team
+  writer). Publish any new bundle version - re-publishing the
+  org-wide floor is enough - to converge those, or move the roster
+  from the dashboard.
+- **Team targeting needs the server's signing key.** An org-wide
+  bundle is served exactly as it was stored, signature and all. A
+  composed bundle can only be signed at delivery, so the serving
+  process needs `[policy].signing_key_path` configured **and loaded**
+  - if you generated the key from the dashboard, restart the server
+  before publishing a team bundle. Publishing one on a server that
+  cannot sign is refused, naming that key. Should a server somehow
+  lose the key with team bundles already stored, developers on no
+  team keep receiving the org-wide floor and only the targeted teams
+  see a `409`.
+
+Use the Guard tab's **Effective for a developer** preview to see
+exactly which authored bundles compose one developer's bundle and what
+the merged TOML says. It runs the delivery path's own resolver, so it
+cannot drift from what the node receives.
 
 ## Cookbook — worked recipes
 
