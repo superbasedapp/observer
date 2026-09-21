@@ -9,6 +9,32 @@ All notable changes to SuperBased Observer are documented here.
   computed from (plan v2.1 6.9; `scripts/verify-price-snapshot.sh --line` prints this line and
   `scripts/release.sh` requires it in a final tag's section).
 
+## [1.34.0-rc.6] — 2026-09-21
+
+Pre-release on the `edge` channel; rc.5 plus two org-dashboard fixes found on the demo estate
+(the OIDC login gate and the SCIM-hidden team create form). Cut so the org-feature validation
+arc runs on a signed image carrying them:
+
+- Org dashboard: the Teams page no longer hides its team CREATE form on a SCIM
+  deployment (D-DEMO-7). It gated the form on `scim_configured`, which only
+  means `[scim].auth_token_path` is set - and the appliance bundle always
+  provisions a SCIM token secret, so on every bundle-deployed org the admin
+  could not create a team at all (and a team budget had nothing to attach to),
+  even with zero SCIM-provisioned rows. `GET /api/org/team-management` now also
+  carries `scim_active`, resolved from the data (a non-empty `external_id` on
+  any `org_teams` or `org_members` row), and the page always offers the form
+  and uses the two flags to choose a notice instead - the D-DEMO-6 "offered,
+  not hidden" rule. An individual SCIM-provisioned team is still read-only by
+  provenance, unchanged.
+- Org sign-in: a configured rail is offered before its first probe (D-DEMO-6).
+  The login page hid the link for any rail whose health was not exactly `ok`,
+  but an OIDC rail's discovery document is fetched lazily and following that
+  link was the only thing that fetched it - so on a fresh boot the first
+  sign-in could never be started. Health is now a tri-state that decides what
+  is said beside a rail, never whether it exists, and the server warms the
+  probe at boot.
+- Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
 ## [1.34.0-rc.5] — 2026-09-20
 
 Pre-release on the `edge` channel; rc.4 plus the demo-estate rebuild waves and two org-dashboard

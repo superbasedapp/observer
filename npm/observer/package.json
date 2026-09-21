@@ -1,6 +1,6 @@
 {
   "name": "@superbased/observer",
-  "version": "1.34.0-rc.5",
+  "version": "1.34.0-rc.6",
   "description": "Claude Code cost tracking, Cursor token usage, Codex spend — AI coding agent observability across 40 adapters, proxy-accurate token counts and cost.",
   "keywords": [
     "ai",
@@ -42,11 +42,11 @@
     "LICENSE"
   ],
   "optionalDependencies": {
-    "@superbased/observer-linux-x64": "1.34.0-rc.5",
-    "@superbased/observer-linux-arm64": "1.34.0-rc.5",
-    "@superbased/observer-darwin-x64": "1.34.0-rc.5",
-    "@superbased/observer-darwin-arm64": "1.34.0-rc.5",
-    "@superbased/observer-win32-x64": "1.34.0-rc.5"
+    "@superbased/observer-linux-x64": "1.34.0-rc.6",
+    "@superbased/observer-linux-arm64": "1.34.0-rc.6",
+    "@superbased/observer-darwin-x64": "1.34.0-rc.6",
+    "@superbased/observer-darwin-arm64": "1.34.0-rc.6",
+    "@superbased/observer-win32-x64": "1.34.0-rc.6"
   },
   "scripts": {
     "test": "node bin/observer.js --version"
