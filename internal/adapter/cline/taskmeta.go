@@ -181,6 +181,26 @@ func latestHostToken(meta taskMetadata) (string, bool) {
 	return tok, tok != ""
 }
 
+// latestClineVersion returns the `cline_version` of the newest
+// `environment_history[]` entry that carries one (Issue 2 tool-version
+// capture, migration 125). The version is the CLINE AGENT build
+// ("3.17.4"), distinct from host_version (the editor's own version).
+// "" when the list is absent, empty, or names no cline_version — the
+// honest unknown, never guessed.
+func latestClineVersion(meta taskMetadata) string {
+	ver := ""
+	var bestTs int64 = -1
+	for _, e := range meta.EnvironmentHistory {
+		if e.ClineVersion == "" {
+			continue
+		}
+		if e.Ts >= bestTs {
+			bestTs, ver = e.Ts, e.ClineVersion
+		}
+	}
+	return ver
+}
+
 // resolveSurfaceHost decides the SurfaceHost token for one task.
 //
 // Two grounded signals, path first then metadata refinement:

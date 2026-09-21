@@ -158,14 +158,15 @@ func (a *Adapter) parseJSONL(ctx context.Context, kind layout, path string, from
 	segment := kind == layoutSegment
 	res := adapter.ParseResult{NewOffset: fromOffset}
 	st := &parseState{
-		adapter:       a,
-		path:          path,
-		layout:        kind,
-		rootCache:     map[string]string{},
-		remoteCache:   map[string]string{},
-		identityCache: map[string]git.Identity{},
-		pendingCall:   map[string]int{},
-		firstOffset:   fromOffset,
+		adapter:          a,
+		path:             path,
+		layout:           kind,
+		rootCache:        map[string]string{},
+		remoteCache:      map[string]string{},
+		identityCache:    map[string]git.Identity{},
+		pendingCall:      map[string]int{},
+		versionBySession: map[string]string{},
+		firstOffset:      fromOffset,
 	}
 	if segment {
 		st.sessionID = sessionIDFromSegmentPath(path)
@@ -219,6 +220,7 @@ func (a *Adapter) parseJSONL(ctx context.Context, kind layout, path string, from
 	st.flagPendingOutcomes(&res)
 	st.applyIdentities(&res)
 	st.emitSurfaces(&res)
+	st.emitToolVersions(&res)
 	return res, nil
 }
 
@@ -242,6 +244,21 @@ func (st *parseState) emitSurfaces(res *adapter.ParseResult) {
 	for _, id := range st.sessionOrder {
 		if s := surfaceFor(st.layout, id); s.Surface != "" {
 			res.SessionSurfaces = append(res.SessionSurfaces, s)
+		}
+	}
+}
+
+// emitToolVersions appends one captured tool-version stamp per session
+// that carried a CC-envelope `version` (Issue 2, migration 125), in
+// first-seen session order. Segment run-logs carry no version line, so
+// this naturally no-ops for them.
+func (st *parseState) emitToolVersions(res *adapter.ParseResult) {
+	for _, id := range st.sessionOrder {
+		if ver := st.versionBySession[id]; ver != "" {
+			res.SessionToolVersions = append(res.SessionToolVersions, models.SessionToolVersion{
+				SessionID: id,
+				Version:   ver,
+			})
 		}
 	}
 }
@@ -294,6 +311,11 @@ type parseState struct {
 	// lastCwd / lastBranch carry the most recent envelope context.
 	lastCwd    string
 	lastBranch string
+	// versionBySession collects the first non-empty CC-envelope `version`
+	// (the Qoder CLI build, e.g. "1.0.40") seen per session, for Issue 2
+	// tool-version capture (migration 125). Emitted once per session by
+	// emitToolVersions; the store write is first-wins-unless-empty.
+	versionBySession map[string]string
 	// sessionID + projectRoot are recovered for segment run-logs (whose
 	// records carry neither directly on the token line).
 	sessionID   string
@@ -319,6 +341,13 @@ func (st *parseState) handleTranscript(raw []byte, lineNum int, res *adapter.Par
 	// parser skips — so the surface stamp survives a poll window that
 	// happened to contain only informational records.
 	st.noteSession(rec.SessionID)
+	// Issue 2: capture the CC-envelope tool version, first-wins per
+	// session (a re-parse never overwrites what an earlier record set).
+	if rec.SessionID != "" && rec.Version != "" {
+		if _, ok := st.versionBySession[rec.SessionID]; !ok {
+			st.versionBySession[rec.SessionID] = rec.Version
+		}
+	}
 	switch rec.Type {
 	case "user":
 		st.emitUser(&rec, res)

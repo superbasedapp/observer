@@ -527,6 +527,14 @@ export function SessionDetailPanel({
             {/* Capture surface (migration 107). Renders nothing when the
                 session carries no stamp — absence is UNKNOWN, never "cli". */}
             <SurfaceBadge surface={d.surface} host={d.surface_host} />
+            {/* Captured tool/CLI version (migration 125). Rendered only
+                when stamped — absence is UNKNOWN, never a fabricated
+                version. */}
+            {d.tool_version ? (
+              <span className="font-mono text-[11px] text-fg-3" title="Tool version">
+                v{d.tool_version}
+              </span>
+            ) : null}
             <CopyOnClick
               value={d.id}
               className="font-mono text-[12px] text-fg-2"

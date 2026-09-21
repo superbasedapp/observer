@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	mrand "math/rand"
 	"testing"
 
@@ -368,5 +370,135 @@ func TestEconomicsCanonicalPresentVsAbsent(t *testing.T) {
 func TestSignRejectsBadPrivateKey(t *testing.T) {
 	if _, err := Sign(ed25519.PrivateKey{1, 2, 3}, Envelope{}); err == nil {
 		t.Fatal("Sign accepted a short private key")
+	}
+}
+
+// TestVerifyOverReceivedBytes_NoFreezeForKnownEnvelopes is the HARD
+// fleet-no-freeze compatibility proof (docs/plans/
+// peak-off-peak-pricing-plan-2026-09-20.md §3.4/§R M1+M2): for an envelope
+// with no unknown fields, verify-over-received-bytes must be byte-identical
+// to the pre-existing verify-by-typed-remarshal path, so every already-
+// signed, currently-published feed still verifies on an upgraded consumer.
+//
+// It signs a representative envelope, round-trips it through
+// json.Marshal/json.Unmarshal (exactly what a real HTTP/bundle consumer
+// does — see internal/pricingfeed/client, internal/orgserver/pricingfeed's
+// bundle.go and poller.go, all of which decode via encoding/json and so
+// transparently populate Envelope.rawRows through UnmarshalJSON with ZERO
+// code change), and asserts:
+//  1. Verify still passes against the original KeySet.
+//  2. canonicalRawRows(rawRows) is byte-for-byte identical to
+//     CanonicalRows(the decoded typed Rows) — the actual no-freeze property,
+//     not just an end-to-end pass/fail.
+func TestVerifyOverReceivedBytes_NoFreezeForKnownEnvelopes(t *testing.T) {
+	env, keys := newSignedEnvelope(t, 11, sampleRows())
+
+	wire, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("json.Marshal(env): %v", err)
+	}
+
+	var decoded Envelope
+	if err := json.Unmarshal(wire, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(wire): %v", err)
+	}
+	if decoded.rawRows == nil {
+		t.Fatalf("decoded envelope has no rawRows captured — UnmarshalJSON did not run or did not populate it")
+	}
+
+	if err := Verify(decoded, keys); err != nil {
+		t.Fatalf("Verify(decoded) = %v, want nil — a known-shape envelope must still verify after the raw-bytes fix", err)
+	}
+
+	fromRaw, err := canonicalRawRows(decoded.rawRows)
+	if err != nil {
+		t.Fatalf("canonicalRawRows: %v", err)
+	}
+	fromTyped, err := CanonicalRows(decoded.Rows)
+	if err != nil {
+		t.Fatalf("CanonicalRows: %v", err)
+	}
+	if !bytes.Equal(fromRaw, fromTyped) {
+		t.Fatalf("canonicalRawRows and CanonicalRows diverged for a known-shape envelope:\n  raw:   %s\n  typed: %s", fromRaw, fromTyped)
+	}
+}
+
+// TestVerifyOverReceivedBytes_GracefulDegradationOnUnknownField is the
+// graceful-degradation proof: a feed body carrying a field THIS BUILD's
+// Row/PricingPolicyRow/Economics structs don't know about (e.g. some future
+// nested "reserved_capacity" object) must still VERIFY — proving an
+// already-deployed consumer degrades to base pricing instead of freezing with
+// ErrDigestMismatch, which is the entire point of the fix. ("peak" was this
+// test's original exemplar, but it is now a REAL field on PricingPolicyRow
+// per docs/plans/peak-off-peak-pricing-plan-2026-09-20.md, so the exemplar
+// moved to a still-genuinely-unknown nested field.)
+//
+// It hand-assembles a full envelope JSON body the way a publisher would,
+// with an extra "reserved_capacity" key inside one row, signs it with a
+// throwaway key exactly as the real publisher signs (digest/signature over the
+// canonical bytes of the RAW rows — the publisher never has typed knowledge of
+// a field added after this consumer build was compiled either), and asserts:
+//  1. Verify passes on THIS build, which has never heard of "reserved_capacity".
+//  2. The decoded typed Row for that model has dropped the unknown field
+//     (proving the degradation is real — the field is truly gone from the
+//     typed side, just not from what was verified).
+func TestVerifyOverReceivedBytes_GracefulDegradationOnUnknownField(t *testing.T) {
+	const feedVersion = int64(4)
+	const keyID = "test-future-field-key"
+
+	rowsJSON := `[` +
+		`{"model":"claude-haiku-5","input_per_mtok":1,"output_per_mtok":5,"cache_read_per_mtok":0,"grade":"observed","reserved_capacity":{"input":0.3,"output":1.5}},` +
+		`{"model":"claude-opus-5","input_per_mtok":15,"output_per_mtok":75,"grade":"verified"}` +
+		`]`
+
+	canonical, err := canonicalRawRows([]byte(rowsJSON))
+	if err != nil {
+		t.Fatalf("canonicalRawRows(rowsJSON): %v", err)
+	}
+	digest := digestOf(canonical)
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	sig := ed25519.Sign(priv, SigningMessage(feedVersion, canonical))
+	sigB64 := base64.StdEncoding.EncodeToString(sig)
+	keys, err := NewKeySet(map[string]string{keyID: hex.EncodeToString(pub)})
+	if err != nil {
+		t.Fatalf("NewKeySet: %v", err)
+	}
+
+	envJSON := fmt.Sprintf(
+		`{"schema_version":%d,"feed_version":%d,"generated_at":"2026-09-20T00:00:00Z","rows":%s,"digest":%q,"signature":%q,"key_id":%q}`,
+		SupportedSchemaVersion, feedVersion, rowsJSON, digest, sigB64, keyID,
+	)
+
+	var env Envelope
+	if err := json.Unmarshal([]byte(envJSON), &env); err != nil {
+		t.Fatalf("json.Unmarshal(envJSON): %v", err)
+	}
+
+	if err := Verify(env, keys); err != nil {
+		t.Fatalf("Verify(env with unknown future field) = %v, want nil — an old consumer must degrade gracefully, not freeze", err)
+	}
+
+	// Prove the degradation is real: the typed row for claude-haiku-5 has NO
+	// memory of "reserved_capacity" — this build genuinely does not understand
+	// the field, it simply didn't let that stop verification.
+	var haiku *Row
+	for i := range env.Rows {
+		if env.Rows[i].Model == "claude-haiku-5" {
+			haiku = &env.Rows[i]
+		}
+	}
+	if haiku == nil {
+		t.Fatalf("claude-haiku-5 row missing from decoded typed Rows")
+	}
+	typedJSON, err := json.Marshal(haiku)
+	if err != nil {
+		t.Fatalf("marshal typed row: %v", err)
+	}
+	if bytes.Contains(typedJSON, []byte("reserved_capacity")) {
+		t.Fatalf("typed row unexpectedly retained the unknown 'reserved_capacity' field: %s", typedJSON)
 	}
 }

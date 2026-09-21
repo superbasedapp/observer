@@ -99,3 +99,19 @@ func orgParseNotes(ignored []string) []string {
 		len(ignored), strings.Join(ignored, ", "),
 	)}
 }
+
+// loadVerifiedOrgLayer reads + signature-verifies the cached org bundle
+// at path with the given reader and returns the parsed org layer, or nil
+// when it is absent/corrupt/unverifiable. It shares parseOrgBundle's
+// verify path (no pin — the local-root lint context, where the root can
+// already write the user policy) and is the org half of the
+// trusted-project lint gate (LintTrustedProject). A throwaway Guard is
+// used only to reach the shared parse/verify method; no other Guard
+// state is touched.
+func loadVerifiedOrgLayer(readFile func(string) ([]byte, error), path string) *policyFile {
+	g := &Guard{readFile: readFile}
+	if pf, _, _, loaded := g.parseOrgBundle(path, ""); loaded {
+		return pf
+	}
+	return nil
+}

@@ -1097,6 +1097,16 @@ type Session struct {
 	// discriminator on disk (never fabricated).
 	Surface     string
 	SurfaceHost string
+	// ToolVersion is the captured tool/CLI version that produced the
+	// session (migration 125): the free-form semver string an adapter
+	// resolved from a grounded on-disk field (Codex
+	// `session_meta.cli_version`, Cline `cline_version`, Claude Code
+	// transcript top-level `version`, ...). NODE-LOCAL — never on the
+	// org-push wire. Written ONLY through Store.SetSessionToolVersion
+	// (not UpsertSession), FIRST-WINS-UNLESS-EMPTY. Empty = the adapter
+	// found no grounded version on disk — the honest "unknown", NEVER
+	// fabricated.
+	ToolVersion string
 }
 
 // ActionMetadata is the per-event JSON-marshaled metadata column on
@@ -1365,6 +1375,27 @@ type Action struct {
 	// authored nothing (reads, searches) and on adapters that don't yet
 	// compute it. NODE-LOCAL — not on the org-push seam.
 	ContentBytes int64
+	// UserAttachments records the files/images/audio a USER attached to a
+	// prompt turn (Issue 1, migration 126). PRESENCE + COUNT + KIND
+	// (+ optional MediaType) only — NEVER filenames or bytes, since a
+	// filename can encode ticket/codename ids (the same reasoning that
+	// gated git_branch). Nil/empty = no attachments; the store layer
+	// marshals a non-empty slice to JSON for actions.user_attachments.
+	// NODE-LOCAL — not on the org-push seam.
+	UserAttachments []UserAttachment
+}
+
+// UserAttachment is a single file/image/audio a user attached to a prompt
+// turn. Metadata only, by design: Kind is the coarse class ("image" |
+// "file" | "audio"), MediaType the optional IANA type ("image/png",
+// "application/pdf") when the source exposes it. It deliberately carries
+// NO filename and NO bytes — those are content and are never captured
+// (Issue 1 privacy rule; same reasoning that gated git_branch). Captured
+// at each adapter's own boundary (CLAUDE.md #3), resolved into these
+// capability fields so nothing downstream switches on source shape.
+type UserAttachment struct {
+	Kind      string `json:"kind"`
+	MediaType string `json:"media_type,omitempty"`
 }
 
 // ToolEvent is the adapter → storage transport type for a single tool call.
@@ -1462,6 +1493,12 @@ type ToolEvent struct {
 	// same command eventually_succeeded. The action row itself still
 	// inserts normally.
 	OutcomePending bool
+	// UserAttachments records the files/images/audio a USER attached to
+	// this prompt turn (Issue 1, migration 126). PRESENCE + COUNT + KIND
+	// (+ optional MediaType) only, NEVER filenames or bytes. Set by the
+	// adapter at its own boundary from its own source shape; flows through
+	// store.Ingest into actions.user_attachments. See [UserAttachment].
+	UserAttachments []UserAttachment
 }
 
 // ActionOutcomeUpdate carries the late-arriving outcome of an already-
@@ -2073,6 +2110,27 @@ type SessionSurface struct {
 	// identical re-stamp is still a no-op. Zero value = the ordinary
 	// first-wins-unless-empty self-report every adapter emits today.
 	Hosted bool
+}
+
+// SessionToolVersion is the per-session tool/CLI version an adapter
+// resolved from a grounded on-disk field. NODE-LOCAL (migration 125):
+// `sessions.tool_version` never enters the org-push wire (pinned by
+// tests/invariant/privacy_test.go). Written through the single store
+// seam Store.SetSessionToolVersion with FIRST-WINS-UNLESS-EMPTY
+// semantics: the first grounded stamp sticks, a later parse can only
+// FILL a still-empty column, and a re-parse can never clear or change a
+// captured value. The version is a property of the session's ORIGIN
+// (the build that produced it), fixed when the session was created. An
+// adapter that finds NO grounded version emits nothing — the zero value
+// on the session row is the honest "unknown", never a guess.
+type SessionToolVersion struct {
+	// SessionID is the session the version belongs to.
+	SessionID string
+	// Version is the free-form semver-ish token the adapter read from a
+	// grounded on-disk field ("0.150.0", "3.17.4"). Not an enum, but a
+	// bounded token: the store length-caps it and rejects whitespace /
+	// control / prose so a stray free-text field can never be persisted.
+	Version string
 }
 
 // KnownSurface reports whether kind is one of the Surface* constants.

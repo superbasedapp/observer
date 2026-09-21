@@ -140,6 +140,11 @@ var gitHooksPatterns = []pathPattern{
 // permission grant; flagging it would be constant noise and denying
 // it would break the host tool (revisit with the G6 conformance
 // matrix).
+// The `~/.observer/**` glob already covers the dashboard-authored
+// trusted per-project layer dir (~/.observer/guard-project-policies/),
+// so an agent write there is denied with no new matcher — that coverage
+// is what lets the trusted layer safely carry weaken/disable semantics
+// (guard-rule-management-ui plan §3.4).
 var observerConfigPatterns = []pathPattern{
 	{"~/.observer/**", "observer configuration"},
 	{"?:/users/*/.observer/**", "observer configuration"},
@@ -309,14 +314,14 @@ func boundaryRules() []Rule {
 			AppliesTo: faCfg, Match: matchProjectPolicyWriteFA,
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "agent modifying the project guard policy file",
-			Advice: "Project policy edits are recorded; §4.6 layering prevents loosening regardless.",
+			Advice: "Project policy edits are recorded; this in-repo file is escalate-only (§4.6 drops any loosening it attempts). Dashboard-managed project relaxations live in the R-160-protected daemon-local trusted layer, which the agent cannot write.",
 		},
 		{
 			ID: "R-161", Category: CategoryBoundary, Severity: SeverityHigh,
 			AppliesTo: shell, MatchCmd: matchProjectPolicyWriteShell,
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "shell command modifying the project guard policy file",
-			Advice: "Project policy edits are recorded; §4.6 layering prevents loosening regardless.",
+			Advice: "Project policy edits are recorded; this in-repo file is escalate-only (§4.6 drops any loosening it attempts). Dashboard-managed project relaxations live in the R-160-protected daemon-local trusted layer, which the agent cannot write.",
 		},
 	}
 }

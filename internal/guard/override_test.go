@@ -108,7 +108,7 @@ overridable = true
 			default:
 				project = pf
 			}
-			_, overrides, issues := mergeLayers(org, user, project)
+			_, overrides, _, issues := mergeLayers(org, user, project, nil)
 			granted := false
 			for _, ov := range overrides {
 				if ov.RuleID == "R-110" && ov.Overridable {

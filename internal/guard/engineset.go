@@ -94,7 +94,14 @@ func newEngineSet(base *policy.Engine, org, user *policyFile, states []PolicySta
 // new root evaluates with the base engine (correct, minus any
 // project-layer escalations for that root).
 func (es *engineSet) engineFor(g *Guard, projectRoot string) *policy.Engine {
-	if projectRoot == "" || g.cfg.Rules.ProjectPolicy == "" {
+	// The two per-project layers are INDEPENDENT switches: the in-repo,
+	// agent-writable file ([guard.rules].project_policy) and the
+	// dashboard-authored trusted file ([guard.rules].trusted_project_dir).
+	// Clearing project_policy is exactly the hardening that motivates the
+	// trusted layer, so it must not also switch that layer off — gate on
+	// both resolvers, not on the in-repo key alone.
+	if projectRoot == "" || (ProjectPolicyPath(g.cfg, projectRoot) == "" &&
+		TrustedProjectPolicyPath(g.cfg, g.home, projectRoot) == "") {
 		return es.base
 	}
 	es.pmu.Lock()
@@ -109,21 +116,23 @@ func (es *engineSet) engineFor(g *Guard, projectRoot string) *policy.Engine {
 	es.pmu.Unlock()
 
 	// Build outside the lock (file read + parse + engine construction).
-	eng, st, cats, loaded := g.buildProjectEngine(es, projectRoot)
+	// A project root can carry TWO layers now — the in-repo file and the
+	// trusted daemon-local file — so buildProjectEngine returns a state
+	// slice (one entry per successfully-loaded layer).
+	eng, states, cats, loaded := g.buildProjectEngine(es, projectRoot)
 
-	var fire *PolicyState
+	var fire []PolicyState
 	es.pmu.Lock()
 	if existing, ok := es.projectEngines[projectRoot]; ok {
 		eng = existing // another goroutine won the race; keep its engine
 	} else if len(es.projectEngines) < maxProjectEngines {
 		es.projectEngines[projectRoot] = eng
 		if loaded {
-			es.projectStates = append(es.projectStates, st)
+			es.projectStates = append(es.projectStates, states...)
 			for id, c := range cats {
 				es.projectCats[id] = c
 			}
-			s := st
-			fire = &s
+			fire = append(fire, states...)
 		}
 	} else {
 		// Capacity filled between the two locks: match the first-check
@@ -134,8 +143,10 @@ func (es *engineSet) engineFor(g *Guard, projectRoot string) *policy.Engine {
 		eng = es.base
 	}
 	es.pmu.Unlock()
-	if fire != nil && g.onPolicyState != nil {
-		g.onPolicyState(*fire)
+	if g.onPolicyState != nil {
+		for i := range fire {
+			g.onPolicyState(fire[i])
+		}
 	}
 	return eng
 }
@@ -231,37 +242,89 @@ func (es *engineSet) orgState() (PolicyState, bool) {
 	return PolicyState{}, false
 }
 
-// buildProjectEngine reads + parses + merges one project's policy file
-// against the SNAPSHOT's org+user layers WITHOUT mutating the snapshot
-// — the caller caches the result under pmu. loaded=false (with the
-// snapshot's base engine) covers every degrade path (no file, read
-// error, parse error, engine-build error), each recording an issue.
-func (g *Guard) buildProjectEngine(es *engineSet, projectRoot string) (eng *policy.Engine, st PolicyState, cats map[string]policy.Category, loaded bool) {
-	path := ProjectPolicyPath(g.cfg, projectRoot)
-	raw, err := g.readFile(path)
-	switch {
-	case os.IsNotExist(err):
-		return es.base, PolicyState{}, nil, false
-	case err != nil:
-		g.recordIssues([]string{fmt.Sprintf("project policy %s: %v", path, err)})
-		return es.base, PolicyState{}, nil, false
+// buildProjectEngine reads + parses + merges a project root's TWO
+// per-project layers against the SNAPSHOT's org+user layers WITHOUT
+// mutating the snapshot — the caller caches the result under pmu. The
+// layers, in fold order:
+//
+//   - the in-repo <root>/.observer/guard-policy.toml (layerProject) —
+//     agent-writable, escalate-only, git-shareable (unchanged);
+//   - the trusted <trusted_project_dir>/<hash>.toml (layerTrustedProject)
+//     — dashboard-authored, R-160-protected, weaken/disable-allowed but
+//     never below the org floor. Its `disable` list unions into the
+//     per-project engine's Config.Disabled inside buildEngine.
+//
+// It returns one PolicyState per successfully-loaded layer (0, 1 or 2).
+// loaded=false (with the snapshot's base engine, states=nil) covers every
+// degrade path (no files, read error, parse error, engine-build error),
+// each recording an issue. A parse error on ONE layer drops that layer's
+// contribution but the other layer still loads; only an engine-build
+// failure of the merged result drops both.
+func (g *Guard) buildProjectEngine(es *engineSet, projectRoot string) (eng *policy.Engine, states []PolicyState, cats map[string]policy.Category, loaded bool) {
+	// In-repo project layer (escalate-only, unchanged).
+	inRepoPath := ProjectPolicyPath(g.cfg, projectRoot)
+	var inRepo *policyFile
+	if inRepoPath != "" {
+		raw, err := g.readFile(inRepoPath)
+		switch {
+		case os.IsNotExist(err):
+			// no in-repo project policy — the common case
+		case err != nil:
+			g.recordIssues([]string{fmt.Sprintf("project policy %s: %v", inRepoPath, err)})
+		default:
+			pf, perr := parsePolicyFile(raw, layerProject)
+			if perr != nil {
+				g.recordIssues([]string{fmt.Sprintf("project policy %s: %v", inRepoPath, perr)})
+			} else {
+				inRepo = pf
+				states = append(states, PolicyState{Layer: layerProject, Path: inRepoPath, ContentHash: sha256hex(raw)})
+			}
+		}
 	}
-	pf, perr := parsePolicyFile(raw, layerProject)
-	if perr != nil {
-		g.recordIssues([]string{fmt.Sprintf("project policy %s: %v", path, perr)})
-		return es.base, PolicyState{}, nil, false
+
+	// Trusted daemon-local project layer (weaken/disable-allowed,
+	// org-floor-respected).
+	trustedPath := TrustedProjectPolicyPath(g.cfg, g.home, projectRoot)
+	var trusted *policyFile
+	if trustedPath != "" {
+		raw, err := g.readFile(trustedPath)
+		switch {
+		case os.IsNotExist(err):
+			// no trusted project policy — the common case
+		case err != nil:
+			g.recordIssues([]string{fmt.Sprintf("trusted project policy %s: %v", trustedPath, err)})
+		default:
+			pf, perr := parsePolicyFile(raw, layerTrustedProject)
+			if perr != nil {
+				g.recordIssues([]string{fmt.Sprintf("trusted project policy %s: %v", trustedPath, perr)})
+			} else {
+				trusted = pf
+				states = append(states, PolicyState{Layer: layerTrustedProject, Path: trustedPath, ContentHash: sha256hex(raw)})
+			}
+		}
 	}
-	built, err := g.buildEngine(es.base.Mode(), es.orgLayer, es.userLayer, pf)
+
+	if inRepo == nil && trusted == nil {
+		return es.base, nil, nil, false
+	}
+
+	built, err := g.buildEngine(es.base.Mode(), es.orgLayer, es.userLayer, inRepo, trusted)
 	if err != nil {
-		g.recordIssues([]string{fmt.Sprintf("project policy %s dropped: %v", path, err)})
-		return es.base, PolicyState{}, nil, false
+		g.recordIssues([]string{fmt.Sprintf("project policy for %s dropped: %v", projectRoot, err)})
+		return es.base, nil, nil, false
 	}
-	st = PolicyState{Layer: layerProject, Path: path, ContentHash: sha256hex(raw)}
-	cats = make(map[string]policy.Category, len(pf.rules))
-	for i := range pf.rules {
-		cats[pf.rules[i].ID] = pf.rules[i].Category
+	cats = make(map[string]policy.Category)
+	if inRepo != nil {
+		for i := range inRepo.rules {
+			cats[inRepo.rules[i].ID] = inRepo.rules[i].Category
+		}
 	}
-	return built, st, cats, true
+	if trusted != nil {
+		for i := range trusted.rules {
+			cats[trusted.rules[i].ID] = trusted.rules[i].Category
+		}
+	}
+	return built, states, cats, true
 }
 
 // buildRuleCategories seeds the audit-attribution category map from the
@@ -363,7 +426,7 @@ func (g *Guard) ReloadOrgLayer(ctx context.Context) error {
 
 	// Build a FRESH base against the new org layer + the existing user
 	// layer. A build failure is fail-safe: return the error, no swap.
-	base, err := g.buildEngine(cur.base.Mode(), pf, cur.userLayer, nil)
+	base, err := g.buildEngine(cur.base.Mode(), pf, cur.userLayer, nil, nil)
 	if err != nil {
 		return fmt.Errorf("guard.ReloadOrgLayer: build engine: %w", err)
 	}

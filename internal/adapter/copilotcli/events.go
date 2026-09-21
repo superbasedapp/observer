@@ -543,6 +543,16 @@ func (a *Adapter) parseEventsJSONL(_ context.Context, path string, fromOffset in
 	if surf, ok := surfaceForClientName(st.sessionID, ws.ClientName); ok {
 		out.SessionSurfaces = append(out.SessionSurfaces, surf)
 	}
+	// Issue 2: captured Copilot CLI version from session.start
+	// (dispatchState set st.copilotVersion above). first-wins-unless-
+	// empty + bounded-token validation make a re-stamp / bad value
+	// harmless.
+	if st.sessionID != "" && st.copilotVersion != "" {
+		out.SessionToolVersions = append(out.SessionToolVersions, models.SessionToolVersion{
+			SessionID: st.sessionID,
+			Version:   st.copilotVersion,
+		})
+	}
 	// Backfill ProjectRoot on emitted events (we built them before
 	// finalizing state).
 	adapter.ApplyProjectIdentity(&out, st.identity)

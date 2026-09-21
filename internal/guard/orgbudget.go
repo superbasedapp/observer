@@ -423,7 +423,7 @@ func (g *Guard) publishSubjects(baseline policy.BudgetWindowAmounts, baselineFla
 // reloadMu held; a caller that changes neither passes the current pair.
 func (g *Guard) rebuildLocked(binding string, calendars BudgetCalendars) error {
 	cur := g.set.Load()
-	base, err := g.buildEngine(cur.base.Mode(), cur.orgLayer, cur.userLayer, nil)
+	base, err := g.buildEngine(cur.base.Mode(), cur.orgLayer, cur.userLayer, nil, nil)
 	if err != nil {
 		return err
 	}

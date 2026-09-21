@@ -597,10 +597,12 @@ type pipelineAdapter struct {
 	p *conversation.Pipeline
 }
 
-// costEngineAdapter bridges (*cost.Engine).Compute to proxy.CostComputer
-// — same pattern as pipelineAdapter for the conversation pipeline.
-// Lives here so the proxy contract stays free of an intelligence-pkg
-// import cycle.
+// costEngineAdapter bridges (*cost.Engine).ComputeAt to proxy.CostComputer
+// — same pattern as pipelineAdapter for the conversation pipeline. It
+// passes CostTokens.At through so time-of-day-dependent rates (e.g.
+// peak/off-peak) resolve against the turn's own timestamp rather than
+// wall-clock-now. Lives here so the proxy contract stays free of an
+// intelligence-pkg import cycle.
 type costEngineAdapter struct {
 	e *cost.Engine
 }
@@ -610,14 +612,14 @@ func (a costEngineAdapter) Compute(model string, t proxy.CostTokens) (float64, b
 	if a.e == nil {
 		return 0, false
 	}
-	return a.e.Compute(model, cost.TokenBundle{
+	return a.e.ComputeAt(model, cost.TokenBundle{
 		Input:           t.Input,
 		Output:          t.Output,
 		CacheRead:       t.CacheRead,
 		CacheCreation:   t.CacheCreation,
 		CacheCreation1h: t.CacheCreation1h,
 		Fast:            t.Fast,
-	})
+	}, t.At)
 }
 
 // Compress implements proxy.Compressor (the legacy non-session-aware

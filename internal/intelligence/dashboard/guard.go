@@ -96,10 +96,17 @@ func (s *Server) handleGuardSummary(w http.ResponseWriter, r *http.Request) {
 // node-local operator UI — the privacy gating applies to the ORG
 // WIRE (SelectUnpushedSince), not to the operator's own dashboard.
 type guardEventJSON struct {
-	ID            int64  `json:"id"`
-	Ts            string `json:"ts"`
-	SessionID     string `json:"session_id,omitempty"`
-	ActionID      *int64 `json:"action_id,omitempty"`
+	ID        int64  `json:"id"`
+	Ts        string `json:"ts"`
+	SessionID string `json:"session_id,omitempty"`
+	ActionID  *int64 `json:"action_id,omitempty"`
+	// APITurnID is the api_turns.id anchor a proxy-path guard verdict
+	// carries (guard_events has three producers with different anchors —
+	// see store.GuardEventRow). Added alongside the session-scoped
+	// /api/session/<id>/guard endpoint (sessionguard.go) so the Messages
+	// tab's merge can attempt exact placement; ActionID remains the only
+	// anchor that resolves against a rendered message row today.
+	APITurnID     *int64 `json:"api_turn_id,omitempty"`
 	Tool          string `json:"tool,omitempty"`
 	EventKind     string `json:"event_kind,omitempty"`
 	RuleID        string `json:"rule_id"`
@@ -121,6 +128,50 @@ type guardEventJSON struct {
 	// exactly as it did before the wave.
 	Overridable bool `json:"overridable,omitempty"`
 	OrgLocked   bool `json:"org_locked,omitempty"`
+	// MessageID / TurnIndex resolve ActionID to the upstream
+	// actions.message_id / turn_index (a LEFT JOIN — see
+	// store.LoadGuardEventsForSessionWithMessageAnchor). Populated only by
+	// /api/session/<id>/guard (sessionguard.go); the global
+	// /api/guard/events timeline leaves these empty/nil (it doesn't pay the
+	// join, and the Security page has no message row to anchor against).
+	// This is what the Messages tab's merge (@shared/lib/guardMessages)
+	// uses for exact placement instead of guessing from timestamps.
+	MessageID string `json:"message_id,omitempty"`
+	TurnIndex *int64 `json:"turn_index,omitempty"`
+}
+
+// toGuardEventJSON is the single row->wire mapper for guardEventJSON,
+// shared by /api/guard/events (this file) and /api/session/<id>/guard
+// (sessionguard.go) so the Security page's global timeline and the session
+// drawer's interleaved feed can never drift on shape.
+//
+// Ts is full precision (RFC3339Nano, matching how store.timestamp() stamps
+// the column at insert) rather than truncated to whole seconds
+// (time.RFC3339) — the Messages tab's merge
+// (@shared/lib/guardMessages::mergeGuardIntoTimeline) can fall back to
+// nearest-timestamp ordering among several guard events or messages that
+// land in the same second, and second-truncation would silently discard
+// the sub-second ordering it needs to place them correctly.
+func toGuardEventJSON(row *store.GuardEventRow) guardEventJSON {
+	return guardEventJSON{
+		ID: row.ID, Ts: row.TS.UTC().Format(time.RFC3339Nano),
+		SessionID: row.SessionID, ActionID: row.ActionID, APITurnID: row.APITurnID,
+		Tool: row.Tool, EventKind: row.EventKind,
+		RuleID: row.RuleID, Category: row.Category,
+		Severity: row.Severity, Decision: row.Decision,
+		DegradedFrom: row.DegradedFrom, Enforced: row.Enforced,
+		Source: row.Source, Reason: row.Reason,
+		TargetExcerpt: row.TargetExcerpt, TaintOrigin: row.TaintOrigin,
+	}
+}
+
+// toGuardEventJSONAnchored extends toGuardEventJSON with the
+// message_id/turn_index a GuardEventAnchoredRow resolved via its LEFT JOIN.
+func toGuardEventJSONAnchored(row *store.GuardEventAnchoredRow) guardEventJSON {
+	j := toGuardEventJSON(&row.GuardEventRow)
+	j.MessageID = row.MessageID
+	j.TurnIndex = row.TurnIndex
+	return j
 }
 
 // handleGuardEvents serves GET /api/guard/events — the verdict
@@ -174,16 +225,7 @@ func (s *Server) handleGuardEvents(w http.ResponseWriter, r *http.Request) {
 			(wantSession != "" && row.SessionID != wantSession) {
 			continue
 		}
-		ev := guardEventJSON{
-			ID: row.ID, Ts: row.TS.UTC().Format(time.RFC3339),
-			SessionID: row.SessionID, ActionID: row.ActionID,
-			Tool: row.Tool, EventKind: row.EventKind,
-			RuleID: row.RuleID, Category: row.Category,
-			Severity: row.Severity, Decision: row.Decision,
-			DegradedFrom: row.DegradedFrom, Enforced: row.Enforced,
-			Source: row.Source, Reason: row.Reason,
-			TargetExcerpt: row.TargetExcerpt, TaintOrigin: row.TaintOrigin,
-		}
+		ev := toGuardEventJSON(row)
 		ev.Overridable, ev.OrgLocked = orgOverride.For(row.RuleID)
 		out = append(out, ev)
 		if len(out) >= limit {

@@ -115,19 +115,41 @@ var datedPricing = map[string][]DatedPricing{
 	// DeepSeek V4 peak/off-peak overhaul, effective 2026-08-16T16:00Z UTC
 	// (api-docs.deepseek.com/quick_start/pricing, confirmed live
 	// 2026-09-07 — see the "PEAK/OFF-PEAK OVERHAUL" comment above the
-	// deepseek-v4-flash row in pricing.go for the full rationale,
-	// including why off-peak is the flat-table representative and peak is
-	// left unmodeled). The old flat rate applied identically to
-	// deepseek-v4-flash, deepseek-chat, deepseek-reasoner, deepseek-v4 and
-	// the bare "deepseek" family row — all five keys get their own
-	// timeline since dated entries are per exact table key, not inherited
-	// across aliases.
+	// deepseek-v4-flash row in pricing.go for the full rationale, including
+	// why each key's base rate is the OFF-PEAK rate). The base rate here is
+	// off-peak; the peak variant (2× every dimension inside the weekday UTC
+	// windows) is modeled for deepseek-v4-pro via the Peak field (see the
+	// newest v4-pro entry below and peak.go). The old flat rate applied
+	// identically to deepseek-v4-flash, deepseek-chat, deepseek-reasoner,
+	// deepseek-v4 and the bare "deepseek" family row — all five keys get
+	// their own timeline since dated entries are per exact table key, not
+	// inherited across aliases.
+	//
+	// SECOND flash cutover, effective 2026-09-10T16:00Z UTC: on 2026-09-10
+	// DeepSeek released V4.1-Flash, renamed the canonical model to
+	// `deepseek-flash`, and REDUCED flash prices to $0.15 in / $0.60 out /
+	// $0.003 cache-read (per 1M) AND introduced a flash peak variant
+	// (Peak: deepseekFlashPeak, EXACTLY 2×). Each of the five flash-family
+	// timelines gets a newest entry at that instant; the pre-2026-09-10
+	// entries stay peak-free (the flash peak scheme did not exist before
+	// then). The vendor stated only the DATE (no time); 16:00 UTC follows
+	// DeepSeek's own established boundary convention (the 2026-08-16T16:00Z
+	// entry above) — confirm before any prod publish. `deepseek-flash` and
+	// `deepseek-v4.1-flash` are NEW keys with no history, so they carry a
+	// flat row only (no timeline in this table).
+	// Each flash timeline: pre-overhaul flat → 2026-08-16 off-peak base →
+	// 2026-09-10 reduced base + flash peak variant. The NEWEST entry
+	// carries Peak: deepseekFlashPeak (the SAME pointer as the flat row) so
+	// ValidateDated's flat==newest struct comparison holds.
 	"deepseek-v4-flash": {
 		{EffectiveFrom: time.Time{}, Pricing: Pricing{
 			Input: 0.14, Output: 0.28, CacheRead: 0.0028,
 		}},
 		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
 			Input: 0.22, Output: 0.66, CacheRead: 0.007,
+		}},
+		{EffectiveFrom: time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
+			Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak,
 		}},
 	},
 	"deepseek-chat": {
@@ -137,6 +159,9 @@ var datedPricing = map[string][]DatedPricing{
 		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
 			Input: 0.22, Output: 0.66, CacheRead: 0.007,
 		}},
+		{EffectiveFrom: time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
+			Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak,
+		}},
 	},
 	"deepseek-reasoner": {
 		{EffectiveFrom: time.Time{}, Pricing: Pricing{
@@ -144,6 +169,9 @@ var datedPricing = map[string][]DatedPricing{
 		}},
 		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
 			Input: 0.22, Output: 0.66, CacheRead: 0.007,
+		}},
+		{EffectiveFrom: time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
+			Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak,
 		}},
 	},
 	"deepseek-v4": {
@@ -153,6 +181,9 @@ var datedPricing = map[string][]DatedPricing{
 		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
 			Input: 0.22, Output: 0.66, CacheRead: 0.007,
 		}},
+		{EffectiveFrom: time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
+			Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak,
+		}},
 	},
 	"deepseek": {
 		{EffectiveFrom: time.Time{}, Pricing: Pricing{
@@ -161,13 +192,21 @@ var datedPricing = map[string][]DatedPricing{
 		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
 			Input: 0.22, Output: 0.66, CacheRead: 0.007,
 		}},
+		{EffectiveFrom: time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
+			Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak,
+		}},
 	},
 	"deepseek-v4-pro": {
 		{EffectiveFrom: time.Time{}, Pricing: Pricing{
 			Input: 0.435, Output: 0.87, CacheRead: 0.003625,
 		}},
+		// Newest entry mirrors the current defaultPricing row, including
+		// the SAME deepseekV4ProPeak pointer so ValidateDated's
+		// flat==newest struct comparison holds. The pre-overhaul entry
+		// above stays peak-free: the peak scheme did not exist before
+		// 2026-08-16.
 		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.66, Output: 1.98, CacheRead: 0.022,
+			Input: 0.66, Output: 1.98, CacheRead: 0.022, Peak: deepseekV4ProPeak,
 		}},
 	},
 }
@@ -334,17 +373,24 @@ func (t *Table) datedRate(key string, at time.Time) (Pricing, bool) {
 // the ONLY place the date dimension is applied, and — because it is the
 // one funnel every Lookup rung passes through with the resolved key in
 // hand — the one place the per-provider cache-write fallback
-// (applyCacheWriteRule) is applied. Doing it here covers baked rows,
-// config.toml overrides, dated timeline entries and family-prefix
-// fallbacks in a single owner, instead of restating the same fact on
-// every Gemini row in the table.
+// (applyCacheWriteRule) and the time-of-day peak overlay (peakAdjusted)
+// are applied. Doing it here covers baked rows, config.toml overrides,
+// dated timeline entries and family-prefix fallbacks in a single owner,
+// instead of restating the same fact on every Gemini row in the table.
+//
+// Order matters: peakAdjusted runs FIRST on the resolved (base/off-peak)
+// Pricing so its peak rate set — including any peak long-context sub-tier
+// — is in place before fillDefaults supplies missing cache-read/write
+// defaults and applyCacheWriteRule fills the provider write fallback. A
+// zero `at` or a model with no Peak leaves peakAdjusted a no-op, so the
+// no-peak path is byte-identical to before.
 func (t *Table) rate(key string, at time.Time) Pricing {
 	if len(t.dated) > 0 {
 		if p, ok := t.datedRate(key, at); ok {
-			return applyCacheWriteRule(key, fillDefaults(p))
+			return applyCacheWriteRule(key, fillDefaults(peakAdjusted(p, at)))
 		}
 	}
-	return applyCacheWriteRule(key, fillDefaults(t.exact[key]))
+	return applyCacheWriteRule(key, fillDefaults(peakAdjusted(t.exact[key], at)))
 }
 
 // LookupAt is the date-aware Lookup: it returns the rate in force for

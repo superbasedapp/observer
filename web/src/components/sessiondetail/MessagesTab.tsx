@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import clsx from "clsx";
 import { Pill, SegmentedControl, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { CopyOnClick } from "@/components/CopyOnClick";
 import { Pagination } from "@/components/DataTable";
-import { fmtInt } from "@/lib/format";
-import type { SessionMessages, SessionRawEvents } from "@/lib/types";
+import { useApi } from "@/lib/useApi";
+import { fmtClock, fmtInt } from "@/lib/format";
+import type { SessionGuardEvent, SessionGuardEventsResponse, SessionMessages, SessionRawEvents } from "@/lib/types";
+import { guardBannersWithContext } from "@shared/lib/guardMessages";
 import {
   MESSAGES_LIMIT,
   MESSAGE_COLUMNS,
@@ -29,6 +31,104 @@ import { MessagesTable } from "./MessagesTable";
 // this tab is on screen — and because moving the fetch here would have changed
 // polling behaviour, which this split explicitly does not do. This module is
 // presentation only.
+//
+// ONE EXCEPTION: the guard-verdict feed (/api/session/<id>/guard, LOC/
+// guardmsg/APM followups plan Item 2) IS fetched here, not lifted to the
+// shell — it feeds no tab-strip count and nothing else on the panel needs
+// it, so threading it through SessionDetailPanel would be a prop for
+// nothing. It keys off messages.data.session_id rather than taking its own
+// sessionId prop, since the shell already resolves and carries that value.
+
+// Mirrors Security.tsx's exported DECISION_VARIANT (guard decision ->
+// Pill variant). Kept as a small local copy rather than importing it: that
+// page is lazy-loaded as its own chunk (App.tsx), and a static import from
+// this always-eagerly-mounted panel would pull the whole Security page into
+// the main bundle instead.
+const GUARD_DECISION_VARIANT: Record<string, "neutral" | "warn" | "danger" | "accent"> = {
+  flag: "warn",
+  ask: "accent",
+  deny: "danger",
+  allow: "neutral",
+};
+
+// isPromptGuardEvent reports whether a guard verdict came from the
+// prompt-submit guard subsystem (R-172 secrets / R-190 PII in the prompt
+// text, event_kind=user_prompt) rather than a tool-call policy decision.
+// Both now surface through the same /api/session/<id>/guard feed (operator
+// decision 2026-09-21); this is only used to render the two distinctly —
+// see GuardVerdictsStrip.
+function isPromptGuardEvent(event: SessionGuardEvent): boolean {
+  return event.event_kind === "user_prompt" || event.rule_id === "R-172" || event.rule_id === "R-190";
+}
+
+// GuardVerdictsStrip renders the session's guard policy BLOCKS (the events
+// prop already arrives server-filtered to enforced/deny/ask — see
+// SessionGuardEvent's doc comment; informational `flag` events are dropped
+// upstream to avoid drowning the timeline) in chronological order, each
+// tagged with the seq of the message it landed after
+// (guardBannersWithContext, @shared/lib/guardMessages — the merge algorithm
+// shared with the org dashboard's OrgMessagesTab, which anchors on
+// message_id server-resolved from action_id). It sits above the message
+// table rather than literally inside it: MessagesTable.tsx is a large
+// shared row/column renderer, and true per-row interleaving would mean
+// threading guard rows through its column model for a handful of
+// low-volume events — this compact strip gives the same "what got blocked,
+// and roughly when" answer without that.
+function GuardVerdictsStrip({
+  messages,
+  events,
+}: {
+  messages: SessionMessages["messages"];
+  events: SessionGuardEvent[];
+}) {
+  const banners = useMemo(() => guardBannersWithContext(messages, events), [messages, events]);
+  if (banners.length === 0) return null;
+  return (
+    <div className="space-y-1.5 rounded-2 border border-line-2 bg-bg-1 p-2.5">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-3">
+        Guard verdicts ({banners.length})
+      </div>
+      <ul className="space-y-1">
+        {banners.map(({ event, afterSeq }) => {
+          const isPromptGuard = isPromptGuardEvent(event);
+          return (
+          <li
+            key={event.id}
+            className="flex flex-wrap items-center gap-1.5 rounded-1 border border-line-2 bg-bg-2 px-2 py-1 text-[11px]"
+          >
+            <Pill variant={GUARD_DECISION_VARIANT[event.decision ?? ""] ?? "neutral"}>
+              {event.decision || "verdict"}
+            </Pill>
+            {isPromptGuard ? (
+              <Pill variant="accent">prompt guard</Pill>
+            ) : (
+              event.tool && <span className="text-fg-4">via {event.tool}</span>
+            )}
+            <span className="font-mono text-fg-2">{event.rule_id}</span>
+            {event.category && <span className="text-fg-3">{event.category}</span>}
+            <span className="text-fg-4">{fmtClock(event.ts)}</span>
+            {afterSeq != null && <span className="text-fg-4">after turn #{afterSeq}</span>}
+            {!event.enforced && (
+              <Tooltip content="Observe mode: the policy engine recorded this verdict but did not block the call.">
+                <Pill variant="neutral">observed only</Pill>
+              </Tooltip>
+            )}
+            {event.reason && (
+              <CopyOnClick value={event.reason} className="block w-full basis-full text-fg-3">
+                {event.reason}
+                {event.target_excerpt && (
+                  <span className="ml-1 font-mono text-fg-4">— {event.target_excerpt}</span>
+                )}
+              </CopyOnClick>
+            )}
+          </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 export function MessagesTab({
   tool,
   messages,
@@ -86,6 +186,19 @@ export function MessagesTab({
   const [preset, setPreset] = useState<MessageColumnPreset>(loadStoredMsgPreset);
   const columns = visibleMessageColumns(preset, sortBy);
   const hidden = MESSAGE_COLUMNS.length - columns.length;
+  // Guard-verdict feed. Keyed off the messages payload's own session_id
+  // (see the file header note) rather than a new prop. Low-volume by
+  // design (allow verdicts never persist), so the same live-refresh cadence
+  // as the message stream is cheap; watch mode's faster 4s cadence matters
+  // here too — a deny that stopped a tool call while an operator is
+  // watching live should show up promptly.
+  const sessionId = messages.data?.session_id ?? null;
+  const guard = useApi<SessionGuardEventsResponse>(
+    sessionId ? `/api/session/${sessionId}/guard` : null,
+    undefined,
+    [sessionId],
+    { refreshMs: watchMode ? 4000 : 8000 },
+  );
   return (
     <div className="space-y-5">
       <RawEventsPanel
@@ -97,6 +210,9 @@ export function MessagesTab({
         page={raw.page}
         onPage={raw.onPage}
       />
+      {messages.data && (
+        <GuardVerdictsStrip messages={messages.data.messages} events={guard.data?.events ?? []} />
+      )}
 
       {messages.data?.account_summary && (
         <div className="rounded border border-stroke px-3 py-2 text-xs text-fg-3" aria-label="Session account coverage">

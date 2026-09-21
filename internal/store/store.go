@@ -645,8 +645,9 @@ const insertActionSQL = `INSERT INTO actions (
 	message_id,
 	metadata,
 	org_id, user_email,
-	content_bytes
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	content_bytes,
+	user_attachments
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(source_file, source_event_id) DO UPDATE SET
 	duration_ms = CASE
 		WHEN excluded.duration_ms > 0 AND (actions.duration_ms IS NULL OR actions.duration_ms = 0)
@@ -723,6 +724,18 @@ ON CONFLICT(source_file, source_event_id) DO UPDATE SET
 		 AND excluded.content_bytes > COALESCE(actions.content_bytes, 0)
 		THEN excluded.content_bytes
 		ELSE actions.content_bytes
+	END,
+	-- user_attachments (Issue 1, migration 126): a re-emit can carry the
+	-- structured attachment metadata where the original insert had none
+	-- (e.g. a hook emit lacking the user content, later refreshed by the
+	-- JSONL adapter which does see the image/document blocks). Fill only
+	-- when the existing value is NULL; never regress a captured value back
+	-- to NULL. Metadata (kinds/counts/media-types) only — never content.
+	user_attachments = CASE
+		WHEN excluded.user_attachments IS NOT NULL
+		 AND actions.user_attachments IS NULL
+		THEN excluded.user_attachments
+		ELSE actions.user_attachments
 	END,
 	-- success self-heal, ASYMMETRIC 1 → 0 ONLY (outcome seam).
 	-- A tool_use and its tool_result are separate records: every call
@@ -804,6 +817,23 @@ func marshalActionMetadata(m *models.ActionMetadata) any {
 	return string(b)
 }
 
+// marshalUserAttachments returns the JSON-encoded attachment array
+// suitable for insertion into actions.user_attachments, or nil for the
+// "no attachments" case (NULL on disk). Metadata only by construction
+// (kind + optional media_type) — the UserAttachment type carries no
+// filename and no bytes. Marshal errors fall back to nil so a per-event
+// bug can't fail the whole batch.
+func marshalUserAttachments(atts []models.UserAttachment) any {
+	if len(atts) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(atts)
+	if err != nil {
+		return nil
+	}
+	return string(b)
+}
+
 // InsertActions writes a batch of actions using INSERT OR IGNORE — duplicate
 // (source_file, source_event_id) rows are silently skipped. Returns the
 // count of newly inserted rows. Runs in a single transaction.
@@ -878,6 +908,7 @@ func (s *Store) InsertActions(ctx context.Context, actions []models.Action) (int
 				marshalActionMetadata(a.Metadata),
 				nullableString(a.OrgID), nullableString(a.UserEmail),
 				nullableInt64(a.ContentBytes),
+				marshalUserAttachments(a.UserAttachments),
 			); err != nil {
 				return inserted, fmt.Errorf("store.InsertActions: upsert dup: %w", err)
 			}
@@ -906,6 +937,7 @@ func (s *Store) InsertActions(ctx context.Context, actions []models.Action) (int
 			marshalActionMetadata(a.Metadata),
 			nullableString(a.OrgID), nullableString(a.UserEmail),
 			nullableInt64(a.ContentBytes),
+			marshalUserAttachments(a.UserAttachments),
 		)
 		if err != nil {
 			return inserted, fmt.Errorf("store.InsertActions: exec: %w", err)
@@ -1599,6 +1631,16 @@ type IngestOptions struct {
 	// the actions and tokens have already landed by then. NODE-LOCAL —
 	// never on the org-push wire. Empty/nil is a clean no-op.
 	SessionSurfaces []models.SessionSurface
+	// SessionToolVersions carries captured tool/CLI versions (migration
+	// 125). Ingest persists each onto its session row via
+	// SetSessionToolVersion after the sessions are upserted, FIRST-WINS-
+	// UNLESS-EMPTY (the first grounded stamp sticks; a later parse only
+	// fills a still-empty column). Applied best-effort: a rejected
+	// (malformed) or failing stamp is counted in
+	// IngestResult.SessionToolVersionsSkipped, never returned as an
+	// error. NODE-LOCAL — never on the org-push wire. Empty/nil is a
+	// clean no-op.
+	SessionToolVersions []models.SessionToolVersion
 	// OutcomeUpdates carries outcomes for actions inserted by an
 	// EARLIER Ingest call: a tool_result an adapter parsed in a later
 	// watcher tick than the tool_use that created the row (see
@@ -1651,6 +1693,15 @@ type IngestResult struct {
 	// stays visible instead of vanishing. A steady non-zero here on a
 	// given adapter is a bug in that adapter's surface table.
 	SessionSurfacesSkipped int
+	// SessionToolVersionsSkipped counts the
+	// IngestOptions.SessionToolVersions entries this batch did NOT
+	// persist because of a store WRITE ERROR. A malformed value returns
+	// (false, nil) from SetSessionToolVersion and is silently skipped
+	// (not counted here) — the version column is best-effort. Best-effort
+	// like SessionSurfacesSkipped: it runs AFTER actions and tokens have
+	// landed, so the count is how a write failure stays visible without a
+	// logger the store does not have.
+	SessionToolVersionsSkipped int
 }
 
 // Ingest is the high-level batch API used by the watcher and scan commands.
@@ -1802,6 +1853,7 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 			IsSidechain:        e.IsSidechain,
 			MessageID:          e.MessageID,
 			Metadata:           e.Metadata,
+			UserAttachments:    e.UserAttachments,
 		}
 
 		// File-typed actions with a classifier go through a per-event
@@ -2160,6 +2212,22 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 		}
 		if _, err := s.SetSessionSurface(ctx, sf); err != nil {
 			result.SessionSurfacesSkipped++
+		}
+	}
+
+	// Captured tool/CLI version (migration 125): stamp the free-form
+	// version an adapter resolved at its boundary onto the sessions
+	// upserted above. NODE-LOCAL; FIRST-WINS-UNLESS-EMPTY. Same
+	// best-effort posture as the surface seam above — it runs AFTER the
+	// actions/tokens landed, so a write error is counted, not returned.
+	// A malformed value returns (false, nil) and is skipped silently
+	// inside SetSessionToolVersion.
+	for _, tv := range opts.SessionToolVersions {
+		if tv.SessionID == "" {
+			continue
+		}
+		if _, err := s.SetSessionToolVersion(ctx, tv); err != nil {
+			result.SessionToolVersionsSkipped++
 		}
 	}
 
@@ -2561,6 +2629,7 @@ func (s *Store) insertSingleAction(ctx context.Context, a *models.Action) (bool,
 		nullableString(a.OrgID),
 		nullableString(a.UserEmail),
 		nullableInt64(a.ContentBytes),
+		marshalUserAttachments(a.UserAttachments),
 	)
 	if err != nil {
 		return false, fmt.Errorf("store.insertSingleAction: %w", err)

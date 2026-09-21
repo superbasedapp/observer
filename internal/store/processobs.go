@@ -776,6 +776,37 @@ func (s *Store) CorrelateProcessActions(ctx context.Context, sessionID string) (
 	return n, nil
 }
 
+// SessionActionCursor returns a cheap change-detector for a session's
+// process/action correlation inputs, so a background sweeper can skip the
+// expensive CorrelateProcessActions pass when nothing new has arrived since
+// its last look.
+//
+// unlinkedRuns is the COUNT of the session's process_runs that still lack an
+// action_id — deliberately a count, not MAX(started_at). It advances when a
+// new process becomes part of the session's turn-unlinked set by EITHER path:
+// a fresh INSERT, OR the cross-OS sweep's UPDATE that stamps session_id onto an
+// already-captured (hence earlier-started) row. A MAX(started_at) mark would
+// miss the latter — the cross-OS-attributed row carries an OLD started_at, so
+// the mark wouldn't move and the sweep would skip the very row that just gained
+// a session_id, defeating the same-tick turn-link the sweep is ordered for. The
+// count also self-heals: a linking pass lowers it, which registers as a change
+// and triggers exactly one more pass that converges (the remaining ambiguous
+// residue links nothing, the count holds, and the session is then skipped).
+// actionMark is the highest actions.id for the session's run_command actions,
+// advancing only when a new run_command action is ingested. A caller comparing
+// consecutive (unlinkedRuns, actionMark) pairs can tell "nothing new" from
+// "worth a correlate pass" without loading process_runs/actions rows.
+func (s *Store) SessionActionCursor(ctx context.Context, sessionID string) (unlinkedRuns int64, actionMark int64, err error) {
+	err = s.db.QueryRowContext(ctx, `
+		SELECT (SELECT COUNT(*) FROM process_runs WHERE session_id = ? AND action_id IS NULL),
+		       COALESCE((SELECT MAX(id) FROM actions WHERE session_id = ? AND action_type = ?), 0)`,
+		sessionID, sessionID, models.ActionRunCommand).Scan(&unlinkedRuns, &actionMark)
+	if err != nil {
+		return 0, 0, fmt.Errorf("store.SessionActionCursor: %w", err)
+	}
+	return unlinkedRuns, actionMark, nil
+}
+
 // CorrelateCrossOS runs the §5.5 deferred cross-OS pass for one session: it
 // matches the Windows AI-tool root process (exe basename in the tool's set, cwd
 // == the session's project root, started within a bounded window) to the

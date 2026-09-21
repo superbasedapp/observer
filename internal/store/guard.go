@@ -433,6 +433,85 @@ func (s *Store) LoadGuardEventsForSession(ctx context.Context, sessionID string)
 	return loadGuardEventRows(rows, "store.LoadGuardEventsForSession")
 }
 
+// GuardEventAnchoredRow extends GuardEventRow with the upstream
+// actions.message_id / actions.turn_index resolved from the event's
+// action_id anchor. Session-scoped only — feeds the Messages tab's
+// exact-placement guard interleave (LOC/guardmsg/APM followups plan, Item
+// 2). Live-grounded 2026-09-21: 34,165 of 34,610 guard_events rows carry a
+// resolvable action_id (~99%); MessageID is empty for the small remainder
+// (the hook path's pre-execution case, which precedes the action row's
+// existence) and for an action_id that no longer resolves (a pruned row).
+type GuardEventAnchoredRow struct {
+	GuardEventRow
+	MessageID string
+	TurnIndex *int64
+}
+
+// LoadGuardEventsForSessionWithMessageAnchor is LoadGuardEventsForSession's
+// sibling for the Messages-tab interleave: the same session-scoped,
+// unbounded, insert-order read, plus a LEFT JOIN onto actions resolving
+// each action-anchored event's message_id/turn_index. A caller that needs
+// to place a verdict on the EXACT message row it judged (rather than
+// guessing from timestamps) uses this; every other caller (the Security
+// page's global timeline, `observer guard status`) keeps using
+// LoadGuardEventsForSession, which doesn't pay the join.
+func (s *Store) LoadGuardEventsForSessionWithMessageAnchor(ctx context.Context, sessionID string) ([]GuardEventAnchoredRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT ge.id, ge.ts, COALESCE(ge.session_id,''), ge.action_id, ge.api_turn_id,
+		       COALESCE(ge.tool,''), COALESCE(ge.event_kind,''), ge.rule_id,
+		       COALESCE(ge.category,''), COALESCE(ge.severity,''), COALESCE(ge.decision,''),
+		       COALESCE(ge.degraded_from,''), ge.enforced, COALESCE(ge.source,''),
+		       COALESCE(ge.reason,''), COALESCE(ge.target_hash,''),
+		       COALESCE(ge.target_excerpt,''), COALESCE(ge.taint_origin,''),
+		       ge.chain_prev, ge.chain_hash,
+		       COALESCE(a.message_id, ''), a.turn_index
+		FROM guard_events ge
+		LEFT JOIN actions a ON a.id = ge.action_id
+		WHERE ge.session_id = ?
+		ORDER BY ge.id ASC`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("store.LoadGuardEventsForSessionWithMessageAnchor: query: %w", err)
+	}
+	defer rows.Close()
+	var out []GuardEventAnchoredRow
+	for rows.Next() {
+		var r GuardEventAnchoredRow
+		var enforced int
+		var actionID, apiTurnID, turnIndex sql.NullInt64
+		if err := rows.Scan(
+			&r.ID, &r.tsStored, &r.SessionID, &actionID, &apiTurnID,
+			&r.Tool, &r.EventKind, &r.RuleID,
+			&r.Category, &r.Severity, &r.Decision,
+			&r.DegradedFrom, &enforced, &r.Source,
+			&r.Reason, &r.TargetHash,
+			&r.TargetExcerpt, &r.TaintOrigin,
+			&r.ChainPrev, &r.ChainHash,
+			&r.MessageID, &turnIndex,
+		); err != nil {
+			return nil, fmt.Errorf("store.LoadGuardEventsForSessionWithMessageAnchor: scan: %w", err)
+		}
+		r.Enforced = enforced != 0
+		if actionID.Valid {
+			v := actionID.Int64
+			r.ActionID = &v
+		}
+		if apiTurnID.Valid {
+			v := apiTurnID.Int64
+			r.APITurnID = &v
+		}
+		if turnIndex.Valid {
+			v := turnIndex.Int64
+			r.TurnIndex = &v
+		}
+		r.TS = parseStamp(r.tsStored)
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.LoadGuardEventsForSessionWithMessageAnchor: rows: %w", err)
+	}
+	return out, nil
+}
+
 // LoadRecentGuardEvents returns up to limit guard events with ts >=
 // since, newest first. A zero since means no lower bound (the
 // timestamp() helper maps zero times to NOW, which would exclude

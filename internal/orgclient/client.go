@@ -1325,6 +1325,71 @@ func warnOnce(logger *slog.Logger, d *failureDeduper, err error, msg string, arg
 	logger.Warn(msg, fields...)
 }
 
+// benignRailFetchStates is the closed set of org policy-distribution
+// fetch-states that mean "the org deliberately isn't distributing this, or
+// this node isn't asking" — an EXPECTED steady state, never an error.
+//
+// The three policy rails that ride the push loop (budget, pricing, intel)
+// share their fetch-state string VALUES — orgcontract.BudgetFetch* (budgetposture.go),
+// orgcontract.PricingFetch* (pricingpolicy.go), and the IntelFetch* set in
+// intelrail.go all spell "channel_off", "disabled", etc. identically — so one
+// table classifies all three call sites (CLAUDE.md #5: a data table, not a
+// per-rail conditional). Each distinct value appears ONCE (a map literal can't
+// repeat a key), referenced through whichever rail's constant defines it.
+var benignRailFetchStates = map[string]bool{
+	// 409: the org published no [policy] signing key, so the rail cannot serve
+	// a trustworthy body. The documented, common opt-out state — not a failure.
+	orgcontract.BudgetFetchChannelOff: true, // "channel_off" (all three rails)
+	// [guard.budget].from_org / [intelligence].org_enrichment is off, so the
+	// node never made the request. It isn't asking; nothing is wrong.
+	orgcontract.BudgetFetchDisabled: true, // "disabled" (all three rails)
+	// 404 on the pricing/intel rails: the org server predates the rail. An
+	// opt-out by not-yet-deploying, not an error, and it clears nothing.
+	orgcontract.PricingFetchNotSupported: true, // "not_supported" (pricing, intel)
+	// 404 on the budget rail: the org authored no budget for this member — an
+	// explicit NONE, never a failure.
+	orgcontract.BudgetFetchNoBudget: true, // "no_budget" (budget)
+	// a VERIFIED empty pricing body: the org negotiated nothing and the fleet
+	// prices at seed. Deliberate, and produces no error anyway.
+	orgcontract.PricingFetchNoPricing: true, // "no_pricing" (pricing)
+	// no org enrolment on this node. Already excluded upstream by ErrNotEnrolled
+	// at every call site; listed so the predicate is total, never as a gap.
+	orgcontract.BudgetFetchNotEnrolled: true, // "not_enrolled" (all three rails)
+}
+
+// benignRailFetchState reports whether a policy-rail fetch-state is an expected
+// steady state rather than a genuine problem, so the push loop can log budget /
+// pricing / intel fetch failures in those states at Debug instead of a WARN per
+// rail per cycle forever (the d67768ce5 regression: flipping
+// [guard.budget].from_org on by default made every enrolled node poll rails a
+// legitimately-unconfigured org answers 409 channel_off on).
+//
+// Everything NOT in the benign set stays at WARN. Two exclusions are
+// deliberate. "unverified" is a signature-verification FAILURE (a served body
+// this node could not check — security-relevant) and "auth_failed" is a refused
+// credential; both are real. "unreachable" is a TRANSIENT network error, and it
+// was a judgment call to leave it at WARN: a persistently-unreachable org is
+// worth surfacing and self-resolves once the server returns, so a (deduped,
+// backstopped) WARN is the better tradeoff than silence.
+func benignRailFetchState(state string) bool {
+	return benignRailFetchStates[state]
+}
+
+// logRailFetchFailure logs a non-nil policy-rail fetch outcome at the right
+// level: Debug with debugMsg when the state is a benign steady state
+// (benignRailFetchState), Warn with warnMsg otherwise. It lives here rather
+// than inline at the three push-loop call sites so each site stays one
+// statement — the level split would otherwise grow PushLoop's branch count for
+// no behavioural reason. Callers still gate on err != nil (and exclude
+// ErrNotEnrolled / context.Canceled) before calling.
+func (c *Client) logRailFetchFailure(state, debugMsg, warnMsg string, err error) {
+	if benignRailFetchState(state) {
+		c.logger.Debug(debugMsg, "state", state, "err", err)
+		return
+	}
+	c.logger.Warn(warnMsg, "state", state, "err", err)
+}
+
 // httpStatusError carries an HTTP status code separately from the
 // (often server-controlled, and frequently variable — a request id, a
 // timestamp) response body text, so normalizeFailureKey can key on the
@@ -1532,7 +1597,9 @@ func (c *Client) pushCycle(ctx context.Context, state *pushCycleState) error {
 	// node. Every failure is FAIL-OPEN: the node keeps its cached results.
 	intelOutcome, ierr := c.FetchIntelResults(ctx)
 	if ierr != nil && !errors.Is(ierr, ErrNotEnrolled) && !errors.Is(ierr, context.Canceled) {
-		c.logger.Warn("org intelligence results fetch failed", "state", intelOutcome.State, "err", ierr)
+		c.logRailFetchFailure(intelOutcome.State,
+			"org intelligence distribution channel off or not offered",
+			"org intelligence results fetch failed", ierr)
 	}
 	// Rail R3 of the dashboard-announcements plan (§4) rides the
 	// SAME cycle for the same reason: no new timer, no new host, no
@@ -1609,11 +1676,15 @@ func (c *Client) refreshBudgetRails(ctx context.Context) {
 		c.budgetSink(budgetOutcome)
 	}
 	if berr != nil && !errors.Is(berr, ErrNotEnrolled) && !errors.Is(berr, context.Canceled) {
-		c.logger.Warn("org budget policy fetch failed", "state", budgetOutcome.State, "err", berr)
+		c.logRailFetchFailure(budgetOutcome.State,
+			"org budget distribution channel off or not offered",
+			"org budget policy fetch failed", berr)
 	}
 	pricingOutcome, prerr := c.FetchPricingPolicy(ctx)
 	if prerr != nil && !errors.Is(prerr, ErrNotEnrolled) && !errors.Is(prerr, context.Canceled) {
-		c.logger.Warn("org pricing policy fetch failed", "state", pricingOutcome.State, "err", prerr)
+		c.logRailFetchFailure(pricingOutcome.State,
+			"org pricing distribution channel off or not offered",
+			"org pricing policy fetch failed", prerr)
 	}
 }
 

@@ -191,7 +191,11 @@ func runPricingSync(ctx context.Context, st *store.Store, enrolled bool, opts pr
 		}, nil
 	}
 
-	if err := st.SavePricingFeed(ctx, env, pricingSyncVerified); err != nil {
+	// Persist the VERBATIM verified bytes (res.Raw), not a typed re-marshal of
+	// env: a re-marshal drops any row field this build does not model, and the
+	// reloaded feed would then fail pricingfeed.Verify on the next start and
+	// revert the whole table to seed (N1 / P2-0).
+	if err := st.SavePricingFeedRaw(ctx, env, res.Raw, pricingSyncVerified); err != nil {
 		return pricingSyncResult{}, fmt.Errorf("observer pricing sync: persist verified feed: %w", err)
 	}
 	return pricingSyncResult{

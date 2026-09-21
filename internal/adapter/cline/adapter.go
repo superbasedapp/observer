@@ -239,6 +239,26 @@ type rawContentBlock struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
 	IsError   bool            `json:"is_error"`
+	// Source is the image envelope ({type:"base64", media_type, data}).
+	// Only media_type is read (Issue 1 user-attachment capture); the
+	// base64 `data` is never decoded or stored.
+	Source json.RawMessage `json:"source"`
+}
+
+// imageMediaType reads the media_type off an image block's source
+// envelope ("image/png"), or "" when absent. Reads ONLY the media type,
+// never the base64 data.
+func (b rawContentBlock) imageMediaType() string {
+	if len(b.Source) == 0 {
+		return ""
+	}
+	var src struct {
+		MediaType string `json:"media_type"`
+	}
+	if err := json.Unmarshal(b.Source, &src); err == nil {
+		return src.MediaType
+	}
+	return ""
 }
 
 // ParseSessionFile implements adapter.Adapter.
@@ -283,6 +303,15 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	taskModel := ""
 	if haveMeta {
 		taskModel = latestModelID(meta)
+		// Issue 2: captured Cline agent version. first-wins-unless-empty
+		// + bounded-token validation in the store make a re-stamp or a
+		// malformed value harmless.
+		if ver := latestClineVersion(meta); ver != "" {
+			res.SessionToolVersions = append(res.SessionToolVersions, models.SessionToolVersion{
+				SessionID: sessionID,
+				Version:   ver,
+			})
+		}
 	}
 
 	for i := range msgs {
@@ -382,7 +411,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 				// user turns carry no <task> text, so extractUserPrompt
 				// skips them) — observability-only, no image bytes stored.
 				// The image's token cost lands on the per-message TokenEvent.
-				res.ToolEvents = append(res.ToolEvents, a.imageEvent(path, toolID, sessionID, projectRoot, gitBranch, gitRemote, model, ts, i, blockIdx))
+				res.ToolEvents = append(res.ToolEvents, a.imageEvent(path, toolID, sessionID, projectRoot, gitBranch, gitRemote, model, ts, i, blockIdx, block.imageMediaType()))
 			}
 		}
 	}
@@ -504,6 +533,7 @@ func (a *Adapter) imageEvent(
 	sourceFile, toolID, sessionID, projectRoot, gitBranch, gitRemote, model string,
 	ts time.Time,
 	msgIdx, blockIdx int,
+	mediaType string,
 ) models.ToolEvent {
 	const marker = "[image attachment]"
 	return models.ToolEvent{
@@ -518,9 +548,13 @@ func (a *Adapter) imageEvent(
 		Tool:          toolID,
 		ActionType:    models.ActionUserPrompt,
 		Target:        marker,
-		Success:       true,
-		RawToolName:   toolID + ".image",
-		MessageID:     fmt.Sprintf("%s:image:%s:%d:%d", toolID, sessionID, msgIdx, blockIdx),
+		// Structured user-attachment metadata (Issue 1) alongside the
+		// back-compat text marker. Metadata only — kind + optional
+		// media_type, never a filename or bytes.
+		UserAttachments: []models.UserAttachment{{Kind: "image", MediaType: mediaType}},
+		Success:         true,
+		RawToolName:     toolID + ".image",
+		MessageID:       fmt.Sprintf("%s:image:%s:%d:%d", toolID, sessionID, msgIdx, blockIdx),
 	}
 }
 

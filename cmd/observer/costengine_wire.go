@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
@@ -301,7 +302,44 @@ func orgPriceRowsOf(rows []orgcontract.PricingPolicyRow) []cost.OrgPrice {
 				*f.dst, *f.set = *f.src, true
 			}
 		}
+		p.Peak = peakRatesToCost(r.Peak)
 		out = append(out, p)
+	}
+	return out
+}
+
+// peakRatesToCost translates the wire's peak variant into the node engine's
+// own vocabulary (a plain field copy, mirroring orgPriceRowsOf's own rule —
+// the two shapes are deliberately identical, see orgcontract.RateSet's doc).
+// nil in, nil out: a wire row that carries no Peak field composes no peak at
+// all, which is what lets [cost.OrgPrice]'s overlay wholesale-replace a
+// seed's peak variant with "no peak" for a model the org negotiated flat.
+func peakRatesToCost(pr *orgcontract.PeakRates) *cost.PeakRates {
+	if pr == nil {
+		return nil
+	}
+	out := &cost.PeakRates{
+		RateSet: cost.RateSet{
+			Input:           pr.Input,
+			Output:          pr.Output,
+			CacheRead:       pr.CacheRead,
+			CacheCreation:   pr.CacheCreation,
+			CacheCreation1h: pr.CacheCreation1h,
+
+			LongContextThreshold:       pr.LongContextThreshold,
+			LongContextInput:           pr.LongContextInput,
+			LongContextOutput:          pr.LongContextOutput,
+			LongContextCacheRead:       pr.LongContextCacheRead,
+			LongContextCacheCreation:   pr.LongContextCacheCreation,
+			LongContextCacheCreation1h: pr.LongContextCacheCreation1h,
+		},
+	}
+	for _, w := range pr.Schedule.Windows {
+		out.Schedule.Windows = append(out.Schedule.Windows, cost.PeakWindow{
+			Days:     append([]time.Weekday(nil), w.Days...),
+			StartUTC: w.StartUTC,
+			EndUTC:   w.EndUTC,
+		})
 	}
 	return out
 }

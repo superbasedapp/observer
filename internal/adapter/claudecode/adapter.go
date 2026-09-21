@@ -217,6 +217,13 @@ type rawLine struct {
 	// — see docs/plans/ide-surface-capture-remediation-plan-2026-09-02.md
 	// §0/§3 (Part E).
 	Entrypoint string `json:"entrypoint"`
+	// Version is the Claude Code CLI version stamped at the head of the
+	// transcript (semver, e.g. "1.0.40"). Captured node-local for Issue 2
+	// (migration 125) and emitted as a models.SessionToolVersion —
+	// first-wins handles the head-of-transcript stamp. Observer's own
+	// test fixtures strip it; it is proven present by the qoder adapter,
+	// which decodes the same field from the identical Claude-Code JSONL.
+	Version string `json:"version"`
 }
 
 type rawMessage struct {
@@ -297,6 +304,11 @@ type rawContentBlock struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
 	IsError   bool            `json:"is_error"`
+	// Source is the attachment envelope on an `image` / `document` content
+	// block ({"type":"base64","media_type":"image/png","data":...}). Only
+	// the media_type is read (Issue 1 user-attachment capture) — the
+	// base64 `data` is NEVER decoded or stored. Empty for text/tool blocks.
+	Source json.RawMessage `json:"source"`
 }
 
 type rawUsage struct {
@@ -394,6 +406,11 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	// own first entrypoint-bearing line — harmless, the store write is
 	// first-wins-unless-empty (models.SessionSurface doc).
 	surfaceStamped := false
+	// versionStamped gates Issue 2 tool-version capture the same way:
+	// stamp at most once per ParseSessionFile call, from the first line
+	// carrying a non-empty `version` + sessionId. first-wins-unless-empty
+	// makes a later chunk's re-stamp harmless.
+	versionStamped := false
 	// Per-file dedup for noisy state-assertion lines:
 	//   • agent-name re-emits the same persona name per assistant turn
 	//   • permission-mode re-emits the same mode per user prompt
@@ -544,6 +561,18 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 					})
 				}
 				surfaceStamped = true
+			}
+
+			// Issue 2: captured Claude Code CLI version from the
+			// transcript's top-level `version`. Stamp once per parse; the
+			// store write is first-wins-unless-empty + bounded-token
+			// validated, so a re-stamp or absent field is harmless.
+			if !versionStamped && line.Version != "" && line.SessionID != "" {
+				res.SessionToolVersions = append(res.SessionToolVersions, models.SessionToolVersion{
+					SessionID: line.SessionID,
+					Version:   line.Version,
+				})
+				versionStamped = true
 			}
 
 			// compact_boundary — `system / compact_boundary` lines carry
@@ -836,8 +865,23 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			// model) don't trigger this — their content is tool_result blocks,
 			// not text — so the existing block loop below handles them
 			// unchanged.
-			if msg.Role == "user" {
-				if text := userPromptText(blocks); text != "" {
+			// A user turn is either a role=user message OR a
+			// type:"attachment" line (Claude Code injects @-mentioned /
+			// dragged file bodies as their own user-side line — R1).
+			if msg.Role == "user" || line.Type == "attachment" {
+				// User-attachment capture (Issue 1): the image/document
+				// blocks the user attached, plus a synthetic "file" for a
+				// type:"attachment" line. Metadata only (kind + optional
+				// media_type) — never a filename or bytes.
+				atts := collectUserAttachments(blocks)
+				if line.Type == "attachment" {
+					atts = append(atts, models.UserAttachment{Kind: "file"})
+				}
+				text := userPromptText(blocks)
+				// Emit the user_prompt row when there is prompt text OR the
+				// turn carried attachments — an image-only user turn used to
+				// produce no row at all (Issue 1 fix).
+				if text != "" || len(atts) > 0 {
 					truncated := text
 					if len(truncated) > 200 {
 						truncated = truncated[:200]
@@ -859,6 +903,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 						RawToolInput:       a.scrubber.String(text),
 						IsSidechain:        line.IsSidechain,
 						MessageID:          "user:" + line.UUID,
+						UserAttachments:    atts,
 					})
 				}
 			}
@@ -1756,6 +1801,41 @@ func userPromptText(blocks []rawContentBlock) string {
 		b.WriteString(t)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// collectUserAttachments scans a user turn's content blocks for the
+// files/images the user attached (Issue 1). It records PRESENCE + KIND
+// (+ optional MediaType) only — an `image` block becomes kind "image",
+// a `document` block kind "file" — and NEVER reads the base64 `data` or
+// any filename. Returns nil when the turn carried no attachment blocks.
+func collectUserAttachments(blocks []rawContentBlock) []models.UserAttachment {
+	var atts []models.UserAttachment
+	for _, block := range blocks {
+		switch block.Type {
+		case "image":
+			atts = append(atts, models.UserAttachment{Kind: "image", MediaType: attachmentMediaType(block)})
+		case "document":
+			atts = append(atts, models.UserAttachment{Kind: "file", MediaType: attachmentMediaType(block)})
+		}
+	}
+	return atts
+}
+
+// attachmentMediaType pulls the IANA media_type off an attachment
+// block's `source` envelope ("image/png", "application/pdf"), or the
+// block's own top-level media_type as a fallback. Returns "" when the
+// source exposes no type. It decodes ONLY the media_type field — never
+// the base64 `data`.
+func attachmentMediaType(block rawContentBlock) string {
+	if len(block.Source) > 0 {
+		var src struct {
+			MediaType string `json:"media_type"`
+		}
+		if err := json.Unmarshal(block.Source, &src); err == nil && src.MediaType != "" {
+			return src.MediaType
+		}
+	}
+	return ""
 }
 
 // appendCapped appends v to xs, keeping at most n elements (oldest dropped).

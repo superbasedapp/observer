@@ -117,7 +117,7 @@ type Notifier interface {
 // policy-change log. The caller (cmd composition) persists these via
 // store.RecordGuardPolicyState — guard does not import store.
 type PolicyState struct {
-	// Layer is "user", "project" or "org".
+	// Layer is "user", "project", "trusted_project" or "org".
 	Layer string
 	// Path is the source file location (the bundle cache path for the
 	// org layer).
@@ -421,7 +421,7 @@ func New(opts Options) (*Guard, error) {
 		}
 	}
 
-	base, err := g.buildEngine(mode, orgLayer, userLayer, nil)
+	base, err := g.buildEngine(mode, orgLayer, userLayer, nil, nil)
 	if err != nil {
 		// A layer that breaks ENGINE construction (e.g. an override
 		// on an unknown rule) degrades the same way a parse failure
@@ -433,14 +433,14 @@ func New(opts Options) (*Guard, error) {
 		firstErr := err
 		built := false
 		if orgLayer != nil {
-			if b, e := g.buildEngine(mode, nil, userLayer, nil); e == nil {
+			if b, e := g.buildEngine(mode, nil, userLayer, nil, nil); e == nil {
 				g.issues = append(g.issues, fmt.Sprintf("org policy layer dropped: %v", firstErr))
 				orgLayer, base, built = nil, b, true
 				states = dropLayerState(states, layerOrg)
 			}
 		}
 		if !built && userLayer != nil {
-			if b, e := g.buildEngine(mode, orgLayer, nil, nil); e == nil {
+			if b, e := g.buildEngine(mode, orgLayer, nil, nil, nil); e == nil {
 				g.issues = append(g.issues, fmt.Sprintf("user policy layer dropped: %v", firstErr))
 				userLayer, base, built = nil, b, true
 				states = dropLayerState(states, layerUser)
@@ -451,7 +451,7 @@ func New(opts Options) (*Guard, error) {
 				g.issues = append(g.issues, fmt.Sprintf("org+user policy layers dropped: %v", firstErr))
 			}
 			orgLayer, userLayer, states = nil, nil, nil
-			b, e := g.buildEngine(mode, nil, nil, nil)
+			b, e := g.buildEngine(mode, nil, nil, nil, nil)
 			if e != nil {
 				return nil, fmt.Errorf("guard.New: built-in engine: %w", e)
 			}
@@ -486,8 +486,8 @@ func modeOrDefault(s string) string {
 // fields) so New, ReloadOrgLayer, and the per-snapshot project-engine
 // build all funnel through this one seam against an explicit layer set
 // (B3 — no hidden read of mutable guard state).
-func (g *Guard) buildEngine(mode policy.Mode, org, user, project *policyFile) (*policy.Engine, error) {
-	extra, overrides, mergeIssues := mergeLayers(org, user, project)
+func (g *Guard) buildEngine(mode policy.Mode, org, user, project, trusted *policyFile) (*policy.Engine, error) {
+	extra, overrides, layerDisable, mergeIssues := mergeLayers(org, user, project, trusted)
 	g.recordIssues(mergeIssues)
 	// The EFFECTIVE budget, not g.cfg.Budget: an org-composed ceiling applied
 	// through ApplyOrgBudget must survive every later engine rebuild (project
@@ -509,9 +509,13 @@ func (g *Guard) buildEngine(mode policy.Mode, org, user, project *policyFile) (*
 		AllowPaths:        g.cfg.Boundary.AllowPaths,
 		ProtectedBranches: g.cfg.Boundary.ProtectedBranches,
 		KnownProjectRoots: g.roots,
-		Disabled:          g.cfg.Rules.Disable,
-		ExtraRules:        extra,
-		Overrides:         appendOverrides(overrides, budgetSoft),
+		// Config-level disables ([guard.rules] disable) unioned with the
+		// trusted per-project layer's `disable` list (empty on New /
+		// ReloadOrgLayer, where trusted is nil — byte-identical to the
+		// pre-arc Disabled: g.cfg.Rules.Disable).
+		Disabled:   unionDisable(g.cfg.Rules.Disable, layerDisable),
+		ExtraRules: extra,
+		Overrides:  appendOverrides(overrides, budgetSoft),
 		// [guard.budget] (§12.1): thresholds for the B-601..B-604 $ rows;
 		// hard upgrades their enforce-mode decision to deny. The
 		// [guard.budget.window] utilization thresholds feed the
@@ -755,6 +759,60 @@ func ProjectPolicyPath(cfg config.GuardConfig, projectRoot string) string {
 		return ""
 	}
 	return filepath.Join(projectRoot, filepath.FromSlash(cfg.Rules.ProjectPolicy))
+}
+
+// TrustedProjectPolicyPath resolves the daemon-local trusted per-project
+// policy file for a project root: <trusted_project_dir>/<sha256(canonical
+// root)>.toml, with [guard.rules] trusted_project_dir's leading "~"
+// expanded against home. The root is canonicalized (filepath.Clean +
+// filepath.ToSlash) BEFORE hashing so a given LOGICAL root hashes
+// identically across OSes — this is the ONE resolver both the loader
+// (engineset.buildProjectEngine) and the dashboard writer call, so the
+// load side and the write side always agree on the path. Empty when the
+// root is empty or trusted_project_dir is unconfigured (the trusted layer
+// disabled).
+//
+// The filename uses the FULL 64-hex-char digest, not a prefix: a truncated
+// hash needlessly narrows the collision margin between distinct roots for
+// no benefit. The feature is unreleased (no trusted files exist anywhere),
+// so this needs no migration or back-compat shim.
+func TrustedProjectPolicyPath(cfg config.GuardConfig, home, projectRoot string) string {
+	if projectRoot == "" {
+		return ""
+	}
+	dir := expandUserPath(cfg.Rules.TrustedProjectDir, home)
+	if dir == "" {
+		return ""
+	}
+	canonical := filepath.ToSlash(filepath.Clean(projectRoot))
+	sum := sha256hex([]byte(canonical))
+	return filepath.Join(dir, sum+".toml")
+}
+
+// unionDisable returns base ∪ extra (config-level disables unioned with a
+// layer's `disable` list), order-preserving and deduplicated. When extra
+// is empty it returns base unchanged (nil-safe), keeping every New /
+// ReloadOrgLayer build byte-identical to the pre-arc single-source
+// Config.Disabled.
+func unionDisable(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]bool, len(base)+len(extra))
+	out := make([]string, 0, len(base)+len(extra))
+	for _, id := range base {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	for _, id := range extra {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // OrgBundlePath resolves the configured [guard.rules] org_bundle

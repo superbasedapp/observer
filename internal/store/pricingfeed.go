@@ -73,7 +73,30 @@ type PricingFeedCache struct {
 // key set before calling — this seam performs no verification, it only durably
 // records what the ladder already accepted.
 func (s *Store) SavePricingFeed(ctx context.Context, env pricingfeed.Envelope, state string) error {
-	blob, err := json.Marshal(env)
+	return s.SavePricingFeedRaw(ctx, env, nil, state)
+}
+
+// SavePricingFeedRaw persists one VERIFIED feed envelope, storing rawEnvelope
+// VERBATIM as body_json when it is supplied.
+//
+// rawEnvelope is the exact bytes the fetch path decoded and verified (the HTTP
+// response body). Persisting them unchanged is what makes graceful degradation
+// true across a restart: LoadPricingFeed decodes body_json back into an
+// Envelope, and Envelope.UnmarshalJSON repopulates its unexported rawRows from
+// whatever bytes were stored. Keeping the received bytes means a row field this
+// build does not model (a future addition) rides through into rawRows, so
+// pricingfeed.Verify digests/signs over the same bytes the publisher did rather
+// than a typed re-marshal that dropped the unknown field and tripped
+// ErrDigestMismatch — the whole-table revert to seed the N1 finding named
+// (docs/plans/peak-off-peak-phase2-3-implementation-plan-2026-09-21.md §R2).
+//
+// A nil (or invalid) rawEnvelope falls back to a typed marshal of env, which is
+// lossless for the fields this build knows and correct for programmatic callers
+// that have no wire bytes to preserve. The version/key_id/digest columns are
+// always taken from the typed env (which was decoded from those same bytes), so
+// the provenance columns never disagree with the stored body.
+func (s *Store) SavePricingFeedRaw(ctx context.Context, env pricingfeed.Envelope, rawEnvelope []byte, state string) error {
+	blob, err := pricingFeedBodyBytes(env, rawEnvelope)
 	if err != nil {
 		return fmt.Errorf("store.SavePricingFeed: marshal: %w", err)
 	}
@@ -87,6 +110,19 @@ UPDATE pricing_feed_cache
 		return fmt.Errorf("store.SavePricingFeed: %w", err)
 	}
 	return nil
+}
+
+// pricingFeedBodyBytes chooses the bytes stored in body_json. The verbatim
+// received envelope is used when supplied and valid (preserving a field this
+// build does not model); otherwise a typed marshal of env is used, which is
+// lossless for the fields it knows. Invalid raw bytes are ignored rather than
+// trusted — marshalling an invalid json.RawMessage would fail the whole save,
+// and the typed fallback is the honest degrade.
+func pricingFeedBodyBytes(env pricingfeed.Envelope, rawEnvelope []byte) ([]byte, error) {
+	if len(rawEnvelope) > 0 && json.Valid(rawEnvelope) {
+		return rawEnvelope, nil
+	}
+	return json.Marshal(env)
 }
 
 // LoadPricingFeed reads the stored feed envelope.

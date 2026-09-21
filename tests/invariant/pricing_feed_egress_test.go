@@ -11,12 +11,16 @@ import (
 // pricing feed's NETWORK LANE (internal/pricingfeed/client), the sibling of
 // cloud_egress_test.go's TestCloudClientIsolatedToConsentGateway.
 //
-// The posture (plan §C.3 / §F / D3): an individual node makes NO network call
-// for prices by default. The one opt-in outbound path is reachable only through
-// internal/pricingfeedgate (the seam cmd/observer composes); the always-on
-// daemon packages and the org push loop must never even LINK the network lane.
-// Proving that structurally — a package that cannot import the lane cannot
-// egress through it — is stronger than any runtime assertion.
+// The posture (plan §C.3 / §F; D3 SUPERSEDED 2026-09-20): the standalone-node
+// feed is now ON by default, so an individual node DOES fetch prices unless the
+// operator opts out (`[pricing.feed] enabled = false`). What this test still
+// pins is the STRUCTURAL egress isolation, which is unchanged by that flip: the
+// one outbound path is reachable only through internal/pricingfeedgate (the seam
+// cmd/observer composes, driven by the manual CLI + the opt-in autosync
+// tickers); the always-on daemon packages and the org push loop must never even
+// LINK the network lane. Proving that structurally — a package that cannot
+// import the lane cannot egress through it — is stronger than any runtime
+// assertion, and holds regardless of the default-enabled flag.
 //
 // NOTE the PARENT package internal/pricingfeed (the pure contract + verify +
 // canonical body + vendor key) is deliberately NOT isolated: it is imported

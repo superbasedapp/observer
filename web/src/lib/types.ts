@@ -347,6 +347,10 @@ export type SessionRow = {
   // SurfaceBadge, which draws nothing for an absent pair; never default.
   surface?: string;
   surface_host?: string;
+  // Captured tool/CLI version (node migration 125): free-form semver an
+  // adapter read from disk. omitempty — ABSENT MEANS UNSTAMPED, never
+  // fabricated.
+  tool_version?: string;
 };
 
 export type SessionsResponse = {
@@ -901,6 +905,10 @@ export type SessionDetail = {
   // must never be rendered as "cli" (see the shared SurfaceBadge).
   surface?: string;
   surface_host?: string;
+  // Captured tool/CLI version (migration 125, NODE-LOCAL): the free-form
+  // semver an adapter read from disk. OMITTED when unstamped — absence
+  // means UNKNOWN, never a fabricated version.
+  tool_version?: string;
   // Resume-capability block (session-attach design Phase 3): how a CLOSED
   // session on this tool can be reopened, derived server-side by capability
   // shape. Always present.
@@ -1964,6 +1972,20 @@ export type MessageRow = {
   // carries the 2x FastMultiplier premium. Renders a FAST badge.
   fast?: boolean;
   tool_calls: ToolCallRow[];
+  // attachments records the files/images/audio the USER attached to this
+  // prompt turn (Issue 1, migration 126). PRESENCE + KIND (+ optional
+  // media_type) only — never a filename or bytes. Absent/empty on non-user
+  // turns and on adapters that don't capture attachments; the Att column
+  // renders "-" in that case.
+  attachments?: MessageAttachment[];
+};
+
+// MessageAttachment is one user-attachment's metadata: a coarse kind
+// (image | file | audio) and an optional IANA media_type. No filename and
+// no bytes, by construction (Issue 1 privacy rule).
+export type MessageAttachment = {
+  kind: string;
+  media_type?: string;
 };
 
 // NOTE: envelope key is `messages` (not `rows`) — different from
@@ -1975,6 +1997,53 @@ export type SessionMessages = {
   total: number;
   limit: number;
   offset?: number;
+};
+
+// ---------- /api/session/<id>/guard ----------
+// One row per hook policy verdict recorded for this session
+// (store.LoadGuardEventsForSessionWithMessageAnchor — unbounded time
+// window; guard verdicts are low-volume by design, allow verdicts never
+// persist). Mirrors the dashboard's guardEventJSON
+// (internal/intelligence/dashboard/guard.go). DEFAULT-FILTERED server-side
+// to BLOCKS — enforced OR decision deny/ask — TOOL-CALL AND PROMPT-GUARD
+// VERDICTS ALIKE (operator decision 2026-09-21, superseding the prior
+// design which excluded prompt-guard rows entirely). The Messages tab's
+// GuardVerdictsStrip (MessagesTab.tsx) renders a distinct "prompt guard"
+// label for rows where event_kind=="user_prompt" or rule_id is R-172
+// (secrets) / R-190 (PII); everything else renders as a tool-call verdict.
+// Informational flag/unenforced rows stay dropped by default. Pass
+// ?include_flags=1 for the full unfiltered history. Feeds the Messages
+// tab's inline guard interleave via @shared/lib/guardMessages: message_id
+// is resolved SERVER-SIDE from action_id via a LEFT JOIN onto actions
+// (~99% of tool-call rows resolve one; prompt-guard rows have no action_id
+// and fall back to nearest-timestamp placement) and is the exact anchor
+// that function matches against a rendered MessageRow's own message_id.
+// `ts` is full RFC3339Nano precision, load-bearing for that same-second
+// fallback order.
+export type SessionGuardEvent = {
+  id: number;
+  ts: string;
+  action_id?: number;
+  api_turn_id?: number;
+  message_id?: string;
+  turn_index?: number;
+  tool?: string;
+  event_kind?: string;
+  rule_id: string;
+  category?: string;
+  severity?: string;
+  decision?: string;
+  degraded_from?: string;
+  enforced: boolean;
+  source?: string;
+  reason?: string;
+  target_excerpt?: string;
+  taint_origin?: string;
+};
+
+export type SessionGuardEventsResponse = {
+  events: SessionGuardEvent[] | null;
+  count: number;
 };
 
 // ---------- /api/session/<id>/raw-events ----------
@@ -2610,6 +2679,44 @@ export type CostPricing = {
   long_context_cache_creation?: number;
   long_context_cache_creation_1h?: number;
   web_search_per_request?: number;
+  // peak is the model's peak/off-peak variant (`cost.Pricing.Peak`),
+  // absent for the vast majority of models. When present the base
+  // rates above are the OFF-PEAK rates and `peak` carries the
+  // expensive-window rate set plus the schedule that selects it. See
+  // internal/intelligence/cost/peak.go.
+  peak?: PeakRates;
+};
+
+// PeakWindow mirrors `cost.PeakWindow` — one recurring UTC time window.
+// `days` is 0=Sun..6=Sat (Go's time.Weekday numbering); `start_utc` /
+// `end_utc` are "HH:MM" 24h, half-open [start, end).
+export type PeakWindow = {
+  days: number[];
+  start_utc: string;
+  end_utc: string;
+};
+
+// PeakSchedule mirrors `cost.PeakSchedule` — an ordered set of windows.
+export type PeakSchedule = {
+  windows: PeakWindow[];
+};
+
+// PeakRates mirrors `cost.PeakRates` — Go embeds `RateSet` anonymously
+// so its fields flatten into this object alongside `schedule`, rather
+// than nesting under a `rate_set` key.
+export type PeakRates = {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_creation: number;
+  cache_creation_1h: number;
+  long_context_threshold?: number;
+  long_context_input?: number;
+  long_context_output?: number;
+  long_context_cache_read?: number;
+  long_context_cache_creation?: number;
+  long_context_cache_creation_1h?: number;
+  schedule: PeakSchedule;
 };
 
 // DatedCostPricing is one rate period in a model's historical rate
@@ -3511,6 +3618,120 @@ export type UpdateOrgRefusal = {
 // `enabled: false` means [update].enabled is off on this node. Every other
 // field is then empty, and the surface must say the feature is OFF rather than
 // implying the node is up to date.
+// ---------- /api/guard/rules + /api/guard/policy (+ /policy/project) ----------
+// Guard rule management from the UI
+// (docs/plans/guard-rule-management-ui-plan-2026-09-21.md §5/§6 Track B).
+// Canonical wire shapes for the Security page's structured rule manager
+// (RuleManager.tsx) AND the pre-existing raw-TOML PolicyLayersCard, which
+// both read the same two endpoints — defined once here rather than forked
+// per component.
+
+// GuardRule is one /api/guard/rules catalog row — the rule's definition
+// (doc) and remediation hint (advice). Multi-row IDs (e.g. R-152's write +
+// read rows) arrive once per row. `source`/`enforced` are effective-view
+// extras (?effective=1): which policy layer defined the rule (builtin |
+// user | project | trusted_project | org) and whether it's per-rule
+// enforced even in observe mode.
+export type GuardRule = {
+  id: string;
+  category?: string;
+  severity?: string;
+  observe?: string;
+  enforce?: string;
+  doc: string;
+  advice?: string;
+  source?: string;
+  enforced?: boolean;
+};
+
+export type GuardRulesResponse = { rules: GuardRule[] | null };
+
+// GuardPolicyLayerKind names every row `layer` can carry in
+// GuardPolicyView.layers. "trusted_project" (§3) is the NEW daemon-local
+// per-project layer the dashboard writes directly — editable like "user",
+// unlike the read-only in-repo "project" layer.
+export type GuardPolicyLayerKind = "builtin" | "user" | "project" | "trusted_project" | "org" | string;
+
+// GuardPolicyLayer is one /api/guard/policy layers row. `counts_known` is
+// false for the org bundle — a signed JSON envelope we don't structurally
+// count rather than showing a misleading zero. `content` is present ONLY
+// for a row the UI can write back (the trusted_project row carries its
+// current file text so the editor can open it without a second round trip;
+// the user row's content instead lives in `GuardPolicyView.user.content` for
+// historical reasons — both are editable, this is the newer row's shape).
+export type GuardPolicyLayer = {
+  layer: GuardPolicyLayerKind;
+  path: string;
+  exists: boolean;
+  editable: boolean;
+  version?: string;
+  content_hash?: string;
+  counts_known: boolean;
+  rules: number;
+  overrides: number;
+  // Top-level `disable = [...]` count — only ever non-zero on a
+  // trusted_project row (disable is a load-time error on every other
+  // layer's file grammar).
+  disabled?: number;
+  problems?: string[] | null;
+  project_root?: string;
+  content?: string;
+};
+
+export type GuardPolicyUserLayer = {
+  path: string;
+  exists: boolean;
+  content: string;
+  writable: boolean;
+  backup_exists: boolean;
+  backup_path: string;
+};
+
+export type GuardPolicyView = {
+  layers: GuardPolicyLayer[] | null;
+  load_issues: string[] | null;
+  user: GuardPolicyUserLayer;
+  project_policy_relpath: string;
+};
+
+export type GuardPolicyLint = {
+  ok: boolean;
+  problems: string[] | null;
+  rules: number;
+  overrides: number;
+  disabled?: number;
+};
+
+// GuardPolicyLintRequest is POST /api/guard/policy/lint's body. `layer` is
+// "user" for the global layer (existing) or "trusted_project" for the new
+// per-project layer (§4) — the trusted-project lint mode allows the
+// `disable` key and weakening overrides, still checked against the org
+// floor.
+export type GuardPolicyLintRequest = { content: string; layer: "user" | "trusted_project" };
+
+// GuardPolicyProjectSaveRequest/Response are PUT /api/guard/policy/project
+// (§5, NEW) — writes the trusted daemon-local per-project layer. 422 on lint
+// problems leaves the file untouched.
+export type GuardPolicyProjectSaveRequest = { project_root: string; content: string };
+
+export type GuardPolicyProjectSaveResponse = {
+  saved: boolean;
+  path?: string;
+  backup_path?: string;
+  rules?: number;
+  overrides?: number;
+  disabled?: number;
+  restart_required: boolean;
+  project_root: string;
+};
+
+// GuardPolicyBackupParams is POST /api/guard/policy/backup's QUERY STRING
+// (not a JSON body — internal/intelligence/dashboard/guardpolicy.go reads
+// r.URL.Query()). Omit both to swap-undo the user layer (existing
+// behaviour, unchanged); pass both to swap-undo a trusted-project layer's
+// file. Shaped for fetchJSON's `params` argument.
+export type GuardPolicyBackupParams = { layer?: "trusted_project"; project_root?: string };
+
 export type UpdateStatusResponse = {
   enabled: boolean;
   version?: string;

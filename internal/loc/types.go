@@ -20,6 +20,16 @@ package loc
 // Stats, but it does change input_digest, so the rows must be rewritten
 // for the read-side collapse to take effect on an existing corpus —
 // which is the other reason this bump is required and not cosmetic.
+//
+// NOTE (2026-09-21, sub-agent LOC split): the sub-agent LOC split is a
+// PURE READ-TIME fold — a parent session's card treats its sub-agent
+// children's rows as sidechain at read time (internal/store/locread.go),
+// leaving each child's stored file_changes.sidechain HONEST for the
+// child's own card. Nothing about loc.Extract's stored output changed, so
+// this constant is deliberately NOT bumped. Populating file_changes for a
+// sparsely-covered corpus (so any sidechain split has rows to fold) is an
+// operational `observer backfill --loc`, run daemon-quiesced by the
+// operator — not a classifier-version re-count.
 const Version = 2
 
 // Category is the coarse bucket a path falls into. Only CategoryCode

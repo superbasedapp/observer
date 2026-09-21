@@ -1092,6 +1092,7 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// guard policy PUT WRITES the guard policy → whole-route Local. policy/backup
 	// writes a backup to disk → Local.
 	reg("/api/guard/policy", L, secPolicies, s.handleGuardPolicy)
+	reg("/api/guard/policy/project", L, secPolicies, s.handleGuardProjectPolicy)
 	reg("/api/guard/policy/lint", V, secPolicies, s.handleGuardPolicyLint)
 	reg("/api/guard/policy/backup", L, secPolicies, s.handleGuardPolicyBackup)
 	reg("/api/guard/evidence", L, secSecurity, s.handleGuardEvidence)
@@ -2335,7 +2336,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		        -- Capture surface (migration 107): plain columns on the row,
 		        -- read in the same pass as the rest — no per-row
 		        -- store.LoadSessionSurface round trip. '' = unstamped.
-		        COALESCE(s.surface, ''), COALESCE(s.surface_host, '')
+		        COALESCE(s.surface, ''), COALESCE(s.surface_host, ''),
+		        -- Captured tool/CLI version (migration 125): same plain-column
+		        -- read; '' = unstamped (honest unknown, never fabricated).
+		        COALESCE(s.tool_version, '')
 		 FROM sessions s
 		 LEFT JOIN projects p ON p.id = s.project_id
 		 `+whereClause+` `+orderAndLimit, dataArgs...)
@@ -2472,6 +2476,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		// cannot disagree about one session.
 		Surface     string `json:"surface,omitempty"`
 		SurfaceHost string `json:"surface_host,omitempty"`
+		// ToolVersion is the captured tool/CLI version (migration 125,
+		// NODE-LOCAL). omitempty + ABSENT MEANS UNSTAMPED — the list never
+		// fabricates a version. Same field the detail response exposes.
+		ToolVersion string `json:"tool_version,omitempty"`
 	}
 	var out []sessRow
 	for rows.Next() {
@@ -2483,7 +2491,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			&sr.TotalActions, &sr.SidechainActionCount,
 			&q, &er, &rr,
 			&rrWasteful, &stWasteful, &stNecessary,
-			&sr.Surface, &sr.SurfaceHost); err != nil {
+			&sr.Surface, &sr.SurfaceHost, &sr.ToolVersion); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -3424,6 +3432,15 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionSubagents(w, r, id)
 		return
 	}
+	// Sub-route: /api/session/<id>/guard → the session-scoped guard
+	// verdict feed (hook R-1xx deny/ask/flag events) the Messages tab
+	// interleaves into its timeline (sessionguard.go). Read-only, no new
+	// SQL — reuses store.LoadGuardEventsForSession.
+	if strings.HasSuffix(id, "/guard") {
+		id = strings.TrimSuffix(id, "/guard")
+		s.handleSessionGuardEvents(w, r, id)
+		return
+	}
 	// Sub-route: /api/session/<id>/raw-events → on-demand source JSONL row
 	// browser. Re-reads local source files; nothing is persisted.
 	if strings.HasSuffix(id, "/raw-events") {
@@ -3639,6 +3656,11 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		// "cli". Additive; frontend rendering is a follow-up.
 		Surface     string `json:"surface,omitempty"`
 		SurfaceHost string `json:"surface_host,omitempty"`
+		// ToolVersion is the captured tool/CLI version (migration 125,
+		// NODE-LOCAL): the free-form semver an adapter read from disk.
+		// Omitted when unstamped — the frontend treats absence as
+		// "unknown", never fabricates a version.
+		ToolVersion string `json:"tool_version,omitempty"`
 		// Resume declares how a CLOSED session on this tool can be reopened
 		// (session-attach design Phase 3): kind "native" (grounded
 		// ResumeNative → the Resume button POSTs /resume), "handoff" (no native
@@ -4069,6 +4091,11 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		d.Surface = sv.Surface
 		d.SurfaceHost = sv.SurfaceHost
 	}
+	// Captured tool/CLI version (migration 125) — same best-effort read;
+	// a failure leaves it empty (= unknown) and omitted.
+	if tv, terr := store.New(s.db()).LoadSessionToolVersion(r.Context(), id); terr == nil {
+		d.ToolVersion = tv
+	}
 	if lin, lerr := store.New(s.db()).LoadSessionLineage(r.Context(), id); lerr == nil {
 		d.ForkedFromID = lin.ForkedFromID
 		d.ParentThreadID = lin.ParentThreadID
@@ -4277,6 +4304,13 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 	// displayable answer), resolved once here at the boundary rather than
 	// branched on tool name deeper in the scan loop.
 	browserSession := strings.HasSuffix(sessionTool, "-web")
+	// messageAttachment is the per-turn user-attachment metadata decoded
+	// from actions.user_attachments (Issue 1). Metadata only: a coarse
+	// kind + optional media_type, never a filename or bytes.
+	type messageAttachment struct {
+		Kind      string `json:"kind"`
+		MediaType string `json:"media_type,omitempty"`
+	}
 	type toolCallRow struct {
 		// ActionID is the actions.id primary key. Surfaced so the
 		// frontend can call /api/action/<id>/full_text to fetch the
@@ -4403,8 +4437,16 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		// Opus 4.8 speed:"fast", captured by the proxy). The timeline
 		// renders a FAST badge on the row; CostUSD already reflects the
 		// FastMultiplier premium. Zero/false for every standard turn.
-		Fast      bool          `json:"fast,omitempty"`
-		ToolCalls []toolCallRow `json:"tool_calls"`
+		Fast bool `json:"fast,omitempty"`
+		// Attachments records the files/images/audio the USER attached to
+		// this prompt turn (Issue 1, migration 126), decoded from
+		// actions.user_attachments on the turn's user_prompt action.
+		// Metadata only: each entry carries a coarse kind (image | file |
+		// audio) and an optional media_type — NEVER a filename or bytes.
+		// Empty/omitted when the turn had no attachments; renders as an
+		// "Att" badge in the Messages table.
+		Attachments []messageAttachment `json:"attachments,omitempty"`
+		ToolCalls   []toolCallRow       `json:"tool_calls"`
 		// TpsMs is the denominator the Tok/s column divides Output by, in
 		// milliseconds — picked from the best available timing source per a
 		// layered priority (see the post-merge block): (1) the proxy's
@@ -4769,7 +4811,8 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		        COALESCE(json_extract(a.metadata, '$.id_source'), '') AS id_source,
 		        COALESCE(json_extract(a.metadata, '$.granularity'), '') AS granularity,
 		        COALESCE(json_extract(a.metadata, '$.prompt_tokens_est'), 0) AS prompt_tokens_est,
-		        COALESCE(json_extract(a.metadata, '$.response_tokens_est'), 0) AS response_tokens_est
+		        COALESCE(json_extract(a.metadata, '$.response_tokens_est'), 0) AS response_tokens_est,
+		        COALESCE(a.user_attachments, '') AS user_attachments
 		 FROM actions a
 		 WHERE a.session_id = ?
 		   AND a.action_type <> 'post_tool_batch'
@@ -4797,7 +4840,8 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		var promptTokensEst, responseTokensEst int64
 		var success, isInterrupt int
 		var durationMs, rawOutputLen int64
-		if err := actRows.Scan(&actionID, &key, &actionType, &rawTool, &target, &rawInput, &rawOutputLen, &asstBody, &success, &errMsg, &ts, &durationMs, &permMode, &effortLevel, &isInterrupt, &stopReason, &serviceTier, &requestURL, &idSource, &granularity, &promptTokensEst, &responseTokensEst); err != nil {
+		var userAttachmentsJSON string
+		if err := actRows.Scan(&actionID, &key, &actionType, &rawTool, &target, &rawInput, &rawOutputLen, &asstBody, &success, &errMsg, &ts, &durationMs, &permMode, &effortLevel, &isInterrupt, &stopReason, &serviceTier, &requestURL, &idSource, &granularity, &promptTokensEst, &responseTokensEst, &userAttachmentsJSON); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -4914,6 +4958,15 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 			out = append(out, mr)
 		}
 		mr.ToolCalls = append(mr.ToolCalls, tc)
+		// Decode this turn's user-attachment metadata (Issue 1) onto the
+		// message row. Metadata only (kind + optional media_type); a
+		// malformed blob is ignored rather than failing the endpoint.
+		if userAttachmentsJSON != "" {
+			var atts []messageAttachment
+			if err := json.Unmarshal([]byte(userAttachmentsJSON), &atts); err == nil && len(atts) > 0 {
+				mr.Attachments = append(mr.Attachments, atts...)
+			}
+		}
 		pendings = append(pendings, pendingExcerpt{actionID: actionID, mr: mr, idx: len(mr.ToolCalls) - 1})
 		actionIDs = append(actionIDs, actionID)
 		mr.ToolCallCount++
@@ -5118,6 +5171,7 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 				Output:         mr.Output,
 				ElapsedMs:      mr.ElapsedMs,
 				ToolCalls:      mr.ToolCallCount,
+				Attachments:    len(mr.Attachments),
 				AICostUSD:      mr.AICostUSD,
 				ToolCostUSD:    mr.ToolCostUSD,
 				CostUSD:        mr.CostUSD,

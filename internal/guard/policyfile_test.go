@@ -195,6 +195,7 @@ func TestPolicyRuleRefs(t *testing.T) {
 		body          string
 		wantOverrides []string
 		wantDeclared  []string
+		wantDisabled  []string
 		wantErr       bool
 	}{
 		{
@@ -204,6 +205,11 @@ func TestPolicyRuleRefs(t *testing.T) {
 				"[[rule]]\nid='ORG-1'\ncategory='boundary'\ndecision='flag'\nmatch.command_base='scp'\n",
 			wantOverrides: []string{"R-110", "R-172"},
 			wantDeclared:  []string{"ORG-1"},
+		},
+		{
+			name:         "top-level disable list is reported",
+			body:         "disable = ['R-101', 'R-152']\n",
+			wantDisabled: []string{"R-101", "R-152"},
 		},
 		{
 			name:          "empty file",
@@ -226,7 +232,7 @@ func TestPolicyRuleRefs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			ov, decl, err := PolicyRuleRefs([]byte(tc.body))
+			ov, decl, dis, err := PolicyRuleRefs([]byte(tc.body))
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected a parse error")
@@ -241,6 +247,9 @@ func TestPolicyRuleRefs(t *testing.T) {
 			}
 			if !slices.Equal(decl, tc.wantDeclared) {
 				t.Errorf("declared = %v, want %v", decl, tc.wantDeclared)
+			}
+			if !slices.Equal(dis, tc.wantDisabled) {
+				t.Errorf("disabled = %v, want %v", dis, tc.wantDisabled)
 			}
 		})
 	}

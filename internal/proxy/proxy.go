@@ -191,7 +191,7 @@ type CompressionEvent struct {
 // insert time so `observer cost` and CLI scripts that sum the column
 // directly (scripts/ab-claude-report.sh, etc.) see real numbers
 // without re-implementing pricing in shell. In production this is a
-// thin adapter over (*cost.Engine).Compute.
+// thin adapter over (*cost.Engine).ComputeAt.
 type CostComputer interface {
 	Compute(model string, tokens CostTokens) (usd float64, ok bool)
 }
@@ -211,6 +211,10 @@ type CostTokens struct {
 	// fast turn and the dashboard's recorded cost would understate the
 	// real spend by 2×.
 	Fast bool
+	// At is the turn's wall-clock timestamp, used by the cost computer
+	// to resolve time-of-day-dependent rates such as peak/off-peak.
+	// Zero means resolve at current/flat rates.
+	At time.Time
 }
 
 // VirtualKeySource supplies the org-issued AI Gateway virtual key
@@ -2882,6 +2886,7 @@ func (p *Proxy) applyCost(t *models.APITurn) {
 		CacheCreation:   t.CacheCreationTokens,
 		CacheCreation1h: t.CacheCreation1hTokens,
 		Fast:            t.Fast,
+		At:              t.Timestamp,
 	}); ok {
 		t.CostUSD = usd
 	}

@@ -292,6 +292,17 @@ type ParseResult struct {
 	// silently no-ops. One entry per session per parse is plenty; the
 	// store write is first-wins-unless-empty so re-stamps are idempotent.
 	SessionSurfaces []models.SessionSurface
+	// SessionToolVersions carries the captured tool/CLI version an
+	// adapter resolved from a grounded on-disk field (Codex
+	// `session_meta.cli_version`, Cline `cline_version`, Claude Code
+	// transcript top-level `version`, ...) into a free-form semver
+	// string. The watcher plumbs them into store.IngestOptions; the
+	// store persists them node-local via Store.SetSessionToolVersion
+	// (migration 125) — never on the org-push wire. Additive: adapters
+	// with no version field leave it nil and every stop on the path
+	// silently no-ops. The store write is first-wins-unless-empty so
+	// re-stamps are idempotent, and a malformed value is skipped.
+	SessionToolVersions []models.SessionToolVersion
 	// OutcomeUpdates carries outcomes for actions persisted by an
 	// EARLIER parse window. A tool_use and its tool_result are two
 	// separate records; a poll tick that ends between them persists

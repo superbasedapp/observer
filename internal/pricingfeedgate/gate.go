@@ -37,6 +37,11 @@ type Options struct {
 type Result struct {
 	Envelope    pricingfeed.Envelope
 	NotModified bool
+	// Raw is the VERBATIM verified 200 body (nil on a 304). It is threaded to
+	// store.SavePricingFeedRaw so the persisted copy is the bytes that verified,
+	// keeping a field this build does not model alive across a restart (N1 /
+	// P2-0).
+	Raw []byte
 }
 
 // ErrCannotVerify is returned when the build ships no usable vendor key (empty
@@ -84,7 +89,7 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 	if verr := pricingfeed.Verify(res.Envelope, keys); verr != nil {
 		return Result{}, verr
 	}
-	return Result{Envelope: res.Envelope}, nil
+	return Result{Envelope: res.Envelope, Raw: res.Raw}, nil
 }
 
 // IsTransportError reports whether err returned by [Fetch] is a NETWORK-LANE

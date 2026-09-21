@@ -3,11 +3,13 @@ package guard
 import (
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/policy"
 )
 
@@ -31,6 +33,15 @@ import (
 const (
 	layerUser    = "user"
 	layerProject = "project"
+	// layerTrustedProject is the dashboard-authored, daemon-local
+	// per-project layer (guard-rule-management-ui plan §3): it lives
+	// under ~/.observer (inside R-160's deny surface, so the agent
+	// cannot write it) and therefore carries user-level weaken/disable
+	// semantics scoped to one project root — the ONE layer allowed a
+	// top-level `disable = [...]` key, and the ONE project-scoped layer
+	// that may relax a decision (never below the org floor). Distinct
+	// from layerProject, the in-repo, agent-writable, escalate-only file.
+	layerTrustedProject = "trusted_project"
 	// layerOrg is the org policy-bundle layer (spec §14.2, G13) — the
 	// same TOML format as user/project files, delivered signed by the
 	// org server and merged as the strictness floor.
@@ -48,6 +59,11 @@ type policyFile struct {
 	// File order, no de-duplication (the decoder reports each path
 	// once).
 	notes []string
+	// disable is the top-level `disable = [...]` rule-ID list. It is
+	// honored ONLY for the trusted-project layer (an unknown-key error
+	// for every other layer, enforced in parsePolicyFile); the caller
+	// unions it into the per-project engine's Config.Disabled.
+	disable []string
 }
 
 // rawOverride is a parsed [[override]] entry, kept pre-merge so the
@@ -72,6 +88,12 @@ type rawOverride struct {
 type tomlPolicyFile struct {
 	Rule     []tomlRule     `toml:"rule"`
 	Override []tomlOverride `toml:"override"`
+	// Disable is the optional top-level `disable = [...]` list. Decoded
+	// for every layer so it never lands in the decoder's Undecoded set,
+	// but parsePolicyFile REJECTS it for any layer except
+	// trusted_project (the "disable is a config posture" split for the
+	// user + in-repo-project layers is preserved as an unknown-key error).
+	Disable []string `toml:"disable"`
 }
 
 // tomlRule is one [[rule]] entry (§4.4).
@@ -145,9 +167,12 @@ var validSinks = map[string]struct {
 // same parse + compile pass, PLUS a throwaway engine construction so
 // override targets resolve (an [[override]] on an unknown rule ID is
 // only detectable against the rule tables). layer is "user",
-// "project" or "org" — project and org files additionally get the
-// §4.6 one-way merge pass so relaxation attempts surface as problems
-// here instead of as silent load-time drops (org overrides are
+// "project", "trusted_project" or "org" — project and org files
+// additionally get the §4.6 one-way merge pass so relaxation attempts
+// surface as problems here instead of as silent load-time drops (the
+// trusted_project layer is weaken-allowed, so its standalone merge pass
+// only catches parse/compile problems — the real org-floor check is
+// org-aware and lives in LintTrustedProject; org overrides are
 // escalate-only: the bundle is a strictness floor, and the server's
 // publish path lints with layer "org" so a relaxing bundle is caught
 // BEFORE it is signed). Returns nil when the file is clean.
@@ -233,11 +258,20 @@ func lintParsed(pf *policyFile, layer string) []string {
 	switch layer {
 	case layerProject:
 		var mergeIssues []string
-		extra, overrides, mergeIssues = mergeLayers(nil, nil, pf)
+		extra, overrides, _, mergeIssues = mergeLayers(nil, nil, pf, nil)
+		problems = append(problems, mergeIssues...)
+	case layerTrustedProject:
+		// The trusted layer's own merge pass: weakening/disable are
+		// allowed, so a standalone lint (no org bundle in scope) surfaces
+		// only parse/compile problems here. The REAL org-floor check runs
+		// in LintTrustedProject (org-aware) and in the per-project engine
+		// build — both feed the floor from the actual org bundle.
+		var mergeIssues []string
+		extra, overrides, _, mergeIssues = mergeLayers(nil, nil, nil, pf)
 		problems = append(problems, mergeIssues...)
 	case layerOrg:
 		var mergeIssues []string
-		extra, overrides, mergeIssues = mergeLayers(pf, nil, nil)
+		extra, overrides, _, mergeIssues = mergeLayers(pf, nil, nil, nil)
 		problems = append(problems, mergeIssues...)
 	default:
 		// The user layer has no relaxation check to fail in isolation
@@ -246,7 +280,7 @@ func lintParsed(pf *policyFile, layer string) []string {
 		// reports — an `overridable` key only the org may grant. Take
 		// the issues so lint says what loading would record.
 		var mergeIssues []string
-		extra, overrides, mergeIssues = mergeLayers(nil, pf, nil)
+		extra, overrides, _, mergeIssues = mergeLayers(nil, pf, nil, nil)
 		problems = append(problems, mergeIssues...)
 	}
 	if _, err := policy.New(policy.Config{
@@ -254,6 +288,39 @@ func lintParsed(pf *policyFile, layer string) []string {
 		Overrides:  overrides,
 	}); err != nil {
 		problems = append(problems, err.Error())
+	}
+	return problems
+}
+
+// LintTrustedProject lints trusted per-project content EXACTLY as the
+// per-project engine build loads it: the standard trusted-project
+// parse+compile pass PLUS the real §4.6 org-floor check against the org
+// bundle at the configured [guard.rules] org_bundle path (cfg + home
+// resolve it exactly as guard.New does). A trusted relaxation of an
+// org-floored rule is a load issue surfaced HERE, before the write —
+// which the plain Lint(raw, "trusted_project") cannot see because it has
+// no org context. When no org bundle is present the result equals
+// Lint(raw, "trusted_project"): weakening/disabling built-ins is allowed
+// on the trusted layer by design.
+//
+// It is the dashboard's save/validate gate for the trusted-project file;
+// `observer guard lint` uses the pure Lint (no org context) for the CLI.
+func LintTrustedProject(cfg config.GuardConfig, home string, raw []byte) []string {
+	pf, err := parsePolicyFile(raw, layerTrustedProject)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	var org *policyFile
+	if p := OrgBundlePath(cfg, home); p != "" {
+		org = loadVerifiedOrgLayer(os.ReadFile, p)
+	}
+	extra, overrides, _, issues := mergeLayers(org, nil, nil, pf)
+	problems := append([]string{}, issues...)
+	if _, perr := policy.New(policy.Config{
+		ExtraRules: extra,
+		Overrides:  overrides,
+	}); perr != nil {
+		problems = append(problems, perr.Error())
 	}
 	return problems
 }
@@ -290,8 +357,24 @@ func parsePolicyFile(raw []byte, layer string) (*policyFile, error) {
 		}
 		ignored = keys
 	}
+	// `disable` is a trusted-project-only capability. For the user and
+	// in-repo-project layers it stays an unknown-key error (the field is
+	// decoded, so it would otherwise be silently accepted — this preserves
+	// the strict "disable is a config posture, not a policy-file key"
+	// split). The ORG layer gets the same tolerance as any other key this
+	// binary does not honour there (GUARD-FWD-1): a signed bundle carrying
+	// `disable` is accepted with the key IGNORED and noted, never rejected
+	// — a rejection here would strand the node on a stale bundle (or, from
+	// the on-disk cache, drop the whole org floor: fail-open).
+	if meta.IsDefined("disable") && layer != layerTrustedProject {
+		if layer != layerOrg {
+			return nil, fmt.Errorf("unknown keys: disable")
+		}
+		ignored = append(ignored, "disable")
+		f.Disable = nil
+	}
 
-	pf := &policyFile{layer: layer, notes: ignored}
+	pf := &policyFile{layer: layer, notes: ignored, disable: f.Disable}
 	seen := map[string]bool{}
 	for i := range f.Rule {
 		r, err := compileRule(&f.Rule[i], layer)
@@ -324,17 +407,20 @@ func parsePolicyFile(raw []byte, layer string) (*policyFile, error) {
 // PolicyRuleRefs structurally parses raw as a §4.4 policy file and returns
 // the rule IDs it references: overrides = [[override]].rule targets (existing
 // rule IDs whose decisions the file escalates), declared = [[rule]].id
-// entries the file defines itself. It powers the org dashboard's §14.2
-// dry-run statistics (G14): override targets have server-side hit history,
-// newly declared matchers do not. The parse is deliberately LOOSE — no
-// matcher compilation, no unknown-key strictness — because every authoring
+// entries the file defines itself, disabled = the top-level `disable = [...]`
+// list (meaningful only for a trusted-project file; a stray one elsewhere is
+// still reported so the dry-run counts are honest — Lint is what rejects it).
+// It powers the org dashboard's §14.2 dry-run statistics (G14) and the node
+// dashboard's per-layer counts: override targets have server-side hit
+// history, newly declared matchers do not. The parse is deliberately LOOSE —
+// no matcher compilation, no unknown-key strictness — because every authoring
 // surface runs Lint alongside it; a structurally unparseable file returns
 // the parse error. Order follows file order; duplicates are preserved
 // (Lint reports them).
-func PolicyRuleRefs(raw []byte) (overrides, declared []string, err error) {
+func PolicyRuleRefs(raw []byte) (overrides, declared, disabled []string, err error) {
 	var f tomlPolicyFile
 	if _, err := toml.Decode(string(raw), &f); err != nil {
-		return nil, nil, fmt.Errorf("guard.PolicyRuleRefs: parse: %w", err)
+		return nil, nil, nil, fmt.Errorf("guard.PolicyRuleRefs: parse: %w", err)
 	}
 	for _, ov := range f.Override {
 		if ov.Rule != "" {
@@ -346,7 +432,12 @@ func PolicyRuleRefs(raw []byte) (overrides, declared []string, err error) {
 			declared = append(declared, r.ID)
 		}
 	}
-	return overrides, declared, nil
+	for _, id := range f.Disable {
+		if id != "" {
+			disabled = append(disabled, id)
+		}
+	}
+	return overrides, declared, disabled, nil
 }
 
 // compileRule turns one [[rule]] entry into a policy.Rule row.

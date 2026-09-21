@@ -9,6 +9,49 @@ All notable changes to SuperBased Observer are documented here.
   computed from (plan v2.1 6.9; `scripts/verify-price-snapshot.sh --line` prints this line and
   `scripts/release.sh` requires it in a final tag's section).
 
+## [1.34.0-rc.8] — 2026-09-21
+
+Pre-release on the `edge` channel; rc.7 plus the two demo-estate fixes rc.7 could not carry, the
+2026-09-21 Windows-side handoff merged onto the rc.7 tree, and one adversarial review of that merge
+folded. Server migration 159 (`org_model_prices.peak_json`; run `observer-org migrate` before starting
+the new image) and agent migrations 125 + 126 (node-local, additive). Node binaries need updating too.
+
+- Org server: the fleet-findings sweeper is now carried onto the served server (D-DEMO-12) - the built-in
+  `no_contact` alert rule seeds and `authority_divergence` / `integrity_risk` / `no_contact` /
+  `governance_lapsed` findings open; a runtime test pins every background worker across the assembly copy.
+- Deploy bundle: `observer-env-sync.sh` re-asserts the D12 `secrets/config.toml` mountpoint placeholder in
+  place (D-DEMO-11) so `docker exec observer-org <cli>` keeps reading the real config.
+- Org server, pricing feed: the public signed pricing feed importer now defaults to ENABLED with mode
+  `auto` (operator decision 2026-09-20): a connected org pulls `https://superbased.app/api/pricing/v1/observer-pricing`
+  and auto-applies list-price versions as `source = imported` rows; opt out with `[pricing_feed] enabled = false`,
+  or keep pulls but park them for approval with `mode = "park"`. An air-gapped org (bundle_path set) egresses nothing.
+- Pricing, peak/off-peak (Phases 0-3): `org_model_prices.peak_json` backs `pricing.Row.Peak` (a peak RateSet
+  + UTC schedule); both signed rails carry it; the node cost engine prices a turn at the peak variant inside
+  the window; the org Pricing page shows a read-only vendor-line badge; the Tokenomics feed export carries
+  `peak_json`. Inert until an org authors (or the feed publishes) a peak variant. Both pricing rails now
+  verify over the raw received bytes and persist them, so a field a newer server adds degrades instead of
+  freezing the cache. DeepSeek flash-family off-peak base correction.
+- Guard: manage guard rules from the node dashboard (Settings, per project) through a daemon-local
+  trusted per-project policy layer under `~/.observer` (weaken/disable scoped to one project, never below
+  the org floor; R-160/R-161 integrity rules cannot be disabled or relaxed below the org); the global rule
+  picker can loosen built-ins; the org dashboard's guard form picks rules from a described dropdown; the
+  guard-rule vocabulary is one shared module for both dashboards. Hook-lane policy blocks are interleaved
+  into the session Messages tab at the exact message anchor.
+- Guard, merge-review fold: a signed org bundle carrying a top-level `disable` list is accepted with the key
+  ignored and noted (the forward-compatibility rc.7 introduced now covers decoded keys too - rejecting it
+  would have stranded every node on its stale bundle); the trusted per-project layer loads even when the
+  in-repo `project_policy` layer is disabled; `/api/session/<id>/guard` carries `overridable` / `org_locked`
+  like the global timeline.
+- Capture: user file/image attachments on a prompt are captured and shown in the Messages tab (agent 126);
+  the AI tool / CLI version is captured per session (agent 125) and shown on the session card; lines of
+  code by sub-agents fold under the parent session card; process-APM metrics correlate to the message /
+  turn that caused them across every adapter; clinecli pidbridge rail proven live.
+- Org client: benign policy-rail states (`channel_off`, `disabled`, `not_supported`, `no_budget`,
+  `no_pricing`) log at Debug instead of a WARN per rail per cycle.
+- Marketing site: `www` 301s to the apex host; `/listed-on` directory page with a quiet footer link;
+  tool counts say 40 supported tools and 27 CLI launchers; guide links from the home page and footer.
+- Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
 ## [1.34.0-rc.7] — 2026-09-21
 
 Pre-release on the `edge` channel; rc.6 plus the org guardrail control wave (plan of record
@@ -42,6 +85,18 @@ before starting the new image). Node-side changes need the node binaries updated
   status` names them); nodes older than rc.7 still drop the org layer on such a bundle - update them first.
 - pi adapter: git identity (remote, branch, owner) resolved from the session cwd (D-DEMO-9).
 - Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+- Deploy bundle (Azure + AWS cloud-init `observer-env-sync.sh`, and the four Azure templates that embed it):
+  the D12 `secrets/config.toml` mountpoint placeholder is re-asserted IN PLACE on every timer run
+  instead of being re-`install`ed. Recreating its inode detached the running org container's bind mount
+  of `config.production.toml` for every later path lookup, so `docker exec observer-org <cli>` read an
+  EMPTY config from the next 6-hourly run on (the server itself never re-reads its file and was
+  unaffected; `docker compose run --rm --no-deps org <cli>` always worked). Found live on the demo
+  estate (D-DEMO-11); the harness now pins the inode across runs. NOT in the rc.7 tag - lands in the
+  next bundle export.
+- Org server: the Track C fleet-findings sweeper was assembled but never carried onto the served
+  server, so it never started - no built-in `no_contact` alert rule was seeded and no fleet finding was
+  ever opened (D-DEMO-12, found live on the demo org after the rc.7 roll). Carried, and a runtime test
+  now pins every background worker across the assembly copy. NOT in the rc.7 tag.
 
 ## [1.34.0-rc.6] — 2026-09-21
 

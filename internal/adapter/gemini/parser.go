@@ -598,9 +598,14 @@ func (a *Adapter) emitMessage(path string, idx int, msg rawLegacyMsg, state *ses
 		// the timeline; the image's token cost lands on the next token
 		// event's input bucket. Observability-only — no image bytes are
 		// read or stored.
+		// Structured user-attachment metadata (Issue 1): the images the
+		// user attached to this turn (kind + optional media_type from
+		// inlineData.mimeType), captured for both image-only turns and
+		// turns that also carry text. Metadata only — no bytes, no name.
+		atts := collectInlineImageAttachments(msg.Content)
 		if strings.TrimSpace(text) == "" {
-			if n := countInlineImages(msg.Content); n > 0 {
-				text = fmt.Sprintf("[user sent %d image attachment(s)]", n)
+			if len(atts) > 0 {
+				text = fmt.Sprintf("[user sent %d image attachment(s)]", len(atts))
 			} else {
 				return
 			}
@@ -627,6 +632,7 @@ func (a *Adapter) emitMessage(path string, idx int, msg rawLegacyMsg, state *ses
 			RawToolName:        "message.user",
 			RawToolInput:       a.scrubber.String(text),
 			MessageID:          "user:" + firstNonEmpty(msg.ID, fmt.Sprintf("L%d", idx)),
+			UserAttachments:    atts,
 		})
 	case "gemini", "model", "assistant":
 		// Reasoning arrives in one of two shapes: legacy `thought` content
@@ -1155,24 +1161,31 @@ func concatText(parts []legacyPart) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
-// countInlineImages counts content parts carrying Gemini `inlineData`
-// (the multimodal image shape: {mimeType, data}). Used to emit an
-// image-attachment marker for image-only user turns. A part is treated
-// as an image when it has a non-empty inlineData map or its declared
-// type names an image/inline-data part.
-func countInlineImages(parts []legacyPart) int {
-	n := 0
+// collectInlineImageAttachments builds the structured user-attachment
+// metadata (Issue 1) for a user turn's inline images: one kind="image"
+// entry per inlineData part, with MediaType read from inlineData.mimeType
+// when present. Metadata only — the base64 `data` is never read. A part is
+// treated as an image when it has a non-empty inlineData map or its declared
+// type names an image/inline-data part; the image-attachment marker for
+// image-only user turns is emitted from len() of the result.
+func collectInlineImageAttachments(parts []legacyPart) []models.UserAttachment {
+	var atts []models.UserAttachment
 	for _, p := range parts {
-		if len(p.InlineData) > 0 {
-			n++
+		isImage := len(p.InlineData) > 0
+		if !isImage {
+			t := strings.ToLower(strings.TrimSpace(p.Type))
+			isImage = t == "image" || t == "inlinedata" || t == "inline_data"
+		}
+		if !isImage {
 			continue
 		}
-		t := strings.ToLower(strings.TrimSpace(p.Type))
-		if t == "image" || t == "inlinedata" || t == "inline_data" {
-			n++
+		mediaType := ""
+		if mt, ok := p.InlineData["mimeType"].(string); ok {
+			mediaType = mt
 		}
+		atts = append(atts, models.UserAttachment{Kind: "image", MediaType: mediaType})
 	}
-	return n
+	return atts
 }
 
 // concatThought joins all `thought` parts (Gemini's CoT-style

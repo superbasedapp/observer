@@ -28,6 +28,7 @@ export type MessageSortKey =
   | "elapsed_ms"
   | "tokens_per_sec"
   | "tool_call_count"
+  | "attachments"
   | "ai_cost_usd"
   | "tool_cost_usd"
   | "cost_usd"
@@ -74,8 +75,8 @@ export type MessageColumn = {
 // header: one row per column, in table order, carrying its sort key, label,
 // alignment and optional tooltip. Adding a column is one row here plus one
 // row in the server's messageSortKeys table — never a new conditional.
-// Eighteen columns; the widths below sum to 1650 (the account column added
-// 190 to the pre-presets 1460 literal).
+// Nineteen columns; the widths below sum to 1700 (the account column added
+// 190 to the pre-presets 1460 literal; the Att column added 50).
 export const MESSAGE_COLUMNS: MessageColumn[] = [
   { key: "seq", label: "#", className: "pl-3", width: 40 },
   { key: "timestamp", label: "Time", width: 80 },
@@ -106,6 +107,15 @@ export const MESSAGE_COLUMNS: MessageColumn[] = [
     tooltipMaxWidth: 420,
   },
   { key: "tool_call_count", label: "Tools", right: true, width: 58 },
+  {
+    key: "attachments",
+    label: "Att",
+    right: true,
+    width: 50,
+    tooltip:
+      "Files/images/audio the user attached to this turn (presence, count and kind only - never filenames or content). Empty for turns with no attachment and for adapters/surfaces that don't capture it.",
+    tooltipMaxWidth: 360,
+  },
   { key: "ai_cost_usd", label: "API $", right: true, width: 70 },
   { key: "tool_cost_usd", label: "Tool $", right: true, width: 70 },
   { key: "cost_usd", label: "Total $", right: true, width: 74 },
@@ -149,7 +159,7 @@ export const MESSAGE_PRESETS: {
     id: "default",
     label: "Default",
     hint: "what happened - when, who, which model, did it call tools, what it cost, what it was about",
-    keys: ["seq", "timestamp", "role", "account", "model", "tool_call_count", "cost_usd", "content"],
+    keys: ["seq", "timestamp", "role", "account", "model", "tool_call_count", "attachments", "cost_usd", "content"],
   },
   {
     id: "cost",

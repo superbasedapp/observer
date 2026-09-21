@@ -1,0 +1,27 @@
+-- 125_session_tool_version.sql — captured tool/CLI version per session.
+--
+-- Many flagship AI tools stamp the version of the CLI/agent that produced
+-- a session on disk (Codex `session_meta.cli_version`, Cline task
+-- `cline_version`, Copilot CLI its own version, Claude Code transcript
+-- top-level `version`, and per-store `version` fields on qwencode /
+-- kilocode / devin / qoder). Until this migration Observer read none of
+-- it, so the dashboard could not tell which tool build produced a
+-- session.
+--
+--   tool_version — the free-form semver string the adapter resolved from
+--                  a grounded on-disk field ("0.150.0", "3.17.4", ...).
+--                  Honest-empty = unknown; NEVER fabricated. Not an enum:
+--                  a bounded token (length-capped, non-prose), resolved
+--                  at each adapter's own boundary (CLAUDE.md #3/#5),
+--                  nothing downstream switches on tool name.
+--
+-- NODE-LOCAL: this column is NEVER selected by the org-push seam
+-- (internal/store/orgpush.go::SelectUnpushedSince) and is pinned out of
+-- the wire by tests/invariant/privacy_test.go. Written ONLY through
+-- Store.SetSessionToolVersion (not UpsertSession), FIRST-WINS-UNLESS-
+-- EMPTY, so a re-parse never clears a captured value.
+--
+-- Nullable, no backfill: existing rows keep NULL (= "unknown", the
+-- honest zero) until the owning transcript is re-scanned.
+
+ALTER TABLE sessions ADD COLUMN tool_version TEXT;

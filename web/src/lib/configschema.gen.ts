@@ -365,6 +365,7 @@ export type ConfigKeyPath =
   "guard.rules.disable" |
   "guard.rules.user_policy" |
   "guard.rules.project_policy" |
+  "guard.rules.trusted_project_dir" |
   "guard.rules.org_bundle" |
   "guard.rules.cel" |
   "guard.boundary.allow_paths" |

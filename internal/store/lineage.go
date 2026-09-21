@@ -51,6 +51,50 @@ type SessionLineageView struct {
 	Children []SessionLineageChild
 }
 
+// SubagentChildIDs returns the session ids of sub-agents spawned from
+// parentID, for folding a sub-agent's own lines-of-code back under the
+// parent's session card (see internal/store/locread.go::LoadSessionLOC).
+//
+// The link is the lineage the adapters already record: a session whose
+// parent_thread_id is parentID and whose thread_source is 'subagent'
+// (claude-code dedicated-file children, opencode, openclaw, codex, devin).
+// It deliberately does NOT encode the claude-code `<parent>:agent:<id>` id
+// convention — LoadSessionLOC adds an id-prefix LIKE for the orphan case
+// (a child whose session row was never materialized) on top of this — so
+// this helper stays a plain, capability-based lineage read with no
+// tool-name or id-string knowledge. A separate-session sub-agent that
+// records no lineage row (the clinecli model) is NOT folded; it stays a
+// first-class session shown apart, its own card honest about its lines.
+//
+// An empty slice (never an error) is returned for a session with no
+// sub-agent children, so callers can union unconditionally.
+func (s *Store) SubagentChildIDs(ctx context.Context, parentID string) ([]string, error) {
+	if parentID == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM sessions
+		 WHERE parent_thread_id = ? AND thread_source = 'subagent'`, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("store.SubagentChildIDs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store.SubagentChildIDs: scan: %w", err)
+		}
+		if id != "" && id != parentID {
+			out = append(out, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.SubagentChildIDs: rows: %w", err)
+	}
+	return out, nil
+}
+
 // LoadSessionLineage resolves the codex fork/subagent lineage for a single
 // session (migration 069). It returns sql.ErrNoRows when the session does
 // not exist, mirroring LoadSessionShape. Since sessions.id for codex is the

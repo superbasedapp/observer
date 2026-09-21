@@ -144,6 +144,15 @@ func TestMessageSortOrder_PerKey(t *testing.T) {
 			wantDesc: []int{1, 3, 2},
 		},
 		{
+			// Attachment count sorts ascending; 0 is the null-sink (tested
+			// separately in TestMessageSortOrder_NullSink), so all values here
+			// are nonzero to exercise the ordering itself.
+			key:      "attachments",
+			set:      func(f *messageSortField, i int) { f.Attachments = []int{3, 1, 2}[i] },
+			wantAsc:  []int{2, 3, 1},
+			wantDesc: []int{1, 3, 2},
+		},
+		{
 			key:      "ai_cost_usd",
 			set:      func(f *messageSortField, i int) { f.AICostUSD = []float64{0.3, 0.1, 0.2}[i] },
 			wantAsc:  []int{2, 3, 1},
@@ -187,14 +196,14 @@ func TestMessageSortOrder_PerKey(t *testing.T) {
 	}
 }
 
-// TestMessageSortKeys_AllColumnsCovered pins the allow-list against the 17
+// TestMessageSortKeys_AllColumnsCovered pins the allow-list against the 18
 // columns the Messages table renders — a new column must land as a table row
 // here AND a case in TestMessageSortOrder_PerKey, never as a new conditional.
 func TestMessageSortKeys_AllColumnsCovered(t *testing.T) {
 	want := []string{
 		"seq", "timestamp", "message_id", "role", "account", "model", "effort_level",
 		"input", "cache_read", "cache_creation", "output", "elapsed_ms",
-		"tokens_per_sec", "tool_call_count", "ai_cost_usd", "tool_cost_usd",
+		"tokens_per_sec", "tool_call_count", "attachments", "ai_cost_usd", "tool_cost_usd",
 		"cost_usd", "content",
 	}
 	if len(messageSortKeys) != len(want) {
@@ -226,6 +235,11 @@ func TestMessageSortOrder_NullSink(t *testing.T) {
 		// treatment — including whitespace-only, which trims to empty.
 		{"effort_level", func(f *messageSortField, i int) {
 			f.EffortLevel = []string{"high", "", "low", "  "}[i]
+		}},
+		// 0 attachments is the null-sink (the MAJORITY value on real data —
+		// almost every turn has none), same treatment as an absent metric.
+		{"attachments", func(f *messageSortField, i int) {
+			f.Attachments = []int{2, 0, 1, 0}[i]
 		}},
 	}
 	for _, tc := range tests {

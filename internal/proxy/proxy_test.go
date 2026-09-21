@@ -3607,6 +3607,31 @@ func TestApplyCost_ThreadsFastFlag(t *testing.T) {
 	}
 }
 
+// TestApplyCost_ThreadsTimestamp pins Phase 1 slice B of peak/off-peak
+// pricing (the Q3 live-path fix): applyCost must pass APITurn.Timestamp
+// through to the CostComputer as CostTokens.At, so a peak/off-peak-aware
+// cost engine resolves the rate at the turn's own wall-clock time rather
+// than at capture-time-blind current/flat rates. Before this fix the
+// proxy dropped the timestamp on the floor, so `api_turns.cost_usd`
+// could never reflect time-of-day pricing.
+func TestApplyCost_ThreadsTimestamp(t *testing.T) {
+	fake := &fakeCostComputer{rate: 0.01}
+	p := &Proxy{cost: fake}
+
+	want := time.Date(2026, 9, 21, 14, 30, 0, 0, time.UTC)
+	p.applyCost(&models.APITurn{Model: "claude-opus-4-8", InputTokens: 1000, Timestamp: want})
+	if !fake.lastTokens.At.Equal(want) {
+		t.Errorf("applyCost.At = %v, want %v", fake.lastTokens.At, want)
+	}
+
+	// A zero Timestamp must ride through as a zero At, not get
+	// silently defaulted to time.Now() somewhere along the seam.
+	p.applyCost(&models.APITurn{Model: "claude-opus-4-8", InputTokens: 1000})
+	if !fake.lastTokens.At.IsZero() {
+		t.Errorf("applyCost.At = %v, want zero", fake.lastTokens.At)
+	}
+}
+
 func TestExtractOpenAIModel_Roundtrip(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

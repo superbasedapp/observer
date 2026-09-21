@@ -153,6 +153,22 @@ func (a *CLIAdapter) ParseSessionFile(ctx context.Context, path string, fromOffs
 	res.ToolEvents = append(res.ToolEvents, todos...)
 	res.TokenEvents = append(res.TokenEvents, tokens...)
 	res.CacheObservations = append(res.CacheObservations, cacheObservations...)
+	// Issue 2: the Kilo CLI build version rides on the `session` row
+	// (session.version, e.g. "7.3.40"). Stamp it node-local for the
+	// sessions this slice touched. Store write is first-wins-unless-empty
+	// + bounded-token validated.
+	touched := map[string]bool{}
+	for i := range res.ToolEvents {
+		if res.ToolEvents[i].SessionID != "" {
+			touched[res.ToolEvents[i].SessionID] = true
+		}
+	}
+	for i := range res.TokenEvents {
+		if res.TokenEvents[i].SessionID != "" {
+			touched[res.TokenEvents[i].SessionID] = true
+		}
+	}
+	res.SessionToolVersions = append(res.SessionToolVersions, a.loadSessionToolVersions(ctx, database, touched)...)
 	// Project Identity Resolver v2 (2026-09-06, §3.1 / W1): rootCache
 	// already carries one git.Identity per distinct cwd this parse
 	// touched (a kilo-cli db can span multiple sessions/projects), keyed
@@ -375,6 +391,38 @@ func (a *CLIAdapter) loadSessionDirectories(ctx context.Context, db *sql.DB) (ma
 		out[id] = kiloSessionDirectory{Directory: dir, ProjectWorktree: worktree}
 	}
 	return out, rows.Err()
+}
+
+// loadSessionToolVersions reads the per-session `version` column — the
+// Kilo CLI build that produced the session ("7.3.40") — for Issue 2
+// tool-version capture (migration 125). Only sessions in `touched`
+// (those with new rows this slice) get a stamp, so an incremental poll
+// re-stamps just the active sessions; the store's first-wins write makes
+// a repeat harmless anyway. The `version` column is absent on older Kilo
+// schemas, so a query error is TOLERATED (returns nil) rather than
+// failing the whole parse — the tableExists-tolerant posture the rest of
+// this adapter uses.
+func (a *CLIAdapter) loadSessionToolVersions(ctx context.Context, db *sql.DB, touched map[string]bool) []models.SessionToolVersion {
+	if len(touched) == 0 {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, COALESCE(version, '') FROM session`)
+	if err != nil {
+		return nil // older schema without a version column — tolerate.
+	}
+	defer rows.Close()
+	var out []models.SessionToolVersion
+	for rows.Next() {
+		var id, ver string
+		if err := rows.Scan(&id, &ver); err != nil {
+			return out
+		}
+		if ver == "" || !touched[id] {
+			continue
+		}
+		out = append(out, models.SessionToolVersion{SessionID: id, Version: ver})
+	}
+	return out
 }
 
 func (a *CLIAdapter) loadUserPromptEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]kiloResolvedRoot) ([]models.ToolEvent, error) {

@@ -48,7 +48,14 @@ func TestSaveOrgPricingIsEnrollmentFencedAndRetainsDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Binding != firstIdentity.Binding || !reflect.DeepEqual(got.Document, doc) {
+	// Compare the SIGNED CONTENT (body + signature), not the whole Document by
+	// reflect.DeepEqual: a reloaded document legitimately carries the unexported
+	// rawRows that json.Unmarshal repopulates so re-verification works over the
+	// bytes the org signed (Phase 0 / P2-0), and rawRows is not part of the
+	// document's meaning here.
+	if got.Binding != firstIdentity.Binding ||
+		!reflect.DeepEqual(got.Document.PricingPolicyBody, doc.PricingPolicyBody) ||
+		got.Document.Signature != doc.Signature {
 		t.Fatalf("cache provenance/document = binding %q doc %+v, want %q %+v", got.Binding, got.Document, firstIdentity.Binding, doc)
 	}
 
@@ -107,7 +114,12 @@ UPDATE org_pricing_cache
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Have || got.Binding != "" || !reflect.DeepEqual(got.Document, doc) {
+	// Compare the SIGNED CONTENT, not the whole Document: a reloaded document
+	// legitimately carries the unexported rawRows json.Unmarshal repopulates
+	// (Phase 0 / P2-0), which is not part of the document's meaning here.
+	if !got.Have || got.Binding != "" ||
+		!reflect.DeepEqual(got.Document.PricingPolicyBody, doc.PricingPolicyBody) ||
+		got.Document.Signature != doc.Signature {
 		t.Fatalf("legacy cache = %+v, want readable unbound document", got)
 	}
 }

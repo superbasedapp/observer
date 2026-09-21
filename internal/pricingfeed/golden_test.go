@@ -57,16 +57,35 @@ func TestGoldenEnvelope_CrossModuleCanonicalAgreement(t *testing.T) {
 	// fails. The digest is recomputed so the refusal is ErrBadSignature, not a
 	// digest mismatch — pinning that the Ed25519 signature binds the canonical
 	// BODY, so no consumer can accept a tampered feed.
-	tampered := env
-	tampered.Rows = make([]Row, len(env.Rows))
-	copy(tampered.Rows, env.Rows)
-	r0 := tampered.Rows[0]
+	//
+	// Verify now checks the digest/signature over the envelope's RAW RECEIVED
+	// bytes when it has them (verify-over-received-bytes, §3.4), so the tamper
+	// must happen at the WIRE-BYTES level — exactly what a real attacker
+	// controls — rather than on the already-decoded typed Rows field (mutating
+	// that leaves the untouched original raw bytes behind, which would make
+	// this a digest-mismatch test instead of a signature test). Re-marshal the
+	// mutated typed envelope to get tampered wire bytes, then re-decode so
+	// tampered.rawRows reflects them, exactly like a real received body would.
+	tamperedRows := make([]Row, len(env.Rows))
+	copy(tamperedRows, env.Rows)
+	r0 := tamperedRows[0]
 	if r0.InputPerMTok == nil {
 		t.Fatalf("golden row 0 (%s) unexpectedly has a nil input rate; cannot flip a byte of it", r0.Model)
 	}
 	bumped := *r0.InputPerMTok + 1
 	r0.InputPerMTok = &bumped
-	tampered.Rows[0] = r0
+	tamperedRows[0] = r0
+
+	preTamper := env
+	preTamper.Rows = tamperedRows
+	tamperedJSON, err := json.Marshal(preTamper)
+	if err != nil {
+		t.Fatalf("marshal tampered envelope: %v", err)
+	}
+	var tampered Envelope
+	if err := json.Unmarshal(tamperedJSON, &tampered); err != nil {
+		t.Fatalf("unmarshal tampered envelope: %v", err)
+	}
 	reDigest, err := Digest(tampered.Rows)
 	if err != nil {
 		t.Fatalf("Digest(tampered): %v", err)

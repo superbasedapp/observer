@@ -1101,6 +1101,7 @@ func (w *Watcher) ingestProcessResult(ctx context.Context, a adapter.Adapter, re
 		SessionProcessSeeds: res.SessionProcessSeeds,
 		SessionLineages:     res.SessionLineages,
 		SessionSurfaces:     res.SessionSurfaces,
+		SessionToolVersions: res.SessionToolVersions,
 		OutcomeUpdates:      res.OutcomeUpdates,
 	})
 	return err

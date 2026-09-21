@@ -413,6 +413,12 @@ type pricingResponseClass struct {
 
 type verifiedPricingDocument struct {
 	doc orgcontract.PricingPolicyDoc
+	// raw is the VERBATIM response body the document was decoded and verified
+	// from. It is threaded to store.SaveOrgPricingRaw so the persisted copy is
+	// the bytes that verified, not a typed re-marshal that would drop a field
+	// this build does not model and freeze the node on the next restart (N1 /
+	// P2-0).
+	raw json.RawMessage
 	pub []byte
 }
 
@@ -521,8 +527,16 @@ func classifyPricingResponse(status int) pricingResponseClass {
 }
 
 func (c *Client) decodeVerifyPricingDocument(ctx context.Context, resp *http.Response, enr *store.Enrolment) (verifiedPricingDocument, error) {
+	// Read the body into memory (bounded) BEFORE decoding so the exact received
+	// bytes can be persisted verbatim. Verification runs over doc.rawRows, which
+	// UnmarshalJSON populates from these same bytes, so the bytes we keep are the
+	// bytes we verified (N1 / P2-0).
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxOrgDocBytes))
+	if err != nil {
+		return verifiedPricingDocument{}, fmt.Errorf("orgclient.FetchPricingPolicy: read body: %w", err)
+	}
 	var doc orgcontract.PricingPolicyDoc
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxOrgDocBytes)).Decode(&doc); err != nil {
+	if err := json.Unmarshal(raw, &doc); err != nil {
 		return verifiedPricingDocument{}, fmt.Errorf("orgclient.FetchPricingPolicy: decode: %w", err)
 	}
 	pub, err := c.orgSigningKey(ctx)
@@ -532,7 +546,7 @@ func (c *Client) decodeVerifyPricingDocument(ctx context.Context, resp *http.Res
 	if err := orgcontract.VerifyPricingPolicy(pub, enr.OrgID, doc); err != nil {
 		return verifiedPricingDocument{}, fmt.Errorf("orgclient.FetchPricingPolicy: %w", err)
 	}
-	return verifiedPricingDocument{doc: doc, pub: pub}, nil
+	return verifiedPricingDocument{doc: doc, raw: json.RawMessage(raw), pub: pub}, nil
 }
 
 func (c *Client) pricingReplayError(cached pricingCacheSnapshot, doc orgcontract.PricingPolicyDoc, pub []byte) error {
@@ -596,7 +610,7 @@ func (c *Client) publishPricingDocumentLocked(ctx context.Context, identity stor
 		c.notifyPricing(ctx, out)
 		return out, fmt.Errorf("orgclient.FetchPricingPolicy: refusing pricing document version %d, older than the cached %d (replay)", verified.doc.Version, currentBody.Version), false
 	}
-	witness, err := c.store.SaveOrgPricingWithWitness(ctx, verified.doc, fp, state, identity)
+	witness, err := c.store.SaveOrgPricingRaw(ctx, verified.doc, verified.raw, fp, state, identity)
 	if err != nil {
 		if errors.Is(err, store.ErrOrgPricingIdentityChanged) {
 			return PricingFetchOutcome{}, err, true

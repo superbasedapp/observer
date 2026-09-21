@@ -51,6 +51,12 @@ var (
 type Result struct {
 	Envelope    pricingfeed.Envelope
 	NotModified bool
+	// Raw is the VERBATIM 200 response body the Envelope was decoded from (nil on
+	// a 304). It is threaded through the gate to store.SavePricingFeedRaw so the
+	// persisted copy is the bytes that verified, not a typed re-marshal that would
+	// drop a field this build does not model and freeze the node on the next
+	// restart (N1 / P2-0).
+	Raw []byte
 }
 
 // Fetcher performs the feed GET. It is an interface so the gate can inject a
@@ -109,11 +115,19 @@ func (f *httpFetcher) Fetch(ctx context.Context, feedURL, lastDigest string) (Re
 	if resp.StatusCode != http.StatusOK {
 		return Result{}, fmt.Errorf("%w: %d", ErrStatus, resp.StatusCode)
 	}
+	// Read the body into memory (bounded) BEFORE decoding so the exact received
+	// bytes can be persisted verbatim. Verification runs over env.rawRows, which
+	// UnmarshalJSON populates from these same bytes, so the bytes we keep are the
+	// bytes the caller verifies (N1 / P2-0).
+	raw, rerr := io.ReadAll(io.LimitReader(resp.Body, maxFeedBodyBytes))
+	if rerr != nil {
+		return Result{}, fmt.Errorf("%w: %w", ErrDecode, rerr)
+	}
 	var env pricingfeed.Envelope
-	if derr := json.NewDecoder(io.LimitReader(resp.Body, maxFeedBodyBytes)).Decode(&env); derr != nil {
+	if derr := json.Unmarshal(raw, &env); derr != nil {
 		return Result{}, fmt.Errorf("%w: %w", ErrDecode, derr)
 	}
-	return Result{Envelope: env}, nil
+	return Result{Envelope: env, Raw: raw}, nil
 }
 
 // etagOf renders a digest as a (weak-tolerant) quoted ETag value. A publisher

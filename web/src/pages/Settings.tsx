@@ -69,6 +69,8 @@ import type {
   DatedCostPricing,
   MCPValueResponse,
   ModelPricing,
+  PeakRates,
+  PeakSchedule,
   PricingDefaultsResponse,
   ProfileShowResponse,
   ToolsStatusResponse,
@@ -1136,6 +1138,7 @@ function PricingSection({
           <PricingTable
             models={overrides}
             modelKeys={modelKeys}
+            defaults={defaults.data?.defaults}
             onChange={updateRate}
             onRemove={removeOverride}
           />
@@ -1231,11 +1234,18 @@ const PRICING_FIELDS: { key: keyof ModelPricing; label: string }[] = [
 function PricingTable({
   models,
   modelKeys,
+  defaults,
   onChange,
   onRemove,
 }: {
   models: Record<string, ModelPricing>;
   modelKeys: string[];
+  // Baked-in reference rates, keyed like `models` — consulted ONLY to
+  // read a model's `peak` variant (peak scheduling isn't overridable in
+  // this phase; the rates a developer edits below are always the
+  // OFF-PEAK base). Absent while /api/config/pricing/defaults is still
+  // loading, in which case no peak badge renders yet.
+  defaults?: Record<string, CostPricing>;
   onChange: (key: string, field: keyof ModelPricing, val: string) => void;
   onRemove: (key: string) => void;
 }) {
@@ -1256,12 +1266,19 @@ function PricingTable({
         </tr>
       }
     >
-      {modelKeys.map((k) => (
+      {modelKeys.map((k) => {
+        const def = defaults?.[k];
+        return (
             <tr
               key={k}
               className="border-b border-line-1 last:border-b-0 hover:bg-bg-3/40"
             >
-              <td className="py-1.5 pl-2 font-mono text-fg-1">{k}</td>
+              <td className="py-1.5 pl-2 font-mono text-fg-1">
+                <span className="inline-flex items-center gap-1.5">
+                  {k}
+                  {def?.peak && <PeakBadge base={def} peak={def.peak} />}
+                </span>
+              </td>
               {PRICING_FIELDS.map((f) => (
                 <td key={f.key} className="py-1.5">
                   <Input
@@ -1288,7 +1305,8 @@ function PricingTable({
                 </Tooltip>
               </td>
             </tr>
-          ))}
+        );
+      })}
     </Table>
   );
 }
@@ -1351,6 +1369,7 @@ function DefaultsTable({
                       {dated?.[k] && dated[k].length > 0 && (
                         <RateHistoryBadge periods={dated[k]} />
                       )}
+                      {p.peak && <PeakBadge base={p} peak={p.peak} />}
                     </span>
                   </td>
                   <td className="py-1 text-right font-mono text-fg-2 tabular-nums">
@@ -1436,6 +1455,111 @@ function fmtEffectiveFrom(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+
+// WEEKDAY_ABBR indexes like Go's time.Weekday (0=Sun..6=Sat) — the same
+// numbering PeakWindow.days uses on the wire.
+const WEEKDAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// formatWeekdays collapses a set of weekday numbers into contiguous
+// range labels, e.g. [1,2,3,4,5] -> "Mon-Fri", [0,6] -> "Sun, Sat",
+// and all seven -> "every day". Does not handle a range that wraps
+// past Saturday into Sunday (v1 schedules don't author one).
+function formatWeekdays(days: number[]): string {
+  const sorted = [...new Set(days)].sort((a, b) => a - b);
+  if (sorted.length === 0) return "";
+  if (sorted.length === 7) return "every day";
+  const labels: string[] = [];
+  let start = sorted[0];
+  let prev = sorted[0];
+  for (let i = 1; i <= sorted.length; i++) {
+    const d = sorted[i];
+    if (d === prev + 1) {
+      prev = d;
+      continue;
+    }
+    labels.push(
+      start === prev
+        ? WEEKDAY_ABBR[start]
+        : `${WEEKDAY_ABBR[start]}–${WEEKDAY_ABBR[prev]}`,
+    );
+    start = d;
+    prev = d;
+  }
+  return labels.join(", ");
+}
+
+// formatPeakSchedule renders a PeakSchedule as one compact human-
+// readable clause, e.g. "Mon-Fri 01:00-04:00, 06:00-10:00 UTC" for
+// deepseek-v4-pro's two same-weekday windows. Windows that share an
+// identical weekday set are grouped onto one line so the schedule
+// doesn't repeat the day range per window; windows on different
+// weekday sets are joined with "; ".
+function formatPeakSchedule(schedule: PeakSchedule): string {
+  const windows = schedule?.windows ?? [];
+  if (windows.length === 0) return "no active window";
+  const order: string[] = [];
+  const groups = new Map<string, { days: number[]; times: string[] }>();
+  for (const w of windows) {
+    const key = [...new Set(w.days)].sort((a, b) => a - b).join(",");
+    let g = groups.get(key);
+    if (!g) {
+      g = { days: w.days, times: [] };
+      groups.set(key, g);
+      order.push(key);
+    }
+    g.times.push(`${w.start_utc}–${w.end_utc}`);
+  }
+  return order
+    .map((key) => {
+      const g = groups.get(key)!;
+      return `${formatWeekdays(g.days)} ${g.times.join(", ")} UTC`;
+    })
+    .join("; ");
+}
+
+// PeakBadge marks a model that bills at a higher rate during recurring
+// UTC windows (`cost.Pricing.Peak`) — today only deepseek-v4-pro. `base`
+// is the OFF-PEAK rate the surrounding row already shows; the badge's
+// tooltip is the only place the peak rates and the window are spelled
+// out, mirroring RateHistoryBadge's hover-for-detail idiom so the table
+// itself stays exactly as compact as it is for every non-peak model.
+function PeakBadge({
+  base,
+  peak,
+}: {
+  base: Pick<CostPricing, "input" | "output" | "cache_read">;
+  peak: PeakRates;
+}) {
+  const windowLabel = useMemo(() => formatPeakSchedule(peak.schedule), [peak.schedule]);
+  const content = (
+    <div className="max-w-[280px] text-left">
+      <div className="mb-1 font-medium text-fg-1">Peak-hours pricing</div>
+      <div className="space-y-1">
+        <div className="flex items-baseline justify-between gap-3 font-mono text-[10.5px]">
+          <span className="text-fg-3">Off-peak</span>
+          <span className="text-fg-1 tabular-nums">
+            {fmtUSD(base.input, true)} in / {fmtUSD(base.output, true)} out
+          </span>
+        </div>
+        <div className="flex items-baseline justify-between gap-3 font-mono text-[10.5px]">
+          <span className="text-fg-3">Peak</span>
+          <span className="text-fg-1 tabular-nums">
+            {fmtUSD(peak.input, true)} in / {fmtUSD(peak.output, true)} out
+          </span>
+        </div>
+      </div>
+      <div className="mt-1.5 border-t border-line-2 pt-1 text-[10.5px] text-fg-3">
+        {windowLabel}
+      </div>
+    </div>
+  );
+  return (
+    <Pill variant="accent" title={content}>
+      <LightningIcon size={9} />
+      peak
+    </Pill>
+  );
 }
 
 // ============================================================ Backfill

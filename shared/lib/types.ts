@@ -254,6 +254,20 @@ export type MessageRowLike = {
   // When the array is absent/empty but the count is present, the Tools cell
   // renders the count with the expander disabled ("tool calls not shipped").
   tool_calls?: ToolCallRowLike[];
+  // attachments records the files/images/audio the USER attached to this
+  // prompt turn (Issue 1). PRESENCE + KIND (+ optional media_type) only —
+  // never a filename or bytes. Absent/empty on non-user turns, on adapters
+  // that don't capture attachments, and on the org (no org data yet); the
+  // Att cell renders "-" in that case.
+  attachments?: MessageAttachmentLike[];
+};
+
+// MessageAttachmentLike is one user-attachment's metadata: a coarse kind
+// (image | file | audio) and an optional IANA media_type. It carries no
+// filename and no bytes by construction (Issue 1 privacy rule).
+export type MessageAttachmentLike = {
+  kind: string;
+  media_type?: string;
 };
 
 // ExtraMessageColumn is an app-supplied column the shared MessagesTable renders

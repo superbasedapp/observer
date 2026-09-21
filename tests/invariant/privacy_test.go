@@ -104,6 +104,24 @@ const (
 	secParentThread = "SECRET_PARENTTHREAD_perspicacious_pp"
 	secThreadSource = "SECRET_THREADSOURCE_sesquipedalian_ss"
 
+	// Captured tool/CLI version (migration 125): sessions.tool_version is
+	// NODE-LOCAL — never selected by the push seam, in ANY share mode
+	// (like the lineage columns above, unlike git_branch it does not ship
+	// even under full_content). Written only via
+	// Store.SetSessionToolVersion. A bounded token by policy, but stuffed
+	// here as a distinctive secret so a regression that ever selected the
+	// column onto the wire fails loudly.
+	secToolVersion = "SECRET_TOOLVERSION_grandiloquent_tv"
+
+	// User-attachment metadata (migration 126): actions.user_attachments is
+	// NODE-LOCAL — never selected by the push seam, in ANY share mode (like
+	// the lineage/tool_version columns above, unlike git_branch it does not
+	// ship even under full_content). It carries only kind/count/media_type by
+	// design, but a distinctive secret is stuffed into the column here so a
+	// regression that ever selected it onto the wire fails loudly. Org-wire
+	// promotion is a documented follow-up.
+	secUserAttachments = "SECRET_USERATTACH_grandiloquent_ua"
+
 	// Capture-surface attribution (agent migration 107 / server migration
 	// 139). These are POSITIVE CANARIES, not sentinels — the opposite
 	// polarity of everything else in this block.
@@ -204,6 +222,8 @@ var allSentinels = []string{
 	secRawInput, secRawOutput, secReasoning, secErrMsg,
 	secTarget, secSourceFile, secRootPath, secGitRemote, secGitBranch,
 	secForkedFrom, secParentThread, secThreadSource,
+	secToolVersion,
+	secUserAttachments,
 	secGuardReason, secGuardExcerpt, secGuardTaint,
 	secOTelContent,
 	secAdmTenant, secAdmUser, secAdmReason,
@@ -246,8 +266,8 @@ func TestPushPayloadCarriesNoContent(t *testing.T) {
 	// in the same rows the push seam will read.
 	// actions has no UNIQUE on target/source_file, so blanket-update is fine.
 	if _, err := database.ExecContext(ctx,
-		`UPDATE actions SET raw_tool_input = ?, raw_tool_output = ?, preceding_reasoning = ?, error_message = ?, target = ?, source_file = ?`,
-		secRawInput, secRawOutput, secReasoning, secErrMsg, secTarget, secSourceFile); err != nil {
+		`UPDATE actions SET raw_tool_input = ?, raw_tool_output = ?, preceding_reasoning = ?, error_message = ?, target = ?, source_file = ?, user_attachments = ?`,
+		secRawInput, secRawOutput, secReasoning, secErrMsg, secTarget, secSourceFile, secUserAttachments); err != nil {
 		t.Fatalf("stuff actions: %v", err)
 	}
 	// projects has UNIQUE(root_path) — per-id update with the same prefix so
@@ -294,9 +314,9 @@ func TestPushPayloadCarriesNoContent(t *testing.T) {
 	if _, err := database.ExecContext(ctx,
 		`UPDATE sessions SET git_branch = ?, forked_from_id = ?, parent_thread_id = ?, thread_source = ?,
 		    workspace = ?, workspace_hash = 'sha256:workspace-canary', is_worktree = 1,
-		                     surface = ?, surface_host = ?`,
-		secGitBranch, secForkedFrom, secParentThread, secThreadSource, secWorkspace, canarySurface, canarySurfaceHost); err != nil {
-		t.Fatalf("stuff sessions git_branch + lineage + identity v2 + surface: %v", err)
+		                     surface = ?, surface_host = ?, tool_version = ?`,
+		secGitBranch, secForkedFrom, secParentThread, secThreadSource, secWorkspace, canarySurface, canarySurfaceHost, secToolVersion); err != nil {
+		t.Fatalf("stuff sessions git_branch + lineage + identity v2 + surface + tool_version: %v", err)
 	}
 	// Plane B per-turn authority stamps (Sol S5 / Luna L15, migration 095):
 	// route / routing_generation / authority_source are CONTENT-FREE enum +
@@ -594,6 +614,9 @@ func TestPushPayloadCarriesContentWhenOptedIn(t *testing.T) {
 		// Codex fork/subagent lineage is node-local in EVERY share mode —
 		// it must not ship even under full_content / admin_managed.
 		secForkedFrom, secParentThread, secThreadSource,
+		// User-attachment metadata (migration 126) is node-local in EVERY
+		// share mode — org-wire promotion is a documented follow-up.
+		secUserAttachments,
 	}
 
 	for _, tc := range []struct {
@@ -615,8 +638,8 @@ func TestPushPayloadCarriesContentWhenOptedIn(t *testing.T) {
 			seed(ctx, t, st)
 
 			if _, err := database.ExecContext(ctx,
-				`UPDATE actions SET raw_tool_input = ?, raw_tool_output = ?, preceding_reasoning = ?, error_message = ?, target = ?, source_file = ?`,
-				secRawInput, secRawOutput, secReasoning, secErrMsg, secTarget, secSourceFile); err != nil {
+				`UPDATE actions SET raw_tool_input = ?, raw_tool_output = ?, preceding_reasoning = ?, error_message = ?, target = ?, source_file = ?, user_attachments = ?`,
+				secRawInput, secRawOutput, secReasoning, secErrMsg, secTarget, secSourceFile, secUserAttachments); err != nil {
 				t.Fatalf("stuff actions: %v", err)
 			}
 			// projects has UNIQUE(root_path): per-id update with the sentinel as a

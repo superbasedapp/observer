@@ -172,6 +172,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		identityCache: map[string]git.Identity{},
 		pendingCall:   map[string]int{},
 		byName:        map[string][]int{},
+		versionSeen:   map[string]bool{},
 		firstOffset:   fromOffset,
 	}
 
@@ -344,6 +345,12 @@ type parseState struct {
 	// rootCache/remoteCache. Applied at the end of ParseSessionFile via
 	// adapter.ApplyProjectIdentityByRoot, keyed by resolved root.
 	identityCache map[string]git.Identity
+	// versionSeen tracks sessionIDs for which a tool-version stamp has
+	// already been emitted this parse (Issue 2, migration 125), so the
+	// per-record `version` field yields at most one SessionToolVersion
+	// per session per parse. The store write is first-wins-unless-empty
+	// regardless; this just avoids O(records) duplicate stamps.
+	versionSeen map[string]bool
 }
 
 // handle dispatches one record onto the appropriate emit path.
@@ -353,6 +360,15 @@ func (st *parseState) handle(rec *rawRecord, res *adapter.ParseResult) {
 	}
 	if rec.GitBranch != "" {
 		st.lastBranch = rec.GitBranch
+	}
+	// Issue 2: the qwen-code build version rides on every record's
+	// Claude-Code envelope. Emit at most one stamp per session per parse.
+	if rec.Version != "" && rec.SessionID != "" && !st.versionSeen[rec.SessionID] {
+		st.versionSeen[rec.SessionID] = true
+		res.SessionToolVersions = append(res.SessionToolVersions, models.SessionToolVersion{
+			SessionID: rec.SessionID,
+			Version:   rec.Version,
+		})
 	}
 	switch rec.Type {
 	case "user":

@@ -884,6 +884,17 @@ type GuardRulesConfig struct {
 	// ProjectPolicy is the project policy file location relative to
 	// each project root. Default ".observer/guard-policy.toml".
 	ProjectPolicy string `toml:"project_policy"`
+	// TrustedProjectDir is the daemon-local directory holding the
+	// dashboard-authored trusted per-project policy files (one file per
+	// project root, named <sha256(canonical root) as 64 hex chars>.toml). Default
+	// "~/.observer/guard-project-policies". Unlike ProjectPolicy (the
+	// in-repo, agent-writable, escalate-only file), files under this
+	// directory sit inside R-160's ~/.observer/** deny surface — the
+	// agent cannot write them — so they carry user-level weaken/disable
+	// semantics scoped to one project (never below the org floor). The
+	// dashboard writes them directly; guard loads them in the per-project
+	// engine build. Empty disables the trusted per-project layer.
+	TrustedProjectDir string `toml:"trusted_project_dir"`
 	// OrgBundle is the local cache location of the verified org
 	// policy bundle envelope (guard spec §14.2). Default
 	// "~/.observer/org-policy-bundle.json". Written ONLY by the org
@@ -985,8 +996,10 @@ type GuardBudgetConfig struct {
 	Hard          bool  `toml:"hard"`
 	// FromOrg opts this node into applying the ORGANIZATION's budget, fetched
 	// per caller from GET /api/agent/budget (org-budget plan §3.3c). Default
-	// false: with it off the node behaves byte-identically to a build that
-	// never had this feature.
+	// TRUE (operator decision 2026-09-20): an enrolled node applies its org's
+	// pricing/budget by default — the node-side companion to the default-on
+	// pricing feed. Set it false to opt OUT, which makes the node behave
+	// byte-identically to a build that never had this feature.
 	//
 	// With it on, the composition is capability-branched, never
 	// source-branched: on an INDIVIDUAL node the org's numbers may only LOWER
@@ -1287,11 +1300,13 @@ type PricingSectionConfig struct {
 	Feed PricingFeedConfig `toml:"feed"`
 }
 
-// PricingFeedConfig is the [pricing.feed] surface — the OPT-IN pricing feed
-// client for a STANDALONE (non-enrolled) node (plan §C.3). It is the ONLY case
-// that needs a new node->internet path, and it is OFF by default in every path
-// to preserve the zero-egress-by-default invariant (D3): with the zero value,
-// and with this Default() seed, the node makes no feed call.
+// PricingFeedConfig is the [pricing.feed] surface — the pricing feed client for
+// a STANDALONE (non-enrolled) node (plan §C.3). It is the case that needs a new
+// node->internet path, and it is ON by default (operator decision 2026-09-20,
+// reversing the former zero-egress-by-default invariant D3): with this Default()
+// seed the node fetches prices from the public feed so its costing tracks the
+// Tokenomics source without a per-node opt-in. A standalone operator who wants
+// zero egress opts OUT with `[pricing.feed] enabled = false`.
 //
 // An ENROLLED node (individual or managed) ignores this block entirely — it
 // receives prices through the org rail, which is the one authority per enrolled
@@ -1300,18 +1315,19 @@ type PricingSectionConfig struct {
 //
 // Same partial-merge invariant as CacheTrackConfig/PredictConfig: an install
 // with no [pricing.feed] section gets the Default() seed (URL/interval set,
-// Enabled=false), NOT a zero-valued struct, because Load() starts from
+// Enabled=true), NOT a zero-valued struct, because Load() starts from
 // Default() and unmarshals TOML on top. LOCAL-ONLY, never distributed.
 type PricingFeedConfig struct {
-	// Enabled gates the whole feed client. Default FALSE: the feed is inert
-	// until the standalone operator opts in (with this, or with a manual
-	// `observer pricing sync`). When false, no feed is fetched and no feed
-	// source badge renders.
+	// Enabled gates the whole feed client. Default TRUE (operator decision
+	// 2026-09-20): the feed is live so a standalone node's prices track the
+	// public source. A node that wants zero egress sets this false, which
+	// makes the feed inert — no feed is fetched and no feed source badge
+	// renders — leaving it drivable only by a manual `observer pricing sync`.
 	Enabled bool `toml:"enabled"`
 	// Auto turns on the BACKGROUND poller (in addition to the manual sync).
-	// Default FALSE: even an Enabled node only fetches on an explicit
-	// `observer pricing sync` until Auto is set, so the first outbound call is
-	// always operator-initiated.
+	// Default TRUE (operator decision 2026-09-20): an Enabled node polls on
+	// the PollIntervalHours cadence without further setup. Set false to keep
+	// the feed enabled but fetch only on an explicit `observer pricing sync`.
 	Auto bool `toml:"auto"`
 	// URL is the feed endpoint. Default DefaultPricingFeedURL (the public
 	// edge); overridable for testing / a self-hosted mirror.
@@ -4329,16 +4345,19 @@ func Default() Config {
 			StartupDelaySeconds:   90,
 			FirstScanPollSeconds:  60,
 		},
-		// Pricing feed (standalone-node pricing sync) is OPT-IN and OFF by
-		// default — the zero-egress-by-default invariant (D3). The seed sets
-		// only the endpoint and cadence so an operator who flips enabled=true
-		// needs no further lines. Same partial-merge rule as Predict — an
-		// install with no [pricing.feed] section gets this seed (Enabled=false),
-		// not a zero-valued struct with an empty URL.
+		// Pricing feed (standalone-node pricing sync) is ON by default,
+		// including its background poller (Auto). This is a deliberate
+		// reversal (operator decision 2026-09-20) of the former
+		// zero-egress-by-default invariant (D3): prices should track the
+		// Tokenomics source without a per-node opt-in. A standalone node
+		// that wants zero egress opts OUT with `[pricing.feed] enabled =
+		// false`. Same partial-merge rule as Predict — an install with no
+		// [pricing.feed] section gets this seed (Enabled=true), not a
+		// zero-valued struct with an empty URL.
 		Pricing: PricingSectionConfig{
 			Feed: PricingFeedConfig{
-				Enabled:           false,
-				Auto:              false,
+				Enabled:           true,
+				Auto:              true,
 				URL:               DefaultPricingFeedURL,
 				PollIntervalHours: 24,
 			},
@@ -4603,10 +4622,19 @@ func Default() Config {
 			Mode:          "observe",
 			Strict:        false,
 			RetentionDays: 365,
+			// Budget.FromOrg is ON by default (operator decision
+			// 2026-09-20) so an enrolled node applies its org's
+			// pricing/budget by default — the node-side companion to
+			// the default-on pricing feed. The composition stays
+			// lowering-only on an individual node (see the FromOrg
+			// field comment); the numeric caps stay zero (unset). A
+			// node opts OUT with `[guard.budget] from_org = false`.
+			Budget: GuardBudgetConfig{FromOrg: true},
 			Rules: GuardRulesConfig{
-				UserPolicy:    "~/.observer/guard-policy.toml",
-				ProjectPolicy: ".observer/guard-policy.toml",
-				OrgBundle:     "~/.observer/org-policy-bundle.json",
+				UserPolicy:        "~/.observer/guard-policy.toml",
+				ProjectPolicy:     ".observer/guard-policy.toml",
+				TrustedProjectDir: "~/.observer/guard-project-policies",
+				OrgBundle:         "~/.observer/org-policy-bundle.json",
 			},
 			Taint: GuardTaintConfig{
 				Enabled:    true,

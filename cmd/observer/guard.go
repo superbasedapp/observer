@@ -449,6 +449,7 @@ func newGuardLintCmd() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 			out := cmd.OutOrStdout()
+			home, _ := os.UserHomeDir()
 
 			type target struct {
 				path  string
@@ -462,7 +463,6 @@ func newGuardLintCmd() *cobra.Command {
 					targets = append(targets, target{a, "user"})
 				}
 			} else {
-				home, _ := os.UserHomeDir()
 				if up := expandUserPolicyPath(cfg.Guard.Rules.UserPolicy, home); up != "" {
 					targets = append(targets, target{up, "user"})
 				}
@@ -473,6 +473,16 @@ func newGuardLintCmd() *cobra.Command {
 				}
 				if cfg.Guard.Rules.ProjectPolicy != "" {
 					targets = append(targets, target{filepath.Join(root, filepath.FromSlash(cfg.Guard.Rules.ProjectPolicy)), "project"})
+				}
+				// The dashboard-authored trusted per-project layer for THIS
+				// repo. It lints via the org-aware guard.LintTrustedProject
+				// (not the plain Lint) so a trusted relaxation of an
+				// org-floored rule surfaces here instead of a false PASS: a
+				// standalone Lint(raw, "trusted_project") has no org context
+				// and cannot see the floor the runtime engine correctly
+				// enforces (F3).
+				if tp := guard.TrustedProjectPolicyPath(cfg.Guard, home, root); tp != "" {
+					targets = append(targets, target{tp, "trusted_project"})
 				}
 			}
 
@@ -490,7 +500,15 @@ func newGuardLintCmd() *cobra.Command {
 					continue
 				}
 				checked++
-				issues := guard.Lint(raw, tgt.layer)
+				var issues []string
+				if tgt.layer == "trusted_project" {
+					// Org-aware: reads the configured org bundle so an
+					// org-floor violation is caught, matching the runtime
+					// per-project engine build and the dashboard save-gate.
+					issues = guard.LintTrustedProject(cfg.Guard, home, raw)
+				} else {
+					issues = guard.Lint(raw, tgt.layer)
+				}
 				if len(issues) == 0 {
 					fmt.Fprintf(out, "%-8s %s — OK\n", tgt.layer, tgt.path)
 					continue

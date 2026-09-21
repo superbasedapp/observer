@@ -194,6 +194,7 @@ func runProcessObserver(ctx context.Context, configPath string) error {
 	go func() {
 		t := time.NewTicker(correlateInterval)
 		defer t.Stop()
+		actionCursors := make(map[string]actionSweepCursor)
 		for {
 			select {
 			case <-ctx.Done():
@@ -207,6 +208,18 @@ func runProcessObserver(ctx context.Context, configPath string) error {
 						"sessions", swept, "newly_attributed", attributed)
 				}
 				consumeLaunchSeeds(ctx, st, bridge, logger)
+				// Runs AFTER the cross-OS sweep in the same tick, so a process
+				// row that just gained a session_id above can be turn-linked
+				// to its run_command action in this same pass. Already inside
+				// the capture-enabled+backend-selected guard above, so a
+				// disabled install never sweeps.
+				linkedSessions, linked, lerr := sweepActionCorrelation(ctx, st, 60, logger, actionCursors)
+				if lerr != nil {
+					logger.Debug("process observability: action-correlation sweep — active-session query failed", "err", lerr)
+				} else if linked > 0 {
+					logger.Debug("process observability: background action-correlation sweep",
+						"sessions", linkedSessions, "newly_linked", linked)
+				}
 			}
 		}
 	}()
@@ -740,6 +753,88 @@ func sweepCrossOSCorrelation(ctx context.Context, st *store.Store, windowMinutes
 		attributed += n
 	}
 	return sessions, attributed, nil
+}
+
+// actionSweepCursor is the per-session watermark sweepActionCorrelation uses
+// to skip a session with nothing new since its last look (see
+// store.SessionActionCursor). unlinked is the count of turn-unlinked
+// process_runs (advances on INSERT or cross-OS UPDATE, self-heals after a
+// linking pass); action is the highest run_command action id.
+type actionSweepCursor struct {
+	unlinked int64
+	action   int64
+}
+
+// sweepActionCorrelation runs ONE background process→action correlation pass:
+// for each recent-active session it drives the SAME idempotent
+// store.CorrelateProcessActions seam the lazy Processes-drawer poll and
+// `observer process tree` already trigger on demand (so they never fight —
+// whichever runs first, the other is a no-op). It is the turn-level sibling
+// of sweepCrossOSCorrelation: where that pass makes an unattributed process
+// row VISIBLE to a session, this one links an already-session-attributed
+// process to the run_command turn that spawned it, filling
+// process_runs.action_id/turn_index without a human opening the drawer.
+//
+// cursors is a per-session watermark (the count of turn-unlinked process_runs
+// + the run_command actions.id high-water mark, from store.SessionActionCursor)
+// that the
+// caller owns across ticks: a session whose watermark hasn't moved since the
+// last sweep has no new processes or run_command actions, so the (relatively
+// expensive) correlate pass is skipped — this keeps a marathon long-running
+// session from being re-scanned every tick once it has converged. The
+// watermark is updated even when a pass links nothing (e.g. only ambiguous
+// residue remains), so that session isn't re-scanned until something actually
+// changes. Entries for sessions no longer in the active window are pruned
+// from cursors so the map cannot grow unbounded across a long daemon run.
+//
+// A per-session cursor or correlate error is logged at DEBUG and skipped,
+// never fatal (fail-open); an active-session query error is returned to the
+// caller. windowMinutes bounds the session set to recent activity.
+func sweepActionCorrelation(ctx context.Context, st *store.Store, windowMinutes int, logger *slog.Logger, cursors map[string]actionSweepCursor) (sessions, linked int, err error) {
+	ids, err := st.ActiveSessionIDs(ctx, windowMinutes)
+	if err != nil {
+		return 0, 0, err
+	}
+	active := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		active[id] = struct{}{}
+	}
+	for _, id := range ids {
+		unlinkedRuns, actionMark, cerr := st.SessionActionCursor(ctx, id)
+		if cerr != nil {
+			if logger != nil {
+				logger.Debug("process observability: action-correlation sweep — cursor failed", "session", id, "err", cerr)
+			}
+			continue
+		}
+		if prev, ok := cursors[id]; ok && prev.unlinked == unlinkedRuns && prev.action == actionMark {
+			// Nothing new since the last sweep — skip the expensive pass.
+			continue
+		}
+		n, lerr := st.CorrelateProcessActions(ctx, id)
+		if lerr != nil {
+			if logger != nil {
+				logger.Debug("process observability: action-correlation sweep — correlate failed", "session", id, "err", lerr)
+			}
+			continue
+		}
+		// Store the POST-link unlinked count: the pass just linked n rows (moving
+		// them out of the unlinked set) and added no actions, so the settled mark
+		// is unlinkedRuns-n. Storing the pre-link count instead would make the
+		// very next tick see the count drop as "changed" and re-run a no-op pass.
+		// A concurrent capture INSERT between the read and here just makes the
+		// real count higher than this next tick, correctly triggering one more
+		// sweep.
+		cursors[id] = actionSweepCursor{unlinked: unlinkedRuns - int64(n), action: actionMark}
+		sessions++
+		linked += n
+	}
+	for id := range cursors {
+		if _, ok := active[id]; !ok {
+			delete(cursors, id)
+		}
+	}
+	return sessions, linked, nil
 }
 
 // launchSeedStaleTTL bounds how long an unconsumed launch seed survives. It

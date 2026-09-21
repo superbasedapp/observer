@@ -1,6 +1,7 @@
 package pricingfeed
 
 import (
+	"encoding/json"
 	"errors"
 
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -152,6 +153,46 @@ type Envelope struct {
 	// can ship an overlap window (the vendorkey.go slot pattern). Verify looks
 	// the key up by this id and refuses an unknown one ([ErrUnknownKey]).
 	KeyID string `json:"key_id"`
+
+	// rawRows is the exact, unparsed bytes of the top-level "rows" JSON array
+	// as received over the wire, captured by UnmarshalJSON. It is unexported
+	// (never marshalled — a re-encoded Envelope round-trips through the typed
+	// Rows field exactly as before) and exists so [Verify] can digest/sign
+	// over what was ACTUALLY RECEIVED rather than a re-marshal of the decoded
+	// typed rows, which silently drops any field this build's Row/
+	// PricingPolicyRow/Economics structs don't know about (docs/plans/
+	// peak-off-peak-pricing-plan-2026-09-20.md §3.4/§R M1+M2 — the
+	// fleet-no-freeze fix). nil when the envelope was built programmatically
+	// (e.g. by a signer or a test) rather than decoded from JSON; Verify falls
+	// back to re-marshalling Rows in that case.
+	rawRows []byte
+}
+
+// envelopeAlias is Envelope's field set without its methods, used by
+// UnmarshalJSON to decode the ordinary fields without recursing back into
+// UnmarshalJSON itself.
+type envelopeAlias Envelope
+
+// UnmarshalJSON decodes b into e exactly as the default struct decoding would
+// (every exported field, unknown JSON keys ignored, same as before this
+// method existed), and additionally captures the raw bytes of the top-level
+// "rows" array into the unexported rawRows field for [Verify] to
+// digest/sign over. This is the ONLY behavioural change: json.Marshal(e)
+// still produces exactly the same bytes as before (rawRows is unexported so
+// it never marshals), so every existing consumer, and the signer's golden
+// tests, are unaffected.
+func (e *Envelope) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, (*envelopeAlias)(e)); err != nil {
+		return err
+	}
+	var rowsHolder struct {
+		Rows json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(b, &rowsHolder); err != nil {
+		return err
+	}
+	e.rawRows = rowsHolder.Rows
+	return nil
 }
 
 // Typed verification errors. Verify is all-or-nothing: it returns the FIRST of

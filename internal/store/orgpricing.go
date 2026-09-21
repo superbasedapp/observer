@@ -122,12 +122,56 @@ func loadOrgPricingWitness(ctx context.Context, q querier) (OrgPricingWitness, e
 // generation fence before it could mutate the cache.
 var ErrOrgPricingIdentityChanged = errors.New("org pricing enrollment identity changed")
 
-const storedOrgPricingFormat = 1
+const (
+	// storedOrgPricingFormatBinding (1) wrapped the SIGNED document as a TYPED
+	// object under "document" and added the enrollment binding. It could not
+	// preserve a document field this build does not model: the typed re-marshal
+	// dropped it, and the reloaded document then failed to re-verify against the
+	// signature taken over the fuller received bytes (N1 / P2-0 —
+	// docs/plans/peak-off-peak-phase2-3-implementation-plan-2026-09-21.md §R2).
+	storedOrgPricingFormatBinding = 1
+	// storedOrgPricingFormatRaw (2) stores the VERBATIM received document bytes
+	// under "document", so a future pricing field (e.g. a nested "peak" object
+	// this build has not yet learned) rides through persist -> reload untouched
+	// and the reloaded document re-verifies. Read compatibility is exact: a
+	// format-1 blob is loaded through the SAME json.Unmarshal path, which
+	// repopulates PricingPolicyDoc.rawRows from whatever bytes were stored, and a
+	// format-1 document never carried an unknown field, so it re-verifies exactly
+	// as before.
+	storedOrgPricingFormatRaw = 2
+	// storedOrgPricingFormat is the format new saves write.
+	storedOrgPricingFormat = storedOrgPricingFormatRaw
+)
 
+// storedOrgPricingDocument is the durable wrapper persisted in
+// org_pricing_cache.body_json. Document is a raw JSON message rather than a
+// typed orgcontract.PricingPolicyDoc so the VERBATIM received bytes can be
+// stored (format 2) — a typed re-marshal drops any row field this build does
+// not know (the N1 freeze). A programmatic save with no raw bytes stores a
+// typed marshal here instead, which is lossless for the fields it knows.
 type storedOrgPricingDocument struct {
-	Format   int                          `json:"format"`
-	Binding  string                       `json:"binding"`
-	Document orgcontract.PricingPolicyDoc `json:"document"`
+	Format   int             `json:"format"`
+	Binding  string          `json:"binding"`
+	Document json.RawMessage `json:"document"`
+}
+
+// orgPricingDocumentBytes chooses the bytes stored under "document". When the
+// caller supplies the VERBATIM received document bytes (the fetch path) they are
+// stored unchanged, so a field this build does not model survives persist ->
+// reload -> re-verify. A caller with no raw bytes (a programmatic or advisory
+// seed, which by construction carries no unknown field) gets a typed marshal,
+// which is lossless for the fields it knows. Invalid raw bytes are ignored
+// rather than trusted — a marshal of an invalid json.RawMessage would fail the
+// whole save, and the typed fallback is the honest degrade.
+func orgPricingDocumentBytes(doc orgcontract.PricingPolicyDoc, rawDocument json.RawMessage) (json.RawMessage, error) {
+	if len(rawDocument) > 0 && json.Valid(rawDocument) {
+		return rawDocument, nil
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("store.SaveOrgPricing: marshal: %w", err)
+	}
+	return b, nil
 }
 
 // SaveOrgPricing persists one VERIFIED document. It is the ONE writer of
@@ -151,7 +195,31 @@ func (s *Store) SaveOrgPricing(ctx context.Context, doc orgcontract.PricingPolic
 // ErrOrgPricingIdentityChanged when the enrollment/generation predicate no
 // longer matches; the witness is then zero and must not authorize a live
 // process-control operation.
+//
+// It carries NO raw bytes, so it persists a typed marshal of doc. Use it for
+// programmatic and advisory seeds (which never carry an unknown field). The
+// fetch path uses SaveOrgPricingRaw so a future pricing field survives reload.
 func (s *Store) SaveOrgPricingWithWitness(ctx context.Context, doc orgcontract.PricingPolicyDoc, keyFingerprint, state string, identities ...OrgBudgetIdentity) (OrgPricingWitness, error) {
+	return s.SaveOrgPricingRaw(ctx, doc, nil, keyFingerprint, state, identities...)
+}
+
+// SaveOrgPricingRaw persists one verified pricing document, storing rawDocument
+// VERBATIM when it is supplied.
+//
+// rawDocument is the exact bytes the fetch path decoded and verified (the HTTP
+// response body). Persisting them unchanged is what makes graceful degradation
+// true across a restart: the reloaded document carries a field this build does
+// not model (a future "peak", say) into
+// PricingPolicyDoc.rawRows, so orgcontract.VerifyPricingPolicy re-verifies over
+// the same bytes the org signed instead of a typed re-marshal that dropped the
+// unknown field and tripped ErrPricingPolicySignature — the whole-table revert
+// to seed the N1 finding named (docs/plans/
+// peak-off-peak-phase2-3-implementation-plan-2026-09-21.md §R2).
+//
+// A nil (or invalid) rawDocument falls back to a typed marshal of doc, which is
+// lossless for the fields this build knows and correct for programmatic callers
+// that have no wire bytes to preserve.
+func (s *Store) SaveOrgPricingRaw(ctx context.Context, doc orgcontract.PricingPolicyDoc, rawDocument json.RawMessage, keyFingerprint, state string, identities ...OrgBudgetIdentity) (OrgPricingWitness, error) {
 	if len(identities) > 1 {
 		return OrgPricingWitness{}, fmt.Errorf("store.SaveOrgPricing: %w: one identity allowed", ErrOrgPricingIdentityChanged)
 	}
@@ -162,8 +230,12 @@ func (s *Store) SaveOrgPricingWithWitness(ctx context.Context, doc orgcontract.P
 			return OrgPricingWitness{}, fmt.Errorf("store.SaveOrgPricing: %w: binding required", ErrOrgPricingIdentityChanged)
 		}
 	}
+	documentBytes, err := orgPricingDocumentBytes(doc, rawDocument)
+	if err != nil {
+		return OrgPricingWitness{}, err
+	}
 	blob, err := json.Marshal(storedOrgPricingDocument{
-		Format: storedOrgPricingFormat, Binding: identity.Binding, Document: doc,
+		Format: storedOrgPricingFormat, Binding: identity.Binding, Document: documentBytes,
 	})
 	if err != nil {
 		return OrgPricingWitness{}, fmt.Errorf("store.SaveOrgPricing: marshal: %w", err)
@@ -261,11 +333,23 @@ SELECT version, org_key_fingerprint, body_json, fetched_at, state
 	if uerr := json.Unmarshal([]byte(blob), &stored); uerr != nil {
 		return out, fmt.Errorf("store.LoadOrgPricing: decode stored document: %w", uerr)
 	}
-	doc := stored.Document
-	if stored.Format != storedOrgPricingFormat {
-		// Rows written before enrollment binding stored the signed document
-		// directly. Preserve read compatibility while exposing an empty binding
-		// so managed restore can reject the legacy provenance.
+	var doc orgcontract.PricingPolicyDoc
+	if stored.Format >= storedOrgPricingFormatBinding && len(stored.Document) > 0 {
+		// Format 1 (typed document bytes) and format 2 (VERBATIM received bytes)
+		// are read identically: json.Unmarshal repopulates
+		// PricingPolicyDoc.rawRows from whatever bytes were stored, so a format-2
+		// document re-verifies against a signature taken over a field this build
+		// does not model, and a format-1 document (which never carried an unknown
+		// field) re-verifies exactly as before. This is the reload half of the N1
+		// fix — the persisted bytes are the bytes re-verified.
+		if uerr := json.Unmarshal(stored.Document, &doc); uerr != nil {
+			return out, fmt.Errorf("store.LoadOrgPricing: decode stored document body: %w", uerr)
+		}
+	} else {
+		// Format 0: rows written before enrollment binding stored the signed
+		// document directly as the blob. Preserve read compatibility while
+		// exposing an empty binding so managed restore rejects the legacy
+		// provenance.
 		if uerr := json.Unmarshal([]byte(blob), &doc); uerr != nil {
 			return out, fmt.Errorf("store.LoadOrgPricing: decode legacy stored document: %w", uerr)
 		}

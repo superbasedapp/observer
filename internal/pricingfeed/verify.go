@@ -61,13 +61,29 @@ func Sign(priv ed25519.PrivateKey, env Envelope) (string, error) {
 // specific reason):
 //
 //  1. SchemaVersion == SupportedSchemaVersion, else ErrUnsupportedSchema.
-//  2. FeedVersion > 0 and every row is well-formed, else ErrInvalidRows.
+//  2. FeedVersion > 0 and every KNOWN row field is well-formed, else
+//     ErrInvalidRows.
 //  3. Digest recomputed from the rows equals env.Digest, else ErrDigestMismatch
 //     (catches tampering and publisher bugs BEFORE the signature math).
 //  4. A signature is present, else ErrUnsigned.
 //  5. KeyID names a key this build accepts, else ErrUnknownKey.
 //  6. The signature verifies over SigningMessage under that key, else
 //     ErrBadSignature.
+//
+// Digest and signature verification is done over the RAW RECEIVED "rows"
+// bytes when available (env carries them whenever it was produced by
+// json.Unmarshal — see Envelope.UnmarshalJSON), not over a re-marshal of the
+// decoded typed []Row. This is the verify-over-received-bytes fix (docs/
+// plans/peak-off-peak-pricing-plan-2026-09-20.md §3.4/§R M1+M2): a row field
+// this build's Row/PricingPolicyRow/Economics structs don't know about (a
+// future addition, e.g. a nested "peak" object) rides along in the bytes
+// that are digested and signed-over instead of being silently dropped and
+// tripping ErrDigestMismatch — so an already-deployed consumer degrades
+// gracefully to the fields it understands rather than freezing on stale
+// prices. Programmatically-built envelopes (a signer, or a test that
+// constructs an Envelope{} literal rather than decoding one) carry no raw
+// bytes; Verify falls back to CanonicalRows(env.Rows) for those, unchanged
+// from before this fix.
 //
 // Replay (a lower FeedVersion than one already applied) is the CALLER's
 // concern: this function has no state. Verify establishes only that env is a
@@ -79,7 +95,13 @@ func Verify(env Envelope, keys KeySet) error {
 	if err := validateRows(env.FeedVersion, env.Rows); err != nil {
 		return err
 	}
-	canonical, err := CanonicalRows(env.Rows)
+	var canonical []byte
+	var err error
+	if env.rawRows != nil {
+		canonical, err = canonicalRawRows(env.rawRows)
+	} else {
+		canonical, err = CanonicalRows(env.Rows)
+	}
 	if err != nil {
 		return err
 	}

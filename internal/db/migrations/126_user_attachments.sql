@@ -1,0 +1,32 @@
+-- 126_user_attachments.sql — captured user-attachment metadata per action.
+--
+-- Until this migration Observer had NO structured record of whether a
+-- USER attached files/images/audio to a prompt turn. Only three adapters
+-- (cline/gemini/cowork) noted an image at all, and only as an ad-hoc
+-- "[image attachment]" text marker in actions.target; the flagship coding
+-- agents (Claude Code, Codex) dropped image/document blocks entirely on
+-- the text-only extraction path, and an image-only user turn produced no
+-- row at all.
+--
+--   user_attachments — a JSON array of {kind, media_type?} objects, one
+--                      per attachment the user sent on this turn. kind is
+--                      the coarse class ("image" | "file" | "audio");
+--                      media_type is the optional IANA type ("image/png",
+--                      "application/pdf") when the source exposes it.
+--                      NULL = no attachments (the honest zero).
+--
+-- PRIVACY: PRESENCE + COUNT + KIND (+ optional MediaType) ONLY. NEVER a
+-- filename and NEVER bytes — a filename can encode ticket/codename ids,
+-- the same reasoning that gated sessions.git_branch. Counts/kinds/
+-- media-types are metadata.
+--
+-- NODE-LOCAL: this column is NEVER selected by the org-push seam
+-- (internal/store/orgpush.go::SelectUnpushedSince) and is pinned out of
+-- the wire by tests/invariant/privacy_test.go. Org-wire promotion is a
+-- documented follow-up.
+--
+-- Nullable, no backfill (mirrors 017_action_metadata.sql): pre-migration
+-- rows keep NULL and surface as "we never captured this" — the correct
+-- reading, since the adapters didn't capture it before this release.
+
+ALTER TABLE actions ADD COLUMN user_attachments TEXT;

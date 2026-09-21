@@ -297,6 +297,174 @@ func TestPricingPolicyCanonicalBytesArePinned(t *testing.T) {
 	}
 }
 
+// TestPricingPolicyByteCompatNoUnknownFields is the FLEET-NO-FREEZE proof for
+// the raw verification path (docs/plans/peak-off-peak-pricing-plan-2026-09-20.md
+// §R "Phase 0"). It asserts that for a document with NO unknown fields the raw
+// canonicalisation ([canonicalPricingBodyRaw]) produces bytes IDENTICAL to the
+// typed one ([canonicalPricingBody]), so a document a currently-deployed server
+// signed over the typed bytes still verifies on an upgraded node that verifies
+// over the received bytes. If this ever fails, every deployed server's document
+// would land `unverified` on upgraded nodes — the exact freeze the change exists
+// to remove.
+func TestPricingPolicyByteCompatNoUnknownFields(t *testing.T) {
+	t.Parallel()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	const orgID = "org-compat"
+	// The pair the nullable-rate change turns on: one rate unquoted (absent
+	// from the bytes) and one quoted free (present as 0).
+	body := PricingPolicyBody{
+		Version:     12,
+		GeneratedAt: "2026-09-08T00:00:00Z",
+		Rows: []PricingPolicyRow{
+			{Model: "m-unquoted", InputPerMTok: Rate(3), Source: "negotiated"},
+			{Model: "m-free", InputPerMTok: Rate(0), OutputPerMTok: Rate(0), Source: "negotiated"},
+		},
+	}
+
+	// SignPricingPolicy uses the TYPED path — these are the current wire bytes a
+	// deployed server produces.
+	doc, err := SignPricingPolicy(priv, orgID, body)
+	if err != nil {
+		t.Fatalf("SignPricingPolicy: %v", err)
+	}
+
+	// Round-trip through JSON exactly as the node does (json.Marshal on the
+	// server, Decode/Unmarshal on the node), which triggers UnmarshalJSON and
+	// populates rawRows.
+	wire, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal doc: %v", err)
+	}
+	var decoded PricingPolicyDoc
+	if err := json.Unmarshal(wire, &decoded); err != nil {
+		t.Fatalf("unmarshal doc: %v", err)
+	}
+	if decoded.rawRows == nil {
+		t.Fatal("UnmarshalJSON did not capture rawRows — the raw verification path would never engage")
+	}
+
+	// The hard requirement: the two canonicalisations must be byte-identical for
+	// a no-unknown-field document.
+	rawBytes, err := canonicalPricingBodyRaw(decoded.Version, decoded.GeneratedAt, decoded.rawRows)
+	if err != nil {
+		t.Fatalf("canonicalPricingBodyRaw: %v", err)
+	}
+	typedBytes, err := canonicalPricingBody(body)
+	if err != nil {
+		t.Fatalf("canonicalPricingBody: %v", err)
+	}
+	if !bytes.Equal(rawBytes, typedBytes) {
+		t.Fatalf("raw and typed canonical bytes differ (fleet-freeze):\n raw: %s\ntyped: %s", rawBytes, typedBytes)
+	}
+
+	// And the property that matters operationally: a genuine, decoded document
+	// verifies over the received bytes.
+	if err := VerifyPricingPolicy(pub, orgID, decoded); err != nil {
+		t.Fatalf("a decoded genuine document failed to verify: %v", err)
+	}
+
+	// Marshalling the doc is UNCHANGED by UnmarshalJSON/rawRows: the re-marshal
+	// of the decoded doc reproduces the wire bytes exactly (unexported field is
+	// never emitted).
+	reWire, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("re-marshal decoded doc: %v", err)
+	}
+	if !bytes.Equal(wire, reWire) {
+		t.Errorf("json.Marshal(doc) changed after decode:\n first: %s\nsecond: %s", wire, reWire)
+	}
+}
+
+// TestPricingPolicyFutureRowFieldStillVerifies is the GRACEFUL-DEGRADATION
+// proof: a document a FUTURE server emits — carrying a row field this build's
+// PricingPolicyRow has no place for (a nested "reserved_capacity" object,
+// standing in for whatever field ships after this one; "peak" itself became a
+// real, KNOWN field in Phase 2 and so no longer exemplifies an unknown one)
+// — must VERIFY on this old build, not freeze it. The future server signs
+// over the raw canonicalisation of its rows; this build captures those exact
+// raw rows on decode and verifies over them, even though its typed decode
+// drops the unknown field.
+func TestPricingPolicyFutureRowFieldStillVerifies(t *testing.T) {
+	t.Parallel()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	const orgID = "org-future"
+	const version = int64(20)
+	const generatedAt = "2026-09-08T00:00:00Z"
+
+	// The rows a future server serves: an extra nested "reserved_capacity"
+	// object inside a row that this build does not model. Compact, as
+	// json.Marshal would emit.
+	rawRows := []byte(`[` +
+		`{"model":"m","input_per_mtok":3,"reserved_capacity":{"discount_pct":10},"source":"negotiated"}` +
+		`]`)
+
+	// The future server signs over the RAW canonicalisation of exactly these
+	// rows (which equals what its own typed canonicalPricingBody would render).
+	signBody, err := canonicalPricingBodyRaw(version, generatedAt, rawRows)
+	if err != nil {
+		t.Fatalf("canonicalPricingBodyRaw: %v", err)
+	}
+	sig := ed25519.Sign(priv, pricingSigningHash(orgID, version, signBody))
+
+	// Assemble the full wire document with those exact raw rows.
+	docJSON := []byte(`{"version":20,"generated_at":"` + generatedAt + `","rows":` +
+		string(rawRows) + `,"signature":"` + base64.StdEncoding.EncodeToString(sig) + `"}`)
+
+	var doc PricingPolicyDoc
+	if err := json.Unmarshal(docJSON, &doc); err != nil {
+		t.Fatalf("unmarshal future-field document: %v", err)
+	}
+
+	// The headline: an OLD struct verifies a FUTURE-field document instead of
+	// refusing it as `unverified`.
+	if err := VerifyPricingPolicy(pub, orgID, doc); err != nil {
+		t.Fatalf("a future-field document failed to verify on this build (fleet freeze): %v", err)
+	}
+
+	// The typed decode dropped the unknown field — logic runs against only what
+	// this build knows — yet verification still succeeded above.
+	if len(doc.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(doc.Rows))
+	}
+	if doc.Rows[0].Model != "m" {
+		t.Errorf("model = %q, want %q", doc.Rows[0].Model, "m")
+	}
+	if doc.Rows[0].InputPerMTok == nil || *doc.Rows[0].InputPerMTok != 3 {
+		t.Errorf("input = %v, want a SET 3", doc.Rows[0].InputPerMTok)
+	}
+	// Re-marshalling the typed row cannot reproduce the "reserved_capacity"
+	// field — proof the field was dropped from the typed view (and hence why a
+	// typed re-marshal would have failed to verify, which the raw path is
+	// exactly what fixes).
+	reTyped, err := json.Marshal(doc.Rows[0])
+	if err != nil {
+		t.Fatalf("marshal typed row: %v", err)
+	}
+	if bytes.Contains(reTyped, []byte(`"reserved_capacity"`)) {
+		t.Errorf("the typed row unexpectedly carried the unknown field: %s", reTyped)
+	}
+	// And Peak — now a REAL field — must have decoded as genuinely absent
+	// (nil), not as a spuriously-populated zero value: the raw row above never
+	// named "peak" at all.
+	if doc.Rows[0].Peak != nil {
+		t.Errorf("Peak = %+v, want nil — the raw row named no peak field", doc.Rows[0].Peak)
+	}
+
+	// Tamper proof: flipping a byte inside the received rows must fail — the raw
+	// path is verifying the actual bytes, not blindly accepting anything.
+	tampered := doc
+	tampered.rawRows = []byte(`[{"model":"m","input_per_mtok":9,"peak":{"input_per_mtok":0.3},"source":"negotiated"}]`)
+	if err := VerifyPricingPolicy(pub, orgID, tampered); !errors.Is(err, ErrPricingPolicySignature) {
+		t.Errorf("a tampered rows body verified (err=%v)", err)
+	}
+}
+
 // TestPricingPolicyDecodesAnOlderServersZero pins the compat direction that
 // matters: a server built BEFORE 135 always sent every rate, spelling "not
 // negotiated" as 0. Decoding that into the pointer type must still work.

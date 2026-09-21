@@ -1,6 +1,7 @@
 package orgcontract
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 )
 
 // The FLEET-WIDE org PRICING policy body served by GET /api/agent/pricing
@@ -67,17 +69,92 @@ import (
 // spelling of this struct, so there is no fleet in that state to break. That is
 // why P1-1 was a comment fix and not a code change.
 //
-// THE STANDING CONSEQUENCE, which is the part worth carrying forward: because
-// verification re-derives the bytes from THIS BUILD'S struct rather than
-// checking the signature against the bytes actually received, ANY future
-// field-shape change to this document - a field added, removed, renamed,
-// reordered, or retyped between value and pointer - is a fleet-freezing change
-// for every node still on the older struct. It is a DESIGN RESIDUAL of
-// verify-by-re-marshal, not a property of the nullable-rate change. Two exits
-// exist and neither is taken here: verify over the received canonical bytes, or
-// version the document so an old node can refuse it knowingly. Until one is,
-// TestPricingPolicyCanonicalBytesArePinned is the tripwire - a shape change
-// fails there, at authoring time, instead of on a fleet.
+// THE STANDING CONSEQUENCE, and why the FIRST of the two exits is now TAKEN on
+// this rail (docs/plans/peak-off-peak-pricing-plan-2026-09-20.md §R / §3.4,
+// "Phase 0"): historically verification re-derived the bytes from THIS BUILD'S
+// struct rather than checking the signature against the bytes actually
+// received, so ANY future field-shape change to this document - a field added,
+// removed, renamed, reordered, or retyped between value and pointer - was a
+// fleet-freezing change for every node still on the older struct. A row-level
+// field ADDED by a future server (e.g. a nested "peak" object) is the case that
+// motivated the fix: an already-deployed node would drop the unknown field on
+// decode, re-marshal without it, and refuse a perfectly genuine document as
+// `unverified`.
+//
+// [PricingPolicyDoc.UnmarshalJSON] now captures the RAW RECEIVED bytes of the
+// body's `rows` field, and [VerifyPricingPolicy] signs over THOSE bytes (via
+// [canonicalPricingBodyRaw]) whenever the document was decoded from JSON. An
+// unknown row field therefore rides through into the signing message untouched,
+// so a future-field document VERIFIES on an old node instead of freezing it —
+// while the node's typed logic still runs against only the fields it knows.
+//
+// The fix carries a HARD byte-compatibility property, pinned by
+// TestPricingPolicyByteCompatNoUnknownFields: for a document with NO unknown
+// fields, canonicalPricingBodyRaw produces bytes IDENTICAL to
+// canonicalPricingBody(typed body). This holds because the server signs over
+// json.Marshal(typed body) and serves those exact compact rows bytes, so the
+// raw path recovers precisely the bytes that were signed. Every currently
+// deployed org server's signed document therefore still verifies on an upgraded
+// node — the whole point of the change.
+//
+// The SIGNER ([SignPricingPolicy]) keeps using the typed path: it builds
+// documents programmatically with no unknown fields, and by the byte-compat
+// property that path is identical to the raw one. The SECOND exit (versioning
+// the document so an old node can refuse it knowingly) is unneeded for additive
+// row fields now that the raw path exists.
+//
+// TestPricingPolicyCanonicalBytesArePinned remains the tripwire for a change to
+// the fields THIS build already knows — a rename/reorder/retype of an existing
+// field still changes the typed signer's bytes and must be versioned, because it
+// changes what the SERVER signs.
+
+// RateSet mirrors internal/intelligence/cost.RateSet and
+// internal/orgserver/pricing.RateSet EXACTLY (identical json tags): a
+// complete token-rate set, base rates plus an optional long-context sub-tier.
+// This is the SIGNED WIRE shape of a peak rate variant; peak_json (the org
+// store's column, internal/orgserver/pricing.RateSet) and this wire type
+// share the shape by construction, so the store<->wire translation at each
+// boundary is a plain field copy with no arithmetic (Phase 2, plan §R2/P2-B).
+type RateSet struct {
+	Input           float64 `json:"input"`
+	Output          float64 `json:"output"`
+	CacheRead       float64 `json:"cache_read"`
+	CacheCreation   float64 `json:"cache_creation"`
+	CacheCreation1h float64 `json:"cache_creation_1h"`
+
+	LongContextThreshold       int64   `json:"long_context_threshold,omitempty"`
+	LongContextInput           float64 `json:"long_context_input,omitempty"`
+	LongContextOutput          float64 `json:"long_context_output,omitempty"`
+	LongContextCacheRead       float64 `json:"long_context_cache_read,omitempty"`
+	LongContextCacheCreation   float64 `json:"long_context_cache_creation,omitempty"`
+	LongContextCacheCreation1h float64 `json:"long_context_cache_creation_1h,omitempty"`
+}
+
+// PeakWindow mirrors cost.PeakWindow / pricing.PeakWindow: one recurring UTC
+// time window on the given weekdays. Days is []time.Weekday (plan §R4), the
+// same element kind cost and pricing already use, so the three mirrors stay
+// wire-identical (a time.Weekday marshals as a plain int either way, but one
+// convention is picked rather than left to coincide).
+type PeakWindow struct {
+	Days     []time.Weekday `json:"days"`
+	StartUTC string         `json:"start_utc"`
+	EndUTC   string         `json:"end_utc"`
+}
+
+// PeakSchedule mirrors cost.PeakSchedule / pricing.PeakSchedule: an ordered
+// set of windows.
+type PeakSchedule struct {
+	Windows []PeakWindow `json:"windows"`
+}
+
+// PeakRates mirrors cost.PeakRates / pricing.PeakRates: the peak rate set
+// plus the schedule that selects it. Nil on a [PricingPolicyRow] ⇒ the org
+// has authored no peak variant for that model; the node prices flat around
+// the clock.
+type PeakRates struct {
+	RateSet
+	Schedule PeakSchedule `json:"schedule"`
+}
 
 // PricingPolicyRow is ONE model's authored rate set, in the vocabulary of
 // internal/intelligence/cost.Pricing (the node's own price table) so the node
@@ -128,6 +205,18 @@ type PricingPolicyRow struct {
 	// carried so a node surface can say "org (negotiated)" rather than
 	// merely "org".
 	Source string `json:"source,omitempty"`
+
+	// Peak is the org-authored peak (time-of-day) rate variant, mirroring
+	// internal/orgserver/pricing.Row.Peak (the peak_json org-store payload)
+	// field for field (Phase 2, plan §R2/P2-B). Nil ⇒ the org has authored no
+	// peak variant for this model — and that nil-ness is itself the signal:
+	// composing it onto the node's seed table REPLACES the seed's peak
+	// wholesale rather than leaving it, so a negotiated flat-rate model is
+	// never rebilled at the seed's peak multiplier (see cost.OrgPrice's
+	// overlay). omitempty keeps an absent peak byte-identical to a
+	// pre-Phase-2 document, so a document with no peak rows still verifies
+	// unchanged on a node built before this field existed.
+	Peak *PeakRates `json:"peak,omitempty"`
 }
 
 // Rate boxes a quoted rate so a caller can state one inline. &0.0 is not
@@ -173,6 +262,56 @@ type PricingPolicyDoc struct {
 	// Signature is base64 (std encoding, matching every other org rail) over
 	// [PricingPolicySigningMessage].
 	Signature string `json:"signature"`
+
+	// rawRows holds the RAW RECEIVED bytes of the body's `rows` field,
+	// populated by [PricingPolicyDoc.UnmarshalJSON] and read only by
+	// [VerifyPricingPolicy] so it can sign over what was ACTUALLY RECEIVED
+	// rather than a re-marshal of this build's typed rows (which silently drops
+	// any row field this build does not know — the fleet-freeze residual, now
+	// closed; see the P1-1 block above and the feed rail's precedent
+	// internal/pricingfeed.Envelope.rawRows).
+	//
+	// It is UNEXPORTED and carries no json tag, so encoding/json never marshals
+	// it: json.Marshal(doc), [PricingPolicyDigest] and the wire bytes are
+	// unchanged. It is nil for a document built programmatically (e.g. by
+	// [SignPricingPolicy] or a test literal); Verify then falls back to the
+	// typed path, which the byte-compat property makes identical.
+	rawRows []byte
+}
+
+// pricingPolicyDocAlias is PricingPolicyDoc's field set without its methods,
+// used by UnmarshalJSON to decode the ordinary fields without recursing back
+// into UnmarshalJSON itself.
+type pricingPolicyDocAlias PricingPolicyDoc
+
+// UnmarshalJSON decodes b into d exactly as the default struct decoding would
+// (every field of the embedded body plus the signature, unknown JSON keys
+// ignored, same as before this method existed), and ADDITIONALLY captures the
+// raw bytes of the body's "rows" array into the unexported rawRows field for
+// [VerifyPricingPolicy] to sign over.
+//
+// This is the ONLY behavioural change on the type. json.Marshal(d) still
+// produces exactly the same bytes as before (rawRows is unexported so it never
+// marshals), so [PricingPolicyDigest], [SignPricingPolicy] and every existing
+// consumer and golden test are unaffected. rawRows is left nil when the
+// document carries no "rows" field, in which case Verify falls back to the
+// typed canonicalisation.
+func (d *PricingPolicyDoc) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, (*pricingPolicyDocAlias)(d)); err != nil {
+		return err
+	}
+	var rowsHolder struct {
+		Rows json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(b, &rowsHolder); err != nil {
+		return err
+	}
+	if len(rowsHolder.Rows) == 0 {
+		d.rawRows = nil
+		return nil
+	}
+	d.rawRows = rowsHolder.Rows
+	return nil
 }
 
 // pricingPolicySigningDomain domain-separates pricing-policy signatures from
@@ -205,6 +344,59 @@ func canonicalPricingBody(body PricingPolicyBody) ([]byte, error) {
 	return raw, nil
 }
 
+// canonicalPricingBodyRaw renders the body's signing bytes from the RAW
+// RECEIVED bytes of the `rows` field, so a row field this build does not know
+// (a future nested "peak" object, say) rides through into the signature
+// untouched instead of being dropped by a typed re-marshal. This is the
+// fleet-no-freeze path (see the P1-1 block).
+//
+// It returns (nil, nil) when rawRows is empty, signalling "no raw bytes were
+// captured; the caller must fall back to the typed [canonicalPricingBody]".
+//
+// BYTE-COMPATIBILITY (the hard requirement). For a document with NO unknown
+// fields this MUST produce bytes identical to canonicalPricingBody(typed body),
+// or a currently-deployed org server's signed document would stop verifying on
+// an upgraded node. It does, because:
+//
+//   - The wrapper marshals the SAME three fields in the SAME order as
+//     PricingPolicyBody — version, then generated_at, then rows — with the same
+//     json tags and types, so the framing bytes match exactly.
+//   - The server signs over json.Marshal(typed body) and serves those exact
+//     compact rows bytes (json.NewEncoder(w).Encode, escapeHTML on). rawRows is
+//     therefore already the byte-for-byte output of json.Marshal on the typed
+//     rows; json.Compact removes only insignificant whitespace (of which there
+//     is none) and the wrapper re-emits the RawMessage verbatim, so the rows
+//     portion is unchanged.
+//
+// The UNLIKE part from the sibling feed rail: this does NOT sort the rows. The
+// org server pre-sorts by model id at authoring time, and canonicalPricingBody
+// never sorted, so re-ordering here would produce DIFFERENT bytes from the
+// signer and break the property above. Received order is preserved.
+//
+// json.Compact is defensive: were a document ever re-serialised with
+// insignificant whitespace between the signer and this verifier, compacting
+// restores the canonical form. It cannot change the escaping of the values the
+// server produced (its input never contains a literal <, > or &), so it does
+// not perturb byte-compatibility.
+func canonicalPricingBodyRaw(version int64, generatedAt string, rawRows []byte) ([]byte, error) {
+	if len(rawRows) == 0 {
+		return nil, nil
+	}
+	var compacted bytes.Buffer
+	if err := json.Compact(&compacted, rawRows); err != nil {
+		return nil, fmt.Errorf("orgcontract.canonicalPricingBodyRaw: %w", err)
+	}
+	raw, err := json.Marshal(struct {
+		Version     int64           `json:"version"`
+		GeneratedAt string          `json:"generated_at"`
+		Rows        json.RawMessage `json:"rows"`
+	}{version, generatedAt, json.RawMessage(compacted.Bytes())})
+	if err != nil {
+		return nil, fmt.Errorf("orgcontract.canonicalPricingBodyRaw: %w", err)
+	}
+	return raw, nil
+}
+
 // PricingPolicySigningMessage returns the canonical bytes signed over a
 // pricing policy body:
 //
@@ -226,15 +418,43 @@ func PricingPolicySigningMessage(orgID string, body PricingPolicyBody) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
+	return pricingSigningHash(orgID, body.Version, raw), nil
+}
+
+// pricingSigningHash frames the domain, org, version and body bytes into the
+// SHA-256 signing message. It is the ONE place the framing lives, so the typed
+// path ([PricingPolicySigningMessage]) and the raw verification path
+// ([pricingVerifyMessage]) can never drift in how they bind the header.
+func pricingSigningHash(orgID string, version int64, bodyJSON []byte) []byte {
 	h := sha256.New()
 	h.Write([]byte(pricingPolicySigningDomain))
 	h.Write([]byte{0})
 	h.Write([]byte(orgID))
 	h.Write([]byte{0})
-	h.Write([]byte(strconv.FormatInt(body.Version, 10)))
+	h.Write([]byte(strconv.FormatInt(version, 10)))
 	h.Write([]byte{0})
-	h.Write(raw)
-	return h.Sum(nil), nil
+	h.Write(bodyJSON)
+	return h.Sum(nil)
+}
+
+// pricingVerifyMessage returns the signing message a VERIFIER must reproduce
+// for doc. When doc carries the raw received `rows` bytes (i.e. it was decoded
+// from JSON, so [PricingPolicyDoc.UnmarshalJSON] populated rawRows) it signs
+// over those bytes via [canonicalPricingBodyRaw], so an unknown future row
+// field verifies instead of freezing the node. Otherwise — a document built
+// programmatically, with no unknowns — it falls back to the typed path, which
+// the byte-compat property makes identical.
+func pricingVerifyMessage(orgID string, doc PricingPolicyDoc) ([]byte, error) {
+	if len(doc.rawRows) > 0 {
+		raw, err := canonicalPricingBodyRaw(doc.Version, doc.GeneratedAt, doc.rawRows)
+		if err != nil {
+			return nil, err
+		}
+		if raw != nil {
+			return pricingSigningHash(orgID, doc.Version, raw), nil
+		}
+	}
+	return PricingPolicySigningMessage(orgID, doc.PricingPolicyBody)
 }
 
 // SignPricingPolicy returns the wire document for one org.
@@ -263,6 +483,13 @@ var ErrPricingPolicySignature = errors.New("orgcontract: pricing policy signatur
 // when PublicKeyPinHash(pub) equals its TOFU pin — this function deliberately
 // does NOT re-check that pin, so the pin stays owned by the one place that
 // established it (internal/orgclient's loadRailPins).
+//
+// When doc was decoded from JSON it verifies over the RAW RECEIVED `rows` bytes
+// ([pricingVerifyMessage] → [canonicalPricingBodyRaw]), so a row field this
+// build does not yet know rides through into the signing message untouched and
+// a future-field document VERIFIES instead of freezing the node (P1-1). A
+// document with no unknown fields signs to identical bytes either way, so every
+// currently deployed server's document still verifies.
 func VerifyPricingPolicy(pub ed25519.PublicKey, orgID string, doc PricingPolicyDoc) error {
 	if len(pub) != ed25519.PublicKeySize {
 		return errors.New("orgcontract.VerifyPricingPolicy: bad public key size")
@@ -271,7 +498,7 @@ func VerifyPricingPolicy(pub ed25519.PublicKey, orgID string, doc PricingPolicyD
 	if err != nil {
 		return fmt.Errorf("orgcontract.VerifyPricingPolicy: %w", err)
 	}
-	msg, err := PricingPolicySigningMessage(orgID, doc.PricingPolicyBody)
+	msg, err := pricingVerifyMessage(orgID, doc)
 	if err != nil {
 		return err
 	}

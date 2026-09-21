@@ -86,6 +86,13 @@ func CorrelateActions(runs []ProcRunRef, actions []ActionRef, window time.Durati
 		}
 	}
 
+	// Parse-derived per-action fields are computed ONCE here, not once per
+	// (process, action) pair: parseInvokedBinaries is a multi-split,
+	// map-allocating parse, and the scoring loop below is O(procs × actions) —
+	// hundreds of millions of pairs on a large session, re-run every background
+	// sweep. Caching collapses the parse to one call per action.
+	prepped := prepActions(actions)
+
 	// Anchors: each unlinked run that directly matches an action.
 	anchors := make(map[string]ActionRef)
 	for i := range runs {
@@ -93,7 +100,7 @@ func CorrelateActions(runs []ProcRunRef, actions []ActionRef, window time.Durati
 		if r.Linked {
 			continue
 		}
-		if a, ok := bestAction(r, actions, window); ok {
+		if a, ok := bestAction(r, prepped, window); ok {
 			anchors[r.ProcessKey] = a
 		}
 	}
@@ -127,66 +134,314 @@ func CorrelateActions(runs []ProcRunRef, actions []ActionRef, window time.Durati
 	return links
 }
 
-// bestAction picks the action that best explains a process: strongest match
-// (the process IS the command's leading binary > the command appears in the
-// argv), tie-broken by closeness in time. Returns ok=false when nothing
-// matches inside the window.
-func bestAction(r *ProcRunRef, actions []ActionRef, window time.Duration) (ActionRef, bool) {
-	var best ActionRef
-	bestScore := 0
-	var bestDelta time.Duration
-	for _, a := range actions {
-		delta := r.StartedAt.Sub(a.Timestamp)
+// preppedAction caches an action's parse-derived fields (the invoked binaries,
+// already normalized for comparison, and the normalized command prefix) so the
+// O(procs × actions) scoring loop computes them once per action instead of once
+// per (process, action) pair.
+type preppedAction struct {
+	ref      ActionRef
+	normBins []string // normExe of each parseInvokedBinaries(ref.Command) entry
+	normCmd  string   // firstN(stripQuotes(lower(ref.Command)), 60); "" when the command is empty
+}
+
+// prepActions precomputes the per-action match inputs once.
+func prepActions(actions []ActionRef) []preppedAction {
+	out := make([]preppedAction, len(actions))
+	for i, a := range actions {
+		bins := parseInvokedBinaries(a.Command)
+		normBins := make([]string, 0, len(bins))
+		for _, b := range bins {
+			normBins = append(normBins, normExe(b))
+		}
+		out[i] = preppedAction{
+			ref:      a,
+			normBins: normBins,
+			normCmd:  firstN(stripQuotes(strings.ToLower(a.Command)), 60),
+		}
+	}
+	return out
+}
+
+// bestAction picks the action that unambiguously explains a process. It
+// gathers every in-window action with a positive match score, keeps only the
+// actions at the top score, and:
+//   - returns the single top action when there is exactly one (unambiguous);
+//   - when several tie at the top score it does NOT time-tie-break (that was a
+//     coin-flip that systematically mis-linked repeated identical commands like
+//     `go build` run twice in the window). It anchors only if EXACTLY ONE of
+//     the tied actions has its normalized command prefix carried in the
+//     process's normalized argv (a wrapper whose argv names the one specific
+//     command instance); otherwise it returns ok=false and the process stays
+//     unlinked, to be reached later by DFS propagation from an unambiguous
+//     ancestor anchor.
+//
+// Returns ok=false when nothing matches inside the window. The process's
+// normalized exe basename and normalized argv are computed once here and
+// threaded into matchScore.
+func bestAction(r *ProcRunRef, actions []preppedAction, window time.Duration) (ActionRef, bool) {
+	ne := normExe(r.ExeBasename)
+	na := stripQuotes(strings.ToLower(r.ArgvPreview))
+	topScore := 0
+	var top []preppedAction
+	for i := range actions {
+		a := &actions[i]
+		delta := r.StartedAt.Sub(a.ref.Timestamp)
 		// The action timestamp is the command START for hook-logged sources
 		// (delta ≈ +small) but the command END for codex (logged at
 		// exec_command_end). For the latter the process started ~Duration
 		// before the action, so widen the back-skew by the recorded duration;
 		// the forward window stays put.
-		backSkew := correlationBackSkew + a.Duration
+		backSkew := correlationBackSkew + a.ref.Duration
 		if delta < -backSkew || delta > window {
 			continue
 		}
-		score := matchScore(r, a)
+		score := matchScore(ne, na, a)
 		if score == 0 {
 			continue
 		}
-		abs := delta
-		if abs < 0 {
-			abs = -abs
-		}
-		if score > bestScore || (score == bestScore && abs < bestDelta) {
-			best, bestScore, bestDelta = a, score, abs
+		if score > topScore {
+			topScore = score
+			top = top[:0]
+			top = append(top, *a)
+		} else if score == topScore {
+			top = append(top, *a)
 		}
 	}
-	return best, bestScore > 0
+	if topScore == 0 || len(top) == 0 {
+		return ActionRef{}, false
+	}
+	if len(top) == 1 {
+		return top[0].ref, true
+	}
+	// Ambiguous: the process ties at the top score across several in-window
+	// actions (e.g. `go build` run more than once, or a standalone command that
+	// also appears as a clause inside a compound one). We do NOT guess. An argv
+	// substring tie-break systematically mis-picks a compound parent's child for
+	// its standalone look-alike — the child's short argv (`go build`) matches the
+	// standalone action, not the compound `cd /x && go build` that actually
+	// spawned it — and a time tie-break was the original coin-flip defect. Leave
+	// the process unlinked; the DFS reaches it from its true parent anchor (the
+	// wrapper whose full argv names the one specific command instance), which is
+	// the only reliable signal here.
+	return ActionRef{}, false
 }
 
 // matchScore rates how well a process matches an action's command: 2 when the
-// process's executable basename is the command's leading binary, 1 when the
-// command string appears in the (scrubbed) argv preview (the `sh -c "<cmd>"`
-// wrapper case), 0 otherwise.
-func matchScore(r *ProcRunRef, a ActionRef) int {
-	if lead := leadingBinary(a.Command); lead != "" && r.ExeBasename != "" && execMatchesLeadingBinary(r.ExeBasename, lead) {
-		return 2
-	}
-	if r.ArgvPreview != "" && a.Command != "" {
-		if strings.Contains(strings.ToLower(r.ArgvPreview), strings.ToLower(firstN(a.Command, 60))) {
-			return 1
+// process's executable basename is one of the real binaries actually invoked
+// by the command (seeing through wrapper/compound commands like
+// `cd /x && go build` or `bash -lc '…'`), 1 when the command string appears in
+// the (quote-normalized) argv preview (the `sh -c "<cmd>"` wrapper case), 0
+// otherwise. ne is the process's precomputed normalized exe basename (normExe);
+// na is its precomputed normalized argv (stripQuotes+lower). Both a.normBins and
+// a.normCmd are precomputed, so this is allocation-free in the hot pair loop.
+func matchScore(ne, na string, a *preppedAction) int {
+	if ne != "" {
+		for _, nb := range a.normBins {
+			if execMatchesNormalized(ne, nb) {
+				return 2
+			}
 		}
+	}
+	if na != "" && a.normCmd != "" && strings.Contains(na, a.normCmd) {
+		return 1
 	}
 	return 0
 }
 
-// execMatchesLeadingBinary reports whether a captured process's exe basename is
-// the command's leading binary, tolerating the two systematic skews between the
-// two sources: the Windows `.exe` suffix (the command says `git`, the captured
-// process is `git.exe`) and an interpreter VERSION tail (the command says
-// `python3`/`node`, the process is `python3.8`/`node18`). Without this, every
-// Windows command and every versioned-interpreter command scores 0 and the
-// process never links to the action that spawned it. Case-insensitive.
-func execMatchesLeadingBinary(exeBasename, cmdLead string) bool {
-	e := strings.ToLower(strings.TrimSuffix(strings.ToLower(exeBasename), ".exe"))
-	c := strings.ToLower(strings.TrimSuffix(strings.ToLower(cmdLead), ".exe"))
+// stripQuotes removes single and double quote characters from s. The argv
+// preview is de-quoted + full-path-expanded by the capture layer while the
+// action command is the raw quoted shell line, so a substring test between the
+// two must first normalize away the quote boundaries that would otherwise break
+// the match (e.g. `bash -lc 'cd /x && go build'` vs `…bash.exe -c cd /x && go
+// build`).
+func stripQuotes(s string) string {
+	if !strings.ContainsAny(s, "'\"") {
+		return s
+	}
+	return strings.Map(func(rr rune) rune {
+		if rr == '\'' || rr == '"' {
+			return -1
+		}
+		return rr
+	}, s)
+}
+
+// shellWrappers are the interpreter/launcher binaries whose real work is an
+// inner command string we recurse into rather than anchoring on the wrapper
+// itself. Compared lowercased with any `.exe` suffix trimmed.
+var shellWrappers = map[string]bool{
+	"bash": true, "sh": true, "zsh": true, "dash": true,
+	"wsl": true, "cmd": true, "powershell": true, "pwsh": true,
+}
+
+// commandBuiltins are shell builtins that spawn no OS process, so they must
+// never anchor a captured process. Compared lowercased with any `.exe` suffix
+// trimmed.
+var commandBuiltins = map[string]bool{
+	"cd": true, "echo": true, "export": true, "set": true, "unset": true,
+	"source": true, ".": true, ":": true, "pushd": true, "popd": true,
+	"true": true, "false": true, "alias": true, "umask": true, "wait": true,
+	"read": true,
+}
+
+// parseInvokedBinaries returns the distinct set of real leading binaries a
+// command actually invokes, seeing through wrapper/compound commands. Real
+// commands are wrapper/builtin-led — `cd /mnt/d && go build`,
+// `wsl.exe -d Ubuntu -- bash -lc 'cd /x && go build'` — so the naive
+// leadingBinary would return `cd`/`wsl.exe` and never the `go` that spawns the
+// process. Pure, defensive, and bounded (recursion depth 3, clause count ~32).
+func parseInvokedBinaries(cmd string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	collectInvokedBinaries(cmd, 0, seen, &out)
+	return out
+}
+
+const (
+	maxInvokedDepth   = 3
+	maxInvokedClauses = 32
+)
+
+func collectInvokedBinaries(cmd string, depth int, seen map[string]bool, out *[]string) {
+	if depth > maxInvokedDepth || cmd == "" {
+		return
+	}
+	clauses := splitTopLevelClauses(cmd)
+	if len(clauses) > maxInvokedClauses {
+		clauses = clauses[:maxInvokedClauses]
+	}
+	for _, clause := range clauses {
+		fields := strings.Fields(clause)
+		lead, rest := skipCommandPrefix(fields)
+		if lead == "" {
+			continue
+		}
+		norm := strings.TrimSuffix(strings.ToLower(lead), ".exe")
+		if shellWrappers[norm] {
+			if inner := innerWrappedCommand(norm, rest); inner != "" {
+				collectInvokedBinaries(inner, depth+1, seen, out)
+			}
+			continue
+		}
+		bin := basename(lead)
+		bn := strings.TrimSuffix(strings.ToLower(bin), ".exe")
+		if commandBuiltins[bn] {
+			continue // builtin: no OS process
+		}
+		if bin != "" && !seen[bin] {
+			seen[bin] = true
+			*out = append(*out, bin)
+		}
+	}
+}
+
+// splitTopLevelClauses splits a command on the shell separators `&&`, `||`,
+// `|`, and `;`. A plain string split is intentional: over-splitting inside a
+// quoted string only produces harmless extra candidate clauses, never a wrong
+// anchor (each clause is still binary-classified).
+func splitTopLevelClauses(cmd string) []string {
+	fields := strings.FieldsFunc(cmd, func(r rune) bool { return r == ';' })
+	var clauses []string
+	for _, f := range fields {
+		clauses = append(clauses, splitOnOperators(f)...)
+	}
+	if len(clauses) == 0 {
+		return []string{cmd}
+	}
+	return clauses
+}
+
+// splitOnOperators splits a single `;`-free segment on `&&`, `||`, and `|`.
+func splitOnOperators(seg string) []string {
+	seg = strings.ReplaceAll(seg, "&&", "\x00")
+	seg = strings.ReplaceAll(seg, "||", "\x00")
+	seg = strings.ReplaceAll(seg, "|", "\x00")
+	parts := strings.Split(seg, "\x00")
+	out := parts[:0]
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// skipCommandPrefix returns the first real executable token and the remaining
+// fields, skipping `sudo`/`env` prefixes and leading `VAR=val` assignments
+// (the same skip logic as leadingBinary). lead is "" when nothing remains.
+func skipCommandPrefix(fields []string) (lead string, rest []string) {
+	for i, f := range fields {
+		if f == "sudo" || f == "env" {
+			continue
+		}
+		if strings.Contains(f, "=") && !strings.HasPrefix(f, "-") && !strings.ContainsAny(f, "/\\") {
+			continue // VAR=val
+		}
+		return f, fields[i+1:]
+	}
+	return "", nil
+}
+
+// innerWrappedCommand extracts the inner command string a shell wrapper runs.
+// For `bash -lc '<inner>'` / `sh -c '<inner>'` it is the argument after a
+// `-c`/`-lc` flag; for `wsl … -- <inner>` it is everything after the `--`; for
+// `cmd /c <inner>` it is everything after `/c`. Surrounding single/double
+// quotes are stripped. "" when no inner command is found.
+func innerWrappedCommand(wrapperNorm string, rest []string) string {
+	// wsl: everything after a `--` separator.
+	if wrapperNorm == "wsl" {
+		for i, f := range rest {
+			if f == "--" {
+				return unquote(strings.Join(rest[i+1:], " "))
+			}
+		}
+	}
+	// cmd: everything after a `/c` (or `/k`) switch.
+	if wrapperNorm == "cmd" {
+		for i, f := range rest {
+			lf := strings.ToLower(f)
+			if lf == "/c" || lf == "/k" {
+				return unquote(strings.Join(rest[i+1:], " "))
+			}
+		}
+	}
+	// POSIX shells (and, as a fallback, any wrapper): the argument after a
+	// `-c`/`-lc`-style flag (a `-`-led token that ends in `c`).
+	for i, f := range rest {
+		if len(f) >= 2 && f[0] == '-' && strings.HasSuffix(f, "c") && !strings.ContainsAny(f[1:], "/\\") {
+			if i+1 < len(rest) {
+				return unquote(strings.Join(rest[i+1:], " "))
+			}
+		}
+	}
+	return ""
+}
+
+// unquote strips a single pair of surrounding single or double quotes from s
+// (after trimming surrounding whitespace), so the inner command recurses clean.
+func unquote(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 {
+		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
+// normExe normalizes an exe basename or command binary for comparison:
+// lowercased with any trailing `.exe` removed. Precomputed once per process and
+// once per action (preppedAction.normBins) so the hot pair loop compares
+// already-normalized strings without re-allocating.
+func normExe(s string) string {
+	return strings.TrimSuffix(strings.ToLower(s), ".exe")
+}
+
+// execMatchesNormalized reports whether two ALREADY-normalized (normExe) names
+// name the same executable, tolerating an interpreter VERSION tail (the command
+// says `python3`/`node`, the process is `python3.8`/`node18`). Callers pass
+// normExe output; it does no allocation of its own.
+func execMatchesNormalized(e, c string) bool {
 	if e == "" || c == "" {
 		return false
 	}
@@ -207,6 +462,17 @@ func execMatchesLeadingBinary(exeBasename, cmdLead string) bool {
 		}
 	}
 	return false
+}
+
+// execMatchesLeadingBinary reports whether a captured process's exe basename is
+// the command's leading binary, tolerating the two systematic skews between the
+// two sources: the Windows `.exe` suffix (the command says `git`, the captured
+// process is `git.exe`) and an interpreter VERSION tail (the command says
+// `python3`/`node`, the process is `python3.8`/`node18`). Without this, every
+// Windows command and every versioned-interpreter command scores 0 and the
+// process never links to the action that spawned it. Case-insensitive.
+func execMatchesLeadingBinary(exeBasename, cmdLead string) bool {
+	return execMatchesNormalized(normExe(exeBasename), normExe(cmdLead))
 }
 
 // leadingBinary returns the basename of the first real executable token in a

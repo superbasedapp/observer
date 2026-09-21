@@ -42,6 +42,7 @@ type messageSortField struct {
 	ElapsedMs      *int64
 	TokensPerSec   *float64
 	ToolCalls      int
+	Attachments    int
 	AICostUSD      float64
 	ToolCostUSD    float64
 	CostUSD        float64
@@ -63,7 +64,7 @@ type messageSortComparator struct {
 
 // messageSortKeys is the allow-list of sortable columns for
 // /api/session/<id>/messages, keyed by the `sort_by` query value. The keys are
-// exactly the 17 columns the dashboard's Messages table renders, in table
+// exactly the 18 columns the dashboard's Messages table renders, in table
 // order. A key that is not in this table falls back to the default
 // (messageSortDefaultKey, ascending) — an unknown column is never an error.
 //
@@ -110,9 +111,16 @@ var messageSortKeys = map[string]messageSortComparator{
 		missing: func(f messageSortField) bool { return f.TokensPerSec == nil },
 	},
 	"tool_call_count": {less: func(a, b messageSortField) bool { return a.ToolCalls < b.ToolCalls }},
-	"ai_cost_usd":     {less: func(a, b messageSortField) bool { return a.AICostUSD < b.AICostUSD }},
-	"tool_cost_usd":   {less: func(a, b messageSortField) bool { return a.ToolCostUSD < b.ToolCostUSD }},
-	"cost_usd":        {less: func(a, b messageSortField) bool { return a.CostUSD < b.CostUSD }},
+	"attachments": {
+		less: func(a, b messageSortField) bool { return a.Attachments < b.Attachments },
+		// Attachments are the exception, not the rule: nearly every turn has
+		// none. Treat "no attachments" as absent so neither direction opens
+		// with a screenful of "-" — same null-sink as effort_level.
+		missing: func(f messageSortField) bool { return f.Attachments == 0 },
+	},
+	"ai_cost_usd":   {less: func(a, b messageSortField) bool { return a.AICostUSD < b.AICostUSD }},
+	"tool_cost_usd": {less: func(a, b messageSortField) bool { return a.ToolCostUSD < b.ToolCostUSD }},
+	"cost_usd":      {less: func(a, b messageSortField) bool { return a.CostUSD < b.CostUSD }},
 	"content": {
 		less: func(a, b messageSortField) bool {
 			return strings.ToLower(a.Content) < strings.ToLower(b.Content)

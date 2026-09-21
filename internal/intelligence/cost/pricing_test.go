@@ -1133,16 +1133,16 @@ func emptyIntelConfigForTest() config.IntelligenceConfig {
 	return config.IntelligenceConfig{}
 }
 
-// TestTable_DeepSeek2026Q2Pricing pins the CURRENT (post 2026-08-16T16:00Z
-// peak/off-peak overhaul) DeepSeek V4 rates (api-docs.deepseek.com,
-// confirmed live 2026-09-07). These are the OFF-PEAK rates — the flat
-// table's representative choice, since peak (2× every dimension,
-// 01:00-04:00 + 06:00-10:00 UTC Mon-Fri) has no field on this struct to
-// express (see the pricing.go comment above the deepseek-v4-flash row).
-// The pre-overhaul flat rate ($0.14/$0.28/$0.0028 flash,
-// $0.435/$0.87/$0.003625 pro) is preserved as history in dated.go — see
-// TestTable_DeepSeekDatedTimeline. Cache hit → CacheRead; no separate
-// cache-write charge (auto-cache, OpenAI-shape).
+// TestTable_DeepSeek2026Q2Pricing pins the CURRENT (post 2026-09-10T16:00Z
+// V4.1-Flash rename + price reduction) DeepSeek V4 rates
+// (api-docs.deepseek.com, confirmed live 2026-09-21). These are the
+// OFF-PEAK rates — the flat table's representative choice; the peak variant
+// (2× every dimension, 01:00-04:00 + 06:00-10:00 UTC Mon-Fri) rides on the
+// Pricing.Peak field and is exercised by the date-aware / peak tests.
+// The flash base dropped to $0.15/$0.60/$0.003 on 2026-09-10 (was
+// $0.22/$0.66/$0.007 from 2026-08-16, itself preserved as history in
+// dated.go — see TestDated_DeepSeekPeakOffPeakOverhaul). Cache hit →
+// CacheRead; no separate cache-write charge (auto-cache, OpenAI-shape).
 //
 // Pins BOTH the first-party rate (bare model id) AND the OpenRouter-
 // served rate (provider-qualified key) so the host-variance is
@@ -1156,13 +1156,15 @@ func TestTable_DeepSeek2026Q2Pricing(t *testing.T) {
 		in, cacheR, out float64
 	}{
 		// First-party (bare ids) — current off-peak rate.
-		{"v4-flash", "deepseek-v4-flash", 0.22, 0.007, 0.66},
-		{"v4-flash-vision-exp", "deepseek-v4-flash-vision-exp", 0.22, 0.007, 0.66},
+		{"v4-flash (legacy name)", "deepseek-v4-flash", 0.15, 0.003, 0.60},
+		{"flash (new canonical)", "deepseek-flash", 0.15, 0.003, 0.60},
+		{"v4.1-flash (repo alias)", "deepseek-v4.1-flash", 0.15, 0.003, 0.60},
+		{"v4-flash-vision-exp", "deepseek-v4-flash-vision-exp", 0.15, 0.003, 0.60},
 		{"v4-pro", "deepseek-v4-pro", 0.66, 0.022, 1.98},
-		{"chat alias → v4-flash", "deepseek-chat", 0.22, 0.007, 0.66},
-		{"reasoner alias → v4-flash", "deepseek-reasoner", 0.22, 0.007, 0.66},
-		{"v4 family → flash", "deepseek-v4", 0.22, 0.007, 0.66},
-		{"deepseek family → flash", "deepseek", 0.22, 0.007, 0.66},
+		{"chat alias → flash", "deepseek-chat", 0.15, 0.003, 0.60},
+		{"reasoner alias → flash", "deepseek-reasoner", 0.15, 0.003, 0.60},
+		{"v4 family → flash", "deepseek-v4", 0.15, 0.003, 0.60},
+		{"deepseek family → flash", "deepseek", 0.15, 0.003, 0.60},
 		// OpenRouter-served (provider-qualified) — different rates,
 		// must NOT collapse to the bare rate via prefix strip.
 		{"OR v4-flash 30% off", "deepseek/deepseek-v4-flash", 0.098, 0.0197, 0.197},
@@ -2353,8 +2355,9 @@ func TestResolveModelKey(t *testing.T) {
 // pricing row, so LookupWithSourceAt fell through to
 // normalizeUnpricedModel's last-resort router-prefix strip
 // (`cline-free/deepseek-v4.1-flash` -> `deepseek-v4.1-flash`), which then
-// family-prefix-matched the PAID `deepseek-v4` row ($0.22 in / $0.66 out
-// per M) and silently repriced a free session. Mirrors the kilo-auto/free
+// resolved a PAID flash rate (a `deepseek-v4` family match at the time; a
+// paid exact `deepseek-v4.1-flash` row exists as of 2026-09-10) and
+// silently repriced a free session. Mirrors the kilo-auto/free
 // precedent: an explicit known-$0 row with a real (non-miss) reliability
 // tag, so the free tier reads as known-priced rather than unknown.
 func TestTable_ClineFreeGatewayTier(t *testing.T) {
@@ -2398,8 +2401,8 @@ func TestTable_ClineFreeGatewayTier(t *testing.T) {
 	if !paidOK {
 		t.Fatalf("LookupWithSource(deepseek-v4-flash) ok=false; want paid rate")
 	}
-	if paid.Input != 0.22 || paid.Output != 0.66 {
-		t.Errorf("LookupWithSource(deepseek-v4-flash) = input %v output %v; want 0.22/0.66 (paid, unaffected by the cline-free fix)", paid.Input, paid.Output)
+	if paid.Input != 0.15 || paid.Output != 0.60 {
+		t.Errorf("LookupWithSource(deepseek-v4-flash) = input %v output %v; want 0.15/0.60 (paid, unaffected by the cline-free fix)", paid.Input, paid.Output)
 	}
 	if paidSrc != PricingSourceExact {
 		t.Errorf("LookupWithSource(deepseek-v4-flash) source=%q; want exact", paidSrc)

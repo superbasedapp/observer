@@ -109,6 +109,47 @@ func locDedupCTESQL(extra string) string {
 	return locDedupCTEPrefix + extra + locDedupCTEMiddle + extra + locDedupCTESuffix
 }
 
+// locSessionFoldFilter builds the per-read session predicate for a session
+// card that folds its sub-agent children in (see LoadSessionLOC). It
+// matches the parent id, each lineage child id, and the claude-code
+// `<parent>:agent:%` id convention (for a child whose session row was
+// never materialized). The returned args are bound ONCE per CTE arm; the
+// caller binds them twice, once for each arm.
+func locSessionFoldFilter(parentID string, childIDs []string) (string, []any) {
+	ids := make([]string, 0, len(childIDs)+1)
+	ids = append(ids, parentID)
+	ids = append(ids, childIDs...)
+	//nolint:gosec // G202: only the ?-placeholder list is concatenated; every value binds via args.
+	clause := " AND (session_id IN (" + placeholders(len(ids)) + ") OR session_id LIKE ? ESCAPE '\\')"
+	args := make([]any, 0, len(ids)+1)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	args = append(args, escapeLikePrefix(parentID)+":agent:%")
+	return clause, args
+}
+
+// escapeLikePrefix escapes LIKE metacharacters (\, %, _) in a literal so it
+// can safely prefix a `%` wildcard under ESCAPE '\'. Session ids are uuids
+// in practice, but escaping keeps a stray `_` in an id from widening the
+// `<parent>:agent:%` match to a sibling session.
+func escapeLikePrefix(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+// locFoldDoubleCountGuard drops a folded sub-agent child row whose
+// (file_path_hash, input_digest) already appears on the parent session, so
+// the parent card never counts one logical change twice — once as a parent
+// inline-sidechain edit and once as a rerouted child edit. Its two ? bind
+// the parent session id: the first scopes "is a folded child row" (a row on
+// a DIFFERENT session), the second scopes the EXISTS to the parent's rows.
+// A row with an empty digest carries no fingerprint and is never dropped.
+const locFoldDoubleCountGuard = `
+		WHERE NOT (fc.session_id <> ? AND fc.input_digest <> '' AND EXISTS (
+		    SELECT 1 FROM file_changes pf
+		    WHERE pf.session_id = ? AND pf.file_path_hash = fc.file_path_hash
+		      AND pf.input_digest = fc.input_digest))`
+
 // LOCBucket is one aggregation cell of a session's line counts: a single
 // (actor, sidechain, category) combination.
 type LOCBucket struct {
@@ -186,21 +227,67 @@ func scanLOCStats(rows *sql.Rows, dest ...any) (loc.Stats, error) {
 }
 
 // LoadSessionLOC returns one session's line counts, deduplicated.
+//
+// SUB-AGENT FOLD (read-time only). A session's own card shows its
+// sub-agents' code lines as SIDECHAIN, not as detached child sessions. The
+// read covers the parent id UNION its sub-agent children:
+//
+//  1. lineage children (SubagentChildIDs): parent_thread_id links with
+//     thread_source 'subagent' — opencode, openclaw, codex, devin, and the
+//     claude-code dedicated-file children whose session row exists;
+//  2. the claude-code `<parent>:agent:<id>` id convention, matched by LIKE,
+//     so a child whose own session row was never materialized still folds
+//     in (its file_changes rows carry the child id).
+//
+// The split is DERIVED HERE, never stored: a folded child row (any row
+// whose session_id is not the parent's) is projected as sidechain via a
+// computed column, so the EXISTING ai_main / ai_sidechain fold in the
+// dashboard splits them with zero UI change. Crucially the child's STORED
+// file_changes.sidechain is left honest, so the SAME child viewed as its
+// OWN session reads its edits as main-line, not sidechain.
+//
+// Viewing a sub-agent child's own card is unaffected: its LIKE pattern and
+// SubagentChildIDs both resolve to nothing, so it shows only its own rows
+// with their stored (main-line) sidechain value.
+//
+// DOUBLE-COUNT GUARD (locFoldDoubleCountGuard): a folded child row whose
+// (file, input_digest) already appears on the parent is dropped, so a
+// parent inline-sidechain edit and a rerouted child edit of the same change
+// can never both count. Proven absent on the reference corpus (a reroute
+// MOVES, it does not copy), kept as cheap insurance.
 func (s *Store) LoadSessionLOC(ctx context.Context, sessionID string) (SessionLOC, error) {
 	out := SessionLOC{SessionID: sessionID, HumanCapture: "none"}
 	if sessionID == "" {
 		return out, nil
 	}
-	args := []any{sessionID, sessionID, sessionID, sessionID}
 
-	bucketQ := locDedupCTE + `
-		SELECT fc.actor, fc.sidechain, fc.category, COUNT(*),
+	childIDs, err := s.SubagentChildIDs(ctx, sessionID)
+	if err != nil {
+		return out, fmt.Errorf("store.LoadSessionLOC: subagent children: %w", err)
+	}
+	sessFilter, filterArgs := locSessionFoldFilter(sessionID, childIDs)
+	// The filter narrows BOTH arms of the collapse CTE, so its args bind
+	// twice (arm 1 first, then arm 2); the double-count guard binds
+	// sessionID twice more, in the outer query.
+	foldArgs := append(append([]any{}, filterArgs...), filterArgs...)
+	guardArgs := func(extraLead ...any) []any {
+		a := append(append([]any{}, foldArgs...), extraLead...)
+		return append(a, sessionID, sessionID)
+	}
+
+	// side is computed, not stored: a folded child row (session_id != the
+	// parent) is sidechain from the parent's vantage; the parent's own rows
+	// keep their stored sidechain value. The CASE's ? binds after the CTE.
+	bucketQ := locDedupCTESQL(sessFilter) + `
+		SELECT fc.actor,
+		       CASE WHEN fc.session_id <> ? THEN 1 ELSE fc.sidechain END AS side,
+		       fc.category, COUNT(*),
 		       SUM(CASE WHEN fc.actor_confidence != 'high' THEN 1 ELSE 0 END),
 		       SUM(fc.overwrite), SUM(fc.deleted_file),` + locStatsColumns + `
-		FROM file_changes fc JOIN keep k ON k.id = fc.id
-		GROUP BY fc.actor, fc.sidechain, fc.category
-		ORDER BY fc.actor, fc.sidechain, fc.category`
-	rows, err := s.db.QueryContext(ctx, bucketQ, args...)
+		FROM file_changes fc JOIN keep k ON k.id = fc.id` + locFoldDoubleCountGuard + `
+		GROUP BY fc.actor, side, fc.category
+		ORDER BY fc.actor, side, fc.category`
+	rows, err := s.db.QueryContext(ctx, bucketQ, guardArgs(sessionID)...)
 	if err != nil {
 		return out, fmt.Errorf("store.LoadSessionLOC: buckets: %w", err)
 	}
@@ -223,12 +310,12 @@ func (s *Store) LoadSessionLOC(ctx context.Context, sessionID string) (SessionLO
 	}
 	_ = rows.Close()
 
-	langQ := locDedupCTE + `
+	langQ := locDedupCTESQL(sessFilter) + `
 		SELECT fc.language, fc.category, COUNT(*),` + locStatsColumns + `
-		FROM file_changes fc JOIN keep k ON k.id = fc.id
+		FROM file_changes fc JOIN keep k ON k.id = fc.id` + locFoldDoubleCountGuard + `
 		GROUP BY fc.language, fc.category
 		ORDER BY 3 DESC`
-	lrows, err := s.db.QueryContext(ctx, langQ, args...)
+	lrows, err := s.db.QueryContext(ctx, langQ, guardArgs()...)
 	if err != nil {
 		return out, fmt.Errorf("store.LoadSessionLOC: languages: %w", err)
 	}
@@ -248,11 +335,11 @@ func (s *Store) LoadSessionLOC(ctx context.Context, sessionID string) (SessionLO
 	}
 	_ = lrows.Close()
 
-	summaryQ := locDedupCTE + `
+	summaryQ := locDedupCTESQL(sessFilter) + `
 		SELECT COUNT(DISTINCT fc.file_path_hash),
 		       COALESCE(MAX(fc.classifier_version), 0)
-		FROM file_changes fc JOIN keep k ON k.id = fc.id`
-	if err := s.db.QueryRowContext(ctx, summaryQ, args...).
+		FROM file_changes fc JOIN keep k ON k.id = fc.id` + locFoldDoubleCountGuard
+	if err := s.db.QueryRowContext(ctx, summaryQ, guardArgs()...).
 		Scan(&out.Files, &out.ClassifierVersion); err != nil {
 		return out, fmt.Errorf("store.LoadSessionLOC: summary: %w", err)
 	}

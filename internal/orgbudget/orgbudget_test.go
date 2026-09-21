@@ -131,9 +131,11 @@ func TestUnreachableOrgKeepsLocalAndSaysSo(t *testing.T) {
 	}
 }
 
-// TestFromOrgOffIsByteIdenticalToTodaysBehaviour pins the default: with the
-// opt-in off, a body in hand changes nothing at all.
-func TestFromOrgOffIsByteIdenticalToTodaysBehaviour(t *testing.T) {
+// TestFromOrgOffIsByteIdenticalToPreFeatureBehaviour pins the OPT-OUT path:
+// FromOrg now defaults ON (operator decision 2026-09-20), but a node that sets
+// from_org=false must, with a body in hand, still change nothing at all — the
+// off state remains byte-identical to a build that never had this feature.
+func TestFromOrgOffIsByteIdenticalToPreFeatureBehaviour(t *testing.T) {
 	t.Parallel()
 
 	local := Thresholds{MonthlyTokens: 5_000_000}

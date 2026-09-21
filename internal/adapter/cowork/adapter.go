@@ -333,6 +333,27 @@ type rawContentBlock struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
 	IsError   bool            `json:"is_error"`
+	// Source is the attachment envelope on an image/document block
+	// ({type:"base64", media_type, data}). Only media_type is read
+	// (Issue 1 user-attachment capture); the base64 `data` is never
+	// decoded or stored.
+	Source json.RawMessage `json:"source"`
+}
+
+// imageMediaType reads the media_type off an image/document block's
+// source envelope ("image/png"), or "" when absent. Reads ONLY the
+// media type, never the base64 data.
+func (b rawContentBlock) imageMediaType() string {
+	if len(b.Source) == 0 {
+		return ""
+	}
+	var src struct {
+		MediaType string `json:"media_type"`
+	}
+	if err := json.Unmarshal(b.Source, &src); err == nil {
+		return src.MediaType
+	}
+	return ""
 }
 
 // sidecar is the canonical per-local-instance metadata at
@@ -737,16 +758,23 @@ func (a *Adapter) handleUser(
 	// marker row instead so the dashboard shows the user activity.
 	// Image cost lands on the next result.modelUsage.input bucket;
 	// this row is observability-only.
+	// Structured user-attachment metadata (Issue 1): the images/documents
+	// the user attached to this turn (kind + optional media_type),
+	// captured for image-only turns and turns that also carry text.
+	// Metadata only — no bytes, no filename.
+	var atts []models.UserAttachment
+	for _, b := range blocks {
+		switch b.Type {
+		case "image":
+			atts = append(atts, models.UserAttachment{Kind: "image", MediaType: b.imageMediaType()})
+		case "document":
+			atts = append(atts, models.UserAttachment{Kind: "file", MediaType: b.imageMediaType()})
+		}
+	}
 	text := userPromptText(blocks)
 	if text == "" {
-		images := 0
-		for _, b := range blocks {
-			if b.Type == "image" {
-				images++
-			}
-		}
-		if images > 0 {
-			text = fmt.Sprintf("[user sent %d image attachment(s)]", images)
+		if len(atts) > 0 {
+			text = fmt.Sprintf("[user sent %d image attachment(s)]", len(atts))
 		} else {
 			return
 		}
@@ -770,6 +798,7 @@ func (a *Adapter) handleUser(
 		MessageID:          "user:" + rec.UUID,
 		IsSidechain:        isSidechain,
 		Metadata:           coworkMetadata(sc, "", "", 0, 0, 0),
+		UserAttachments:    atts,
 	})
 }
 

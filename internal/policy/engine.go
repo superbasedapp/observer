@@ -313,7 +313,12 @@ func New(cfg Config) (*Engine, error) {
 		off := setOf(cfg.Disabled...)
 		kept := rules[:0]
 		for i := range rules {
-			if !off[rules[i].ID] || protectedBudgetRule(cfg, &rules[i]) {
+			// protectedIntegrityRule is a HARD BACKSTOP alongside
+			// protectedBudgetRule: R-160/R-161 can never be disabled by
+			// any layer below the org, and every disable (config/user/
+			// trusted-project) funnels to cfg.Disabled, so keeping the row
+			// here closes the whole class even if a merge path missed it.
+			if !off[rules[i].ID] || protectedBudgetRule(cfg, &rules[i]) || protectedIntegrityRule(&rules[i]) {
 				kept = append(kept, rules[i])
 			}
 		}
@@ -331,13 +336,14 @@ func New(cfg Config) (*Engine, error) {
 				continue
 			}
 			matched = true
-			if ov.Decision != nil && ov.Source != SourceOrgBudget &&
-				protectedBudgetRule(cfg, &rules[i]) &&
-				*ov.Decision < rules[i].Enforce {
-				// A local/user/project override cannot weaken an
-				// organization-authoritative hard budget. The internal
-				// org-budget soft-window override is the one exception:
-				// it carries the administrator-authored per-window mode.
+			if ov.Decision != nil && *ov.Decision < rules[i].Enforce &&
+				overrideWeakensProtected(cfg, &rules[i], ov) {
+				// A below-org override cannot WEAKEN a protected row: an
+				// organization-authoritative hard budget, or one of the
+				// guard's own integrity rules (R-160/R-161). An ESCALATION
+				// still passes — a stricter decision is not < the current
+				// enforce stance. This is a hard backstop; the guard merge
+				// layer already drops these with a surfaced issue.
 				continue
 			}
 			if ov.Decision != nil {
@@ -422,6 +428,55 @@ func (e *Engine) BudgetRuleProtected(ruleID string) bool {
 // Policy files cannot author this source; their layer source is assigned by
 // the guard parser.
 const SourceOrgBudget = "org_budget"
+
+// IsIntegrityRuleID reports whether id names one of the guard's own
+// INTEGRITY rules — R-160 and R-161. It is a small, closed set:
+//
+//   - R-160 denies an agent modifying observer/guard/hook configuration,
+//     which INCLUDES the ~/.observer trusted per-project policy dir. It is
+//     the guard's own tamper-evidence, and the entire trusted-layer trust
+//     model depends on it: the dashboard-authored trusted layer is a
+//     weaken-allowed layer that is safe ONLY because it lives under
+//     ~/.observer where R-160 keeps the agent out. Let R-160 be disabled or
+//     relaxed for one project and an agent can write ~/.observer/** freely —
+//     a global blast radius.
+//   - R-161 flags an agent modifying the in-repo project guard file, the
+//     escalate-only, agent-writable layer whose one-way trust the merge
+//     model rests on.
+//
+// Neither may be DISABLED or RELAXED by any layer BELOW the org (config,
+// user, trusted-project); the org may still define or escalate them (the
+// org layer is escalate-only anyway). Exported so the guard merge layer can
+// enforce this floor at every below-org layer by ID without importing the
+// rule rows. Widening this set is a deliberate edit, never an accident.
+func IsIntegrityRuleID(id string) bool {
+	return id == "R-160" || id == "R-161"
+}
+
+// protectedIntegrityRule reports whether THIS ROW is an integrity rule
+// (R-160/R-161). It is the row-taking companion to IsIntegrityRuleID used
+// by New's disable filter and override loop as a hard backstop: a below-org
+// layer may never disable or weaken these two, mirroring protectedBudgetRule
+// but with no runtime provenance — the protection is intrinsic to the ID.
+func protectedIntegrityRule(r *Rule) bool {
+	return r != nil && IsIntegrityRuleID(r.ID)
+}
+
+// overrideWeakensProtected reports whether ov (which the caller has already
+// checked carries a decision strictly weaker than r's enforce stance) targets
+// a row no below-org layer may weaken: an organization-authoritative hard
+// budget row (protectedBudgetRule — the internal org-budget soft-window
+// override, SourceOrgBudget, is the one exception, as it carries the admin's
+// own per-window mode) or one of the guard's own integrity rules
+// (protectedIntegrityRule, R-160/R-161, which have no such exception because
+// the org never weakens). Folding both weaken-backstops into one predicate
+// keeps New's override loop a single branch.
+func overrideWeakensProtected(cfg Config, r *Rule, ov Override) bool {
+	if protectedIntegrityRule(r) {
+		return true
+	}
+	return ov.Source != SourceOrgBudget && protectedBudgetRule(cfg, r)
+}
 
 // protectedBudgetRule reports whether THIS ROW is an organization-authorized
 // blocking budget row: one a local [guard.rules].disable may not remove, a

@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { HeroStat, PageHeader, Pill, SegmentedControl, Tooltip } from "@/components/primitives";
+import {
+  ComboChip,
+  type ComboOption,
+  HeroStat,
+  PageHeader,
+  Pill,
+  SegmentedControl,
+  Tooltip,
+} from "@/components/primitives";
 import { HelpInd } from "@/components/HelpInd";
 import { CopyOnClick } from "@/components/CopyOnClick";
 import { ShieldIcon } from "@/components/icons";
@@ -9,6 +17,14 @@ import { useApi, type ApiState } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
 import { markRestartPending } from "@/lib/restartPending";
 import { fmtClock, fmtDateTime, fmtShortId } from "@/lib/format";
+import type {
+  GuardPolicyLint,
+  GuardPolicyView,
+  GuardRule,
+  GuardRulesResponse,
+  ProjectsResponse,
+} from "@/lib/types";
+import { RuleManager } from "./security/RuleManager";
 
 // Security page (guard spec §11.2, G7): guard posture header, the
 // verdict timeline with severity/decision filters, the §6.5
@@ -70,25 +86,8 @@ type ConformanceEntry = {
 
 type ConformanceResponse = { entries: ConformanceEntry[] | null };
 
-// GuardRule is one /api/guard/rules catalog row — the rule's
-// definition (doc) and remediation hint (advice). Multi-row IDs
-// (e.g. R-152's write + read rows) arrive once per row.
-type GuardRule = {
-  id: string;
-  category?: string;
-  severity?: string;
-  observe?: string;
-  enforce?: string;
-  doc: string;
-  advice?: string;
-  // Effective-view extras (G1.5): which policy layer defined the rule
-  // (builtin | user | project | org) and whether it's per-rule
-  // enforced even in observe mode.
-  source?: string;
-  enforced?: boolean;
-};
-
-type GuardRulesResponse = { rules: GuardRule[] | null };
+// GuardRule / GuardRulesResponse now live in @/lib/types (shared with the
+// new RuleManager.tsx structured editor — see the import above).
 
 // GuardSimulate is GET /api/guard/simulate — the pre-enforce evidence
 // replay (G1.2). would_block counts deny/ask-class verdicts under the
@@ -133,57 +132,25 @@ type GuardMCPServer = {
 
 type GuardMCPResponse = { servers: GuardMCPServer[] | null; issues: string[] | null };
 
-// GuardPolicyLayer is one /api/guard/policy layers row (G2.2): a
-// policy source in effect (or configured but absent). counts_known is
-// false for the org bundle — a signed JSON envelope we don't
-// structurally count rather than showing a misleading zero.
-type GuardPolicyLayer = {
-  layer: string;
-  path: string;
-  exists: boolean;
-  editable: boolean;
-  version?: string;
-  content_hash?: string;
-  counts_known: boolean;
-  rules: number;
-  overrides: number;
-  problems?: string[] | null;
-  project_root?: string;
-};
-
-type GuardPolicyView = {
-  layers: GuardPolicyLayer[] | null;
-  load_issues: string[] | null;
-  user: {
-    path: string;
-    exists: boolean;
-    content: string;
-    writable: boolean;
-    backup_exists: boolean;
-    backup_path: string;
-  };
-  project_policy_relpath: string;
-};
-
-type GuardPolicyLint = {
-  ok: boolean;
-  problems: string[] | null;
-  rules: number;
-  overrides: number;
-};
+// GuardPolicyLayer / GuardPolicyView / GuardPolicyLint now live in
+// @/lib/types (extended for the trusted_project layer — see the import
+// above); RuleManager.tsx and PolicyLayersCard below share them.
 
 // ApproveSeed hands a verdict row to the Approvals card's grant form
 // ("approve…" on a timeline row pre-fills rule + session).
 type ApproveSeed = { rule: string; session: string };
 
-const SEVERITY_VARIANT: Record<string, "neutral" | "warn" | "danger" | "info"> = {
+// Exported so RuleManager.tsx (the structured rule editor, mounted below)
+// renders the exact same severity/decision colors as the verdict timeline
+// and RuleCell rather than a second hand-picked palette.
+export const SEVERITY_VARIANT: Record<string, "neutral" | "warn" | "danger" | "info"> = {
   info: "neutral",
   warn: "info",
   high: "warn",
   critical: "danger",
 };
 
-const DECISION_VARIANT: Record<string, "neutral" | "warn" | "danger" | "accent"> = {
+export const DECISION_VARIANT: Record<string, "neutral" | "warn" | "danger" | "accent"> = {
   flag: "warn",
   ask: "accent",
   deny: "danger",
@@ -222,6 +189,12 @@ export function SecurityPage() {
   // the param and serve the built-in catalog (graceful).
   const rulesApi = useApi<GuardRulesResponse>("/api/guard/rules", { effective: 1 });
   const approvals = useApi<GuardApprovalsResponse>("/api/guard/approvals");
+  // Lifted here (rather than fetched inside RuleManager/PolicyLayersCard
+  // separately) so the structured rule manager and the raw-TOML advanced
+  // editor below it share ONE /api/guard/policy read — a save in either one
+  // reloads the same ApiState the other reads from.
+  const policyApi = useApi<GuardPolicyView>("/api/guard/policy");
+  const projectsApi = useApi<ProjectsResponse>("/api/projects");
 
   // rule_id → catalog rows, so the timeline can show each verdict's
   // actual definition instead of a bare "R-151". Unknown IDs (user/
@@ -313,6 +286,7 @@ export function SecurityPage() {
         <GuardModeCard sum={sum} loading={summary.loading} />
         <ApprovalsCard
           api={approvals}
+          ruleDefs={ruleDefs}
           seed={approveSeed}
           onSeedConsumed={() => setApproveSeed(null)}
         />
@@ -479,7 +453,12 @@ export function SecurityPage() {
                         <span className="inline-flex items-center gap-1">
                           <CopyOnClick value={ev.session_id} title="Copy the full session id">
                             <Link
-                              to={`/sessions?session=${encodeURIComponent(ev.session_id)}`}
+                              // Deep-links straight to the Messages tab (LOC/guardmsg/APM
+                              // followups plan Item 2.4): that verdict's session drawer now
+                              // interleaves this exact rule's block into its timeline, so a
+                              // reviewer following this link from the global verdict table
+                              // lands where the block actually happened, not on Overview.
+                              to={`/sessions?session=${encodeURIComponent(ev.session_id)}&tab=messages`}
                               className="font-mono text-[10.5px] text-accent underline decoration-dotted decoration-accent/50 underline-offset-[3px] hover:decoration-accent"
                               title={ev.session_id}
                             >
@@ -560,7 +539,9 @@ export function SecurityPage() {
         )}
       </section>
 
-      <PolicyLayersCard />
+      <RuleManager rulesApi={rulesApi} policyApi={policyApi} projects={projectsApi.data?.rows ?? []} />
+
+      <PolicyLayersCard api={policyApi} />
 
       <EvidenceCard />
 
@@ -852,8 +833,9 @@ function MCPPinsCard() {
 // (doc one-liner primary, mono ID + category secondary) with the full
 // per-row breakdown — severity, observe/enforce decisions, remediation
 // advice — in a hover tooltip. Falls back to the bare mono ID when the
-// catalog has no entry for it.
-function RuleCell({ id, category, defs }: { id: string; category?: string; defs?: GuardRule[] }) {
+// catalog has no entry for it. Exported for RuleManager.tsx's structured
+// rule list, which reuses it verbatim rather than a second cell renderer.
+export function RuleCell({ id, category, defs }: { id: string; category?: string; defs?: GuardRule[] }) {
   if (!defs || defs.length === 0) {
     return (
       <>
@@ -1530,16 +1512,21 @@ const POLICY_PLACEHOLDER = `# ~/.observer/guard-policy.toml - your user policy l
 # rule    = "R-110"
 # enforce = true`;
 
-// PolicyLayersCard - the G2.2 policy surface (operator checkpoint Q3:
-// FULL editor). The layers table shows every policy source in effect
-// (org bundle, user file, per-project files) with counts + lint
-// findings; the editor edits the USER layer only - project files
-// belong to their repos (least-trusted; agent edits are R-161) and
-// the org bundle arrives signed. Saves are lint-gated (the same
-// strict parse `observer guard lint` runs; the server refuses a
-// malformed file 422), keep a .bak, and are restart-honest.
-function PolicyLayersCard() {
-  const api = useApi<GuardPolicyView>("/api/guard/policy");
+// PolicyLayersCard - the ADVANCED / raw-TOML fallback beneath RuleManager's
+// structured editor (docs/plans/guard-rule-management-ui-plan-2026-09-21.md
+// §6 Track B). The layers table shows every policy source in effect (org
+// bundle, user file, per-project files) with counts + lint findings; the
+// editor edits the USER layer only - project files belong to their repos
+// (least-trusted; agent edits are R-161) and the org bundle arrives signed.
+// This is the escape hatch RuleManager points at when a layer's content
+// doesn't round-trip through parseRules (a hand-authored construct the
+// structured form can't represent) — it stays a fully working editor on its
+// own, independent of RuleManager's parse success. Saves are lint-gated (the
+// same strict parse `observer guard lint` runs; the server refuses a
+// malformed file 422), keep a .bak, and are restart-honest. `api` is shared
+// with RuleManager (lifted to SecurityPage) so a save in either place
+// reloads the same view.
+function PolicyLayersCard({ api }: { api: ApiState<GuardPolicyView> }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
   const [lint, setLint] = useState<GuardPolicyLint | null>(null);
@@ -1631,7 +1618,7 @@ function PolicyLayersCard() {
     <section className="rounded-3 border border-line-1 bg-bg-1 p-4">
       <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-[13px] font-semibold text-fg-0">
-          Policy layers<HelpInd id="card.security_policy_editor" />
+          Advanced: policy layers (raw TOML)<HelpInd id="card.security_policy_editor" />
         </h2>
         <div className="flex items-center gap-2">
           {saved && <Pill variant="warn">saved - restart the daemon to apply</Pill>}
@@ -1656,7 +1643,9 @@ function PolicyLayersCard() {
       <p className="mb-3 max-w-3xl text-[11.5px] leading-snug text-fg-3">
         Effective policy = merge(org bundle, your user file, project files, built-ins) - strictness
         is one-way; a lower layer can escalate but never relax. Only the user layer is editable
-        here: project files belong to their repos, the org bundle arrives signed.
+        here: project files belong to their repos, the org bundle arrives signed. Most day-to-day
+        rule work belongs in the Rule manager above — reach for this raw editor for constructs it
+        doesn't support (or when its structured view says a file doesn't round-trip).
       </p>
       {confirmRestore && (
         <div className="mb-3 rounded-2 border border-line-1 bg-bg-2 p-3 text-[11.5px]">
@@ -1799,16 +1788,30 @@ const TTL_OPTIONS: { value: number; label: string }[] = [
 // with revoke, plus the grant form. "approve…" on a timeline row
 // pre-fills rule + session here. Grants are DB writes through the
 // same store seam the CLI uses — live immediately, no restart.
+// CUSTOM_RULE_OPTION is the combobox sentinel that reveals the free-text
+// rule-id input — the escape hatch for granting an exception against a
+// user/project/org custom rule that isn't in the effective catalog.
+const CUSTOM_RULE_OPTION = "__custom__";
+
 function ApprovalsCard({
   api,
+  ruleDefs,
   seed,
   onSeedConsumed,
 }: {
   api: ApiState<GuardApprovalsResponse>;
+  // The effective /api/guard/rules catalog, keyed by id (same Map the
+  // timeline's RuleCell reads) — so the grant form can offer a picker of
+  // real rules with their descriptions instead of a bare code field.
+  ruleDefs: Map<string, GuardRule[]>;
   seed: ApproveSeed | null;
   onSeedConsumed: () => void;
 }) {
   const [ruleId, setRuleId] = useState("");
+  // custom = the free-text escape hatch is active (rule id typed by hand,
+  // not chosen from the catalog). Kept distinct from ruleId so an empty
+  // custom field and an empty catalog selection read differently.
+  const [custom, setCustom] = useState(false);
   const [scope, setScope] = useState<"session" | "project" | "global">("session");
   const [sessionId, setSessionId] = useState("");
   const [ttl, setTtl] = useState(24);
@@ -1819,11 +1822,52 @@ function ApprovalsCard({
   useEffect(() => {
     if (!seed) return;
     setRuleId(seed.rule);
+    // A seeded rule that isn't in the effective catalog (older daemon, or a
+    // user/project/org custom rule) drops into the free-text escape hatch.
+    setCustom(seed.rule ? !ruleDefs.has(seed.rule) : false);
     setSessionId(seed.session);
     setScope(seed.session ? "session" : "global");
     setFormOpen(true);
     onSeedConsumed();
-  }, [seed, onSeedConsumed]);
+  }, [seed, onSeedConsumed, ruleDefs]);
+
+  // One combobox option per unique catalog rule id, grouped by category and
+  // sorted (category, then id). Label is "<id> — <doc>"; searchable folds in
+  // id + doc + category so type-ahead matches any of them. A trailing
+  // sentinel reveals the custom free-text field.
+  const ruleOptions = useMemo<ComboOption[]>(() => {
+    const entries = Array.from(ruleDefs.entries()).map(([id, defs]) => {
+      const primary = defs[0];
+      const category = primary?.category ?? "";
+      const doc = primary?.doc ?? "";
+      return { id, category, doc };
+    });
+    entries.sort(
+      (a, b) => a.category.localeCompare(b.category) || a.id.localeCompare(b.id),
+    );
+    const opts: ComboOption[] = entries.map((e) => ({
+      value: e.id,
+      label: (
+        <span className="min-w-0">
+          <span className="font-mono text-fg-1">{e.id}</span>
+          {e.doc && <span className="text-fg-3"> — {e.doc}</span>}
+        </span>
+      ),
+      searchable: `${e.id} ${e.doc} ${e.category}`.toLowerCase(),
+      groupLabel: e.category || "other",
+    }));
+    opts.push({
+      value: CUSTOM_RULE_OPTION,
+      label: <span className="text-fg-2">Other / custom rule id…</span>,
+      searchable: "other custom rule id",
+      groupLabel: " ", // sorts last; blank heading keeps it visually apart
+    });
+    return opts;
+  }, [ruleDefs]);
+
+  // The rule currently chosen from the catalog (if any) — drives the
+  // explanation panel beneath the picker.
+  const selectedDefs = !custom && ruleId ? ruleDefs.get(ruleId) : undefined;
 
   const rows = api.data?.approvals ?? [];
 
@@ -1842,6 +1886,7 @@ function ApprovalsCard({
         }),
       });
       setRuleId("");
+      setCustom(false);
       setSessionId("");
       setFormOpen(false);
       api.reload();
@@ -1883,12 +1928,43 @@ function ApprovalsCard({
         <div className="mb-3 space-y-2 rounded-2 border border-line-1 bg-bg-2 p-3 text-[11.5px]">
           <div className="flex flex-wrap items-center gap-2">
             <label className="text-fg-3">Rule</label>
-            <input
-              className="w-28 rounded-2 border border-line-1 bg-bg-1 px-2 py-1 font-mono text-[11px] text-fg-1"
-              value={ruleId}
-              onChange={(e) => setRuleId(e.target.value)}
-              placeholder="R-151"
+            <ComboChip
+              label="Rule"
+              value={custom ? CUSTOM_RULE_OPTION : ruleId}
+              options={ruleOptions}
+              placeholder="Search rules…"
+              popoverWidth={420}
+              emptyHint="No matching rules."
+              buttonValueRender={(sel) =>
+                custom ? (
+                  <b className="font-semibold text-fg-0">Custom id</b>
+                ) : sel ? (
+                  <b className="font-mono font-semibold text-fg-0">{sel.value}</b>
+                ) : (
+                  <b className="font-semibold text-fg-3">Pick a rule…</b>
+                )
+              }
+              onChange={(next) => {
+                if (next === CUSTOM_RULE_OPTION) {
+                  setCustom(true);
+                  setRuleId("");
+                } else {
+                  setCustom(false);
+                  setRuleId(next);
+                }
+              }}
             />
+            {custom && (
+              <input
+                className="w-28 rounded-2 border border-line-1 bg-bg-1 px-2 py-1 font-mono text-[11px] text-fg-1"
+                value={ruleId}
+                onChange={(e) => setRuleId(e.target.value)}
+                placeholder="R-151"
+                aria-label="Custom rule id"
+                // eslint-disable-next-line jsx-a11y/no-autofocus
+                autoFocus
+              />
+            )}
             <SegmentedControl<"session" | "project" | "global">
               size="sm"
               options={[
@@ -1911,6 +1987,34 @@ function ApprovalsCard({
               ))}
             </select>
           </div>
+          {selectedDefs && selectedDefs.length > 0 && (
+            // The chosen rule's definition, reusing RuleCell's tooltip idiom
+            // (doc + severity + observe/enforce + advice) so the operator
+            // sees exactly what they're granting an exception for.
+            <div className="rounded-2 border border-line-1/70 bg-bg-1 p-2 text-[11px] leading-snug">
+              {selectedDefs.map((d, i) => (
+                <div key={i} className="mb-1.5 last:mb-0">
+                  <span className="text-fg-1">{d.doc}</span>
+                  <span className="block text-fg-3">
+                    {d.severity} · observe → {d.observe} · enforce → {d.enforce}
+                    {d.enforced ? " · per-rule enforced" : ""}
+                  </span>
+                  {d.source && d.source !== "builtin" && (
+                    <span className="block text-fg-3">
+                      defined in the {d.source} policy layer
+                    </span>
+                  )}
+                  {d.advice && <span className="block text-fg-3">{d.advice}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {custom && (
+            <div className="text-[10.5px] text-fg-3">
+              Granting for a rule id not in the effective catalog (a user, project, or org
+              custom rule). The exception applies to whatever verdict carries this exact id.
+            </div>
+          )}
           {scope !== "global" && (
             <div className="flex flex-wrap items-center gap-2">
               <label className="text-fg-3">Session id</label>

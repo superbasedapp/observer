@@ -125,6 +125,17 @@ func (p OrgPrice) overlay(base Pricing) Pricing {
 		}
 	}
 	out.LongContextThreshold = p.LongContextThreshold
+	// Peak is a WHOLESALE REPLACE, unconditional, mirroring the
+	// LongContextThreshold precedent above — never an org.Set-gated field
+	// like the scalar rates. There is deliberately no OrgPriceSet.Peak bool:
+	// "nil inherits the seed's peak" sounds like the safe default but is
+	// backwards here. An org that negotiates a model's base rate almost
+	// always negotiates it FLAT (no time-of-day premium); if a nil org.Peak
+	// inherited the seed's peak variant, that negotiated flat rate would
+	// silently double during the seed's peak window — a rebill the org never
+	// agreed to. So a quoted org row REPLACES the seed's peak with whatever
+	// the org row carries, including nil (no peak at all). Plan §R2 R1/N2.
+	out.Peak = p.Peak
 	return out
 }
 

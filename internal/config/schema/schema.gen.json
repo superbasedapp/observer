@@ -833,7 +833,7 @@
       "field_path": "Pricing.Feed",
       "owner": "github.com/marmutapp/superbased-observer/internal/config.PricingFeedConfig",
       "block": "pricing",
-      "doc": "PricingFeedConfig is the [pricing.feed] surface — the OPT-IN pricing feed\nclient for a STANDALONE (non-enrolled) node (plan §C.3). It is the ONLY case\nthat needs a new node->internet path, and it is OFF by default in every path\nto preserve the zero-egress-by-default invariant (D3): with the zero value,\nand with this Default() seed, the node makes no feed call.\n\nAn ENROLLED node (individual or managed) ignores this block entirely — it\nreceives prices through the org rail, which is the one authority per enrolled\nnode (§C.3/D8); the standalone-vs-enrolled resolution lives next to\norgpricing.Mode (Wave N), not here.\n\nSame partial-merge invariant as CacheTrackConfig/PredictConfig: an install\nwith no [pricing.feed] section gets the Default() seed (URL/interval set,\nEnabled=false), NOT a zero-valued struct, because Load() starts from\nDefault() and unmarshals TOML on top. LOCAL-ONLY, never distributed."
+      "doc": "PricingFeedConfig is the [pricing.feed] surface — the pricing feed client for\na STANDALONE (non-enrolled) node (plan §C.3). It is the case that needs a new\nnode->internet path, and it is ON by default (operator decision 2026-09-20,\nreversing the former zero-egress-by-default invariant D3): with this Default()\nseed the node fetches prices from the public feed so its costing tracks the\nTokenomics source without a per-node opt-in. A standalone operator who wants\nzero egress opts OUT with `[pricing.feed] enabled = false`.\n\nAn ENROLLED node (individual or managed) ignores this block entirely — it\nreceives prices through the org rail, which is the one authority per enrolled\nnode (§C.3/D8); the standalone-vs-enrolled resolution lives next to\norgpricing.Mode (Wave N), not here.\n\nSame partial-merge invariant as CacheTrackConfig/PredictConfig: an install\nwith no [pricing.feed] section gets the Default() seed (URL/interval set,\nEnabled=true), NOT a zero-valued struct, because Load() starts from\nDefault() and unmarshals TOML on top. LOCAL-ONLY, never distributed."
     }
   ],
   "leaves": [
@@ -6602,6 +6602,22 @@
       "doc": "ProjectPolicy is the project policy file location relative to\neach project root. Default \".observer/guard-policy.toml\"."
     },
     {
+      "path": "guard.rules.trusted_project_dir",
+      "field_path": "Guard.Rules.TrustedProjectDir",
+      "kind": "string",
+      "go_type": "string",
+      "owner": "github.com/marmutapp/superbased-observer/internal/config.GuardRulesConfig",
+      "field": "TrustedProjectDir",
+      "block": "guard",
+      "table": "guard.rules",
+      "tier": "sensitive",
+      "restart": "restart",
+      "section": "guard",
+      "prominence": "primary",
+      "secret": false,
+      "doc": "TrustedProjectDir is the daemon-local directory holding the\ndashboard-authored trusted per-project policy files (one file per\nproject root, named <sha256(canonical root)[:16]>.toml). Default\n\"~/.observer/guard-project-policies\". Unlike ProjectPolicy (the\nin-repo, agent-writable, escalate-only file), files under this\ndirectory sit inside R-160's ~/.observer/** deny surface — the\nagent cannot write them — so they carry user-level weaken/disable\nsemantics scoped to one project (never below the org floor). The\ndashboard writes them directly; guard loads them in the per-project\nengine build. Empty disables the trusted per-project layer."
+    },
+    {
       "path": "guard.rules.org_bundle",
       "field_path": "Guard.Rules.OrgBundle",
       "kind": "string",
@@ -6962,7 +6978,7 @@
       "section": "guard",
       "prominence": "primary",
       "secret": false,
-      "doc": "FromOrg opts this node into applying the ORGANIZATION's budget, fetched\nper caller from GET /api/agent/budget (org-budget plan §3.3c). Default\nfalse: with it off the node behaves byte-identically to a build that\nnever had this feature.\n\nWith it on, the composition is capability-branched, never\nsource-branched: on an INDIVIDUAL node the org's numbers may only LOWER\nthe four thresholds above (govern.LowerFloat / LowerInt — min with the\n\"0 means unset\" rule); on a MANAGED node whose grant carries\ngovern.AuthorityEnforceBudget the org's numbers and enforcement mode are\nauthoritative. Both this key and Hard are pinnable through node\ngovernance (internal/policyfam/nodegov.PinnableKeys) so an org can set\nthe fleet's POSTURE; the NUMBERS never ride the pin rail, because a pin\nis one value for a whole fleet and a cap is per developer.\n\nThe node-side fetch/compose/enforce half is wave W3b; this key exists in\nW3a because the governance vocabulary row must resolve against a real\nconfig key (TestEveryPinnableKeyResolvesInConfig)."
+      "doc": "FromOrg opts this node into applying the ORGANIZATION's budget, fetched\nper caller from GET /api/agent/budget (org-budget plan §3.3c). Default\nTRUE (operator decision 2026-09-20): an enrolled node applies its org's\npricing/budget by default — the node-side companion to the default-on\npricing feed. Set it false to opt OUT, which makes the node behave\nbyte-identically to a build that never had this feature.\n\nWith it on, the composition is capability-branched, never\nsource-branched: on an INDIVIDUAL node the org's numbers may only LOWER\nthe four thresholds above (govern.LowerFloat / LowerInt — min with the\n\"0 means unset\" rule); on a MANAGED node whose grant carries\ngovern.AuthorityEnforceBudget the org's numbers and enforcement mode are\nauthoritative. Both this key and Hard are pinnable through node\ngovernance (internal/policyfam/nodegov.PinnableKeys) so an org can set\nthe fleet's POSTURE; the NUMBERS never ride the pin rail, because a pin\nis one value for a whole fleet and a cap is per developer.\n\nThe node-side fetch/compose/enforce half is wave W3b; this key exists in\nW3a because the governance vocabulary row must resolve against a real\nconfig key (TestEveryPinnableKeyResolvesInConfig)."
     },
     {
       "path": "guard.budget.max_document_age",
@@ -9312,7 +9328,7 @@
       "section": "pricing",
       "prominence": "primary",
       "secret": false,
-      "doc": "Enabled gates the whole feed client. Default FALSE: the feed is inert\nuntil the standalone operator opts in (with this, or with a manual\n`observer pricing sync`). When false, no feed is fetched and no feed\nsource badge renders."
+      "doc": "Enabled gates the whole feed client. Default TRUE (operator decision\n2026-09-20): the feed is live so a standalone node's prices track the\npublic source. A node that wants zero egress sets this false, which\nmakes the feed inert — no feed is fetched and no feed source badge\nrenders — leaving it drivable only by a manual `observer pricing sync`."
     },
     {
       "path": "pricing.feed.auto",
@@ -9328,7 +9344,7 @@
       "section": "pricing",
       "prominence": "advanced",
       "secret": false,
-      "doc": "Auto turns on the BACKGROUND poller (in addition to the manual sync).\nDefault FALSE: even an Enabled node only fetches on an explicit\n`observer pricing sync` until Auto is set, so the first outbound call is\nalways operator-initiated."
+      "doc": "Auto turns on the BACKGROUND poller (in addition to the manual sync).\nDefault TRUE (operator decision 2026-09-20): an Enabled node polls on\nthe PollIntervalHours cadence without further setup. Set false to keep\nthe feed enabled but fetch only on an explicit `observer pricing sync`."
     },
     {
       "path": "pricing.feed.url",

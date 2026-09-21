@@ -407,3 +407,64 @@ func TestOrgUnquotedRateFallsThroughToTheSeed(t *testing.T) {
 		t.Errorf("source = %q, want %q - the org owns the key it authored, free or not", src, PricingSourceOrg)
 	}
 }
+
+// TestOrgPriceOverlayPeakWholesaleReplace pins Phase 2's R1/N2 ruling
+// (peak-off-peak plan §R2): overlay treats Peak as a WHOLESALE REPLACE, not a
+// Set-gated field like the scalar rates, and there is no OrgPriceSet.Peak
+// bool. A quoted org row REPLACES the seed's peak variant outright —
+// including with nil, which is the negotiated-flat-rate case: an org that
+// negotiates a model's base rate but says nothing about a time-of-day
+// premium must NOT inherit the seed's peak multiplier, or a flat-rate deal
+// would silently double during the seed's peak window.
+func TestOrgPriceOverlayPeakWholesaleReplace(t *testing.T) {
+	t.Parallel()
+	seedPeak := &PeakRates{
+		RateSet: RateSet{Input: 20, Output: 40, LongContextThreshold: 128000, LongContextInput: 30},
+		Schedule: PeakSchedule{Windows: []PeakWindow{
+			{Days: []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday}, StartUTC: "00:00", EndUTC: "16:00"},
+		}},
+	}
+	base := Pricing{Input: 5, Output: 10, LongContextThreshold: 128000, Peak: seedPeak}
+
+	orgPeak := &PeakRates{RateSet: RateSet{Input: 3, Output: 6}}
+
+	cases := []struct {
+		name       string
+		org        OrgPrice
+		wantPeak   *PeakRates
+		wantPeakOK bool // whether wantPeak should equal the composed Peak by IDENTITY
+	}{
+		{
+			name: "a non-nil org peak replaces the seed's peak",
+			org: OrgPrice{
+				Pricing: Pricing{Input: 1, Output: 2, LongContextThreshold: 500, Peak: orgPeak},
+				Set:     OrgPriceSet{Input: true, Output: true},
+			},
+			wantPeak:   orgPeak,
+			wantPeakOK: true,
+		},
+		{
+			name: "a nil org peak WIPES the seed's peak (the negotiated-flat case)",
+			org: OrgPrice{
+				Pricing: Pricing{Input: 1, Output: 2, LongContextThreshold: 500},
+				Set:     OrgPriceSet{Input: true, Output: true},
+			},
+			wantPeak:   nil,
+			wantPeakOK: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := tc.org.overlay(base)
+			if tc.wantPeakOK && out.Peak != tc.wantPeak {
+				t.Errorf("Peak = %+v, want %+v (identity)", out.Peak, tc.wantPeak)
+			}
+			// LongContextThreshold behavior is unchanged by the Peak addition:
+			// it still always comes from the org row (the pre-existing wholesale
+			// precedent this change mirrors).
+			if out.LongContextThreshold != 500 {
+				t.Errorf("LongContextThreshold = %d, want 500 (unchanged by the Peak wholesale-replace)", out.LongContextThreshold)
+			}
+		})
+	}
+}

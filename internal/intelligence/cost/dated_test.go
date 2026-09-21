@@ -686,10 +686,17 @@ func TestDated_DeepSeekPeakOffPeakOverhaul(t *testing.T) {
 	tbl := NewTable()
 	cutover := time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC)
 
+	// Flash has TWO cutovers: 2026-08-16 (off-peak base bump, no peak) and
+	// 2026-09-10 (V4.1-Flash rename → reduced base + a peak variant).
+	flashCut2 := time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC)
 	oldFlash := Pricing{Input: 0.14, Output: 0.28, CacheRead: 0.0028}
-	newFlash := Pricing{Input: 0.22, Output: 0.66, CacheRead: 0.007}
+	midFlash := Pricing{Input: 0.22, Output: 0.66, CacheRead: 0.007}
+	newestFlash := Pricing{Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak}
 	oldPro := Pricing{Input: 0.435, Output: 0.87, CacheRead: 0.003625}
-	newPro := Pricing{Input: 0.66, Output: 1.98, CacheRead: 0.022}
+	// The post-overhaul (and current flat) v4-pro Pricing carries the peak
+	// variant, preserved through resolution for display surfaces; the
+	// pre-overhaul entry stays peak-free (the scheme didn't exist yet).
+	newPro := Pricing{Input: 0.66, Output: 1.98, CacheRead: 0.022, Peak: deepseekV4ProPeak}
 
 	flashAliases := []string{"deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner", "deepseek-v4", "deepseek"}
 	for _, model := range flashAliases {
@@ -700,10 +707,13 @@ func TestDated_DeepSeekPeakOffPeakOverhaul(t *testing.T) {
 				want Pricing
 			}{
 				{"long before the cut", cutover.Add(-365 * 24 * time.Hour), oldFlash},
-				{"one nanosecond before", cutover.Add(-time.Nanosecond), oldFlash},
-				{"EXACTLY at cutover -> new (inclusive)", cutover, newFlash},
-				{"after the cut", cutover.Add(24 * time.Hour), newFlash},
-				{"zero time -> current flat rate", time.Time{}, newFlash},
+				{"one nanosecond before 2026-08-16", cutover.Add(-time.Nanosecond), oldFlash},
+				{"EXACTLY at 2026-08-16 -> mid (inclusive)", cutover, midFlash},
+				{"between the two cuts", cutover.Add(24 * time.Hour), midFlash},
+				{"one nanosecond before 2026-09-10", flashCut2.Add(-time.Nanosecond), midFlash},
+				{"EXACTLY at 2026-09-10 -> newest (inclusive)", flashCut2, newestFlash},
+				{"after 2026-09-10", flashCut2.Add(24 * time.Hour), newestFlash},
+				{"zero time -> current flat rate", time.Time{}, newestFlash},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					got, ok := tbl.LookupAt(model, tc.at)
@@ -743,11 +753,51 @@ func TestDated_DeepSeekPeakOffPeakOverhaul(t *testing.T) {
 	// deepseek-v4-flash-vision-exp has NO dated timeline (a new SKU, no
 	// history to preserve) — it must resolve to the current rate at every
 	// instant, including long before the DeepSeek cutover.
-	visionWant := fillDefaults(newFlash)
+	visionWant := fillDefaults(newestFlash)
 	for _, at := range []time.Time{{}, cutover.Add(-365 * 24 * time.Hour), cutover, cutover.Add(time.Hour)} {
 		got, ok := tbl.LookupAt("deepseek-v4-flash-vision-exp", at)
 		if !ok || got != visionWant {
 			t.Fatalf("deepseek-v4-flash-vision-exp at %s = %+v (ok=%v), want %+v (no timeline, always current)", at, got, ok, visionWant)
+		}
+	}
+
+	// deepseek-flash / deepseek-v4.1-flash are NEW keys (flat row only, no
+	// dated timeline): they resolve to the current flash rate at every
+	// instant, including long before either DeepSeek cutover.
+	for _, model := range []string{"deepseek-flash", "deepseek-v4.1-flash"} {
+		for _, at := range []time.Time{{}, cutover.Add(-365 * 24 * time.Hour), cutover, flashCut2, flashCut2.Add(time.Hour)} {
+			got, ok := tbl.LookupAt(model, at)
+			if !ok || got != fillDefaults(newestFlash) {
+				t.Fatalf("%s at %s = %+v (ok=%v), want %+v (no timeline, always current)", model, at, got, ok, fillDefaults(newestFlash))
+			}
+		}
+	}
+
+	// Flash PEAK: a turn INSIDE a peak window (Mon 02:00 UTC, in the
+	// 01:00-04:00 window) after 2026-09-10 bills EXACTLY 2× — $0.30 in /
+	// $1.20 out / $0.006 cache-read. A turn in that same window BEFORE
+	// 2026-09-10 has no flash peak variant, so it bills the mid off-peak
+	// base ($0.22/$0.66/$0.007), i.e. the pre-Task-2 under-billing.
+	mondayPeak := time.Date(2026, 9, 14, 2, 0, 0, 0, time.UTC) // Monday 02:00 UTC, post-cut
+	if wd := mondayPeak.Weekday(); wd != time.Monday {
+		t.Fatalf("test setup: %s is %s, want Monday", mondayPeak, wd)
+	}
+	peakFlash := fillDefaults(Pricing{Input: 0.30, Output: 1.20, CacheRead: 0.006, Peak: deepseekFlashPeak})
+	for _, model := range []string{"deepseek-v4-flash", "deepseek-flash", "deepseek-v4.1-flash", "deepseek-chat", "deepseek-reasoner", "deepseek-v4", "deepseek", "deepseek-v4-flash-vision-exp"} {
+		got, ok := tbl.LookupAt(model, mondayPeak)
+		if !ok || got != peakFlash {
+			t.Fatalf("LookupAt(%q, Mon 02:00 UTC peak) = %+v (ok=%v), want %+v (2x flash peak)", model, got, ok, peakFlash)
+		}
+	}
+	// Same window, before 2026-09-10: flash has no peak variant yet.
+	mondayPeakPre := time.Date(2026, 8, 31, 2, 0, 0, 0, time.UTC) // Monday 02:00 UTC, between the two cuts
+	if wd := mondayPeakPre.Weekday(); wd != time.Monday {
+		t.Fatalf("test setup: %s is %s, want Monday", mondayPeakPre, wd)
+	}
+	for _, model := range []string{"deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner", "deepseek-v4", "deepseek"} {
+		got, ok := tbl.LookupAt(model, mondayPeakPre)
+		if !ok || got != fillDefaults(midFlash) {
+			t.Fatalf("LookupAt(%q, Mon 02:00 UTC pre-2026-09-10) = %+v (ok=%v), want %+v (no flash peak yet)", model, got, ok, fillDefaults(midFlash))
 		}
 	}
 }

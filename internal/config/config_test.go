@@ -42,6 +42,28 @@ func TestOTelExporterDefaultsAreOff(t *testing.T) {
 	}
 }
 
+// TestPricingDefaultsAreOn pins the reversed pricing-feed posture (operator
+// decision 2026-09-20, superseding the former zero-egress-by-default D3): the
+// standalone-node feed and its background poller default ON, and an enrolled
+// node applies its org's pricing/budget by default (Guard.Budget.FromOrg). A
+// node opts OUT of each with the matching false flag.
+func TestPricingDefaultsAreOn(t *testing.T) {
+	t.Parallel()
+	d := Default()
+	if !d.Pricing.Feed.Enabled {
+		t.Error("Pricing.Feed.Enabled must default to true (2026-09-20 posture reversal)")
+	}
+	if !d.Pricing.Feed.Auto {
+		t.Error("Pricing.Feed.Auto must default to true (2026-09-20 posture reversal)")
+	}
+	if d.Pricing.Feed.URL != DefaultPricingFeedURL {
+		t.Errorf("Pricing.Feed.URL: got %q want %q", d.Pricing.Feed.URL, DefaultPricingFeedURL)
+	}
+	if !d.Guard.Budget.FromOrg {
+		t.Error("Guard.Budget.FromOrg must default to true (2026-09-20 posture reversal)")
+	}
+}
+
 // TestDefaultCompressTypesIsJSONLogsCode pins V7-24 (v1.7.23, 2026-06-01).
 // The default `compress_types` is restored to ["json","logs","code"]
 // after V7-22's temporary {} flip was re-measured on the V7-22 binary

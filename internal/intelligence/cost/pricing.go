@@ -107,6 +107,29 @@ type Pricing struct {
 	// fast mode is a throughput premium on inference, not on server-tool
 	// invocations.
 	FastMultiplier float64 `json:"fast_multiplier,omitempty"`
+
+	// Peak is the model's peak/off-peak variant, or nil. A nil pointer —
+	// the default for every model — means the model has no time-of-day
+	// pricing and the base rates above apply at every instant, keeping
+	// behaviour byte-identical to before this field existed. A non-nil
+	// Peak carries a COMPLETE peak rate set (its own base rates plus an
+	// optional long-context sub-tier, as a RateSet) together with the
+	// PeakSchedule of UTC windows that select it. The base rates on this
+	// Pricing are the OFF-PEAK rates; the peak rates live on Peak.
+	//
+	// Peak is resolved at rate-resolution time by peakAdjusted (the funnel
+	// in dated.go's rate()), NOT inside ComputeBreakdown: a zero-`at`
+	// lookup stays peak-blind and returns the off-peak base, while an
+	// *At lookup whose instant lands in a peak window returns the peak
+	// rates. The field itself is always preserved through resolution so a
+	// display surface can read it off a plain lookup.
+	//
+	// Pricing stays a COMPARABLE struct — a pointer field is comparable —
+	// which ValidateDated (flat != newest) and several tests rely on. The
+	// SAME *PeakRates pointer must therefore be shared between a model's
+	// flat seed row and the newest entry of its dated timeline, so the two
+	// compare equal.
+	Peak *PeakRates `json:"peak,omitempty"`
 }
 
 // Table maps normalized model IDs to Pricing. Lookup is exact first; on miss,
@@ -699,6 +722,43 @@ var (
 	cursorGrok46Standard = Pricing{Input: 2, Output: 6, CacheRead: 0.50}
 	cursorGrok46Fast     = Pricing{Input: 4, Output: 12, CacheRead: 1.00}
 )
+
+// DeepSeek V4 peak/off-peak schedule and rates. DeepSeek doubles every
+// dimension during two recurring UTC windows on weekdays (weekends and CN
+// public holidays stay off-peak — the holiday exclusion is a documented v1
+// limitation, not modeled). These are declared as shared package-level
+// values so the SAME *PeakRates pointer is used in BOTH the flat
+// defaultPricing row and the newest dated.go timeline entry — Pricing is a
+// comparable struct, so ValidateDated's flat==newest check needs pointer
+// identity, not just equal contents.
+var deepseekPeakWeekdays = []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday}
+
+var deepseekPeakSchedule = PeakSchedule{Windows: []PeakWindow{
+	{Days: deepseekPeakWeekdays, StartUTC: "01:00", EndUTC: "04:00"},
+	{Days: deepseekPeakWeekdays, StartUTC: "06:00", EndUTC: "10:00"},
+}}
+
+// deepseekV4ProPeak is deepseek-v4-pro's peak variant: EXACTLY 2× the
+// off-peak base ($0.66/$1.98/$0.022 → $1.32/$3.96/$0.044). No long-context
+// tier and no cache-write charge (auto-cache, OpenAI-shape), matching the
+// base row.
+var deepseekV4ProPeak = &PeakRates{
+	RateSet:  RateSet{Input: 1.32, Output: 3.96, CacheRead: 0.044},
+	Schedule: deepseekPeakSchedule,
+}
+
+// deepseekFlashPeak is the flash family's peak variant: EXACTLY 2× the
+// post-2026-09-10 off-peak base ($0.15/$0.60/$0.003 → $0.30/$1.20/$0.006).
+// No long-context tier and no cache-write charge (auto-cache, OpenAI-shape),
+// matching the base row. Reuses the SHARED deepseekPeakSchedule (same
+// weekday UTC windows as v4-pro). This SAME pointer anchors BOTH the flat
+// defaultPricing flash rows AND the newest dated.go timeline entry for each
+// flash key, so ValidateDated's flat==newest struct comparison — which is
+// pointer identity for the Peak field — holds and Lookup/LookupAt agree.
+var deepseekFlashPeak = &PeakRates{
+	RateSet:  RateSet{Input: 0.30, Output: 1.20, CacheRead: 0.006},
+	Schedule: deepseekPeakSchedule,
+}
 
 // defaultPricing is the baked-in pricing table. Values are USD per 1M tokens.
 // Source-of-truth: docs/pricing-reference.md (last synced 2026-04-29); the
@@ -1698,34 +1758,52 @@ var defaultPricing = map[string]Pricing{
 	// pre-2026-08-16T16:00Z period of each key's dated.go timeline rather
 	// than being silently overwritten (see dated.go).
 	//
-	// Our Pricing struct has no time-of-day dimension (same documented
-	// limitation as MiniMax's >512K doubling and Sakana's >272K tier), so
-	// ONE rate must be baked into the flat table — off-peak is used as the
-	// representative because it covers the large majority of hours (all
-	// weekend plus 17 of 24 UTC hours on weekdays); PEAK IS UNMODELED
-	// (documented, not modeled, per docs/pricing-reference.md "Out of
-	// scope") — a request actually served in a peak window will be
-	// under-billed 2× until this struct grows a time dimension.
+	// The Pricing struct now carries a TIME-OF-DAY dimension (the Peak
+	// field / RateSet / PeakSchedule, see peak.go). The base rates below
+	// are the OFF-PEAK rates; a peak variant lives on Peak and is selected
+	// at rate-resolution time by peakAdjusted when a turn's timestamp lands
+	// in a peak window (weekends and CN public holidays stay off-peak — the
+	// holiday exclusion is a documented v1 limitation, not modeled).
+	//
+	// PEAK IS MODELED for BOTH `deepseek-v4-pro` (Peak: deepseekV4ProPeak)
+	// AND the FLASH family (Peak: deepseekFlashPeak — the shared pointer
+	// also anchors each flash key's newest dated entry). The flash off-peak
+	// base was ALSO corrected here: it dropped $0.22 → $0.15 (output
+	// $0.66 → $0.60, cache-read $0.007 → $0.003) when V4.1-Flash superseded
+	// V4-Flash and DeepSeek renamed the canonical model to `deepseek-flash`
+	// on 2026-09-10, REDUCING flash prices (peak = EXACTLY 2× that new
+	// base). A flash turn served in a peak window (01:00-04:00 and
+	// 06:00-10:00 UTC, Mon-Fri) now bills 2× via peakAdjusted, matching
+	// v4-pro's treatment. (This closes the Phase-1 caveat that left flash
+	// off-peak-only and 2×-under-billed in peak windows.)
 	//
 	// `deepseek-chat` / `deepseek-reasoner` are legacy aliases that
-	// DeepSeek still resolves; both map to v4-flash and carry the same
+	// DeepSeek still resolves; both map to flash and carry the same
 	// dated timeline. NOTE: neither alias is listed on the current
 	// api-docs.deepseek.com/quick_start/pricing page any more (only the
-	// v4-flash/v4-pro/v4-flash-vision-exp SKU names appear) — the → v4-flash
+	// flash/v4-pro/v4-flash-vision-exp SKU names appear) — the → flash
 	// mapping below is INFERRED from the aliases' historical behavior, not
 	// re-confirmed against a published row for these exact strings.
-	"deepseek-v4-flash": {Input: 0.22, Output: 0.66, CacheRead: 0.007},
+	"deepseek-v4-flash": {Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak}, // legacy name, still routes → flash price
 	// deepseek-v4-flash-vision-exp — a new experimental vision SKU listed
 	// alongside v4-flash/v4-pro on the same pricing page (fetched
-	// 2026-09-07), billed at the SAME off-peak rate as v4-flash. No prior
+	// 2026-09-07), billed at the SAME off-peak rate as flash. No prior
 	// row existed for this id, so no dated timeline is needed (nothing to
-	// preserve).
-	"deepseek-v4-flash-vision-exp": {Input: 0.22, Output: 0.66, CacheRead: 0.007},
-	"deepseek-v4-pro":              {Input: 0.66, Output: 1.98, CacheRead: 0.022},
-	"deepseek-chat":                {Input: 0.22, Output: 0.66, CacheRead: 0.007}, // alias → v4-flash non-thinking
-	"deepseek-reasoner":            {Input: 0.22, Output: 0.66, CacheRead: 0.007}, // alias → v4-flash thinking
-	"deepseek-v4":                  {Input: 0.22, Output: 0.66, CacheRead: 0.007}, // family prefix → flash (default/cheapest)
-	"deepseek":                     {Input: 0.22, Output: 0.66, CacheRead: 0.007}, // family prefix
+	// preserve); it resolves to the current flash rate at every instant.
+	"deepseek-v4-flash-vision-exp": {Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak},
+	"deepseek-v4-pro":              {Input: 0.66, Output: 1.98, CacheRead: 0.022, Peak: deepseekV4ProPeak},
+	// `deepseek-flash` is DeepSeek's NEW canonical flash model id (renamed
+	// from deepseek-v4-flash on 2026-09-10); `deepseek-v4.1-flash` is the
+	// repo alias for the same SKU. Both are new keys with no pre-2026-09-10
+	// history, so a flat row alone is correct (no dated timeline to
+	// preserve). Exact rows: they win before the `deepseek-v4`/`deepseek`
+	// family-prefix fallback and shadow nothing else.
+	"deepseek-flash":      {Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak},
+	"deepseek-v4.1-flash": {Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak},
+	"deepseek-chat":       {Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak}, // alias → flash non-thinking
+	"deepseek-reasoner":   {Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak}, // alias → flash thinking
+	"deepseek-v4":         {Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak}, // family prefix → flash (default/cheapest)
+	"deepseek":            {Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak}, // family prefix
 	// OpenRouter-served DeepSeek (provider-qualified keys, exact match
 	// wins before stripProviderPrefix-equivalent ladder reductions).
 	// OpenRouter serves v4-flash at 30% off first-party ($0.098/$0.197)

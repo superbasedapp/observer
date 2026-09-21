@@ -308,6 +308,12 @@ type sessionMetaPayload struct {
 	// plan-2026-09-02.md §0/§3.
 	Originator string `json:"originator"`
 	Source     string `json:"source"`
+	// CLIVersion is the codex CLI version the runtime stamped on the
+	// OWNING session_meta ("0.150.0", "0.130.0-alpha.5"). Captured
+	// node-local per Issue 2 (migration 125) and emitted as a
+	// models.SessionToolVersion at the same owner-gated site as the
+	// surface attribution below.
+	CLIVersion string `json:"cli_version"`
 }
 
 // turnContextPayload extends sessionContext with developer_instructions —
@@ -378,6 +384,12 @@ type responseItemMessage struct {
 type responseItemMessageContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+	// ImageURL carries an `input_image` part's image reference. In the
+	// Codex rollout it is a data URI string ("data:image/png;base64,...")
+	// but the Responses schema also permits an object ({"url":"..."}), so
+	// it is kept raw and only the media-type prefix is read (Issue 1
+	// user-attachment capture). The base64 payload is NEVER decoded/stored.
+	ImageURL json.RawMessage `json:"image_url"`
 }
 
 // agentMessage is the assistant's natural-language preamble that
@@ -942,6 +954,9 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 	// resolved into a models.SessionSurface at the same emission site
 	// as the lineage marker below.
 	var ownerOriginator, ownerSource string
+	// ownerCLIVersion carries the OWNING session_meta's cli_version for
+	// Issue 2 tool-version capture — same owner-only gate as ownerSource.
+	var ownerCLIVersion string
 
 	// rootCache is declared here (rather than after the resume block
 	// below) so the resume path can prime ctxState.GitRemote from the
@@ -1390,6 +1405,7 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 					sessionMetaObservedThisChunk = true
 					ownerOriginator = meta.Originator
 					ownerSource = meta.Source
+					ownerCLIVersion = meta.CLIVersion
 				}
 				created, have := sessionMetaCreationSec(meta, line.Timestamp)
 				forkTrack.observeSessionMeta(
@@ -2177,6 +2193,18 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 				var rm responseItemMessage
 				if err := json.Unmarshal(line.Payload, &rm); err == nil {
 					body := concatMessageContent(rm.Content)
+					// User-attachment capture (Issue 1): a role=user
+					// response_item carries the API-side input parts, which
+					// include the image/file attachments the user sent (the
+					// event_msg/user_message record carries only the text).
+					// Merge the attachment metadata onto the most recent
+					// user_prompt event so the turn is flagged without
+					// double-counting the prompt text.
+					if rm.Role == "user" {
+						if atts := userAttachmentsFromContent(rm.Content); len(atts) > 0 {
+							attachToRecentUserPrompt(res.ToolEvents, atts)
+						}
+					}
 					emit := false
 					role := rm.Role
 					switch rm.Role {
@@ -2423,6 +2451,15 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 				SessionID:   ctxState.SessionID,
 				Surface:     kind,
 				SurfaceHost: host,
+			})
+		}
+		// Issue 2: captured CLI version from the owning session_meta.
+		// The store write is first-wins-unless-empty and bounded-token
+		// validated, so a re-stamp or malformed value is harmless.
+		if ownerCLIVersion != "" {
+			res.SessionToolVersions = append(res.SessionToolVersions, models.SessionToolVersion{
+				SessionID: ctxState.SessionID,
+				Version:   ownerCLIVersion,
 			})
 		}
 	}
@@ -2753,6 +2790,74 @@ func concatMessageContent(parts []responseItemMessageContent) string {
 		}
 	}
 	return strings.Join(pieces, "\n")
+}
+
+// userAttachmentsFromContent scans a role=user response_item message's
+// content parts for the files/images the user attached (Issue 1):
+// `input_image` / `image_url` / `image` parts become kind "image" (with
+// the media_type read from the data-URI prefix when present), and
+// `input_file` / `file` parts become kind "file". Metadata only — the
+// base64 payload and any filename are never read. Returns nil when the
+// message carried no attachment parts.
+func userAttachmentsFromContent(parts []responseItemMessageContent) []models.UserAttachment {
+	var atts []models.UserAttachment
+	for _, p := range parts {
+		switch p.Type {
+		case "input_image", "image_url", "image":
+			atts = append(atts, models.UserAttachment{Kind: "image", MediaType: mediaTypeFromImageURL(p.ImageURL)})
+		case "input_file", "file":
+			atts = append(atts, models.UserAttachment{Kind: "file"})
+		}
+	}
+	return atts
+}
+
+// attachToRecentUserPrompt stamps user-attachment metadata onto the most
+// recent user_prompt event in evs (best-effort correlation: the role=user
+// response_item that carries the attachment parts is emitted alongside the
+// event_msg/user_message that produced the prompt row). Scans backward and
+// stops at the first user_prompt; a no-op when none exists yet or the row
+// already carries attachments (idempotent re-parse).
+func attachToRecentUserPrompt(evs []models.ToolEvent, atts []models.UserAttachment) {
+	for i := len(evs) - 1; i >= 0; i-- {
+		if evs[i].ActionType != models.ActionUserPrompt {
+			continue
+		}
+		if len(evs[i].UserAttachments) == 0 {
+			evs[i].UserAttachments = atts
+		}
+		return
+	}
+}
+
+// mediaTypeFromImageURL extracts the IANA media type from an
+// `input_image` part's image_url — a data URI ("data:image/png;base64,…")
+// carried either as a bare JSON string or as an object {"url":"…"}. Reads
+// ONLY the media-type prefix; the base64 body is never decoded. Returns
+// "" when the reference is not a typed data URI.
+func mediaTypeFromImageURL(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var url string
+	if err := json.Unmarshal(raw, &url); err != nil {
+		var obj struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return ""
+		}
+		url = obj.URL
+	}
+	if !strings.HasPrefix(url, "data:") {
+		return ""
+	}
+	rest := url[len("data:"):]
+	// media type runs up to the first ';' or ',' ("image/png;base64,…").
+	if i := strings.IndexAny(rest, ";,"); i >= 0 {
+		return rest[:i]
+	}
+	return ""
 }
 
 // buildCompactedEvent emits an ActionContextCompacted row summarizing

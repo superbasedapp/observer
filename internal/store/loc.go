@@ -79,6 +79,15 @@ type FileChangeRow struct {
 // the command is idempotent and re-runnable at will), while a run after
 // a loc.Version bump replaces every row exactly once. A row is never
 // downgraded by an older binary re-walking the corpus.
+//
+// session_id / project_id are in the DO-UPDATE set (fleet-safety): the
+// conflict key is (action_id, file_path_hash, source), so an action whose
+// owning session was CORRECTED after the row was first written — e.g. the
+// claude-code dedicated-file sub-agent reroute moving an action from the
+// parent session to a `<parent>:agent:<id>` child on a re-parse — has its
+// stored session/project brought into line on the next version-guarded
+// re-count, instead of stranding a row on the pre-repair session. Latent
+// on a corpus with no such stale rows, correct when one exists.
 const insertFileChangeSQL = `
 INSERT INTO file_changes (
     session_id, project_id, action_id, file_path_hash, input_digest,
@@ -90,6 +99,8 @@ INSERT INTO file_changes (
 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(action_id, file_path_hash, source) WHERE action_id IS NOT NULL
 DO UPDATE SET
+    session_id         = excluded.session_id,
+    project_id         = excluded.project_id,
     input_digest       = excluded.input_digest,
     language           = excluded.language,
     category           = excluded.category,
@@ -289,6 +300,13 @@ type locActionRow struct {
 // locActionSelect is the projection every LOC read uses. It deliberately
 // selects raw_tool_input and NOTHING else content-bearing: no output, no
 // reasoning, no error message.
+//
+// A sub-agent's own edit keeps its HONEST stored is_sidechain: a sub-agent
+// session is a first-class session whose own card must read its work as
+// main-line, not sidechain. The sub-agent/parent split is derived at
+// PARENT read time only (internal/store/locread.go::LoadSessionLOC), never
+// stamped here — so a claude-code dedicated-file child, an opencode
+// sub-agent session, etc. each stays truthful about its own lines.
 const locActionSelect = `
 SELECT a.id, a.session_id, a.project_id, p.root_path, a.action_type,
        a.target, a.raw_tool_input, a.is_sidechain,

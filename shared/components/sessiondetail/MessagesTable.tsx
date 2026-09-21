@@ -453,6 +453,40 @@ const MESSAGE_CELLS: Record<MessageSortKey, (c: CellCtx) => ReactNode> = {
       )}
     </td>
   ),
+  // Attachments cell (Issue 1). Renders a compact 📎 badge with the count
+  // when the user attached files/images/audio to this turn, with a tooltip
+  // listing each attachment's kind (+ media_type when known). Metadata only
+  // — no filename, no bytes. Empty/absent renders "-".
+  attachments: ({ m }) => {
+    const atts = m.attachments ?? [];
+    if (atts.length === 0) {
+      return <td className="py-1 text-right tabular-nums text-fg-4">-</td>;
+    }
+    return (
+      <td className="py-1 text-right tabular-nums text-fg-2">
+        <Tooltip
+          content={
+            <div className="space-y-0.5">
+              {atts.map((a, i) => (
+                <p key={i}>
+                  {a.kind}
+                  {a.media_type ? ` · ${a.media_type}` : ""}
+                </p>
+              ))}
+            </div>
+          }
+          maxWidth={320}
+        >
+          <span
+            tabIndex={0}
+            className="inline-flex cursor-help items-center gap-0.5 focus:outline-none"
+          >
+            📎 {atts.length}
+          </span>
+        </Tooltip>
+      </td>
+    );
+  },
   content: ({ m }) => (
     <td className="max-w-[320px] truncate py-1 pl-3 pr-3 text-fg-2">
       <ContentSnippet row={m} />

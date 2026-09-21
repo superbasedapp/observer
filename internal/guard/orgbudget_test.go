@@ -283,7 +283,7 @@ func TestSoftWindowsSurviveAnEngineRebuild(t *testing.T) {
 	}
 	// Force a rebuild through the one funnel every later build uses.
 	cur := g.set.Load()
-	base, err := g.buildEngine(cur.base.Mode(), cur.orgLayer, cur.userLayer, nil)
+	base, err := g.buildEngine(cur.base.Mode(), cur.orgLayer, cur.userLayer, nil, nil)
 	if err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}

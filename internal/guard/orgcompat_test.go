@@ -53,6 +53,17 @@ var orgCompatCases = []orgCompatCase{
 		wantOverrides: []string{"R-110"},
 	},
 	{
+		// `disable` is a DECODED key (the trusted-project layer honours
+		// it), so it never reaches meta.Undecoded(); the org layer must
+		// still IGNORE + note it rather than reject the bundle — a
+		// rejection strands every node on its stale bundle (GUARD-FWD-1).
+		// The user / project halves keep rejecting it (unknown keys).
+		name:          "top-level disable list (trusted-project-only key)",
+		body:          "disable = [\"R-101\"]\n\n[[override]]\nrule = \"R-110\"\ndecision = \"deny\"\nenforce = true\n",
+		wantNotes:     []string{"disable"},
+		wantOverrides: []string{"R-110"},
+	},
+	{
 		name:          "clean bundle carries no notes",
 		body:          "[[rule]]\nid = \"ORG-2\"\ncategory = \"exfil\"\ndecision = \"ask\"\nmatch.url_domain = \"paste.example\"\n\n[[override]]\nrule = \"R-110\"\ndecision = \"deny\"\nenforce = true\noverridable = true\n",
 		wantNotes:     nil,

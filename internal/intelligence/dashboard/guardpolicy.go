@@ -16,32 +16,38 @@ import (
 // Guard policy-editor endpoints (G2.2, operator checkpoint Q3 FULL):
 // the dashboard's read/edit surface over the §4.6 policy layers.
 //
-// One write owner: handleGuardPolicy's PUT is the ONLY dashboard path
-// that touches the user guard-policy.toml — and only the USER layer
-// is writable here. Project files belong to their repos (the least-
-// trusted layer — the agent can edit them, which R-161 itself flags),
-// and the org bundle arrives signed from the org server; both stay
-// read-only views. Every save is gated by the same strict parse
-// `observer guard lint` runs (guard.Lint) — a malformed body is
-// refused 422 with the problems listed and the on-disk file is
+// Two write owners, both operator-surface (not the agent): the PUT on
+// handleGuardPolicy writes the USER guard-policy.toml, and the PUT on
+// handleGuardProjectPolicy writes the dashboard-authored TRUSTED
+// per-project file under ~/.observer/guard-project-policies/ (R-160
+// protects that dir, so the agent cannot). The IN-REPO project file
+// belongs to its repo (the least-trusted layer — the agent can edit it,
+// which R-161 flags) and the org bundle arrives signed from the org
+// server; both stay read-only views. Every save is gated by the same
+// strict parse `observer guard lint` runs (guard.Lint for the user
+// layer; guard.LintTrustedProject — org-floor-aware — for the trusted
+// layer) — a malformed body, or a trusted relaxation below the org
+// floor, is refused 422 with the problems listed and the on-disk file
 // untouched. Saves keep a .bak of the prior file; the backup endpoint
 // mirrors handleConfigBackup's swap-restore (a second restore undoes
-// the first).
+// the first) and accepts a {layer, project_root} target.
 
 // guardPolicyLayerJSON is one layers-card row: a policy source in
 // effect (or configured but absent), with counts where the file is a
 // local TOML we can structurally parse. Org bundles are JSON
 // envelopes — counts_known=false rather than a misleading zero.
 type guardPolicyLayerJSON struct {
-	Layer       string   `json:"layer"` // org | user | project
+	Layer       string   `json:"layer"` // org | user | project | trusted_project
 	Path        string   `json:"path"`
 	Exists      bool     `json:"exists"`
-	Editable    bool     `json:"editable"` // true only for the user layer
+	Editable    bool     `json:"editable"` // true for the user + trusted_project layers
 	Version     string   `json:"version,omitempty"`
 	ContentHash string   `json:"content_hash,omitempty"`
 	CountsKnown bool     `json:"counts_known"`
 	Rules       int      `json:"rules"`
 	Overrides   int      `json:"overrides"`
+	Disabled    int      `json:"disabled"`          // top-level `disable = [...]` count (trusted_project)
+	Content     string   `json:"content,omitempty"` // carried inline for editable trusted_project rows
 	Problems    []string `json:"problems,omitempty"`
 	// Notes are NON-FATAL parse notes for a layer that IS loaded and in
 	// force — today the org-bundle keys this binary does not understand
@@ -130,33 +136,47 @@ func (s *Server) serveGuardPolicyView(w http.ResponseWriter, r *http.Request) {
 			userRow.Exists = true
 			userContent = string(raw)
 			userRow.CountsKnown = true
-			ov, decl, _ := guard.PolicyRuleRefs(raw)
-			userRow.Rules, userRow.Overrides = len(decl), len(ov)
+			ov, decl, dis, _ := guard.PolicyRuleRefs(raw)
+			userRow.Rules, userRow.Overrides, userRow.Disabled = len(decl), len(ov), len(dis)
 			userRow.Problems = guard.Lint(raw, "user")
 			userRow.ContentHash = stateHash["user"]
 		}
 	}
 	layers = append(layers, userRow)
 
-	// Project layers: probe every known project root for the
-	// configured relative path. Read-only views — these files belong
-	// to their repos.
+	// Project layers: for every known project root emit the in-repo file
+	// as a READ-ONLY row (it belongs to the repo, escalate-only) AND the
+	// trusted daemon-local file as an EDITABLE row (dashboard-authored,
+	// R-160-protected, weaken/disable-allowed). The trusted row is always
+	// present so the UI can create one for a root that has none yet.
 	for _, root := range roots {
-		p := guard.ProjectPolicyPath(cfg.Guard, root)
-		if p == "" {
-			continue
+		// In-repo project file (read-only).
+		if p := guard.ProjectPolicyPath(cfg.Guard, root); p != "" {
+			if raw, readErr := os.ReadFile(p); readErr == nil {
+				ov, decl, dis, _ := guard.PolicyRuleRefs(raw)
+				layers = append(layers, guardPolicyLayerJSON{
+					Layer: "project", Path: p, Exists: true,
+					CountsKnown: true, Rules: len(decl), Overrides: len(ov), Disabled: len(dis),
+					Problems:    guard.Lint(raw, "project"),
+					ProjectRoot: root,
+				})
+			}
 		}
-		raw, readErr := os.ReadFile(p)
-		if readErr != nil {
-			continue
+		// Trusted daemon-local project file (editable).
+		if tp := guard.TrustedProjectPolicyPath(cfg.Guard, home, root); tp != "" {
+			trow := guardPolicyLayerJSON{
+				Layer: "trusted_project", Path: tp, Editable: true, ProjectRoot: root,
+			}
+			if raw, readErr := os.ReadFile(tp); readErr == nil {
+				trow.Exists = true
+				trow.Content = string(raw)
+				trow.CountsKnown = true
+				ov, decl, dis, _ := guard.PolicyRuleRefs(raw)
+				trow.Rules, trow.Overrides, trow.Disabled = len(decl), len(ov), len(dis)
+				trow.Problems = guard.LintTrustedProject(cfg.Guard, home, raw)
+			}
+			layers = append(layers, trow)
 		}
-		ov, decl, _ := guard.PolicyRuleRefs(raw)
-		layers = append(layers, guardPolicyLayerJSON{
-			Layer: "project", Path: p, Exists: true,
-			CountsKnown: true, Rules: len(decl), Overrides: len(ov),
-			Problems:    guard.Lint(raw, "project"),
-			ProjectRoot: root,
-		})
 	}
 
 	backupExists := false
@@ -212,7 +232,7 @@ func (s *Server) saveGuardUserPolicy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	ov, decl, _ := guard.PolicyRuleRefs([]byte(req.Content))
+	ov, decl, _, _ := guard.PolicyRuleRefs([]byte(req.Content))
 	writeJSON(w, map[string]any{
 		"saved":            true,
 		"path":             path,
@@ -221,6 +241,95 @@ func (s *Server) saveGuardUserPolicy(w http.ResponseWriter, r *http.Request) {
 		"overrides":        len(ov),
 		"restart_required": true,
 	})
+}
+
+// handleGuardProjectPolicy serves /api/guard/policy/project (PUT only):
+// the trusted per-project file writer.
+func (s *Server) handleGuardProjectPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", "PUT")
+		http.Error(w, "PUT only", http.StatusMethodNotAllowed)
+		return
+	}
+	s.saveGuardProjectPolicy(w, r)
+}
+
+// saveGuardProjectPolicy serves PUT /api/guard/policy/project — the ONLY
+// dashboard path that writes the dashboard-authored TRUSTED per-project
+// file (~/.observer/guard-project-policies/<hash>.toml). It mirrors
+// saveGuardUserPolicy exactly, with two differences: the target path is
+// resolved from {project_root} via guard.TrustedProjectPolicyPath (409
+// when the trusted dir is unconfigured or the root is unknown), and the
+// save gate is guard.LintTrustedProject (org-floor-aware — a relaxation
+// below the org floor is refused 422, the file untouched). Local-only
+// (L), SectionPolicies.
+func (s *Server) saveGuardProjectPolicy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProjectRoot string `json:"project_root"`
+		Content     string `json:"content"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	cfg, err := loadConfigForDashboard(s.opts.ConfigPath)
+	if err != nil {
+		writeErr(w, fmt.Errorf("load config: %w", err))
+		return
+	}
+	home, _ := os.UserHomeDir()
+	if !s.guardKnownProjectRoot(r, req.ProjectRoot) {
+		http.Error(w, "unknown project root", http.StatusConflict)
+		return
+	}
+	path := guard.TrustedProjectPolicyPath(cfg.Guard, home, req.ProjectRoot)
+	if path == "" {
+		http.Error(w, "no trusted project dir configured ([guard.rules] trusted_project_dir is empty) or empty project root", http.StatusConflict)
+		return
+	}
+	// The save gate: the trusted-project parse+compile pass PLUS the real
+	// org-floor check. A file that passes here loads with zero issues.
+	if problems := guard.LintTrustedProject(cfg.Guard, home, []byte(req.Content)); len(problems) > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{"saved": false, "problems": problems})
+		return
+	}
+	if err := writeGuardPolicyFile(path, []byte(req.Content)); err != nil {
+		writeErr(w, err)
+		return
+	}
+	ov, decl, dis, _ := guard.PolicyRuleRefs([]byte(req.Content))
+	writeJSON(w, map[string]any{
+		"saved":            true,
+		"path":             path,
+		"backup_path":      path + ".bak",
+		"rules":            len(decl),
+		"overrides":        len(ov),
+		"disabled":         len(dis),
+		"restart_required": true,
+		"project_root":     req.ProjectRoot,
+	})
+}
+
+// guardKnownProjectRoot reports whether root matches a project root the
+// daemon has observed (path-normalized). A trusted per-project file may
+// only be authored for a known root — an unknown root is a 409, not a
+// silent write of an orphan file. Distinct from the guidance handler's
+// knownProjectRoot, which reads the ?root= query param; here the root
+// arrives in the request body / project_root query param.
+func (s *Server) guardKnownProjectRoot(r *http.Request, root string) bool {
+	if root == "" {
+		return false
+	}
+	want := filepath.Clean(root)
+	roots, _ := store.New(s.db()).ProjectRoots(r.Context())
+	for _, have := range roots {
+		if filepath.Clean(have) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // handleGuardPolicyLint serves POST /api/guard/policy/lint — the
@@ -245,37 +354,53 @@ func (s *Server) handleGuardPolicyLint(w http.ResponseWriter, r *http.Request) {
 	if layer == "" {
 		layer = "user"
 	}
-	if layer != "user" && layer != "project" && layer != "org" {
-		http.Error(w, `layer must be one of "user", "project", "org"`, http.StatusBadRequest)
+	if layer != "user" && layer != "project" && layer != "org" && layer != "trusted_project" {
+		http.Error(w, `layer must be one of "user", "project", "trusted_project", "org"`, http.StatusBadRequest)
 		return
 	}
-	problems := guard.Lint([]byte(req.Content), layer)
+	var problems []string
+	if layer == "trusted_project" {
+		// Org-floor-aware lint (the same gate the trusted-project save
+		// uses) so a relaxation below the org floor lints dirty here too.
+		cfg, err := loadConfigForDashboard(s.opts.ConfigPath)
+		if err != nil {
+			writeErr(w, fmt.Errorf("load config: %w", err))
+			return
+		}
+		home, _ := os.UserHomeDir()
+		problems = guard.LintTrustedProject(cfg.Guard, home, []byte(req.Content))
+	} else {
+		problems = guard.Lint([]byte(req.Content), layer)
+	}
 	if problems == nil {
 		problems = []string{}
 	}
-	ov, decl, _ := guard.PolicyRuleRefs([]byte(req.Content))
+	ov, decl, dis, _ := guard.PolicyRuleRefs([]byte(req.Content))
 	writeJSON(w, map[string]any{
 		"ok":        len(problems) == 0,
 		"problems":  problems,
 		"rules":     len(decl),
 		"overrides": len(ov),
+		"disabled":  len(dis),
 	})
 }
 
 // handleGuardPolicyBackup serves /api/guard/policy/backup — the
-// swap-undo over <user-policy>.bak, mirroring handleConfigBackup's
-// contract: GET views the backup, POST swaps current and backup (so a
-// second restore undoes the first). The backup must lint clean before
-// it is restored — restoring a malformed policy would trade a bad
-// save for a bad load.
+// swap-undo over <policy>.bak, mirroring handleConfigBackup's contract:
+// GET views the backup, POST swaps current and backup (so a second
+// restore undoes the first). The backup must lint clean before it is
+// restored — restoring a malformed policy would trade a bad save for a
+// bad load. The target defaults to the user layer; ?layer=trusted_project
+// &project_root=<root> selects a trusted per-project file instead (its
+// restore lints through the org-floor-aware gate).
 func (s *Server) handleGuardPolicyBackup(w http.ResponseWriter, r *http.Request) {
-	path, err := s.guardUserPolicyPath()
+	path, lintFn, err := s.guardBackupTarget(r)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	if path == "" {
-		http.Error(w, "no user policy path configured ([guard.rules] user_policy is empty)", http.StatusConflict)
+		http.Error(w, "no policy path configured for the requested layer (user_policy / trusted_project_dir empty, or unknown project root)", http.StatusConflict)
 		return
 	}
 	bakPath := path + ".bak"
@@ -310,7 +435,7 @@ func (s *Server) handleGuardPolicyBackup(w http.ResponseWriter, r *http.Request)
 			writeErr(w, readErr)
 			return
 		}
-		if problems := guard.Lint(bak, "user"); len(problems) > 0 {
+		if problems := lintFn(bak); len(problems) > 0 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -348,6 +473,31 @@ func (s *Server) handleGuardPolicyBackup(w http.ResponseWriter, r *http.Request)
 		w.Header().Set("Allow", "GET, POST")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+// guardBackupTarget resolves the backup endpoint's target file and the
+// layer-appropriate lint function from the request's ?layer / ?project_root
+// query params. It defaults to the USER layer (path + guard.Lint(_,"user"))
+// so an existing bare POST keeps working; ?layer=trusted_project&project_root
+// =<root> selects the trusted per-project file (path + the org-floor-aware
+// guard.LintTrustedProject). An unknown project root or an unconfigured
+// trusted dir resolves to an empty path (the caller returns 409).
+func (s *Server) guardBackupTarget(r *http.Request) (path string, lintFn func([]byte) []string, err error) {
+	cfg, err := loadConfigForDashboard(s.opts.ConfigPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("load config: %w", err)
+	}
+	home, _ := os.UserHomeDir()
+	if r.URL.Query().Get("layer") == "trusted_project" {
+		root := r.URL.Query().Get("project_root")
+		if !s.guardKnownProjectRoot(r, root) {
+			return "", nil, nil
+		}
+		lintFn = func(b []byte) []string { return guard.LintTrustedProject(cfg.Guard, home, b) }
+		return guard.TrustedProjectPolicyPath(cfg.Guard, home, root), lintFn, nil
+	}
+	lintFn = func(b []byte) []string { return guard.Lint(b, "user") }
+	return guard.UserPolicyPath(cfg.Guard, home), lintFn, nil
 }
 
 // guardUserPolicyPath resolves the user policy file from the ON-DISK

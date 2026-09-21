@@ -147,6 +147,120 @@ func TestCorrelateNoMatch(t *testing.T) {
 	}
 }
 
+// TestParseInvokedBinaries pins the wrapper/compound-command binary parser:
+// it sees through `cd … && go build` and `wsl … -- bash -lc '…'`, drops the
+// `cd` builtin, and never anchors on the wrapper itself.
+func TestParseInvokedBinaries(t *testing.T) {
+	t.Parallel()
+	contains := func(set []string, want string) bool {
+		for _, s := range set {
+			if s == want {
+				return true
+			}
+		}
+		return false
+	}
+	if got := parseInvokedBinaries("cd /x && go build"); !contains(got, "go") || contains(got, "cd") {
+		t.Errorf(`parseInvokedBinaries("cd /x && go build") = %v, want contains go, not cd`, got)
+	}
+	if got := parseInvokedBinaries("wsl.exe -d Ubuntu -- bash -lc 'cd /x && go build'"); !contains(got, "go") {
+		t.Errorf(`parseInvokedBinaries(wsl … go build) = %v, want contains go`, got)
+	}
+	if got := parseInvokedBinaries("FOO=1 python a.py | grep x"); !contains(got, "python") || !contains(got, "grep") {
+		t.Errorf(`parseInvokedBinaries("FOO=1 python a.py | grep x") = %v, want python + grep`, got)
+	}
+	if got := parseInvokedBinaries("cd /x"); len(got) != 0 {
+		t.Errorf(`parseInvokedBinaries("cd /x") = %v, want empty (builtin)`, got)
+	}
+	if got := parseInvokedBinaries("npm test"); !contains(got, "npm") {
+		t.Errorf(`parseInvokedBinaries("npm test") = %v, want npm`, got)
+	}
+}
+
+// TestCorrelateAmbiguousRepeatedCommandRejected pins the ambiguity rejection:
+// two identical `go build` actions in the window mean a bare `go` process can't
+// be attributed to either, so it stays unlinked (no coin-flip). A single such
+// action links as before.
+func TestCorrelateAmbiguousRepeatedCommandRejected(t *testing.T) {
+	t.Parallel()
+	twoActions := []ActionRef{
+		cAction(10, 1, "go build", 0),
+		cAction(20, 2, "go build", 3*time.Second),
+	}
+	run := cRun("k_go", "", 2*time.Second, "go", "go build")
+	if links := CorrelateActions([]ProcRunRef{run}, twoActions, 0); len(links) != 0 {
+		t.Errorf("ambiguous repeated command should produce no link, got %+v", links)
+	}
+	// Single action → unambiguous → links.
+	oneAction := []ActionRef{cAction(10, 1, "go build", 0)}
+	if got := linkMap(CorrelateActions([]ProcRunRef{run}, oneAction, 0))["k_go"]; got != 10 {
+		t.Errorf("single go build action should link, got %d", got)
+	}
+}
+
+// TestCorrelateWrapperArgvAnchorsAndPropagates pins that a wrapper process
+// whose argv carries the compound command anchors by argv (score 1) and
+// propagates the action down its subtree, so children that don't match on their
+// own (the `compile` grandchild) still link.
+func TestCorrelateWrapperArgvAnchorsAndPropagates(t *testing.T) {
+	t.Parallel()
+	actions := []ActionRef{cAction(30, 7, "cd /x && go build", 0)}
+	runs := []ProcRunRef{
+		// De-quoted, full-path-expanded argv, as the capture layer records it.
+		cRun("k_wrap", "", time.Second, "bash", "/bin/bash -c cd /x && go build"),
+		cRun("k_go", "k_wrap", time.Second, "go", "go build"),
+		cRun("k_compile", "k_go", 2*time.Second, "compile", "compile -p"),
+	}
+	got := linkMap(CorrelateActions(runs, actions, 0))
+	for _, k := range []string{"k_wrap", "k_go", "k_compile"} {
+		if got[k] != 30 {
+			t.Errorf("%s linked to %d, want 30", k, got[k])
+		}
+	}
+	// turn_index carries through.
+	for _, l := range CorrelateActions(runs, actions, 0) {
+		if l.TurnIndex == nil || *l.TurnIndex != 7 {
+			t.Errorf("link %s missing turn_index 7: %+v", l.ProcessKey, l.TurnIndex)
+		}
+	}
+}
+
+// TestCorrelateCompoundCommandScore2 pins that a process exe matches the real
+// binary invoked inside a compound command (`cd /mnt/d && go build`) at score
+// 2, so a single such action links.
+func TestCorrelateCompoundCommandScore2(t *testing.T) {
+	t.Parallel()
+	actions := []ActionRef{cAction(40, 3, "cd /mnt/d && go build", 0)}
+	runs := []ProcRunRef{cRun("k_go", "", time.Second, "go", "go build")}
+	if got := linkMap(CorrelateActions(runs, actions, 0))["k_go"]; got != 40 {
+		t.Errorf("go should link to compound command via score 2, got %d", got)
+	}
+}
+
+// TestCorrelateCompoundVsStandaloneNoMisLink pins the MED-2 fix: when a
+// compound action (`cd /x && go build`) and a standalone look-alike (`go build`)
+// both fall in the window, the `go` process the compound spawned must NEVER be
+// attributed to the standalone action just because its short argv (`go build`)
+// matches it. Both the wrapper and the leaf tie ambiguously (the standalone's
+// command is a substring of the compound's), so the correct, conservative
+// outcome is to leave them unlinked rather than mis-link to the standalone.
+func TestCorrelateCompoundVsStandaloneNoMisLink(t *testing.T) {
+	t.Parallel()
+	compound := cAction(10, 1, "cd /x && go build", 0)
+	standalone := cAction(20, 2, "go build", time.Second)
+	runs := []ProcRunRef{
+		cRun("k_wrap", "", time.Second, "bash", "/bin/bash -c cd /x && go build"),
+		cRun("k_go", "k_wrap", 2*time.Second, "go", "go build"),
+	}
+	got := linkMap(CorrelateActions(runs, []ActionRef{compound, standalone}, 0))
+	if got["k_go"] == 20 {
+		t.Errorf("k_go mis-linked to the standalone action 20; it was spawned by the compound (10) or is ambiguous — never the standalone look-alike")
+	}
+	if got["k_wrap"] == 20 {
+		t.Errorf("k_wrap mis-linked to the standalone action 20")
+	}
+}
+
 func TestLeadingBinary(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
