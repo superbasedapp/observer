@@ -4,7 +4,9 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
-## [1.34.0-rc.9] — 2026-09-30
+## [1.34.0-rc.10] — 2026-09-30
+
+`v1.34.0-rc.9` was tagged but never published: its release build failed (the web apps did not declare `lucide-react`, which the shared design kit imports) and its public snapshot did not compile (`release.sh` committed the unpatched `no_obs` stubs). rc.10 carries the same changes plus those two fixes.
 
 Pre-release on the `edge` channel; everything since rc.8 (2026-09-21): Agent Access (off by default), the
 post-Agent-Access backlog and its two live-verification rounds, the finish round (the shared design kit,
@@ -3367,7 +3369,7 @@ retention horizons and the fix below.
   (idempotent; overrides `enabled_adapters` for the run). A future adapter's
   Backfill row appears automatically.
 - **Pricing: GPT-5.6 and Grok 4.5 model launches.** Added `gpt-5.6-sol`
-  ($5/$30), `gpt-5.6-terra` ($2.50 in / $15 out at launch), `gpt-5.6-luna`
+  ($4/$20 since 2026-08-21; it launched at $5/$30), `gpt-5.6-terra` ($2.50 in / $15 out at launch), `gpt-5.6-luna`
   ($1 in / $6 out at launch; OpenAI cut Terra and Luna prices on 2026-07-30 —
   the current table reflects the cut), and a
   `gpt-5.6` family row. GPT-5.6 introduces the **first non-Anthropic explicit

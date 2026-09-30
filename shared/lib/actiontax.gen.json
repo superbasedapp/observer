@@ -476,6 +476,8 @@
         "search",
         "web",
         "agent",
+        "skill",
+        "user",
         "meta"
       ]
     },
@@ -546,7 +548,10 @@
         "search",
         "web",
         "agent",
-        "meta"
+        "skill",
+        "user",
+        "meta",
+        "fail"
       ]
     },
     "pi": {
@@ -621,7 +626,10 @@
       "categories": [
         "file",
         "cmd",
-        "search"
+        "search",
+        "web",
+        "agent",
+        "skill"
       ]
     },
     "zoo-code": {

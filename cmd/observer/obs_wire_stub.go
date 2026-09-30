@@ -1,5 +1,3 @@
-//go:build no_obs
-
 package main
 
 import (
