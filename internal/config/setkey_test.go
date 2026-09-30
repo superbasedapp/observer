@@ -106,12 +106,9 @@ func TestUpdateProjectOverlay(t *testing.T) {
 		t.Errorf("profiles.default: got %q", pp.Default)
 	}
 
-	// Allow-list: daemon-level + pinned keys refused.
+	// Allow-list: daemon-level keys refused.
 	if err := UpdateProjectOverlay(root, "observer.db_path", "/evil"); err == nil {
 		t.Error("daemon-level key must be refused in a project file")
-	}
-	if err := UpdateProjectOverlay(root, "compression.code_graph.enabled", "false"); err == nil {
-		t.Error("code_graph keys must be refused (master-owned)")
 	}
 
 	// Corrupt existing file: refuse rather than clobber.

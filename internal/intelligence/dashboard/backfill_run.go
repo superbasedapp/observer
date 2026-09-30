@@ -51,6 +51,7 @@ var allowlistedBackfillModes = map[string][]string{
 	"clinecli-rescan":          {"backfill", "--clinecli-rescan"},
 	"cache-rescan":             {"backfill", "--cache-rescan"},
 	"zed-rescan":               {"backfill", "--zed-rescan"},
+	"crush-rescan":             {"backfill", "--crush-rescan"},
 	"openclaw-project-root":    {"backfill", "--openclaw-project-root"},
 	"openclaw-session-id":      {"backfill", "--openclaw-session-id"},
 	"codex-project-root":       {"backfill", "--codex-project-root"},

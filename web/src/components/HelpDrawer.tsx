@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
+  Icon,
   Pill,
   SlideOver,
 } from "@/components/primitives";
@@ -11,6 +12,7 @@ import {
   type HelpEntry,
 } from "@/lib/help";
 import { useTour } from "@/components/tour/TourProvider";
+import { Play } from "lucide-react";
 
 const CATEGORY_LABEL: Record<HelpCategory, string> = {
   tab: "Tabs",
@@ -103,7 +105,7 @@ export function HelpDrawer({
             }}
             className="flex w-full items-center justify-center gap-1.5 rounded-2 border border-accent/40 bg-accent-soft px-3 py-2 text-[12px] font-semibold text-accent transition-colors hover:bg-accent/20"
           >
-            <span aria-hidden>▶</span> Take the product tour
+            <Icon icon={Play} size="xs" /> Take the product tour
           </button>
         </div>
         <div className="border-b border-line-1 p-4">

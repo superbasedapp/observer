@@ -125,6 +125,15 @@ type SessionLOCResponse struct {
 	// Markdown).
 	Docs   LOCStatsPayload `json:"docs"`
 	Config LOCStatsPayload `json:"config"`
+	// AISplit / AISidechainSplit are the code-vs-comment splits of the
+	// AIMain / AISidechain roll-ups (internal/loc.SplitAuthored, computed
+	// by the store from the same buckets). AISplit.CodeLines equals
+	// AIMain.CodeTouched and AISidechainSplit.CodeLines equals
+	// AISidechain.CodeTouched by construction. The comment share needs no
+	// human measurement, so it is honest to show while HumanCapture is
+	// "none" - it is never an AI-vs-human share.
+	AISplit          loc.AuthoredSplit `json:"ai_split"`
+	AISidechainSplit loc.AuthoredSplit `json:"ai_sidechain_split"`
 }
 
 // captureNoteNone is the one wording for "we are not measuring the human
@@ -161,6 +170,8 @@ func buildSessionLOCResponse(res store.SessionLOC) SessionLOCResponse {
 		HumanCapture:      res.HumanCapture,
 		CaptureNote:       captureNoteNone,
 		ClassifierVersion: res.ClassifierVersion,
+		AISplit:           res.AISplit,
+		AISidechainSplit:  res.AISidechainSplit,
 	}
 	if res.HumanCapture != "none" {
 		out.CaptureNote = captureNoteVSCode
@@ -237,6 +248,12 @@ type LOCSummaryResponse struct {
 	HumanCodeTouched int `json:"human_code_touched"`
 	// AIShare is present ONLY when human capture exists.
 	AIShare *float64 `json:"ai_share,omitempty"`
+	// AISplit is the code-vs-comment split of the window's AI code lines
+	// (internal/loc.SplitAuthored, computed by the store from the same
+	// buckets). AISplit.CodeLines equals AICodeTouched by construction;
+	// the lines-per-dollar tile divides CodeLines only, so comment lines
+	// never inflate the ratio.
+	AISplit loc.AuthoredSplit `json:"ai_split"`
 	// ClassifierVersion is the version this node counts at.
 	ClassifierVersion int `json:"classifier_version"`
 }
@@ -267,6 +284,7 @@ func (s *Server) handleLOCSummary(w http.ResponseWriter, r *http.Request) {
 		HumanCapture:      res.HumanCapture,
 		CaptureNote:       captureNoteNone,
 		ClassifierVersion: loc.Version,
+		AISplit:           res.AISplit,
 	}
 	if res.HumanCapture != "none" {
 		out.CaptureNote = captureNoteVSCode
@@ -303,4 +321,22 @@ func (s *Server) handleLOCSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, out)
+}
+
+// authoredSplit aliases internal/loc.AuthoredSplit so the Sessions-list row
+// type in dashboard.go can carry the split without that file importing
+// internal/loc for one field.
+type authoredSplit = loc.AuthoredSplit
+
+// sessionRowAISplit is the Sessions-list row's code-vs-comment split of
+// the AI rows store.LoadSessionLOCLines already summed (internal/loc.
+// SplitAuthored, the one derivation). It returns nil when the session has
+// no AI code or comment lines, so the omitempty field keeps an uncounted
+// corpus's payload byte-identical.
+func sessionRowAISplit(lines store.SessionLOCLines) *authoredSplit {
+	if lines.AICodeLines <= 0 && lines.AICommentLines <= 0 {
+		return nil
+	}
+	split := loc.SplitAuthored(int64(lines.AICodeLines), int64(lines.AICommentLines))
+	return &split
 }

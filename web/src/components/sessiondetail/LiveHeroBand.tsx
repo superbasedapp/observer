@@ -1,4 +1,5 @@
-import { HeroStat, Pill } from "@/components/primitives";
+import { CircleDot } from "lucide-react";
+import { HeroStat, Icon, InlineLoading, Pill, Stagger, Tooltip } from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
 import { fmtBytes, fmtCompact, fmtInt, fmtUSD } from "@/lib/format";
 import { flattenProcs, networkSummary, utilPct, type SessionNetworkSummary } from "@/lib/cockpit";
@@ -7,6 +8,9 @@ import type {
   SessionDetail,
   SessionProcessResponse,
 } from "@/lib/types";
+import { MetricIcon } from "@/components/MetricIcon";
+import { GaugeStat } from "@shared/components/sessiondetail";
+import { budgetNoun, contextGaugeModel, type ContextGaugeState } from "@/lib/sessionContextGauge";
 
 // LiveHeroBand — the four "what is happening RIGHT NOW" hero tiles, rendered
 // at the very top of the session slide-over when it is opened from a live
@@ -72,7 +76,7 @@ export function LiveHeroBand({
 
   return (
     <div className="space-y-2">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <Stagger className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <ContextWindowCard detail={detail} predict={predict.data} loading={predict.loading} />
         <LimitCard limit={predict.data?.limit} loading={predict.loading} />
         <NextTurnCostCard predict={predict.data} loading={predict.loading} />
@@ -83,17 +87,19 @@ export function LiveHeroBand({
           networkErr={network.error != null}
           loading={procs.loading && !procs.data}
         />
-      </div>
+      </Stagger>
       {onPinVitals && (
         <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={onPinVitals}
-            title="Open the small floating vitals cockpit, which sits beside the terminal instead of covering it"
-            className="rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3 hover:text-fg-0"
-          >
-            ⊙ Pin vitals panel
-          </button>
+          <Tooltip content="Open the small floating vitals cockpit, which sits beside the terminal instead of covering it">
+            <button
+              type="button"
+              onClick={onPinVitals}
+              className="inline-flex items-center gap-1 rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-caption text-fg-2 hover:bg-bg-3 hover:text-fg-0"
+            >
+              <Icon icon={CircleDot} size="xs" />
+              Pin vitals panel
+            </button>
+          </Tooltip>
         </div>
       )}
     </div>
@@ -102,30 +108,26 @@ export function LiveHeroBand({
 
 // ── 1: context window used ──────────────────────────────────────────────────
 //
-// Numerator  = predict.estimate.prefix_tokens — the conversation prefix the
-//              NEXT request will carry, which is exactly "context in use".
-// Denominator = detail.context_budget_tokens — the only context-size number
-//              the server actually reports. There is deliberately no model
-//              context-window table consulted here: the closest server-side
-//              number, cost pricing's `long_context_threshold`, is a BILLING
-//              tier boundary (272k for GPT-5, 200k for Anthropic), not a
-//              certified maximum, and dressing it up as a context window would
-//              be exactly the fabricated-capability the honest-affordance
-//              convention forbids.
-//
-// With no budget we still show the absolute prefix size, a real and useful
-// observation, and say plainly that there is no ceiling to measure it against.
+// Source of truth: detail.context_gauge, derived by the daemon
+// (internal/sessiongauge - the same derivation the org drawer reads). Its
+// ceiling is either a budget the session reported or the model catalog's
+// context window (budget_source), and a prefix larger than that window comes
+// back as over_window with no ratio. An older daemon without the field falls
+// back to the client computation: predict.estimate.prefix_tokens over
+// detail.context_budget_tokens, with no model table consulted. The mapping
+// is pure and tested in lib/sessionContextGauge.ts.
 //
 // The prefix is a FACT of the session and never depends on pricing: a model
-// with no pricing entry (opencode alias ids such as "big-pickle") still
-// reports its prefix, and this card must not restate that pricing gap as a
-// data gap. Three honest states, in order:
+// with no pricing entry still reports its prefix, and this card must not
+// restate that pricing gap as a data gap. Honest states, in order:
 //   1. no prefix number at all, and the sub-line says which of the two causes
 //      applies (nothing observed yet vs. observed turns on an uncached
-//      provider, distinguished by estimate.has_shape);
-//   2. prefix known, ceiling unknown: show the token count and say the limit
-//      for this model is not known;
-//   3. prefix and budget known: show the percentage.
+//      provider);
+//   2. prefix and ceiling known: the ring fills to the share (GaugeStat's
+//      GAUGE_BANDS pick its tone) and the sub-line states the percentage;
+//   3. prefix larger than the catalog window: an empty ring that says
+//      unknown, and the sub-line says why;
+//   4. prefix known, ceiling unknown: an empty ring that says unknown.
 function ContextWindowCard({
   detail,
   predict,
@@ -135,42 +137,60 @@ function ContextWindowCard({
   predict?: PredictResponse | null;
   loading: boolean;
 }) {
-  const used = predict?.estimate?.prefix_tokens ?? 0;
-  const observed = Boolean(predict?.estimate?.has_shape);
-  const budget = detail?.context_budget_tokens ?? 0;
-  const pct = budget > 0 && used > 0 ? Math.min(100, (used / budget) * 100) : null;
+  // The daemon's own gauge (detail.context_gauge, internal/sessiongauge)
+  // when present; an older daemon without it falls back to the client
+  // computation. A nil ratio / over_window is unknown, never 0% or 100%.
+  const g = contextGaugeModel({
+    gauge: detail?.context_gauge,
+    prefixTokens: predict?.estimate?.prefix_tokens,
+    hasShape: predict?.estimate?.has_shape,
+    contextBudgetTokens: detail?.context_budget_tokens,
+  });
 
-  if (used <= 0) {
+  if (g.state === "no_prefix") {
     return (
-      <HeroStat
+      <GaugeStat
         label="Context window used"
+        icon={<MetricIcon metric="contextWindow" />}
+        ratio={null}
         value="n/a"
         loading={loading}
         sub={
-          observed
+          g.observed
             ? "Turns observed on this session, but none carried a cached prefix, so there is no context size to report."
             : "No prefix observed yet. The predictor needs at least one completed turn on this session."
         }
       />
     );
   }
+  // The ring carries the share; the headline is the absolute prefix, a fact
+  // of the session whether or not a ceiling is known.
+  const noun = budgetNoun(g.budgetSource);
   return (
-    <HeroStat
+    <GaugeStat
       label="Context window used"
-      value={pct != null ? pct.toFixed(0) : fmtCompact(used)}
-      unit={pct != null ? "%" : "tokens"}
-      variant={pct == null ? "accent" : pct > 90 ? "danger" : pct > 70 ? "warn" : "accent"}
+      icon={<MetricIcon metric="contextWindow" />}
+      ratio={g.ratio}
+      value={fmtCompact(g.used)}
+      unit="tokens"
       cornerPill={
-        pct != null ? <Pill variant="neutral">{fmtCompact(budget)} budget</Pill> : undefined
+        g.ratio != null ? <Pill variant="neutral">{fmtCompact(g.budget)} {noun}</Pill> : undefined
       }
-      sub={
-        pct != null
-          ? `${fmtCompact(used)} of ~${fmtCompact(budget)} carried into the next request`
-          : `${fmtCompact(used)} tokens carried into the next request · the context limit for this model is not known, so there is no ceiling to measure against`
-      }
+      sub={CONTEXT_SUB[g.state](g.ratio, g.budget, noun)}
     />
   );
 }
+
+// CONTEXT_SUB - the sub-line per gauge state (no_prefix renders above).
+const CONTEXT_SUB: Record<ContextGaugeState, (ratio: number | null, budget: number, noun: string) => string> = {
+  no_prefix: () => "",
+  measured: (ratio, budget, noun) =>
+    `${((ratio ?? 0) * 100).toFixed(0)}% of ~${fmtCompact(budget)} ${noun} carried into the next request`,
+  over_window: () =>
+    "Carried into the next request. The prefix is larger than the catalog context window for this model, so the real limit is not known.",
+  no_ceiling: () =>
+    "Carried into the next request. The context limit for this model is not known, so there is no ceiling to measure against.",
+};
 
 // ── 2: % of limit spent ─────────────────────────────────────────────────────
 //
@@ -179,9 +199,14 @@ function ContextWindowCard({
 // through the Observer proxy have it), or "transcript" when the tool's own
 // session log carried it (codex token_count rate_limits).
 //
-// The unavailable case is a two-step ladder, not one flag, and each step has a
-// DIFFERENT remedy — so each gets its own sentence rather than a shared
-// "unavailable":
+// The unavailable case is a three-step ladder, not one flag, and each step
+// has a DIFFERENT remedy — so each gets its own sentence rather than a
+// shared "unavailable":
+//   no_source   — an AUDITED registry finding (internal/integration
+//                 Capability.Limit): no local signal can ever exist for this
+//                 tool (e.g. cursor, grokbot). Checked FIRST — must never
+//                 fall through to the needs_proxy branch below, since
+//                 routing such a tool through the proxy cannot help either.
 //   needs_proxy — no snapshot at all; routing this tool through the proxy
 //                 would produce one.
 //   no_window   — a snapshot exists but this account/provider never carries a
@@ -202,37 +227,44 @@ function LimitCard({
 
   if (!available) {
     return (
-      <HeroStat
+      <GaugeStat
         label="% of limit spent"
+        icon={<MetricIcon metric="limitSpent" />}
+        ratio={null}
         value="n/a"
         loading={loading}
         sub={
-          limit?.no_window
-            ? "This provider reports no subscription window - usage here is billed per token, so there is no limit to spend down."
-            : limit?.needs_proxy
-              ? "No rate-limit snapshot: route this tool through the Observer proxy and the gauge fills from the provider's own headers."
-              : "No rate-limit snapshot for this session yet."
+          limit?.no_source
+            ? limit.source_note || "Usage limits are not visible for this tool."
+            : limit?.no_window
+              ? "This provider reports no subscription window - usage here is billed per token, so there is no limit to spend down."
+              : limit?.needs_proxy
+                ? "No rate-limit snapshot: route this tool through the Observer proxy and the gauge fills from the provider's own headers."
+                : "No rate-limit snapshot for this session yet."
         }
       />
     );
   }
-  // The headline is whichever window is closer to its ceiling — that is the one
-  // that will actually stop the operator.
+  // One ring per window (a window this provider does not report is an empty
+  // ring that says unknown). The headline is whichever window is closer to
+  // its ceiling - that is the one that will actually stop the operator.
   const worst = Math.max(u5 ?? 0, u7 ?? 0);
-  const parts: string[] = [];
-  if (u5 != null) parts.push(`5h ${u5.toFixed(0)}%`);
-  if (u7 != null) parts.push(`7d ${u7.toFixed(0)}%`);
+  const worstWindow = u7 != null && (u5 == null || u7 > u5) ? "7d" : "5h";
+  const sub =
+    `${worstWindow} window is closest to its ceiling` +
+    (limit?.observed_age ? ` · observed ${limit.observed_age} ago` : "");
   return (
-    <HeroStat
+    <GaugeStat
       label="% of limit spent"
+      icon={<MetricIcon metric="limitSpent" />}
+      rings={[
+        { name: "5h window", caption: "5h", ratio: u5 != null ? u5 / 100 : null },
+        { name: "7d window", caption: "7d", ratio: u7 != null ? u7 / 100 : null },
+      ]}
       value={worst.toFixed(0)}
       unit="%"
-      variant={worst > 90 ? "danger" : worst > 70 ? "warn" : "accent"}
       cornerPill={limit?.source ? <Pill variant="neutral">{limit.source}</Pill> : undefined}
-      sub={
-        parts.join(" · ") +
-        (limit?.observed_age ? ` · observed ${limit.observed_age} ago` : "")
-      }
+      sub={sub}
     />
   );
 }
@@ -257,6 +289,7 @@ function NextTurnCostCard({
     return (
       <HeroStat
         label="Next-turn avg cost"
+        icon={<MetricIcon metric="nextTurnCost" />}
         value="n/a"
         loading={loading}
         sub={
@@ -276,6 +309,7 @@ function NextTurnCostCard({
   return (
     <HeroStat
       label="Next-turn avg cost"
+      icon={<MetricIcon metric="nextTurnCost" />}
       value={fmtUSD(est.mid.message_usd)}
       variant="accent"
       cornerPill={
@@ -317,6 +351,7 @@ function SystemCard({
     return (
       <HeroStat
         label="Process · network · memory"
+        icon={<MetricIcon metric="process" />}
         value="off"
         sub="OS process capture is disabled - turn it on in Settings › Process to see the process tree, network and memory for this session."
       />
@@ -326,12 +361,13 @@ function SystemCard({
     return (
       <HeroStat
         label="Process · network · memory"
+        icon={<MetricIcon metric="process" />}
         value="n/a"
         loading={loading}
         sub={
           procsErr
             ? "Process vitals could not be loaded - retrying."
-            : "Loading process vitals…"
+            : <InlineLoading label="Loading process vitals" />
         }
       />
     );
@@ -365,6 +401,7 @@ function SystemCard({
   return (
     <HeroStat
       label="Process · network · memory"
+      icon={<MetricIcon metric="process" />}
       value={fmtInt(procs.total)}
       unit={procs.total === 1 ? "process" : "processes"}
       cornerPill={

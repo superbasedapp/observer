@@ -12,23 +12,24 @@ import (
 // session-detail "spawned sessions" list. Since the 2026-08-21 operator
 // ruling that per-sub-agent usage must be visible on the parent's detail
 // view (opencode sub-agents are separate sessions, unlike claude-code's
-// same-session sidechains), each child carries lightweight rollups:
-// token sums over its non-sidechain token_usage rows, their recorded
-// estimated cost, and its action count. These are plain indexed GROUP BY
-// aggregates — deliberately NOT the heavy per-turn cost-engine CTE, which
-// stays single-owned by handleSessionDetail.
+// same-session sidechains), each child carries rollups: its SpendTurns (the
+// one session rule, so the child's figures equal its own session header),
+// their token sums and recorded cost, and its action count.
 type SessionLineageChild struct {
 	ID           string
 	ThreadSource string
 	StartedAt    string
-	// InputTokens / OutputTokens sum the child's non-sidechain token_usage
-	// rows; CostUSD sums their recorded estimated_cost_usd (zero when the
-	// adapter doesn't record cost). ActionCount is the child's actions row
-	// count (zero when pruned or not yet ingested).
+	// InputTokens / OutputTokens sum the child's SpendTurns (api_turns ∪
+	// token_usage under the one session rule - the child header's input and
+	// output); CostUSD sums their RECORDED cost (zero when the adapter
+	// doesn't record one - a caller that prices uses Turns, as the session
+	// header does). ActionCount is the child's actions row count (zero when
+	// pruned or not yet ingested).
 	InputTokens  int64
 	OutputTokens int64
 	CostUSD      float64
 	ActionCount  int64
+	Turns        []SpendTurn
 }
 
 // SessionLineageView is the codex fork/subagent lineage for one session
@@ -132,38 +133,40 @@ func (s *Store) LoadSessionLineage(ctx context.Context, sessionID string) (Sessi
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.id, COALESCE(s.thread_source, ''), s.started_at,
-		        COALESCE(tu.input_tokens, 0), COALESCE(tu.output_tokens, 0),
-		        COALESCE(tu.cost_usd, 0), COALESCE(ac.action_count, 0)
+		        (SELECT COUNT(*) FROM actions a WHERE a.session_id = s.id)
 		 FROM sessions s
-		 LEFT JOIN (
-		       SELECT session_id,
-		              SUM(input_tokens) AS input_tokens,
-		              SUM(output_tokens) AS output_tokens,
-		              SUM(estimated_cost_usd) AS cost_usd
-		         FROM token_usage
-		        WHERE COALESCE(is_sidechain, 0) = 0
-		        GROUP BY session_id
-		 ) tu ON tu.session_id = s.id
-		 LEFT JOIN (
-		       SELECT session_id, COUNT(*) AS action_count
-		         FROM actions GROUP BY session_id
-		 ) ac ON ac.session_id = s.id
 		 WHERE s.forked_from_id = ? OR s.parent_thread_id = ?
 		 ORDER BY s.started_at`, sessionID, sessionID)
 	if err != nil {
 		return v, fmt.Errorf("store.LoadSessionLineage: children: %w", err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var c SessionLineageChild
-		if err := rows.Scan(&c.ID, &c.ThreadSource, &c.StartedAt,
-			&c.InputTokens, &c.OutputTokens, &c.CostUSD, &c.ActionCount); err != nil {
+		if err := rows.Scan(&c.ID, &c.ThreadSource, &c.StartedAt, &c.ActionCount); err != nil {
+			rows.Close()
 			return v, fmt.Errorf("store.LoadSessionLineage: scan child: %w", err)
 		}
 		v.Children = append(v.Children, c)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return v, fmt.Errorf("store.LoadSessionLineage: children rows: %w", err)
+	}
+	rows.Close()
+	ids := make([]string, len(v.Children))
+	for i := range v.Children {
+		ids[i] = v.Children[i].ID
+	}
+	spend, err := s.LoadSessionsSpendTurns(ctx, ids)
+	if err != nil {
+		return v, fmt.Errorf("store.LoadSessionLineage: child spend: %w", err)
+	}
+	for i := range v.Children {
+		turns := spend[v.Children[i].ID]
+		tot := SumSpendTurns(turns)
+		v.Children[i].InputTokens, v.Children[i].OutputTokens = tot.InputTokens, tot.OutputTokens
+		v.Children[i].CostUSD = tot.RecordedCostUSD
+		v.Children[i].Turns = turns
 	}
 	return v, nil
 }

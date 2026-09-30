@@ -13,10 +13,6 @@ import (
 // The native engine ([NewEngine]) is the sole implementation: it answers
 // from codeintel's own store (codeintel_files / codeintel_nodes / …).
 // [Unavailable] returns an empty engine for tests and pre-index wiring.
-// (Historically a strangler-fig wrapper over the external codegraph
-// client was the first implementation; it was deleted in Phase 4 once
-// the native engine became the default — see
-// docs/codeintel/migration-from-codegraph.md.)
 //
 // The interface starts at exactly the surface today's consumers use and
 // grows additively (Search / Architecture / Query land in their

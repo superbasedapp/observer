@@ -19,7 +19,7 @@ Pairs with v1.7.7 marker enrichment + v1.7.8 `get_file`:
 
 `observer serve` registers `get_symbols` automatically on upgrade as long
 as `[intelligence.mcp.get_symbols].enabled` is true (default). The tool
-remains registered even when the codegraph index is missing — calls
+remains registered even when the code index is missing — calls
 then return `degraded: true` per-request and the agent falls back to
 `get_file` for the bytes.
 
@@ -34,10 +34,11 @@ enabled = false
 
 ## Prerequisites
 
-- **codebase-memory-mcp installed** with an indexed graph DB for the
-  project. `get_symbols` queries the `nodes` + `edges` tables and will
-  report `degraded: true` per-request without them. Install via the
-  bundled installer or `observer install codegraph`.
+- **The project is indexed** by the in-process code index
+  (`internal/codeintel`; `[codeintel].enabled`, default on). `observer
+  start` indexes projects when `[codeintel.index].on_start` is set;
+  `observer index <path>` indexes one on demand. Without an index,
+  `get_symbols` reports `degraded: true` per-request.
 - **Path-safety knobs** come from `[intelligence.mcp.get_file]` — the
   same `allow_extensions` and `deny_paths` apply. One place to keep in
   sync.
@@ -165,7 +166,7 @@ Path-safety failures land per-result. Top-level `ok` stays `true`:
 
 ### Per-result degradation
 
-When codegraph is unavailable OR stale for that file:
+When the code index is unavailable OR stale for that file:
 
 ```json
 {
@@ -173,11 +174,11 @@ When codegraph is unavailable OR stale for that file:
   "ok":      true,
   "matches": [],
   "degraded": true,
-  "reason":  "codegraph index stale relative to file; fall back to get_file"
+  "reason":  "code index stale relative to file; fall back to get_file"
 }
 ```
 
-Top-level `degraded: true` is set when codegraph is unavailable for
+Top-level `degraded: true` is set when the code index is unavailable for
 the whole call.
 
 ---
@@ -194,8 +195,8 @@ The `matches[]` array is sorted by:
    header/primary form).
 4. **`fqn` ASC** — alphabetical.
 5. **`file` ASC** — paths sorted.
-6. **`id` ASC** — terminal tiebreaker, deterministic via the codegraph
-   PK.
+6. **`id` ASC** — terminal tiebreaker, deterministic via the index's
+   primary key.
 
 `ambiguous: true` fires when `len(matches) > 1` AND the request didn't
 pin `fqn`. `disambiguation_hint` carries a literal-recipe form
@@ -205,13 +206,13 @@ the agent can pattern-match and copy the structure.
 ### Deviation from V7-15 spec — `is_exported` factor
 
 The V7-15 design spec'd an `is_exported` ranking factor (exported
-symbols rank above non-exported). The codegraph schema doesn't carry
+symbols rank above non-exported). The code-index schema doesn't carry
 that column today, so this factor is **deferred**. Practical impact:
 when two symbols share a name (one exported, one not), they sort by
 `start_line` instead. The agent still gets both bodies, `ambiguous`
 still fires, the hint still works — so the deviation only affects
 *which match appears first*, not the agent's ability to resolve the
-ambiguity. Documented; planned for after an upstream codegraph schema
+ambiguity. Documented; planned for a future code-index schema
 bump.
 
 ---
@@ -334,8 +335,8 @@ second batched call.
 
 - **Zero per-call log spam.** Every call writes one `mcp_audit` row per
   request; stderr stays clean.
-- **One-time stderr line at startup** when codegraph open fails — names
-  the path tried.
+- **No startup failure mode** — the code index is in-process; an
+  unindexed project degrades per-request.
 - **Per-request `degraded: true`** instead of silent zeros when the
   index is stale; agent sees a recovery suggestion.
 

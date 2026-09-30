@@ -1,11 +1,24 @@
 import { useState, type ReactNode } from "react";
-import { HeroStat, PageHeader, Pill, SegmentedControl, TabStrip, type TabDef } from "@/components/primitives";
-import { ShieldIcon, CompassIcon, CoinsIcon, SparklesIcon } from "@/components/icons";
+import {
+  Card,
+  HeroStat,
+  InlineLoading,
+  PageHeader,
+  Pill,
+  SegmentedControl,
+  TabStrip,
+  type TabDef,
+  Stagger,
+} from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { fmtShortId, fmtUSD } from "@/lib/format";
 import { pushToast } from "@/components/Toast";
 import { markRestartPending } from "@/lib/restartPending";
+import { decisionTone } from "@shared/lib/guardCatalog";
+import { vocabView } from "@shared/lib/vocabEntry";
+import { VocabPill } from "@shared/lib/vocabPill";
+import { AUDIT_CHAIN } from "@/lib/vocabTones";
 import { ActivityTab } from "./policies/Activity";
 import { GuardrailsTab } from "./policies/Guardrails";
 import { RoutingTab } from "./policies/Routing";
@@ -18,6 +31,18 @@ import {
   type EgressPolicyGet,
   postPolicy,
 } from "./policies/types";
+import { navIcon } from "@/lib/nav";
+import { ObsDisabled } from "@/components/ObsDisabled";
+import {
+  FlaskConical,
+  History,
+  LayoutDashboard,
+  LayoutTemplate,
+  Route,
+  ShieldHalf,
+  type LucideIcon,
+} from "lucide-react";
+import { MetricIcon } from "@/components/MetricIcon";
 
 // Policies page (Plane-A admission + egress policy AUTHORING) — the write
 // counterpart to the read-only Egress page. It lets the app operator author
@@ -35,6 +60,16 @@ import {
 // daemon restart. The UI must never imply every edit is instant.
 
 type PolicyTab = "overview" | "templates" | "guardrails" | "routing" | "test" | "activity";
+
+// One glyph per Policies tab.
+const POLICY_TAB_ICONS: Record<PolicyTab, LucideIcon> = {
+  overview: LayoutDashboard,
+  templates: LayoutTemplate,
+  guardrails: ShieldHalf,
+  routing: Route,
+  test: FlaskConical,
+  activity: History,
+};
 
 type AdmissionStatus = {
   enabled: boolean;
@@ -81,23 +116,36 @@ export function PoliciesPage() {
   );
 
   const tabs: TabDef<PolicyTab>[] = [
-    { id: "overview", label: "Overview" },
-    { id: "templates", label: "Templates" },
-    { id: "guardrails", label: "Guardrails", count: admission.data?.criteria_count ?? null },
-    { id: "routing", label: "Routing", count: egress.data?.rules?.length ?? null },
-    { id: "test", label: "Test" },
-    { id: "activity", label: "Activity" },
+    { id: "overview", label: "Overview", icon: POLICY_TAB_ICONS.overview },
+    { id: "templates", label: "Templates", icon: POLICY_TAB_ICONS.templates },
+    {
+      id: "guardrails",
+      label: "Guardrails",
+      icon: POLICY_TAB_ICONS.guardrails,
+      count: admission.data?.criteria_count ?? null,
+    },
+    {
+      id: "routing",
+      label: "Routing",
+      icon: POLICY_TAB_ICONS.routing,
+      count: egress.data?.rules?.length ?? null,
+    },
+    { id: "test", label: "Test", icon: POLICY_TAB_ICONS.test },
+    { id: "activity", label: "Activity", icon: POLICY_TAB_ICONS.activity },
   ];
 
   return (
-    <div className="space-y-4 p-5">
+    <div className="space-y-6 p-4 sm:p-6">
       <PageHeader
+        icon={navIcon("policies")}
         title="Policies"
         sub="Author the Plane-A input-admission guardrails and egress routing policy for a hosted app's end-user traffic - the write counterpart to the read-only Egress and admission views. Node-local: policy is never pushed from an org server."
       />
 
       {obsOff ? (
-        <ObsDisabled />
+        <ObsDisabled toml={"[observability]\nenabled = true\n\n[observability.admission]\nenabled = true"}>
+          Admission + egress policy authoring needs the observability subsystem.
+        </ObsDisabled>
       ) : (
         <>
           <ApplyModeNote />
@@ -146,7 +194,7 @@ export function PoliciesPage() {
 // an egress or proxy-backstop edit took effect the instant they clicked Apply.
 function ApplyModeNote() {
   return (
-    <div className="rounded-3 border border-line-1 bg-bg-1 p-3 text-[11.5px] leading-relaxed text-fg-3">
+    <div className="rounded-3 border border-line-2 bg-bg-2 p-3 text-[11.5px] leading-relaxed text-fg-3">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
         <span className="inline-flex items-center gap-1.5">
           <Pill variant="success">Apply live</Pill>
@@ -234,10 +282,10 @@ function OverviewTab({
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <Stagger className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <HeroStat
           label="Admission"
-          icon={<ShieldIcon />}
+          icon={<MetricIcon metric="admission" />}
           loading={loading}
           variant={admission?.mode === "enforce" ? "warn" : "accent"}
           value={admission ? admission.mode : "-"}
@@ -249,7 +297,7 @@ function OverviewTab({
         />
         <HeroStat
           label="Egress routing"
-          icon={<CompassIcon />}
+          icon={<MetricIcon metric="egressRouting" />}
           loading={loading}
           variant={egress?.mode === "enforce" ? "warn" : "accent"}
           value={egress ? egress.mode : "-"}
@@ -261,7 +309,7 @@ function OverviewTab({
         />
         <HeroStat
           label="Judge"
-          icon={<SparklesIcon />}
+          icon={<MetricIcon metric="judge" />}
           loading={loading}
           variant="accent"
           value={admission ? admission.judge_hosting : "-"}
@@ -269,7 +317,7 @@ function OverviewTab({
         />
         <HeroStat
           label="Per-user budget"
-          icon={<CoinsIcon />}
+          icon={<MetricIcon metric="budget" />}
           loading={loading}
           variant={budget && budget.breaches_24h > 0 ? "warn" : "accent"}
           value={budget?.enabled ? fmtUSD(budget.five_hour_usd) : "off"}
@@ -279,7 +327,7 @@ function OverviewTab({
               : "no per-user cap"
           }
         />
-      </div>
+      </Stagger>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card title="Admission posture">
@@ -301,15 +349,15 @@ function OverviewTab({
                 }
               />
               <Row k="Criteria" v={String(admission.criteria_count)} />
-              <Row k="Judge hosting" v={<Pill variant="info">{admission.judge_hosting}</Pill>} />
+              <Row k="Judge hosting" v={<VocabPill vocab="judgeHosting" value={admission.judge_hosting} tone="info" />} />
               <Row k="24h decisions" v={<DecisionBreakdown d={admission.decisions_24h} />} />
-              <Row k="Audit chain" v={<Pill variant={admission.chain.ok ? "success" : "danger"}>{admission.chain.ok ? "ok" : "broken"} · {admission.chain.rows} rows</Pill>} />
+              <Row k="Audit chain" v={<ChainPill ok={admission.chain.ok} rows={admission.chain.rows} />} />
               {admission.policy_hash && (
                 <Row k="Policy" v={<span className="font-mono text-[11px] text-fg-3" title={admission.policy_hash}>{fmtShortId(admission.policy_hash, 16)}</span>} />
               )}
             </dl>
           ) : (
-            <Muted>Loading…</Muted>
+            <InlineLoading label="Loading policy status" />
           )}
         </Card>
 
@@ -334,13 +382,13 @@ function OverviewTab({
               <Row k="Rules" v={String(egress.rules?.length ?? 0)} />
               <Row k="Targets" v={String(egress.targets?.length ?? 0)} />
               <Row k="24h decisions" v={String(egDecisions)} />
-              <Row k="Audit chain" v={<Pill variant={egress.chain.ok ? "success" : "danger"}>{egress.chain.ok ? "ok" : "broken"} · {egress.chain.rows} rows</Pill>} />
+              <Row k="Audit chain" v={<ChainPill ok={egress.chain.ok} rows={egress.chain.rows} />} />
               {egress.policy_hash && (
                 <Row k="Policy" v={<span className="font-mono text-[11px] text-fg-3" title={egress.policy_hash}>{fmtShortId(egress.policy_hash, 16)}</span>} />
               )}
             </dl>
           ) : (
-            <Muted>Loading…</Muted>
+            <InlineLoading label="Loading policy status" />
           )}
         </Card>
       </div>
@@ -364,48 +412,42 @@ function ShadowNudge({ admission, egress }: { admission?: AdmissionStatus | null
   );
 }
 
+// ChainPill renders an audit chain's verification state from AUDIT_CHAIN
+// (@/lib/vocabTones) with its row count.
+function ChainPill({ ok, rows }: { ok: boolean; rows: number }) {
+  const v = vocabView("auditChain", AUDIT_CHAIN, ok ? "intact" : "broken");
+  return (
+    <VocabPill vocab="auditChain" table={AUDIT_CHAIN} value={ok ? "intact" : "broken"}>
+      {v.label} · {rows} rows
+    </VocabPill>
+  );
+}
+
 function DecisionBreakdown({ d }: { d: AdmissionStatus["decisions_24h"] }) {
   const entries = (["allow", "flag", "ask", "deny"] as const).filter((k) => (d[k] ?? 0) > 0);
   if (entries.length === 0) return <span className="text-fg-3">none</span>;
-  const tone: Record<string, "success" | "warn" | "info" | "danger"> = {
-    allow: "success",
-    flag: "warn",
-    ask: "info",
-    deny: "danger",
-  };
   return (
     <span className="inline-flex flex-wrap gap-1">
       {entries.map((k) => (
-        <Pill key={k} variant={tone[k]}>
+        <VocabPill key={k} vocab="guardDecision" value={k} tone={decisionTone(k)}>
           {k} {d[k]}
-        </Pill>
+        </VocabPill>
       ))}
     </span>
   );
 }
 
-function judgeHostingNote(h?: string): string {
-  switch (h) {
-    case "local":
-      return "loopback · no key egress";
-    case "aggregator":
-      return "via aggregator (OpenRouter)";
-    case "provider":
-      return "hosted provider";
-    case "private":
-      return "private endpoint";
-    default:
-      return "no judge configured";
-  }
-}
+// JUDGE_HOSTING_NOTE - where the admission judge runs (the Policies status
+// card's sub-line). Glyphs: VOCAB_ICONS.judgeHosting.
+const JUDGE_HOSTING_NOTE: Readonly<Record<string, string>> = {
+  local: "loopback · no key egress",
+  aggregator: "via aggregator (OpenRouter)",
+  provider: "hosted provider",
+  private: "private endpoint",
+};
 
-function Card({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="rounded-3 border border-line-1 bg-bg-1 p-4">
-      <h3 className="mb-2.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">{title}</h3>
-      {children}
-    </div>
-  );
+function judgeHostingNote(h?: string): string {
+  return (h && JUDGE_HOSTING_NOTE[h]) || "no judge configured";
 }
 
 function Row({ k, v }: { k: string; v: ReactNode }) {
@@ -417,27 +459,3 @@ function Row({ k, v }: { k: string; v: ReactNode }) {
   );
 }
 
-function Muted({ children }: { children: ReactNode }) {
-  return <p className="text-[12px] text-fg-3">{children}</p>;
-}
-
-// ObsDisabled names the exact gate: [observability] must be enabled for the
-// admission/egress policy routes to be served.
-function ObsDisabled() {
-  return (
-    <div className="rounded-3 border border-line-1 bg-bg-1 p-8 text-center text-[12px] leading-relaxed text-fg-3">
-      <p className="mb-2 text-[13px] font-semibold text-fg-2">Observability is disabled</p>
-      <div className="mx-auto max-w-xl">
-        <p>
-          Admission + egress policy authoring needs the observability subsystem.
-          Enable it in{" "}
-          <code className="rounded-1 bg-bg-2 px-1 font-mono">~/.observer/config.toml</code>:
-        </p>
-        <pre className="mt-2 inline-block rounded-2 bg-bg-2 px-3 py-2 text-left font-mono text-[11px] text-fg-2">
-          {"[observability]\nenabled = true\n\n[observability.admission]\nenabled = true"}
-        </pre>
-        <p className="mt-2">then restart the daemon.</p>
-      </div>
-    </div>
-  );
-}

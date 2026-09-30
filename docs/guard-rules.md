@@ -60,6 +60,8 @@ appear once per row.
 | R-304 | mcp | critical | flag | deny | agent modifying an MCP server registry file |
 | R-304 | mcp | critical | flag | deny | shell command modifying an MCP server registry file |
 | R-305 | mcp | critical | flag | flag | pinned MCP server's command/binary or URL changed under the same name |
+| R-306 | mcp | high | flag | deny | MCP tool call to a server not approved by the node's compiled tools.mcp_access table |
+| R-307 | mcp | critical | flag | deny | MCP tool call denied by the organization's tools.mcp_access grant |
 | T-501 | taint | high | flag | ask | shell command while the session carries untrusted content with instruction-like patterns |
 | T-502 | taint | high | flag | ask | out-of-project write while the session carries untrusted content |
 | T-503 | taint | warn | flag | flag | git push while the session carries untrusted content |

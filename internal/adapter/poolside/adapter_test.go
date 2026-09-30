@@ -326,6 +326,75 @@ func TestParseSessionFile_TokenNetting(t *testing.T) {
 	if turn2.OutputTokens != 80 {
 		t.Errorf("turn2 OutputTokens = %d, want 80", turn2.OutputTokens)
 	}
+	// step-2's tool_call.inference.start (ev-0014, 01:10:09.123...) and
+	// its paired tool_call.inference.end (ev-0017, 01:10:11.123...) both
+	// land in this single whole-file parse, so GenMs is their exact
+	// 2-second span.
+	if turn2.GenMs != 2000 || turn2.GenBasis != models.GenBasisNative || turn2.GenTimingV != 1 {
+		t.Errorf("turn2 GenMs/GenBasis/GenTimingV = %d/%q/%d, want 2000/native/1", turn2.GenMs, turn2.GenBasis, turn2.GenTimingV)
+	}
+}
+
+// TestParseSessionFile_GenMs_CrossWindowNotStamped pins the "no cross-
+// window state" rule for the inference start/end pairing: an
+// inference.end whose paired inference.start fell in an EARLIER parse
+// window (the adapter never rewinds or persists startTimeByStep across
+// ParseSessionFile calls, matching the documented modelByStep gap in
+// doc.go's "no-rewind guarantee" section) must NOT be stamped, while a
+// pair that's fully inside the resumed window still is.
+func TestParseSessionFile_GenMs_CrossWindowNotStamped(t *testing.T) {
+	root, trajPath := fixtureRoot(t, fixtureName)
+	a := NewWithOptions(nil, root)
+
+	body, err := os.ReadFile(trajPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// Split right before ev-0005 (thought.end): this lands step-1's
+	// tool_call.inference.start (ev-0003) in the FIRST window only, but
+	// its paired tool_call.inference.end (ev-0009) in the SECOND window.
+	idx := strings.Index(string(body), `"id": "ev-0005"`)
+	if idx < 0 {
+		t.Fatal("fixture no longer contains ev-0005 — update the split point")
+	}
+	lineStart := strings.LastIndex(string(body)[:idx], "\n") + 1
+
+	ctx := context.Background()
+	first, err := a.ParseSessionFile(ctx, trajPath, 0)
+	if err != nil {
+		t.Fatalf("first ParseSessionFile: %v", err)
+	}
+	if int64(lineStart) > first.NewOffset {
+		t.Fatalf("test setup: split point %d is past the first window's natural end %d", lineStart, first.NewOffset)
+	}
+
+	second, err := a.ParseSessionFile(ctx, trajPath, int64(lineStart))
+	if err != nil {
+		t.Fatalf("second ParseSessionFile: %v", err)
+	}
+
+	var step1Tok, step2Tok *models.TokenEvent
+	for i := range second.TokenEvents {
+		te := &second.TokenEvents[i]
+		switch te.SourceEventID {
+		case "tok:ev-0009":
+			step1Tok = te
+		case "tok:ev-0017":
+			step2Tok = te
+		}
+	}
+	if step1Tok == nil {
+		t.Fatal("missing step-1 token event (ev-0009) in the second window")
+	}
+	if step1Tok.GenMs != 0 || step1Tok.GenBasis != "" || step1Tok.GenTimingV != 0 {
+		t.Errorf("step-1 (cross-window start) GenMs/GenBasis/GenTimingV = %d/%q/%d, want zero value (no stamp)", step1Tok.GenMs, step1Tok.GenBasis, step1Tok.GenTimingV)
+	}
+	if step2Tok == nil {
+		t.Fatal("missing step-2 token event (ev-0017) in the second window")
+	}
+	if step2Tok.GenMs != 2000 || step2Tok.GenBasis != models.GenBasisNative || step2Tok.GenTimingV != 1 {
+		t.Errorf("step-2 (in-window pair) GenMs/GenBasis/GenTimingV = %d/%q/%d, want 2000/native/1", step2Tok.GenMs, step2Tok.GenBasis, step2Tok.GenTimingV)
+	}
 }
 
 // TestParseSessionFile_CrossWindowOutcomeUpdate pins the no-rewind design:

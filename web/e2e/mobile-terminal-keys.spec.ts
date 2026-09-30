@@ -898,19 +898,19 @@ test.describe("mobile terminal interaction", () => {
     await mock.write("boom: something failed\r\n");
 
     // None of the six are inline on a phone.
-    for (const label of ["▤ Files", "⎇ Git", "⊙ Session", "⊞ Add to grid"]) {
+    for (const label of ["Files", "Git", "Session", "Add to grid"]) {
       await expect(page.getByRole("button", { name: label, exact: true })).toHaveCount(0);
     }
     await page.getByRole("button", { name: "More terminal actions" }).click();
     const menu = page.getByTestId("terminal-overflow-menu");
     await expect(menu).toBeVisible();
     for (const label of [
-      "▤ Files",
-      "⎇ Git",
-      "⊙ Session",
-      "⧉ Copy visible",
-      "↺ Original size",
-      "⊞ Add to grid",
+      "Files",
+      "Git",
+      "Session",
+      "Copy visible",
+      "Original size",
+      "Add to grid",
     ]) {
       await expect(menu.getByText(label, { exact: true })).toHaveCount(1);
     }
@@ -935,7 +935,7 @@ test.describe("mobile terminal interaction", () => {
     await mock.write("panic: runtime error: index out of range [7]\r\n");
 
     await page.getByRole("button", { name: "More terminal actions" }).click();
-    await page.getByRole("button", { name: "⧉ Copy visible", exact: true }).click();
+    await page.getByRole("button", { name: "Copy visible", exact: true }).click();
     await expect
       .poll(() => page.evaluate(() => navigator.clipboard.readText()))
       .toContain("panic: runtime error: index out of range [7]");
@@ -991,17 +991,17 @@ test.describe("desktop terminal chrome is unchanged", () => {
     await expect(page.getByRole("button", { name: "More terminal actions" })).toHaveCount(0);
 
     for (const label of [
-      "▤ Files",
-      "⎇ Git",
-      "⊙ Session",
-      "↺ Original size",
-      "⤢ Focus mode",
-      "⊞ Add to grid",
-      "▾ Minimize",
+      "Files",
+      "Git",
+      "Session",
+      "Original size",
+      "Focus mode",
+      "Add to grid",
+      "Minimize",
     ]) {
       await expect(page.getByRole("button", { name: label, exact: true })).toHaveCount(1);
     }
-    await expect(page.getByRole("button", { name: /^✕ (Stop & close|Close)$/ })).toHaveCount(1);
+    await expect(page.getByRole("button", { name: /^(Stop & close|Close)$/ })).toHaveCount(1);
 
     const hb = await page.getByTestId("terminal-header").boundingBox();
     console.log(`[D9] desktop header height: ${Math.round(hb!.height)}px`);

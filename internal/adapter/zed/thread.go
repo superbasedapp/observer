@@ -224,7 +224,7 @@ func (a *Adapter) emitToolUse(res *adapter.ParseResult, path, sessID, root, bran
 	model, reasoning string, sidechain bool,
 ) {
 	action := mapZedTool(tu.Name)
-	target := targetFromRawInput(tu.RawInput)
+	target := targetFromRawInput(tu.Name, tu.RawInput)
 	if target == "" {
 		target = tu.Name
 	}
@@ -392,36 +392,80 @@ func decodeTaggedBlock(raw json.RawMessage) (taggedBlock, bool) {
 }
 
 // mapZedTool maps a Zed native tool name to a normalized action type.
-// The 7 grounded names are the COMPLETE surface a live multi-call
-// session exercised (see doc.go); an unrecognized name (a future Zed
+// The first 7 names are the surface a live multi-call session exercised
+// (see doc.go); the rest are grounded in Zed's own tool sources
+// (zed-industries/zed crates/agent/src/tools/*_tool.rs, each tool's
+// `const NAME`), added 2026-09-28. An unrecognized name (a future Zed
 // tool) falls through to ActionUnknown with RawToolName preserved,
 // never guessed.
 func mapZedTool(name string) string {
 	switch name {
 	case "read_file":
 		return models.ActionReadFile
+	case "diagnostics":
+		// Reads the language-server diagnostics for a path (or a
+		// project-wide summary) — cursor's `readlints` precedent: a
+		// read, not a separate category.
+		return models.ActionReadFile
 	case "write_file":
+		return models.ActionWriteFile
+	case "copy_path", "create_directory":
+		// Both materialize a NEW path (a copied file/dir, an empty
+		// directory). No canonical copy / mkdir action type exists;
+		// write_file is the closest file-mutation bucket, the same
+		// reasoning as delete_path -> edit_file below.
 		return models.ActionWriteFile
 	case "edit_file":
 		return models.ActionEditFile
-	case "delete_path":
-		// No canonical delete action type exists; edit_file is the
-		// established precedent (cursor `Delete`, copilot/grok
-		// `deletefile`/`removefile` — see internal/tooltax/table.go).
+	case "delete_path", "move_path":
+		// No canonical delete / move action type exists; edit_file is
+		// the established precedent (cursor `Delete`, copilot/grok
+		// `deletefile`/`removefile` — see internal/tooltax/table.go). A
+		// move/rename mutates an EXISTING path the same way.
 		return models.ActionEditFile
 	case "list_directory", "find_path":
 		return models.ActionSearchFiles
+	case "grep":
+		// Regex over file CONTENTS (GrepToolInput.regex).
+		return models.ActionSearchText
 	case "terminal":
 		return models.ActionRunCommand
+	case "fetch":
+		return models.ActionWebFetch
+	case "search_web":
+		// web_search_tool.rs: `const NAME = "search_web"`.
+		return models.ActionWebSearch
+	case "skill":
+		return models.ActionSkillInvoke
+	case "spawn_agent":
+		// Launches a sub-agent (or continues one by session_id) — the
+		// claude-code `Agent` / codex `spawn_agent` bucket.
+		return models.ActionSpawnSubagent
 	default:
 		return models.ActionUnknown
 	}
 }
 
+// zedTargetKeys is the per-tool raw_input key that best names what a
+// call acted on, for the tools whose input carries no `path` / `glob` /
+// `command` / `query` (the generic ladder below). Grounded in each
+// tool's *ToolInput struct (crates/agent/src/tools/*_tool.rs). A copy
+// is named by the path it WROTE; a move by the EXISTING path it
+// mutated (the same file the history of which continues).
+var zedTargetKeys = map[string][]string{
+	"copy_path":   {"destination_path", "source_path"},
+	"move_path":   {"source_path", "destination_path"},
+	"grep":        {"regex", "include_pattern"},
+	"fetch":       {"url"},
+	"skill":       {"name"},
+	"spawn_agent": {"label"},
+}
+
 // targetFromRawInput extracts the most useful human-readable argument
-// out of a ToolUse's raw_input JSON-text: a file/dir path, a glob
-// pattern, or a shell command, in that priority order.
-func targetFromRawInput(rawInput string) string {
+// out of a ToolUse's raw_input JSON-text: the tool's own key from
+// zedTargetKeys when it has one, else a file/dir path, a glob pattern,
+// a shell command or a query, in that priority order.
+func targetFromRawInput(name, rawInput string) string {
 	rawInput = strings.TrimSpace(rawInput)
 	if rawInput == "" {
 		return ""
@@ -430,7 +474,9 @@ func targetFromRawInput(rawInput string) string {
 	if err := json.Unmarshal([]byte(rawInput), &m); err != nil {
 		return ""
 	}
-	for _, k := range []string{"path", "glob", "command", "query"} {
+	keys := zedTargetKeys[name]
+	keys = append(keys[:len(keys):len(keys)], "path", "glob", "command", "query")
+	for _, k := range keys {
 		if v, ok := m[k].(string); ok && v != "" {
 			return v
 		}

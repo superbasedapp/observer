@@ -144,7 +144,9 @@ func TestProxy_HostedIdentityStrippedFromForwardedRequest(t *testing.T) {
 // hosted-identity headers/query param from its Director-rewritten request,
 // while leaving unrelated headers/query params — and the existing
 // X-Session-Id strip — untouched. Mirrors
-// TestProxy_OpenAIWebSocketUpgradePassthrough's raw-hijack pattern.
+// TestProxy_OpenAIWebSocketUpgradePassthrough's raw-hijack pattern. Uses a
+// non-Responses OpenAI path: a /v1/responses upgrade is answered 426 before
+// the passthrough (wsupgrade.go).
 func TestProxy_WebSocketUpgradePassthrough_StripsHostedIdentity(t *testing.T) {
 	seen := make(chan *http.Request, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -191,7 +193,7 @@ func TestProxy_WebSocketUpgradePassthrough_StripsHostedIdentity(t *testing.T) {
 	}
 	defer conn.Close()
 
-	_, err = fmt.Fprintf(conn, "GET /v1/responses?sb_session=conv-leak-2&conversation=abc HTTP/1.1\r\n"+
+	_, err = fmt.Fprintf(conn, "GET /v1/chat/completions?sb_session=conv-leak-2&conversation=abc HTTP/1.1\r\n"+
 		"Host: %s\r\nConnection: keep-alive, Upgrade\r\nUpgrade: websocket\r\n"+
 		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"+
 		"Authorization: [REDACTED]\r\nX-Session-Id: local-session\r\n"+
@@ -214,8 +216,8 @@ func TestProxy_WebSocketUpgradePassthrough_StripsHostedIdentity(t *testing.T) {
 	select {
 	case req := <-seen:
 		// Unrelated path/query/header pass through untouched.
-		if req.URL.Path != "/root/v1/responses" {
-			t.Errorf("upstream path: got %q want %q", req.URL.Path, "/root/v1/responses")
+		if req.URL.Path != "/root/v1/chat/completions" {
+			t.Errorf("upstream path: got %q want %q", req.URL.Path, "/root/v1/chat/completions")
 		}
 		q, err := url.ParseQuery(req.URL.RawQuery)
 		if err != nil {

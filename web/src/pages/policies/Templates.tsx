@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Pill, SlideOver } from "@/components/primitives";
+import { Card, Pill, SlideOver } from "@/components/primitives";
 import { fetchJSON } from "@/lib/api";
 import { pushToast } from "@/components/Toast";
 import { markRestartPending } from "@/lib/restartPending";
@@ -7,9 +7,10 @@ import {
   type AdmissionPolicyGet,
   type EgressPolicyGet,
   type EgressRule,
-  decisionVariant,
   postPolicy,
 } from "./types";
+import { decisionTone } from "@shared/lib/guardCatalog";
+import { VocabPill } from "@shared/lib/vocabPill";
 import {
   type PolicyTemplate,
   TEMPLATE_CATALOG,
@@ -18,7 +19,7 @@ import {
   mergeEgress,
   templateTouches,
 } from "./templates-catalog";
-import { Card, btnPrimary, btnSecondary } from "./ui";
+import { btnPrimary, btnSecondary } from "./ui";
 
 // Templates tab — the card gallery (handover §5 headline). Each card opens a
 // preview drawer showing the exact criteria/rules/budget it contributes; Apply
@@ -68,7 +69,7 @@ function TemplateCard({ t, onOpen }: { t: PolicyTemplate; onOpen: () => void }) 
     <button
       type="button"
       onClick={onOpen}
-      className="flex h-full flex-col rounded-3 border border-line-1 bg-bg-1 p-4 text-left transition-colors hover:border-line-3"
+      className="flex h-full flex-col rounded-3 border border-line-2 bg-bg-2 p-4 text-left transition-colors hover:border-line-3"
     >
       <div className="mb-1.5 flex items-center gap-1.5">
         {templateTouches(t).map((k) => (
@@ -160,7 +161,7 @@ function TemplatePreview({ t, onDone }: { t: PolicyTemplate; onDone: () => void 
           <ul className="space-y-2">
             {t.criteria.map((c) => (
               <li key={c.id} className="flex items-start gap-2 text-[12px]">
-                <Pill variant={decisionVariant(c.decision)}>{c.decision}</Pill>
+                <VocabPill vocab="guardDecision" value={c.decision} tone={decisionTone(c.decision)} />
                 <div>
                   <span className="font-mono text-[11px] text-fg-1">{c.id}</span>
                   <span className="text-fg-3"> · {c.type}</span>
@@ -178,7 +179,7 @@ function TemplatePreview({ t, onDone }: { t: PolicyTemplate; onDone: () => void 
           <ul className="space-y-1 font-mono text-[11px] text-fg-2">
             {t.prefilterDeny.map((p, i) => <li key={i}>{p}</li>)}
           </ul>
-          {t.secretRemoteJudge && <p className="mt-2 text-[11.5px] text-fg-3">Secret + remote judge → <Pill variant={decisionVariant(t.secretRemoteJudge)}>{t.secretRemoteJudge}</Pill> (a secret-bearing request is decided locally, never sent to a remote judge).</p>}
+          {t.secretRemoteJudge && <p className="mt-2 text-[11.5px] text-fg-3">Secret + remote judge → <VocabPill vocab="guardDecision" value={t.secretRemoteJudge} tone={decisionTone(t.secretRemoteJudge)} /> (a secret-bearing request is decided locally, never sent to a remote judge).</p>}
         </Card>
       )}
 

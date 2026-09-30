@@ -5,6 +5,9 @@ import {
   ActiveFilterChips,
   ChartShell,
   type FilterChip,
+  Icon,
+  InlineLoading,
+  LiveDot,
   PageHeader,
   Pill,
   SegmentedControl,
@@ -16,9 +19,16 @@ import { CopyOnClick } from "@/components/CopyOnClick";
 import { DataTable, Pagination } from "@/components/DataTable";
 import { ChartState } from "@/components/ChartState";
 import { SessionDetailPanel } from "@/components/SessionDetailPanel";
+import { vocabIcon } from "@shared/lib/vocabIcons";
 import { useFilters, windowParams } from "@/lib/filters";
 import { useApi } from "@/lib/useApi";
-import { fmtDateOnly, fmtDateTime, fmtShortId } from "@/lib/format";
+import {
+  fmtDateOnly,
+  fmtDateTime,
+  fmtShortId,
+  localeDateString,
+  localeTimeString,
+} from "@/lib/format";
 import {
   actionMeta,
   mcpIdentity,
@@ -31,6 +41,10 @@ import type {
   ActionsDayCountsResponse,
   ActionsResponse,
 } from "@/lib/types";
+import { navIcon } from "@/lib/nav";
+import { LIVE_TAIL_DOT, liveDotProps, withDotClass } from "@/lib/liveSignals";
+import { useArrivals } from "@/lib/useArrivals";
+import { ChartGantt, Table2 } from "lucide-react";
 
 type View = "table" | "timeline";
 
@@ -143,6 +157,13 @@ export function ActionsPage() {
       sessionFilter,
       pickedDay,
     ],
+  );
+  // Rows that land on a live-tail poll fade in; a filter / page change
+  // (stale data on screen) re-takes the baseline so the new list never
+  // animates as a whole.
+  const arrived = useArrivals(
+    (actions.data?.rows ?? []).map((r) => String(r.id)),
+    actions.data != null && !actions.isStale,
   );
 
   // Day-count strip for the Timeline view — populates every day in
@@ -346,8 +367,9 @@ export function ActionsPage() {
         clearAll={clearAll}
       />
 
-      <div className="min-w-0 space-y-4 overflow-y-auto p-6">
+      <div className="min-w-0 space-y-6 overflow-y-auto p-4 sm:p-6">
         <PageHeader
+          icon={navIcon("actions")}
           title="Actions"
           sub="The flat firehose - every recorded tool-call action across the window, filterable by tool, type, effort, and permission. Row-click expands inline detail; the session pill opens the session slide-over."
           helpId="tab.actions"
@@ -365,13 +387,13 @@ export function ActionsPage() {
           sub={
             actions.data
               ? `${actions.data.total.toLocaleString()} matching · row-click expands details · session pill opens slide-over`
-              : "Loading…"
+              : <InlineLoading label="Loading actions" />
           }
           right={
             <SegmentedControl<View>
               options={[
-                { value: "table", label: "Table" },
-                { value: "timeline", label: "Timeline" },
+                { value: "table", label: "Table", icon: Table2 },
+                { value: "timeline", label: "Timeline", icon: ChartGantt },
               ]}
               value={view}
               onChange={setView}
@@ -425,6 +447,8 @@ export function ActionsPage() {
               <ChartState
                 loading={actions.loading && !actions.data}
                 error={actions.error}
+                denied={actions.denied}
+                deniedPermission={actions.deniedPermission}
                 empty={
                   !actions.loading &&
                   actions.data != null &&
@@ -437,7 +461,11 @@ export function ActionsPage() {
                   data={actions.data?.rows ?? []}
                   columns={columns}
                   rowKey={(r) => String(r.id)}
+                  rowClassName={(r) =>
+                    arrived(String(r.id)) ? "sb-fade-up" : undefined
+                  }
                   minWidth={880}
+                  zebra
                   loading={actions.loading}
                   onRowClick={(r) =>
                     setExpandedId((cur) => (cur === r.id ? null : r.id))
@@ -730,10 +758,7 @@ function TimelineView({
       {rows.length === 0 ? (
         <div className="grid h-[200px] place-items-center rounded-3 border border-dashed border-line-2 bg-bg-3/40 text-[11px] text-fg-3">
           {loading ? (
-            <span className="inline-flex items-center gap-2 text-fg-2">
-              <span className="inline-block h-3 w-3 animate-spin rounded-full border border-line-3 border-t-accent" />
-              Loading…
-            </span>
+<InlineLoading label="Loading actions" />
           ) : pickedDay ? (
             `No actions on ${pickedDay}. Pick another day from the strip above.`
           ) : (
@@ -794,7 +819,7 @@ function TimelineDayAxis({
           const heightPct = Math.max(8, (c.count / maxCount) * 100);
           const isActive = picked === c.day;
           const date = new Date(c.day + "T00:00:00Z");
-          const monthDay = date.toLocaleDateString("en-US", {
+          const monthDay = localeDateString(date, "en-US", {
             month: "short",
             day: "numeric",
             timeZone: "UTC",
@@ -883,13 +908,15 @@ function TimelineEntry({
 }) {
   const meta = actionMeta(row.action_type);
   const ts = new Date(row.timestamp);
-  const hhmmss = ts.toLocaleTimeString("en-US", {
+  // Cached, byte-identical toLocale*String: one formatter per option set,
+  // not one per row.
+  const hhmmss = localeTimeString(ts, "en-US", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
   });
-  const monthDay = ts.toLocaleDateString("en-US", {
+  const monthDay = localeDateString(ts, "en-US", {
     month: "short",
     day: "numeric",
   });
@@ -971,13 +998,13 @@ function EventLogCard({
             if (mcp) {
               return (
                 <CopyOnClick value={row.raw_tool_name || row.target || ""} title="MCP tool call">
-                  <span className="inline-flex items-center gap-1 rounded-pill border border-accent/40 bg-accent/10 px-2 py-0.5 font-mono text-[10px] font-medium leading-none text-accent">
+                  <Pill variant="accent" className="font-mono normal-case">
                     <span className="uppercase tracking-[0.06em] opacity-80">MCP</span>
                     <span className="max-w-[200px] truncate">
                       {mcp.server}
                       {mcp.tool ? ` / ${mcp.tool}` : ""}
                     </span>
-                  </span>
+                  </Pill>
                 </CopyOnClick>
               );
             }
@@ -1079,10 +1106,9 @@ function ActionTypeBadge({ type }: { type: string }) {
           color: meta.colorVar,
         }}
       >
-        <span
-          className="h-1 w-1 rounded-full"
-          style={{ background: meta.colorVar }}
-        />
+        {/* Glyph: VOCAB_ICONS.actionType (CircleHelp for an unregistered
+            type - unknown means unknown); colour: the category's --act-*. */}
+        <Icon icon={vocabIcon("actionType", type)} size={11} className="shrink-0" />
         {meta.label}
       </span>
     </Tooltip>
@@ -1214,13 +1240,7 @@ function LiveTailIndicator({
           : "border-success/40 bg-success-soft text-success hover:bg-success-soft/80",
       )}
     >
-      <span
-        aria-hidden
-        className={clsx(
-          "h-1.5 w-1.5 rounded-full",
-          paused ? "bg-warn" : "animate-pulse bg-success",
-        )}
-      />
+      <LiveDot {...withDotClass(liveDotProps(LIVE_TAIL_DOT, paused ? "paused" : "live"), "h-1.5 w-1.5 shrink-0")} />
       {paused ? "paused" : "live"}
     </button>
     </Tooltip>

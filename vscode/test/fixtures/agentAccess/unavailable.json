@@ -1,0 +1,4 @@
+{
+  "available": false,
+  "reason": "MCP access status is served by the observer daemon (observer start); this dashboard process has no relay"
+}

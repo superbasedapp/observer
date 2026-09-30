@@ -54,8 +54,10 @@ func authorityPlainEnglish(tok string) string {
 		return "FORCE egress-policy enforcement on this machine (managed tenancy only)"
 	case govern.AuthorityEnforceBudget:
 		return "make the organisation's spend cap AUTHORITATIVE on this machine - its numbers and enforcement mode replace your own, and if no verified organisation budget has reached this machine yet, proxied requests are refused until one does (managed tenancy only)"
+	case govern.AuthorityEnforceMCPAccess:
+		return "make the organisation's MCP access policy (tools.mcp_access) AUTHORITATIVE on this machine - the org's enforcement mode replaces your own, and an MCP server the org registry does not know is refused rather than left ungoverned (managed tenancy only)"
 	case govern.AuthorityExtractManaged:
-		return "let the organisation RAISE what this machine shares, including tool inputs/outputs and other local data (managed tenancy only)"
+		return "raise this machine to FULL content sharing - raw command bodies, assistant prose, tool inputs/outputs, raw folder names, git identity and file paths ship to the organisation (managed tenancy only; the teams/enterprise capture posture, and what raises a machine enrolled before that default)"
 	case govern.AuthorityExtractCodeintel:
 		return "let the organisation RAISE extraction of this machine's code-intelligence index as a content-free per-project language/symbol/edge count aggregate - never symbol names, signatures, or file paths (managed tenancy only)"
 	case govern.AuthorityExtractProcess:
@@ -483,6 +485,12 @@ func newOrgGrantShowCmd() *cobra.Command {
 			for _, tok := range grant.Authority {
 				fmt.Fprintf(out, "  - %-24s %s\n", tok, authorityPlainEnglish(tok))
 			}
+			// W4f (R9.5 / R11.10): the one line that says what the grant DOES
+			// to this machine's content sharing, resolved through the same
+			// predicate the push seam ships under — so a developer whose
+			// machine was raised by the org-signed extract.managed grant
+			// reads it here, not in a config file nothing rewrote.
+			fmt.Fprintln(out, enterpriseContentLine(cmd.Context(), b.cfg, b.store, newLogger("warn")))
 			printGovernedFamilies(out, grant.Authority, b.cfg.OrgClient.Policy)
 
 			// The one honest verification line: is the key this grant was

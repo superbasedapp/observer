@@ -268,9 +268,9 @@ func tool_resultText(raw json.RawMessage) (string, bool) {
 // TestPipelineCacheAware_MarkerRollPreservesPriorBytes.)
 // hinter is the per-block compression hint-builder closure supplied
 // by the runAnthropic / runOpenAI call sites. It captures the
-// pipeline's codegraph + current context so the per-type compressor
+// pipeline's symbol lookup + current context so the per-type compressor
 // can receive filename + symbols via CompressHints. Returns the zero
-// CompressHints when filename is empty or codegraph is unavailable.
+// CompressHints when filename is empty or the code index is unavailable.
 type hinter = func(filename string) CompressHints
 
 // codeCollapser is the optional aggressive code-collapse hook
@@ -363,10 +363,10 @@ func compressToolResults(extracted []extractedMessage, registry *Registry, allow
 			}
 			// V7-11 / v1.7.7 marker enrichment: when the per-type
 			// compressor implements HintedCompressor (today only
-			// LogsCompressor), pre-fetch codegraph symbols via the
+			// LogsCompressor), pre-fetch code-index symbols via the
 			// hinter closure and forward filename+symbols through
 			// CompressHinted. The hinter's nil-safe inside — buildHints
-			// returns the zero CompressHints when codegraph is
+			// returns the zero CompressHints when the code index is
 			// unavailable / stale / not configured, and the compressor
 			// degrades to the legacy marker form on the zero hint.
 			var out []byte

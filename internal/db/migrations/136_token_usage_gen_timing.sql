@@ -1,0 +1,43 @@
+-- 136_token_usage_gen_timing.sql — S10-SPEED (2026-09-23): per-call
+-- GENERATION DURATION on token_usage, so a transcript-captured model call
+-- can carry a real Tok/s denominator.
+--
+-- WHY. The Messages tab's Tok/s used to divide a row's output by the gap to
+-- the NEXT timeline row (tool runs, the next call, a synthetic bookkeeping
+-- row 59 ms later) and showed 500-37,000 tok/s. internal/sessionmsg now
+-- computes Tok/s ONLY from a duration the capture recorded for that call:
+-- the proxy's api_turns.total_response_ms, or these columns.
+--
+--   gen_ms        INTEGER  the call's duration in milliseconds, normalised
+--                          at the adapter boundary. NULL = none captured
+--                          (the common case; no rate is shown).
+--   gen_basis     TEXT     'native' (the tool's own store recorded the
+--                          call's duration / start+end) | 'transcript' (a
+--                          span proven from the transcript's record order,
+--                          with a bounded look-back before the window).
+--   gen_timing_v  INTEGER  the adapter's gen-timing parser version. The
+--                          upsert (store.InsertTokenEvents) replaces a
+--                          stored duration only for a STRICTLY newer
+--                          version, so a same-version re-parse is a no-op
+--                          and a fixed parser can re-derive on rescan.
+--
+-- Adapters stamp these ONLY when the span is proven complete. A native
+-- duration arrives with the row. A transcript span may be proven in a
+-- LATER parse (the completion evidence is the next record); the adapter
+-- then re-emits a stamp-only event that UPDATEs these three columns on the
+-- existing row and nothing else (store.stampGenTiming), and the org push
+-- holds such a row back until it is stamped or 10 minutes old
+-- (store.PushSettle), because the org ingest is insert-only. No MIN/MAX
+-- healing: the first stamp at a parser version is final. Nullable, no DEFAULT: existing rows stay NULL and
+-- show "not measured" until a rescan. The duration (not a start/end TEXT
+-- pair) is stored deliberately: TEXT RFC3339 comparison is lexicographic
+-- and wrong across trimmed fractional seconds (review finding #2).
+--
+-- Org wire: gen_ms / gen_basis ride TokenUsageRow as metadata (server
+-- migration 174 / pg 0040); gen_timing_v is NODE-LOCAL.
+--
+-- Authored as 132 (S10 coordination); landed as 136 after the skills
+-- stream (135) and the Agent Access lineage (131-134).
+ALTER TABLE token_usage ADD COLUMN gen_ms INTEGER;
+ALTER TABLE token_usage ADD COLUMN gen_basis TEXT;
+ALTER TABLE token_usage ADD COLUMN gen_timing_v INTEGER;

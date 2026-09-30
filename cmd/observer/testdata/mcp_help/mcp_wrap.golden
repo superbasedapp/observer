@@ -1,0 +1,22 @@
+Projects the relay into every verified installed AI client's MCP
+config: each stdio server bound to an approved vserver is REPLACED by
+the stdio relay (`observer mcp-relay wrap --client <tool> --server
+<key>`), and the approved vservers are added as remote entries through
+the relay's loopback listener when one is configured and remote
+forwarding is wired. Every original is journaled with a verbatim
+backup BEFORE it is rewritten; `observer mcp unwrap` puts it back.
+An entry with no approved binding is NOT wrapped and is reported.
+
+Refuses (writing nothing) when [mcp_relay].enabled = false.
+
+The relay rides the daemon's :8820. Never stop/restart the daemon while an
+MCP session or a proxied route is live: route OFF -> stop -> relaunch ->
+route ON, as one atomic op (docs/daemon-restart-runbook.md).
+
+Usage:
+  observer mcp wrap [flags]
+
+Flags:
+      --config string   path to config.toml (default ~/.observer/config.toml)
+  -h, --help            help for wrap
+      --no-remote       do not resolve remote forwarding (no org-server registration call; remote entries are not projected)

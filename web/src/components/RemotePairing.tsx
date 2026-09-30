@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { clearRemoteAuthLost, isRemoteAuthLost, onRemoteAuthLost } from "@/lib/authLoss";
 import { isRemoteView, setRemoteCSRF } from "@/lib/remote";
+import { Spinner } from "@/components/primitives";
 
 // RemotePairingGate completes the "open the pairing link on your phone" flow.
 // A pairing URL is `https://<tailnet-host>/#pair=<encoded-secret>` — the secret
@@ -190,7 +191,7 @@ function PairingScreen({
           {title}
         </div>
         {tone === "neutral" && (
-          <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-line-2 border-t-accent" />
+          <Spinner size={24} label="" className="mx-auto text-accent" />
         )}
         <p className="text-[12px] leading-relaxed text-fg-3">{body}</p>
         {action}

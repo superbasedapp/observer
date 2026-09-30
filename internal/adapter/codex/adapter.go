@@ -21,6 +21,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/ratelimitstate"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/tooltax"
 )
@@ -763,8 +764,8 @@ type modernTokenCount struct {
 	} `json:"info"`
 	// RateLimits is the Codex 0.130+ envelope carried alongside
 	// `info`. Present even when `info` is null (the startup
-	// token_count fires with rate_limits-only). Emitted as
-	// ActionRateLimit ToolEvent rows reusing the cowork-introduced
+	// token_count fires with rate_limits-only). Emitted (change-only, see
+	// codexRateLimitEmit) as ActionRateLimit ToolEvent rows reusing the cowork-introduced
 	// schema (RateLimitStatus / Type / ResetsAt / OverageStatus).
 	RateLimits *codexRateLimits `json:"rate_limits"`
 }
@@ -897,6 +898,9 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 	defer f.Close()
 
 	res := adapter.ParseResult{NewOffset: fromOffset}
+	// cxTiming is every record of this window projected for the
+	// generation-timing span rule (gentiming.go), in file order.
+	var cxTiming []codexTimingLine
 
 	// Fall back to the filename stem as session id if no real
 	// session-bearing envelope ever lands (e.g. incremental parse
@@ -1079,6 +1083,9 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 	for hash := range resumed.systemPrompts {
 		seenSystemPrompts[hash] = true
 	}
+	// rlTracker is the rate-limit change-only emission state (see the
+	// token_count case), seeded from the prefix on resume.
+	rlTracker := resumed.rateLimits
 	// runningWebSearchCount tallies event_msg/web_search_end records
 	// seen since the last NON-deduped token_count emission. Flushed
 	// onto TokenEvent.WebSearchRequests when the next token_count row
@@ -1330,6 +1337,11 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 				res.NewOffset = nextOffset
 			}
 			res.Warnings = append(res.Warnings, fmt.Sprintf("line %d: skipped oversized record: %d bytes exceeds %d-byte per-record bound", lineNum, consumed, maxRecordBytes))
+			// S10-SPEED: keep the record's PLACE in the gen-timing walk as
+			// an unknown kind (gentiming.go cxUnknown), exactly as the
+			// look-back does, so the stored span never depends on which
+			// parse window the record fell in.
+			cxTiming = append(cxTiming, codexTimingLine{Kind: cxUnknown, TokIdx: -1})
 			continue
 		}
 
@@ -1367,6 +1379,9 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 
 		ts := parseTimestamp(line.Timestamp)
 		payloadType := payloadType(line.Payload)
+		// Generation timing (S10-SPEED): project every record for the span
+		// rule in gentiming.go.
+		cxTiming = append(cxTiming, classifyCodexRecord(line, payloadType))
 
 		switch line.Type {
 		case "compacted":
@@ -1822,13 +1837,38 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 			case "token_count":
 				// Rate-limit snapshot is independent of token-usage: the
 				// startup token_count fires with `info: null` but already
-				// carries the per-window rate_limits envelope. Emit one
-				// ActionRateLimit row per token_count line that carries
-				// rate_limits, reusing the schema cowork introduced
+				// carries the per-window rate_limits envelope. Emit an
+				// ActionRateLimit row for a token_count line that carries
+				// rate_limits when the reading changed (see the change-only
+				// note below), reusing the schema cowork introduced
 				// (RateLimitStatus / Type / ResetsAt / OverageStatus).
 				// Dedup is handled at store.Ingest via the stable
 				// source_event_id below — re-parses are idempotent.
-				if rl := parseModernRateLimits(line.Payload); rl != nil && rl.PlanType != "" {
+				//
+				// Gate on whether a window actually exists (Primary or
+				// Secondary non-nil), NEVER on PlanType. PlanType is not a
+				// reliable "real data present" signal in either direction:
+				// live-observed 2026-09-22, a ChatGPT plan reports
+				// `"plan_type":null` (Go unmarshals a JSON null into the
+				// PlanType string field as "") while `primary` carries a
+				// fully valid window — the old `rl.PlanType != ""` gate
+				// silently dropped every one of these snapshots. The same
+				// gate ALSO let through a genuinely-empty envelope
+				// (`primary:null,secondary:null,plan_type:"plus"`, the
+				// 2026-08-26 startup-probe shape) purely because PlanType
+				// happened to be set. Checking for an actual window fixes
+				// both directions at once.
+				//
+				// Change-only (2026-09-30): Codex repeats the SAME envelope on
+				// every inference, which used to land one "Rate limit" row per
+				// model turn. codexRateLimitEmit asks the shared
+				// ratelimitstate predicate — first of the file, a meaningful
+				// change (status / plan / window set / used_percent / a reset
+				// move beyond jitter), or a heartbeat so the limit gauge's
+				// "observed N ago" stays bounded. rlTracker is seeded from the
+				// pre-offset prefix on resume, so a watcher poll makes the
+				// same decisions a full rescan does.
+				if rl := parseModernRateLimits(line.Payload); rl != nil && (rl.Primary != nil || rl.Secondary != nil) && codexRateLimitEmit(&rlTracker, rl, ts) {
 					projectRoot := a.resolveProjectRoot(ctxState.Cwd, rootCache)
 					evt := buildCodexRateLimitEvent(path, ctxState, projectRoot, ts, rl, lineNum)
 					res.ToolEvents = append(res.ToolEvents, withEffort(evt))
@@ -1950,6 +1990,7 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 				}
 				runningWebSearchCount = 0
 				res.TokenEvents = append(res.TokenEvents, evt)
+				bindCodexTokenCount(cxTiming, len(res.TokenEvents)-1, cxUsage{tk.InputTokens, tk.Cached, tk.OutputTokens, tk.Reasoning})
 				// CACHETRACK §15.3 (was: §14.3 scaffold-only). Codex
 				// Tier-2 emits CacheTurnObservation under
 				// ImplicitCache=true so the engine dispatches to the
@@ -2463,6 +2504,7 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 			})
 		}
 	}
+	applyCodexGenTiming(path, fromOffset, cxTiming, res.TokenEvents)
 	return res, nil
 }
 
@@ -3909,6 +3951,31 @@ func parseModernTokenCount(raw json.RawMessage) (tokenCount, tokenUsage, bool) {
 // absent. Independent of the token-usage path because Codex emits
 // the startup token_count with `info: null` but rate_limits already
 // populated — we want to capture that snapshot too.
+// codexRateLimitTrackerKey is the one ratelimitstate.Tracker key a codex
+// parse uses: the tracker lives for one parse of one rollout file, so the
+// file (= the session) IS the key.
+const codexRateLimitTrackerKey = "rollout"
+
+// codexRateLimitEmit reports whether a token_count's rate_limits envelope
+// should become an ActionRateLimit row, via the shared change-only
+// predicate (internal/ratelimitstate). The envelope is normalised through
+// the SAME json the row stores in RawToolInput, so capture and the
+// Messages-table display (which re-parses RawToolInput) judge "changed"
+// on identical input. An envelope the predicate cannot read is emitted
+// (fail-open: never lose a reading we could not classify).
+func codexRateLimitEmit(tr *ratelimitstate.Tracker, rl *codexRateLimits, ts time.Time) bool {
+	raw, err := json.Marshal(rl)
+	if err != nil {
+		return true
+	}
+	snap, ok := ratelimitstate.Parse(string(raw))
+	if !ok {
+		return true
+	}
+	emit, _ := tr.Observe(codexRateLimitTrackerKey, snap, ts)
+	return emit
+}
+
 func parseModernRateLimits(raw json.RawMessage) *codexRateLimits {
 	var probe struct {
 		RateLimits *codexRateLimits `json:"rate_limits"`
@@ -4141,6 +4208,10 @@ type resumePrefix struct {
 	// envelope bodies are deliberately NOT seeded here — see the
 	// docstring of prefetchSessionContext.
 	systemPrompts map[string]bool
+	// rateLimits is the rate-limit emission state (codexRateLimitEmit)
+	// after replaying every prefix token_count, so the resumed parse
+	// emits exactly the rate_limit rows a fromOffset==0 parse would.
+	rateLimits ratelimitstate.Tracker
 }
 
 // noteSystemPrompt records the hash of a system-prompt body under the
@@ -4312,6 +4383,10 @@ func prefetchSessionContext(f *os.File, until int64) (resumePrefix, bool) {
 				if _, total, ok := parseModernTokenCount(line.Payload); ok && total != (tokenUsage{}) {
 					pre.modernTotal = total
 					pre.haveTotal = true
+				}
+				// Same gate + same decision as the live parse, state only.
+				if rl := parseModernRateLimits(line.Payload); rl != nil && (rl.Primary != nil || rl.Secondary != nil) {
+					codexRateLimitEmit(&pre.rateLimits, rl, parseTimestamp(line.Timestamp))
 				}
 			}
 		case "session_configured", "session_start", "turn_context":

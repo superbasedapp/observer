@@ -469,3 +469,84 @@ func TestSelectLOCDaySummariesDropsRowsOlderThanTheWireWindow(t *testing.T) {
 		t.Errorf("human_code_lines = %d, want 7 (the 40-day-old backfill must not be folded in)", days[0].HumanCodeLines)
 	}
 }
+
+// TestLOCOrgComposersCarryTheCommentSplit pins the code-vs-comment split's
+// wire half (server migration 185 / pg 0051): the session row carries the
+// SIDECHAIN added-comment count beside the main line's, the day row carries
+// the AI comment lines under the SAME actor scope as its AI code lines (main
+// line and sidechain together), docs comments land in neither, and both
+// presence pointers are ALWAYS set by this composer (a nil pointer is
+// reserved for an agent that predates the field).
+func TestLOCOrgComposersCarryTheCommentSplit(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	pid := locSeedSession(ctx, t, s, "/repo", "sess-split")
+	pidPlain := locSeedSession(ctx, t, s, "/repo-plain", "sess-plain")
+
+	// Midday anchor so every row lands in ONE day bucket whatever the clock.
+	day := time.Now().UTC().Truncate(24 * time.Hour).Add(-12 * time.Hour)
+	main := locRow("sess-split", pid, "fmain", "dmain", LOCActorAI, LOCSourceEdit, false,
+		loc.Stats{AddedCode: 30, ModifiedCode: 10, AddedComment: 20, DeletedComment: 4})
+	side := locRow("sess-split", pid, "fside", "dside", LOCActorAI, LOCSourceEdit, true,
+		loc.Stats{AddedCode: 6, ModifiedCode: 2, AddedComment: 8})
+	docs := locRow("sess-split", pid, "fdoc", "ddoc", LOCActorAI, LOCSourceEdit, false,
+		loc.Stats{AddedCode: 5, AddedComment: 500})
+	docs.Category = string(loc.CategoryDocs)
+	human := locRow("sess-split", pid, "fhum", "", LOCActorHuman, LOCSourceEditor, false,
+		loc.Stats{AddedCode: 3, AddedComment: 90})
+	plain := locRow("sess-plain", pidPlain, "fplain", "dplain", LOCActorAI, LOCSourceEdit, false,
+		loc.Stats{AddedCode: 4})
+	for _, r := range []*FileChangeRow{&main, &side, &docs, &human, &plain} {
+		r.SavedAt = day
+	}
+	if _, err := s.InsertFileChanges(ctx, []FileChangeRow{main, side, docs, human, plain}); err != nil {
+		t.Fatalf("InsertFileChanges: %v", err)
+	}
+
+	sessions, err := s.SelectSessionLOCSummaries(ctx, ScopeOptions{}, false)
+	if err != nil {
+		t.Fatalf("SelectSessionLOCSummaries: %v", err)
+	}
+	bySession := map[string]orgcontract.SessionLOCRow{}
+	for _, r := range sessions {
+		bySession[r.SessionID] = r
+	}
+	got := bySession["sess-split"]
+	if got.AIAddedComment != 20 {
+		t.Errorf("ai_added_comment = %d, want 20 (main line only; docs and sidechain excluded)", got.AIAddedComment)
+	}
+	if got.AISidechainAddedComment == nil || *got.AISidechainAddedComment != 8 {
+		t.Errorf("ai_sidechain_added_comment = %v, want 8 (the subagent's comments, split from the main line)", got.AISidechainAddedComment)
+	}
+	if got.DocsLines != 505 {
+		t.Errorf("docs_lines = %d, want 505 - docs comments stay in the docs bucket, never a code-comment count", got.DocsLines)
+	}
+	// Presence, not value: a session with no subagent work still reports 0.
+	if p := bySession["sess-plain"].AISidechainAddedComment; p == nil || *p != 0 {
+		t.Errorf("sess-plain ai_sidechain_added_comment = %v, want a reported 0 (nil means an older agent)", p)
+	}
+
+	days, err := s.SelectLOCDaySummaries(ctx, ScopeOptions{})
+	if err != nil {
+		t.Fatalf("SelectLOCDaySummaries: %v", err)
+	}
+	var found bool
+	for _, d := range days {
+		if d.AICommentLines == nil {
+			t.Errorf("day row %s/%s has nil ai_comment_lines - the current composer must always report it", d.Day, d.ProjectRootHash)
+			continue
+		}
+		if d.AICodeLines != 48 {
+			continue // the /repo-plain row
+		}
+		found = true
+		// 20 main + 8 sidechain; docs (500) and human (90) excluded.
+		if *d.AICommentLines != 28 {
+			t.Errorf("day ai_comment_lines = %d, want 28 (main + sidechain AI comments in code files, same scope as ai_code_lines)", *d.AICommentLines)
+		}
+	}
+	if !found {
+		t.Fatalf("no day row with ai_code_lines 48 (30+10 main + 6+2 sidechain): %+v", days)
+	}
+}

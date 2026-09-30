@@ -373,7 +373,7 @@ any change breaks cache for pre-extension callers.
   exists on disk)
 - `docs/mcp-get-symbols-reference.md` — symbol-targeted retrieval
   with relations metadata
-- `docs/mcp-get-relations-reference.md` — codegraph BFS without
+- `docs/mcp-get-relations-reference.md` — code-index BFS without
   bodies
 - `docs/v4-codex-compression-recipe-and-issues.md` — the V7 arc
   compendium (V7-12, V7-13, V7-16 design proposals)

@@ -1,4 +1,27 @@
 {
+  "api_turn_row_with_request_class": {
+    "session_id": "sess-1",
+    "project_root_hash": "sha256:proj-root-aaa",
+    "timestamp": "2026-05-25T10:05:01Z",
+    "provider": "anthropic",
+    "model": "claude-opus-4-7",
+    "request_id": "req-2",
+    "input_tokens": 300,
+    "output_tokens": 40,
+    "cache_read_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_creation_1h_tokens": 0,
+    "web_search_requests": 0,
+    "cost_usd": 0.0031,
+    "message_count": 0,
+    "tool_use_count": 0,
+    "time_to_first_token_ms": 0,
+    "total_response_ms": 0,
+    "http_status": 200,
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "request_class": "subagent"
+  },
   "bearer_claims": {
     "iss": "https://org.acme.example",
     "sub": "scim-42",
@@ -6,6 +29,88 @@
     "exp": 1797206400,
     "iat": 1789430400,
     "jti": "jti-7f3a"
+  },
+  "commit_ownership_row": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "project_root_hash": "sha256:proj-root-aaa",
+    "commit_sha": "0123abcd0123abcd0123abcd0123abcd0123abcd",
+    "committed_at": "2026-09-28T10:00:00Z",
+    "reachable": true,
+    "is_merge": false,
+    "files_count": 3,
+    "added": 42,
+    "deleted": 7,
+    "ai_files": 2,
+    "ai_code_lines": 30,
+    "ai_comment_lines": 4,
+    "owner_session_id": "sess-1",
+    "owner_reason": "most_code_lines",
+    "share_basis": "code_lines",
+    "contributors": [
+      {
+        "session_id": "sess-1",
+        "share": 0.75,
+        "code_lines": 22,
+        "comment_lines": 3,
+        "files": 1,
+        "prompts": 2
+      },
+      {
+        "session_id": "sess-2",
+        "share": 0.25,
+        "code_lines": 8,
+        "comment_lines": 1,
+        "files": 1,
+        "prompts": 1
+      }
+    ],
+    "rule_version": 1
+  },
+  "commit_ownership_row_full_content": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "project_root_hash": "sha256:proj-root-aaa",
+    "commit_sha": "0123abcd0123abcd0123abcd0123abcd0123abcd",
+    "committed_at": "2026-09-28T10:00:00Z",
+    "reachable": true,
+    "is_merge": false,
+    "files_count": 1,
+    "added": 3,
+    "deleted": 0,
+    "ai_files": 1,
+    "ai_code_lines": 3,
+    "ai_comment_lines": 0,
+    "owner_session_id": "sess-1",
+    "owner_reason": "sole_contributor",
+    "share_basis": "code_lines",
+    "contributors": [
+      {
+        "session_id": "sess-1",
+        "share": 1,
+        "code_lines": 3,
+        "comment_lines": 0,
+        "files": 1,
+        "prompts": 1
+      }
+    ],
+    "subject": "feat: parser",
+    "rule_version": 1
+  },
+  "commit_ownership_row_unreachable": {
+    "project_root_hash": "sha256:proj-root-aaa",
+    "commit_sha": "fedc0000fedc0000fedc0000fedc0000fedc0000",
+    "committed_at": "2026-09-27T09:00:00Z",
+    "reachable": false,
+    "is_merge": false,
+    "files_count": 0,
+    "added": 0,
+    "deleted": 0,
+    "ai_files": 0,
+    "ai_code_lines": 0,
+    "ai_comment_lines": 0,
+    "owner_reason": "unreachable",
+    "rule_version": 1
   },
   "enroll_request": {
     "one_time_token": "tok_id123.ot_abc123",
@@ -121,7 +226,9 @@
         "workspace_hash": "sha256:workspace-hhh",
         "is_worktree": true,
         "surface": "ide",
-        "surface_host": "vscode"
+        "surface_host": "vscode",
+        "tool_version": "1.2.3",
+        "parent_thread_id": "sess-0"
       }
     ],
     "actions": [
@@ -238,6 +345,190 @@
       }
     ]
   },
+  "push_envelope_mcp_inventory_full": {
+    "agent_version": "1.36.0",
+    "source_node_key": "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+    "cursor_from": 90484,
+    "cursor_to": 90484,
+    "sessions": null,
+    "actions": null,
+    "api_turns": null,
+    "token_usage": null,
+    "mcp_inventory": [
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "source_scope": "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+        "locator_fingerprint": "4f6c1d2e3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+        "server_name_hash": "hmac-sha256:v1:7a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+        "transport": "stdio",
+        "observed_at": 1790000100,
+        "first_seen": 1789740000,
+        "last_seen": 1790000100,
+        "client": "claude-code",
+        "server_name": "files",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@acme/files-mcp",
+          "--token=[REDACTED]"
+        ],
+        "env_keys": [
+          "API_KEY",
+          "FILES_ROOT"
+        ],
+        "config_path_hash": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00"
+      },
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "source_scope": "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+        "locator_fingerprint": "8a9b0c1d2e3f405162738495a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f",
+        "server_name_hash": "hmac-sha256:v1:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "transport": "http",
+        "observed_at": 1790000100,
+        "first_seen": 1790000100,
+        "last_seen": 1790000100,
+        "client": "cursor",
+        "server_name": "linear",
+        "url": "https://mcp.linear.app/sse"
+      }
+    ]
+  },
+  "push_envelope_mcp_inventory_reduced": {
+    "agent_version": "1.36.0",
+    "source_node_key": "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+    "cursor_from": 90484,
+    "cursor_to": 90484,
+    "sessions": null,
+    "actions": null,
+    "api_turns": null,
+    "token_usage": null,
+    "mcp_inventory": [
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "source_scope": "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+        "locator_fingerprint": "4f6c1d2e3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+        "server_name_hash": "hmac-sha256:v1:7a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+        "transport": "stdio",
+        "observed_at": 1790000100,
+        "first_seen": 1789740000,
+        "last_seen": 1790000100
+      }
+    ]
+  },
+  "push_envelope_mcp_relay_individual": {
+    "agent_version": "1.35.0",
+    "source_node_key": "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+    "cursor_from": 90477,
+    "cursor_to": 90480,
+    "sessions": null,
+    "actions": null,
+    "api_turns": null,
+    "token_usage": null,
+    "mcp_relay_activity": [
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "day": "2026-09-24",
+        "virtual_server": "vs-github",
+        "tool_ref_hmac": "hmac-tool-aaa",
+        "decision": "allow",
+        "client_attestation": "process_attested",
+        "n": 17
+      }
+    ]
+  },
+  "push_envelope_mcp_relay_managed": {
+    "agent_version": "1.35.0",
+    "machine_identity": "3f2a1b0c9d8e7f60514233445566778899aabbccddeeff00112233445566778a",
+    "source_node_key": "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+    "cursor_from": 90480,
+    "cursor_to": 90484,
+    "sessions": null,
+    "actions": null,
+    "api_turns": null,
+    "token_usage": null,
+    "mcp_relay_activity": [
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "day": "2026-09-24",
+        "virtual_server": "vs-github",
+        "tool_ref_hmac": "hmac-tool-aaa",
+        "decision": "allow",
+        "client_attestation": "process_attested",
+        "n": 1
+      }
+    ],
+    "mcp_relay_events": [
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "local_record_seq": 41,
+        "record_kind": "decision",
+        "ts": 1790000000,
+        "virtual_server": "vs-github",
+        "server": "github",
+        "tool": "create_issue",
+        "method": "tools/call",
+        "call_id": "call-7f3a",
+        "trace_id": "trace-0011",
+        "coding_session_id": "sess-1",
+        "turn_ref": "turn-9",
+        "action_ref": "act-12",
+        "corr_confidence": "exact",
+        "decision": "allow",
+        "reason_code": "grant:github-issues",
+        "client_attestation": "process_attested",
+        "credential_assurance": "node_enrolled",
+        "capture_level": "L2",
+        "args_full": "{\"title\":\"Cursor re-enrol regression\"}",
+        "args_scrub_status": "structured"
+      },
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "local_record_seq": 42,
+        "record_kind": "completion",
+        "ts": 1790000001,
+        "call_id": "call-7f3a",
+        "latency_ms": 830,
+        "capture_level": "L2",
+        "result_full": "{\"number\":118}",
+        "result_scrub_status": "structured",
+        "error_full": "{\"code\":0}",
+        "error_scrub_status": "redacted",
+        "elicitation_full": "{}",
+        "elicitation_scrub_status": "truncated",
+        "result_size_bytes": 2048,
+        "result_status": "ok"
+      },
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "local_record_seq": 43,
+        "record_kind": "gap",
+        "ts": 1790000002,
+        "gap_from": 1789999900,
+        "gap_to": 1789999950,
+        "lost_count": 2,
+        "gap_reason": "local_append_failed"
+      },
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "local_record_seq": 44,
+        "record_kind": "gap_resolution",
+        "ts": 1790000003,
+        "resolves_seq": 43,
+        "resolved_range_start": 1789999900,
+        "resolved_range_end": 1789999920,
+        "resolution": "late_arrival"
+      }
+    ]
+  },
   "push_envelope_with_update_posture": {
     "agent_version": "1.30.0",
     "update_posture": {
@@ -296,6 +587,26 @@
       "lts": 12,
       "stable": 17
     }
+  },
+  "session_limit_snapshot_row": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "session_id": "sess-1",
+    "tool": "claude-code",
+    "provider": "anthropic",
+    "local_id": 4211,
+    "observed_at": 1790000000,
+    "window_5h_util": 0.42,
+    "window_7d_util": 0.17,
+    "window_5h_reset": 1790012000,
+    "window_7d_reset": 1790400000
+  },
+  "session_limit_snapshot_row_sparse": {
+    "session_id": "sess-2",
+    "tool": "codex",
+    "provider": "openai",
+    "local_id": 4212,
+    "observed_at": 1790000060
   },
   "session_loc_row": {
     "org_id": "org-acme",
@@ -359,6 +670,44 @@
     "human_capture": "none",
     "classifier_version": 1,
     "language_mix_json": "[{\"language\":\"go\",\"category\":\"code\",\"files\":18,\"lines\":449}]"
+  },
+  "session_quality_row": {
+    "org_id": "org-acme",
+    "user_email": "dev@acme.example",
+    "session_id": "sess-1",
+    "quality_score": 0.8125,
+    "redundancy_ratio": 0.125,
+    "error_rate": 0.05,
+    "exploration_efficiency": 0.6,
+    "continuity_score": 0.9179,
+    "onboarding_cost": 18234,
+    "turns_to_first_edit": 4,
+    "retry_cost_tokens": 912,
+    "stale_reads_wasteful": 3,
+    "stale_reads_necessary": 1,
+    "redundancy_ratio_wasteful": 0.09,
+    "scored_at": "2026-09-27T10:15:00.123456789Z",
+    "scored_action_count": 50,
+    "weight_redundancy": 0.4,
+    "weight_error": 0.3,
+    "weight_exploration": 0.2,
+    "weight_continuity": 0.1
+  },
+  "session_quality_row_sparse": {
+    "session_id": "sess-2",
+    "quality_score": 0.55,
+    "redundancy_ratio": 0.3,
+    "error_rate": 0.2,
+    "exploration_efficiency": 0,
+    "continuity_score": 0.39,
+    "onboarding_cost": 0,
+    "retry_cost_tokens": 0,
+    "scored_at": "2026-09-27T10:16:00.000000000Z",
+    "scored_action_count": 10,
+    "weight_redundancy": 0.4,
+    "weight_error": 0.3,
+    "weight_exploration": 0.2,
+    "weight_continuity": 0.1
   },
   "session_task_item_row": {
     "org_id": "org-acme",

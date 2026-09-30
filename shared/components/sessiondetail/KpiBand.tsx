@@ -4,6 +4,7 @@ import { BigStat, Tooltip } from "../../primitives";
 import { ClockIcon, DollarIcon, LayersIcon, LightningIcon } from "../../lib/icons";
 import { fmtCompact, fmtDuration, fmtInt } from "../../lib/format";
 import { elapsedMillis, elapsedSub } from "../../lib/sessionElapsed";
+import { TOKENS_DEFINITION } from "../../lib/tokenSources";
 import { defaultRenderCost, type RenderCost } from "./cost";
 
 // KpiBand — the four always-visible session-detail tiles (cost / actions /
@@ -49,6 +50,12 @@ export type KpiBandProps = {
   // own sub-label here (e.g. its proxy-turn count), since it suppresses the
   // API/Tool split. Absent => the node's default text.
   costSub?: ReactNode;
+  // tokensSub replaces the Tokens tile's "net + cache R/W + output" caption
+  // when there is a billed total: both apps pass tokenSourcesLine(...)
+  // (shared/lib/tokenSources.ts), so the node and org tiles name their
+  // sources in the same words (MCP audit #4b). The definition then moves
+  // to the tooltip (tokensNote, else TOKENS_DEFINITION). Absent => unchanged.
+  tokensSub?: ReactNode;
 };
 
 export function KpiBand({
@@ -66,6 +73,7 @@ export function KpiBand({
   lastActivityAt,
   renderCost = defaultRenderCost,
   costSub,
+  tokensSub,
   usageRecorded,
 }: KpiBandProps) {
   // Prefer ended_at; fall back to last_activity_at (server COALESCE of the
@@ -123,7 +131,7 @@ export function KpiBand({
               ? `context ~${fmtCompact(contextBudgetTokens)} (est.) · usage missing`
               : "usage not captured"
             : hasTokens
-              ? "net + cache R/W + output"
+              ? tokensSub ?? "net + cache R/W + output"
               : contextBudgetTokens
                 ? "context budget (est.) · not billed"
                 : "no billed usage"
@@ -132,7 +140,7 @@ export function KpiBand({
         // whenever provided (the org may attach one even when it has billed
         // tokens). The node only sets tokensNote when there is no billed usage,
         // so this leaves the node unchanged (`"" || undefined` => undefined).
-        subTitle={tokensNote || undefined}
+        subTitle={tokensNote || (hasTokens && tokensSub != null ? TOKENS_DEFINITION : undefined)}
         muted={!hasTokens}
       />
     </div>

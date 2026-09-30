@@ -34,7 +34,9 @@ import { useMobileTerminal } from "@/lib/useMediaQuery";
 import { useVisualViewport } from "@/lib/useVisualViewport";
 import type { ProjectPanelTab } from "@/components/ProjectPanel";
 import { CompanionProvider } from "@/components/primitives/companion";
-import { Tooltip, TooltipSpan } from "@/components/primitives";
+import { ConfirmButton, Icon, LiveDot, Tooltip, TooltipSpan } from "@/components/primitives";
+import { TRANSPORT_DOT, liveDotProps, withDotClass } from "@/lib/liveSignals";
+import { ChevronUp, GripHorizontal, Plus, X } from "lucide-react";
 
 // Lazy so the per-terminal project panel (file tree + git graph) stays out of
 // the critical chunk — it loads only when a terminal's Files/Git button fires.
@@ -1129,7 +1131,7 @@ function Dock({
           hoverable span; the enabled button is its own reference. */}
       {(() => {
         const newBtn = (
-          <button type="button" onClick={onNew} disabled={remoteBlocked} className="flex items-center gap-1.5 rounded-full border bg-bg-1 px-3 py-1.5 text-[11px] font-medium text-fg-2 shadow-lg hover:text-fg-1 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-fg-2"><span aria-hidden className="text-[13px] leading-none">+</span>New terminal</button>
+          <button type="button" onClick={onNew} disabled={remoteBlocked} className="flex items-center gap-1.5 rounded-pill border bg-bg-1 px-3 py-1.5 text-caption font-medium text-fg-2 shadow-lg hover:text-fg-1 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-fg-2"><Icon icon={Plus} size="xs" />New terminal</button>
         );
         const tip = remoteBlocked ? REMOTE_TERMINAL_OFF_MSG : "Start a fresh agent in the embedded terminal";
         return remoteBlocked ? (
@@ -1164,14 +1166,7 @@ function Dock({
           onDoubleClick={drag.onReset}
           className="flex h-4 w-9 touch-none cursor-grab select-none items-center justify-center rounded-full border bg-bg-1 text-fg-4 shadow-lg hover:text-fg-2 active:cursor-grabbing"
         >
-        <svg width="14" height="6" viewBox="0 0 14 6" fill="none" aria-hidden>
-          <circle cx="2" cy="2" r="1" fill="currentColor" />
-          <circle cx="7" cy="2" r="1" fill="currentColor" />
-          <circle cx="12" cy="2" r="1" fill="currentColor" />
-          <circle cx="2" cy="5" r="1" fill="currentColor" />
-          <circle cx="7" cy="5" r="1" fill="currentColor" />
-          <circle cx="12" cy="5" r="1" fill="currentColor" />
-        </svg>
+        <Icon icon={GripHorizontal} size={14} />
         </button>
       </Tooltip>
     </div>
@@ -1305,14 +1300,6 @@ function DockPill({
   onRestore: () => void;
   onClose: () => void;
 }) {
-  const dot: Record<Status, string> = {
-    connecting: "bg-fg-3 animate-pulse",
-    open: "bg-ok",
-    // Live server-side; only this browser's transport dropped.
-    reconnecting: "bg-warn animate-pulse",
-    exited: "bg-fg-3",
-    error: "bg-danger",
-  };
   const label: Record<Status, string> = {
     connecting: "connecting…",
     open: "live",
@@ -1324,17 +1311,18 @@ function DockPill({
   // A policy-stopped run is exited FOR A REASON worth calling out — tint the
   // dot/label danger|warn (matching the modal banner's own decision-aware
   // color) instead of the default neutral "exited" grey, and surface the
-  // same message as a tooltip + native title (the label loses its own hover
-  // in favour of the wrapping Tooltip below, so both carry it).
+  // same message through the wrapping Tooltip below (keyboard reachable; the
+  // native title that duplicated it was dropped 2026-09-28).
   const policyStopped = st === "exited" && !!policyStop;
   const policyStoppedDefinitive =
     policyStopped &&
     (policyStop!.decision === "terminated" || policyStop!.decision === "killed");
-  const dotCls = policyStopped
+  // Dot tone + motion from the ONE TRANSPORT_DOT table (lib/liveSignals).
+  const dotState = policyStopped
     ? policyStoppedDefinitive
-      ? "bg-danger"
-      : "bg-warn"
-    : dot[st];
+      ? "policy_terminated"
+      : "policy_stopped"
+    : st;
   const labelCls = policyStopped
     ? policyStoppedDefinitive
       ? "text-danger"
@@ -1344,26 +1332,23 @@ function DockPill({
     ? policyStopMessage(policyStop)
     : `Restore ${session.tool} terminal`;
   return (
-    <div className="flex items-center gap-2 rounded-full border bg-bg-1 py-1 pl-3 pr-1.5 shadow-lg">
+    <div className="flex items-center gap-2 rounded-pill border bg-bg-1 py-1 pl-3 pr-1.5 shadow-lg">
       <Tooltip content={restoreTip}>
         <button
           type="button"
           onClick={onRestore}
           aria-label={`Restore ${session.tool} terminal`}
-          title={policyStop ? policyStopMessage(policyStop) : undefined}
           className="flex items-center gap-2 text-[11px] text-fg-2 hover:text-fg-1 focus:outline-none"
         >
-          <span className={`h-2 w-2 rounded-full ${dotCls}`} />
+          <LiveDot {...withDotClass(liveDotProps(TRANSPORT_DOT, dotState), "h-2 w-2 shrink-0")} />
           <span className="font-mono text-fg-1">{session.tool}</span>
-          <AgentStatusBadge info={agent} />
+          <AgentStatusBadge info={agent} inControl />
           <span
             className={`text-[9.5px] uppercase tracking-[0.05em] ${labelCls}`}
           >
             {label[st]}
           </span>
-          <span aria-hidden className="text-fg-3">
-            ▴
-          </span>
+          <Icon icon={ChevronUp} size="xs" className="text-fg-3" />
         </button>
       </Tooltip>
       <Tooltip
@@ -1371,28 +1356,26 @@ function DockPill({
           st === "open" ? "Stop the running process and close" : "Close"
         }
       >
-        <button
-          type="button"
-          onClick={() => {
-            // Closing kills the process — confirm while it's still live, same
-            // as the terminal header's "Stop & close".
-            if (
-              (st === "open" || st === "connecting") &&
-              !window.confirm(
-                `Stop the running ${session.tool} session? This ends the process.`,
-              )
-            ) {
-              return;
-            }
-            onClose();
-          }}
-          aria-label={
-            st === "open" ? "Stop the running process and close" : "Close"
-          }
-          className="rounded-full px-1.5 text-[11px] text-fg-3 hover:bg-white/10 hover:text-fg-1 focus:outline-none"
-        >
-          ✕
-        </button>
+        <span className="inline-flex">
+          {/* Closing kills the process - arm-then-confirm while it's still
+              live, same as the terminal header's "Stop & close". */}
+          <ConfirmButton
+            onConfirm={onClose}
+            requireConfirm={st === "open" || st === "connecting"}
+            variant="ghost"
+            armedVariant="danger"
+            size="sm"
+            confirmLabel="Stop?"
+            armedNote={`Ends the running ${session.tool} process.`}
+            className="rounded-pill px-1.5 py-0.5"
+          >
+            <Icon
+              icon={X}
+              size="xs"
+              label={st === "open" ? "Stop the running process and close" : "Close"}
+            />
+          </ConfirmButton>
+        </span>
       </Tooltip>
     </div>
   );

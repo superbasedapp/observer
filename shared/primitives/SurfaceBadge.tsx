@@ -1,12 +1,5 @@
-import type { ReactElement } from "react";
 import { Pill } from "./Pill";
-import {
-  BracketsIcon,
-  GlobeIcon,
-  MonitorIcon,
-  TerminalIcon,
-  WindowIcon,
-} from "../lib/icons";
+import { vocabIcon } from "../lib/vocabIcons";
 
 // SurfaceBadge renders the capture-surface attribution a session carries
 // (node migration 107: sessions.surface / sessions.surface_host) as one small
@@ -32,8 +25,8 @@ export type SurfaceKind = "cli" | "ide" | "desktop" | "sdk" | "web";
 
 type SurfaceMeta = {
   label: string;
-  icon: (props: { size?: number; className?: string }) => ReactElement;
-  /** Long-form gloss shown on hover/focus. */
+  /** Long-form gloss shown on hover/focus. The glyph comes from
+   * VOCAB_ICONS.captureSurface (shared/lib/vocabIcons), the one icon table. */
   gloss: string;
 };
 
@@ -42,28 +35,23 @@ type SurfaceMeta = {
 const SURFACE_META: Record<SurfaceKind, SurfaceMeta> = {
   cli: {
     label: "cli",
-    icon: TerminalIcon,
     gloss: "Captured from a terminal run of the tool's CLI.",
   },
   ide: {
     label: "ide",
-    icon: WindowIcon,
     gloss:
       "Captured from an editor extension, plugin, or IDE fork driving the agent.",
   },
   desktop: {
     label: "desktop",
-    icon: MonitorIcon,
     gloss: "Captured from a standalone desktop app.",
   },
   sdk: {
     label: "sdk",
-    icon: BracketsIcon,
     gloss: "Captured from a programmatic embedding (agent SDK / API harness).",
   },
   web: {
     label: "web",
-    icon: GlobeIcon,
     gloss: "Captured from a browser / web-app surface.",
   },
 };
@@ -88,18 +76,16 @@ export function SurfaceBadge({ surface, host, className }: SurfaceBadgeProps) {
   if (!kind && !hostToken) return null;
 
   const meta = kind ? SURFACE_META[kind] : null;
-  const Icon = meta?.icon;
   const title = [
-    "Capture surface",
-    meta ? `— ${meta.gloss}` : "— host reported, kind unknown.",
+    "Capture surface:",
+    meta ? meta.gloss : "host reported, kind unknown.",
     hostToken ? `Host: ${hostToken}.` : "",
   ]
     .filter(Boolean)
     .join(" ");
 
   return (
-    <Pill className={className} title={title}>
-      {Icon ? <Icon size={11} className="shrink-0 opacity-80" /> : null}
+    <Pill className={className} title={title} icon={kind ? vocabIcon("captureSurface", kind) : undefined}>
       {meta ? meta.label : null}
       {hostToken ? (
         <span className="text-fg-3">

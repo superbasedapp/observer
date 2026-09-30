@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { ChartShell, Pill } from "@/components/primitives";
+import { CircleStop, LoaderCircle, type LucideIcon } from "lucide-react";
+import { ChartShell, Pill, Table, Tooltip } from "@/components/primitives";
+import type { Tone } from "@shared/lib/tone";
 import { TitleWithHelp } from "@/components/HelpInd";
 import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
@@ -16,6 +18,24 @@ import type {
 // owner + hot reload); reports recompute arm membership from the
 // session hash, so the numbers here and `observer experiment report`
 // can never disagree.
+// EXPERIMENT_STATE - an A/B experiment's state: running is in flight
+// (spinning LoaderCircle), stopped is neutral.
+const EXPERIMENT_STATE: Readonly<
+  Record<"running" | "stopped", { tone: Tone; icon: LucideIcon; spin: boolean }>
+> = {
+  running: { tone: "success", icon: LoaderCircle, spin: true },
+  stopped: { tone: "neutral", icon: CircleStop, spin: false },
+};
+
+function ExperimentStatePill({ state }: { state: "running" | "stopped" }) {
+  const row = EXPERIMENT_STATE[state];
+  return (
+    <Pill variant={row.tone} icon={row.icon} spin={row.spin}>
+      {state}
+    </Pill>
+  );
+}
+
 export function ExperimentsCard() {
   const list = useApi<{ experiments: ExperimentDef[] }>("/api/experiments");
   const [showStart, setShowStart] = useState(false);
@@ -44,7 +64,7 @@ export function ExperimentsCard() {
         <button
           type="button"
           onClick={() => setShowStart((s) => !s)}
-          className="rounded-2 border border-line-2 bg-bg-2 px-2 py-0.5 text-[11px] text-fg-2 hover:bg-bg-3"
+          className="rounded-2 border border-line-2 bg-bg-3 px-2 py-0.5 text-caption text-fg-2 hover:bg-bg-4"
         >
           {showStart ? "close" : "new experiment"}
         </button>
@@ -71,9 +91,7 @@ export function ExperimentsCard() {
             <li key={e.name} className="rounded-2 border border-line-1 p-2.5">
               <div className="flex flex-wrap items-center gap-2 text-[12px]">
                 <span className="font-mono font-medium text-fg-1">{e.name}</span>
-                <Pill variant={!e.stopped_at ? "success" : "neutral"}>
-                  {!e.stopped_at ? "running" : "stopped"}
-                </Pill>
+                <ExperimentStatePill state={!e.stopped_at ? "running" : "stopped"} />
                 <Pill>{e.class}</Pill>
                 <span className="text-[11px] text-fg-3">
                   {e.control} vs {e.candidate}
@@ -84,7 +102,7 @@ export function ExperimentsCard() {
                   onClick={() =>
                     setReportFor(reportFor === e.name ? null : e.name)
                   }
-                  className="rounded-2 border border-line-2 bg-bg-2 px-2 py-0.5 text-[10.5px] text-fg-2 hover:bg-bg-3"
+                  className="rounded-2 border border-line-2 bg-bg-3 px-2 py-0.5 text-[10.5px] text-fg-2 hover:bg-bg-4"
                 >
                   {reportFor === e.name ? "hide report" : "report"}
                 </button>
@@ -145,9 +163,9 @@ function StartForm({ onStarted }: { onStarted: () => void }) {
   };
 
   const sel =
-    "rounded-2 border border-line-2 bg-bg-1 px-2 py-1 text-[11.5px] text-fg-1 outline-none focus:border-accent/60";
+    "rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-[11.5px] text-fg-1 outline-none focus:border-accent/60";
   return (
-    <div className="mb-3 space-y-2 rounded-2 border border-line-1 bg-bg-1 p-3 text-[12px]">
+    <div className="mb-3 space-y-2 rounded-2 border border-line-2 bg-bg-3/40 p-3 text-small">
       <div className="flex flex-wrap items-center gap-2">
         <input
           value={name}
@@ -226,8 +244,9 @@ function ReportView({ name }: { name: string }) {
   const r = rep.data;
   return (
     <div className="mt-2 space-y-2 border-t border-line-1 pt-2">
-      <table className="w-full text-left text-[11.5px]">
-        <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
+      <Table
+        minWidth={620}
+        head={
           <tr>
             <th className="py-1 font-medium">Arm</th>
             <th className="py-1 font-medium">Profile</th>
@@ -238,38 +257,39 @@ function ReportView({ name }: { name: string }) {
             <th className="py-1 text-right font-medium">Cache r/w</th>
             <th className="py-1 text-right font-medium">Comp. saved</th>
           </tr>
-        </thead>
-        <tbody>
-          {[r.control, r.candidate].map((a) => (
-            <tr key={a.arm} className="border-t border-line-1">
-              <td className="py-1">{a.arm}</td>
-              <td className="py-1 font-mono text-[10.5px]">{a.profile}</td>
-              <td className="py-1 text-right tabular-nums">{fmtInt(a.sessions)}</td>
-              <td className="py-1 text-right tabular-nums">{fmtUSD(a.mean_cost_usd)}</td>
-              <td className="py-1 text-right tabular-nums">
-                {a.sessions >= 2 ? a.cv_pct.toFixed(1) + "%" : "-"}
-              </td>
-              <td className="py-1 text-right tabular-nums">{a.mean_turns.toFixed(1)}</td>
-              <td className="py-1 text-right tabular-nums">
-                {a.cache_write_tokens > 0
-                  ? (a.cache_read_tokens / a.cache_write_tokens).toFixed(1) + "×"
-                  : "-"}
-              </td>
-              <td
-                className="py-1 text-right tabular-nums"
-                title="Genuine, retrievable compression only. Lossy-evicted (dropped) bytes are excluded and shown separately; that content stays recoverable via search_past_outputs markers."
-              >
-                {fmtCompact(a.compression_saved_bytes)}B
-                {(a.compression_evicted_bytes ?? 0) > 0 && (
-                  <span className="block text-[10px] text-fg-3">
-                    +{fmtCompact(a.compression_evicted_bytes ?? 0)}B evicted
-                  </span>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+        }
+      >
+        {[r.control, r.candidate].map((a) => (
+          <tr key={a.arm} className="border-t border-line-1">
+            <td className="py-1">{a.arm}</td>
+            <td className="py-1 font-mono text-[10.5px]">{a.profile}</td>
+            <td className="py-1 text-right tabular-nums">{fmtInt(a.sessions)}</td>
+            <td className="py-1 text-right tabular-nums">{fmtUSD(a.mean_cost_usd)}</td>
+            <td className="py-1 text-right tabular-nums">
+              {a.sessions >= 2 ? a.cv_pct.toFixed(1) + "%" : "-"}
+            </td>
+            <td className="py-1 text-right tabular-nums">{a.mean_turns.toFixed(1)}</td>
+            <td className="py-1 text-right tabular-nums">
+              {a.cache_write_tokens > 0
+                ? (a.cache_read_tokens / a.cache_write_tokens).toFixed(1) + "×"
+                : "-"}
+            </td>
+            <Tooltip content="Genuine, retrievable compression only. Lossy-evicted (dropped) bytes are excluded and shown separately; that content stays recoverable via search_past_outputs markers.">
+            <td
+              tabIndex={0}
+              className="cursor-help py-1 text-right tabular-nums focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring"
+            >
+              {fmtCompact(a.compression_saved_bytes)}B
+              {(a.compression_evicted_bytes ?? 0) > 0 && (
+                <span className="block text-[10px] text-fg-3">
+                  +{fmtCompact(a.compression_evicted_bytes ?? 0)}B evicted
+                </span>
+              )}
+            </td>
+            </Tooltip>
+          </tr>
+        ))}
+      </Table>
       {r.control.sessions > 0 && r.candidate.sessions > 0 && (
         <p className="text-[11px] text-fg-2">
           candidate vs control:{" "}

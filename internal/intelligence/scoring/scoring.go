@@ -5,9 +5,19 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
+)
+
+// The spec §15.2 component weights. Exported so read surfaces (the dashboard
+// Quality card) render the formula from the one owner instead of a copy.
+const (
+	WeightRedundancy  = 0.4
+	WeightError       = 0.3
+	WeightExploration = 0.2
+	WeightContinuity  = 0.1
 )
 
 // Scores is the per-session quality summary. A zero Scores is the correct
@@ -54,10 +64,24 @@ type Scores struct {
 }
 
 // Scorer runs scoring passes against a DB.
-type Scorer struct{ db *sql.DB }
+type Scorer struct {
+	db  *sql.DB
+	now func() time.Time
+}
 
 // New wraps db.
-func New(db *sql.DB) *Scorer { return &Scorer{db: db} }
+func New(db *sql.DB) *Scorer {
+	return &Scorer{db: db, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// WithNow overrides the clock Write stamps scored_at with (tests). A nil fn
+// is ignored. Returns s for chaining.
+func (s *Scorer) WithNow(fn func() time.Time) *Scorer {
+	if fn != nil {
+		s.now = fn
+	}
+	return s
+}
 
 // BatchOptions parameterizes BatchScore.
 type BatchOptions struct {
@@ -70,6 +94,16 @@ type BatchOptions struct {
 	IdleAtLeast time.Duration
 	// Now overrides time.Now for deterministic tests.
 	Now func() time.Time
+	// IDs, when non-empty, restricts the pass to these session ids (still
+	// subject to OnlyUnscored / IdleAtLeast). The daemon's AutoScorer uses
+	// it to re-score sessions that saw new activity since the last tick.
+	IDs []string
+	// Limit, when > 0, stops the pass after this many sessions were
+	// attempted (scored or errored). Sessions skipped by the idle check do
+	// not count — they cost one indexed query. Bounds one daemon tick so a
+	// large unscored backlog is worked off over several ticks instead of in
+	// one long burst.
+	Limit int
 }
 
 // BatchResult summarizes a batch pass.
@@ -89,15 +123,24 @@ func (s *Scorer) BatchScore(ctx context.Context, opts BatchOptions) (BatchResult
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
 
-	q := `SELECT id FROM sessions`
-	var where []string
+	// Sessions with no actions are never scorable (ScoreSession returns a
+	// zero Scores for them), so they are filtered out here rather than
+	// re-listed and skipped on every pass. Newest first, so a bounded pass
+	// scores what the operator is most likely to open.
+	q := `SELECT s.id FROM sessions s`
+	where := []string{"EXISTS (SELECT 1 FROM actions a WHERE a.session_id = s.id)"}
+	var args []any
 	if opts.OnlyUnscored {
-		where = append(where, "quality_score IS NULL")
+		where = append(where, "s.quality_score IS NULL")
 	}
-	if len(where) > 0 {
-		q += " WHERE " + joinAnd(where)
+	if len(opts.IDs) > 0 {
+		where = append(where, "s.id IN ("+placeholders(len(opts.IDs))+")")
+		for _, id := range opts.IDs {
+			args = append(args, id)
+		}
 	}
-	rows, err := s.db.QueryContext(ctx, q)
+	q += " WHERE " + joinAnd(where) + " ORDER BY s.started_at DESC, s.id"
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return BatchResult{}, fmt.Errorf("scoring: list sessions: %w", err)
 	}
@@ -115,7 +158,15 @@ func (s *Scorer) BatchScore(ctx context.Context, opts BatchOptions) (BatchResult
 	res := BatchResult{Considered: len(ids)}
 	cutoff := opts.Now().Add(-opts.IdleAtLeast)
 
+	attempted := 0
 	for _, id := range ids {
+		if ctx.Err() != nil {
+			break
+		}
+		if opts.Limit > 0 && attempted >= opts.Limit {
+			res.Skipped++
+			continue
+		}
 		if opts.IdleAtLeast > 0 {
 			idle, err := s.sessionIdleSince(ctx, id, cutoff)
 			if err != nil {
@@ -127,6 +178,7 @@ func (s *Scorer) BatchScore(ctx context.Context, opts BatchOptions) (BatchResult
 				continue
 			}
 		}
+		attempted++
 		scores, err := s.ScoreSession(ctx, id)
 		if err != nil {
 			res.Errors++
@@ -248,20 +300,24 @@ func (s *Scorer) ScoreSession(ctx context.Context, sessionID string) (Scores, er
 		out.RetryCostTokens, _ = s.sumTokensAfterFailures(ctx, sessionID)
 	}
 
-	out.QualityScore = 0.4*(1-out.RedundancyRatio) +
-		0.3*(1-out.ErrorRate) +
-		0.2*out.ExplorationEff +
-		0.1*out.ContinuityScore
+	out.QualityScore = WeightRedundancy*(1-out.RedundancyRatio) +
+		WeightError*(1-out.ErrorRate) +
+		WeightExploration*out.ExplorationEff +
+		WeightContinuity*out.ContinuityScore
 	return out, nil
 }
 
-// Write persists scores back into the sessions row.
+// Write persists scores back into the sessions row. It is the ONE writer of
+// the sessions score columns (incl. migration 137's exploration_efficiency /
+// continuity_score / scored_at / scored_action_count).
 func (s *Scorer) Write(ctx context.Context, scores Scores) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET
 		quality_score = ?, redundancy_ratio = ?, error_rate = ?,
 		onboarding_cost = ?, turns_to_first_edit = ?, retry_cost_tokens = ?,
 		stale_reads_wasteful = ?, stale_reads_necessary = ?,
-		redundancy_ratio_wasteful = ?
+		redundancy_ratio_wasteful = ?,
+		exploration_efficiency = ?, continuity_score = ?,
+		scored_at = ?, scored_action_count = ?
 		WHERE id = ?`,
 		scores.QualityScore, scores.RedundancyRatio, scores.ErrorRate,
 		scores.OnboardingCost, nullableInt(scores.TurnsToFirstEdit),
@@ -269,6 +325,8 @@ func (s *Scorer) Write(ctx context.Context, scores Scores) error {
 		nullableIntPtr(scores.StaleReadsWasteful),
 		nullableIntPtr(scores.StaleReadsNecessary),
 		nullableFloat64Ptr(scores.RedundancyRatioWasteful),
+		scores.ExplorationEff, scores.ContinuityScore,
+		s.now().UTC().Format(time.RFC3339Nano), scores.TotalActions,
 		scores.SessionID)
 	if err != nil {
 		return fmt.Errorf("scoring: write %s: %w", scores.SessionID, err)
@@ -310,8 +368,15 @@ func (s *Scorer) sessionHasCacheEvents(ctx context.Context, sessionID string) (b
 // function (FreshnessStale is computed on the freshness
 // pipeline by comparing against a prior read).
 func (s *Scorer) splitStaleReads(ctx context.Context, sessionID string, actions []models.Action) (wasteful, necessary int) {
-	// Index prior-read timestamps by target so the per-stale-read
-	// SQL is a single window predicate.
+	// The session's eviction events (compaction_reset / expiry_rewrite) are
+	// loaded ONCE and each stale read is answered by a binary search, instead
+	// of one cache_events query per stale read (2k stale reads x a 24k-row
+	// session index scan took ~20s on a 33k-action session). A load error
+	// degrades exactly like the old per-read query error did: no eviction
+	// found, so the read counts as wasteful.
+	evictions, _ := s.loadEvictionStamps(ctx, sessionID)
+	// Index prior-read timestamps by target so each stale read is a single
+	// window predicate.
 	lastReadByTarget := map[string]time.Time{}
 	for _, a := range actions {
 		if a.ActionType != models.ActionReadFile || a.Target == "" {
@@ -331,8 +396,7 @@ func (s *Scorer) splitStaleReads(ctx context.Context, sessionID string, actions 
 			lastReadByTarget[a.Target] = a.Timestamp
 			continue
 		}
-		evicted, _ := s.cacheEvictedBetween(ctx, sessionID, prior, a.Timestamp)
-		if evicted {
+		if evictedBetween(evictions, prior, a.Timestamp) {
 			necessary++
 		} else {
 			wasteful++
@@ -342,30 +406,44 @@ func (s *Scorer) splitStaleReads(ctx context.Context, sessionID string, actions 
 	return wasteful, necessary
 }
 
-// cacheEvictedBetween reports whether any compaction_reset or
-// expiry_rewrite cache_event landed for the session in
-// (start, end]. The half-open interval matches "an event after
-// the prior read up to and including the current re-read." Empty
-// window or no match → false.
-func (s *Scorer) cacheEvictedBetween(ctx context.Context, sessionID string, start, end time.Time) (bool, error) {
-	if !end.After(start) {
-		return false, nil
-	}
-	var one int
-	err := s.db.QueryRowContext(
-		ctx,
-		`SELECT 1 FROM cache_events
+// loadEvictionStamps returns the session's compaction_reset / expiry_rewrite
+// cache_event timestamps as stored TEXT, sorted ascending (SQLite's binary
+// TEXT order, which is Go's string order).
+func (s *Scorer) loadEvictionStamps(ctx context.Context, sessionID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT timestamp FROM cache_events
 		  WHERE session_id = ?
 		    AND kind IN ('compaction_reset', 'expiry_rewrite')
-		    AND timestamp > ?
-		    AND timestamp <= ?
-		  LIMIT 1`,
-		sessionID, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano),
-	).Scan(&one)
-	if err == sql.ErrNoRows {
-		return false, nil
+		  ORDER BY timestamp`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("scoring: eviction events: %w", err)
 	}
-	return err == nil, err
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var ts string
+		if err := rows.Scan(&ts); err != nil {
+			return nil, fmt.Errorf("scoring: scan eviction event: %w", err)
+		}
+		out = append(out, ts)
+	}
+	return out, rows.Err()
+}
+
+// evictedBetween reports whether any eviction stamp lies in (start, end]. The
+// half-open interval matches "an event after the prior read up to and
+// including the current re-read." Bounds are compared as formatted TEXT, the
+// same comparison the former per-read SQL predicate made. Empty window or no
+// match → false.
+func evictedBetween(stamps []string, start, end time.Time) bool {
+	if !end.After(start) || len(stamps) == 0 {
+		return false
+	}
+	lo := start.UTC().Format(time.RFC3339Nano)
+	hi := end.UTC().Format(time.RFC3339Nano)
+	// First stamp strictly greater than lo.
+	i := sort.Search(len(stamps), func(i int) bool { return stamps[i] > lo })
+	return i < len(stamps) && stamps[i] <= hi
 }
 
 // nullableIntPtr converts a *int into a driver.Value the SQL
@@ -468,22 +546,40 @@ func (s *Scorer) sumTokensAfterFailures(ctx context.Context, sessionID string) (
 	}
 	// Sum token_usage rows that occur within 5 minutes after each failure.
 	// Overlapping windows are OK — we only want a rough "cost of retries".
-	// Using a CTE would be cleaner, but with <1k failures per session the
-	// per-failure query is fine.
+	// The session's token rows are loaded ONCE, ordered by the same TEXT
+	// timestamp SQL compares, and each window is answered from a prefix sum:
+	// one query per session instead of one per failure (the per-failure form
+	// took ~24s on a 33k-action session with 424 failures). The window bounds
+	// keep the previous SQL semantics exactly: TEXT timestamp >= start AND
+	// < end, compared as strings.
+	trows, err := s.db.QueryContext(ctx,
+		`SELECT timestamp, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+		 FROM token_usage WHERE session_id = ? ORDER BY timestamp`, sessionID)
+	if err != nil {
+		return 0, fmt.Errorf("scoring: retry token rows: %w", err)
+	}
+	defer trows.Close()
+	var stamps []string
+	prefix := []int64{0}
+	for trows.Next() {
+		var ts string
+		var n int64
+		if err := trows.Scan(&ts, &n); err != nil {
+			return 0, fmt.Errorf("scoring: scan retry token row: %w", err)
+		}
+		stamps = append(stamps, ts)
+		prefix = append(prefix, prefix[len(prefix)-1]+n)
+	}
+	if err := trows.Err(); err != nil {
+		return 0, fmt.Errorf("scoring: retry token rows: %w", err)
+	}
 	var total int64
 	for _, t := range times {
-		var n int64
-		err := s.db.QueryRowContext(ctx,
-			`SELECT COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)
-			 FROM token_usage WHERE session_id = ?
-			   AND timestamp >= ? AND timestamp < ?`,
-			sessionID,
-			t.UTC().Format(time.RFC3339Nano),
-			t.Add(5*time.Minute).UTC().Format(time.RFC3339Nano)).Scan(&n)
-		if err != nil {
-			return 0, fmt.Errorf("scoring: retry token sum: %w", err)
+		lo := sort.SearchStrings(stamps, t.UTC().Format(time.RFC3339Nano))
+		hi := sort.SearchStrings(stamps, t.Add(5*time.Minute).UTC().Format(time.RFC3339Nano))
+		if hi > lo {
+			total += prefix[hi] - prefix[lo]
 		}
-		total += n
 	}
 	return total, nil
 }
@@ -534,6 +630,50 @@ func nullableInt(n int) sql.NullInt64 {
 		return sql.NullInt64{}
 	}
 	return sql.NullInt64{Int64: int64(n), Valid: true}
+}
+
+// SessionsActiveBetween returns the ids of sessions with at least one action
+// whose timestamp falls in (from, to]. Served by idx_actions_timestamp, so a
+// daemon tick's "what saw new activity since last time" probe stays cheap on
+// a large corpus. A zero or empty window returns nil.
+func (s *Scorer) SessionsActiveBetween(ctx context.Context, from, to time.Time) ([]string, error) {
+	if !to.After(from) {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT session_id FROM actions
+		  WHERE timestamp > ? AND timestamp <= ?`,
+		from.UTC().Format(time.RFC3339Nano), to.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("scoring: active sessions: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scoring: scan active session: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scoring: active sessions rows: %w", err)
+	}
+	return out, nil
+}
+
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	b := make([]byte, 0, 2*n)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, '?')
+	}
+	return string(b)
 }
 
 func joinAnd(parts []string) string {

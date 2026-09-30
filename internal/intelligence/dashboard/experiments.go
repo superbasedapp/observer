@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -297,60 +298,31 @@ func ComputeExperimentReport(ctx context.Context, db *sql.DB, engine costLookup,
 	}
 	rows.Close()
 
-	// Per-session rollups over the window (shared proxy-dedup shape).
+	// Per-session rollups over the window, over the node's deduped spend
+	// substrate (loadSpendTurns: the one session dedup rule,
+	// sessionmsg.DeriveVerdicts, applied by the cost engine) scoped to the
+	// arm population, so an arm's cost agrees with the Sessions list and the
+	// session detail header. The window's upper bound stays inclusive of the
+	// experiment's end second (the population query's `<= end+1s`).
 	type sess struct {
 		cost  float64
 		turns int64
 	}
 	perSession := map[string]*sess{}
-	crows, err := db.QueryContext(ctx,
-		`WITH proxy_turn_ids AS (
-			SELECT request_id FROM api_turns
-			 WHERE request_id IS NOT NULL AND request_id != '' AND timestamp >= ? AND timestamp <= ?
-		),
-		combined AS (
-			SELECT at.session_id, at.model, at.input_tokens, at.output_tokens,
-			       at.cache_read_tokens, at.cache_creation_tokens, at.cache_creation_1h_tokens,
-			       0 AS reasoning_tokens, at.web_search_requests, at.cost_usd,
-			       COALESCE(at.compression_original_bytes, 0) - COALESCE(at.compression_compressed_bytes, 0) AS comp_saved,
-			       at.timestamp
-			FROM api_turns at
-			WHERE at.timestamp >= ? AND at.timestamp <= ?
-			  AND (at.error_class IS NULL OR at.error_class = '')
-			UNION ALL
-			SELECT tu.session_id, tu.model, tu.input_tokens, tu.output_tokens,
-			       tu.cache_read_tokens, tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-			       tu.reasoning_tokens, tu.web_search_requests, tu.estimated_cost_usd, 0,
-			       tu.timestamp
-			FROM token_usage tu
-			WHERE tu.timestamp >= ? AND tu.timestamp <= ?
-			  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-			       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-		)
-		SELECT COALESCE(session_id, ''), COALESCE(model, ''),
-		       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-		       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
-		       COALESCE(cache_creation_1h_tokens, 0), COALESCE(reasoning_tokens, 0),
-		       COALESCE(web_search_requests, 0), COALESCE(cost_usd, 0), COALESCE(comp_saved, 0),
-		       COALESCE(timestamp, '')
-		FROM combined`,
-		startArg, endArg, startArg, endArg, startArg, endArg)
-	if err != nil {
-		return nil, err
+	armIDs := make([]string, 0, len(armOf))
+	for id := range armOf {
+		armIDs = append(armIDs, id)
 	}
-	defer crows.Close()
-	for crows.Next() {
-		var (
-			sid, model, tsStr string
-			bundle            cost.TokenBundle
-			rec               float64
-			compSaved         int64
-		)
-		if crows.Scan(&sid, &model, &bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning, &bundle.WebSearchRequests, &rec, &compSaved, &tsStr) != nil {
-			continue
+	sort.Strings(armIDs)
+	var turns []spendTurn
+	if len(armIDs) > 0 && engine != nil {
+		turns, err = loadSpendTurns(ctx, db, engine, start, end.Add(time.Second+time.Nanosecond), "", "", armIDs)
+		if err != nil {
+			return nil, err
 		}
+	}
+	for _, t := range turns {
+		sid, bundle := t.SessionID, t.Bundle
 		arm, ok := armOf[sid]
 		if !ok {
 			continue
@@ -361,24 +333,41 @@ func ComputeExperimentReport(ctx context.Context, db *sql.DB, engine costLookup,
 			ps = &sess{}
 			perSession[sid] = ps
 		}
-		// Date-effective pricing ladder: recorded cost wins; otherwise
-		// price at the rate in force on the row's own timestamp.
-		rowCost := rec
-		if rowCost <= 0 && engine != nil {
-			ts, _ := time.Parse(time.RFC3339Nano, tsStr)
-			if p, ok := engine.LookupAt(model, ts); ok {
-				rowCost = cost.Compute(p, bundle)
-			}
-		}
+		// The engine's price: recorded cost wins; otherwise the rate in
+		// force on the row's own timestamp.
+		rowCost := t.CostUSD
 		ps.cost += rowCost
 		ps.turns++
 		ar.Turns++
 		ar.TotalCostUSD += rowCost
 		ar.CacheReadTokens += bundle.CacheRead
 		ar.CacheWriteTokens += bundle.CacheCreation + bundle.CacheCreation1h
-		ar.CompressionSavedBytes += compSaved
 	}
-	if err := crows.Err(); err != nil {
+	// Compression telemetry is a property of the proxy rows alone (never
+	// deduped away), summed per arm straight off api_turns.
+	comprows, err := db.QueryContext(ctx,
+		`SELECT COALESCE(session_id, ''),
+		        COALESCE(SUM(COALESCE(compression_original_bytes, 0) - COALESCE(compression_compressed_bytes, 0)), 0)
+		   FROM api_turns
+		  WHERE timestamp >= ? AND timestamp <= ?
+		    AND (error_class IS NULL OR error_class = '')
+		  GROUP BY session_id`, startArg, endArg)
+	if err != nil {
+		return nil, err
+	}
+	for comprows.Next() {
+		var sid string
+		var saved int64
+		if comprows.Scan(&sid, &saved) != nil {
+			continue
+		}
+		if arm, ok := armOf[sid]; ok {
+			rep.armFor(arm).CompressionSavedBytes += saved
+		}
+	}
+	err = comprows.Err()
+	comprows.Close()
+	if err != nil {
 		return nil, err
 	}
 
@@ -496,13 +485,12 @@ func (r *ExperimentReport) armFor(arm string) *ExperimentArmReport {
 	return &r.Control
 }
 
-// costLookup is the cost-engine capability the report needs — the
-// same Lookup/LookupAt the analysis surfaces use. Interface so the
-// CLI can pass its own engine instance. LookupAt is required so
-// historical per-turn rows in the window price at the rate in force
-// on their own timestamp (the date-effective pricing ladder), not
-// unconditionally at the current rate.
+// costLookup is the cost-engine capability the report needs. Interface so
+// the CLI can pass its own engine instance. TurnRows supplies the deduped,
+// date-effectively priced spend rows (the same substrate every spend surface
+// reads); Lookup/LookupAt stay for callers that price a what-if.
 type costLookup interface {
 	Lookup(model string) (cost.Pricing, bool)
 	LookupAt(model string, at time.Time) (cost.Pricing, bool)
+	turnRowLister
 }

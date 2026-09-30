@@ -3,31 +3,40 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
+import {
+  FILTER_DEFAULTS,
+  applyFilterParams,
+  canonicalIso,
+  isWindow,
+  reconcileFromUrl,
+  sameUrlFilters,
+  validRange,
+  type CustomRange,
+  type UrlFilters,
+  type Window,
+} from "./filterUrl";
+import {
+  effectiveChoice,
+  granParams,
+  resolveGranularity,
+  type GranChoice,
+  type Granularity,
+} from "@shared/lib/granularity";
 
 // Window is the global time-scope selector shared by every page.
 // Day-grained presets map to `days=<int>`; the two sub-day presets
 // map to `hours=<int>`; "1d" is deliberately days=1 (NOT hours);
 // "all" keeps each page's own far-horizon / zero sentinel; "custom"
-// carries an explicit [since, until] range on the wire.
-export type Window =
-  | "1h"
-  | "12h"
-  | "1d"
-  | "7d"
-  | "14d"
-  | "30d"
-  | "90d"
-  | "1y"
-  | "all"
-  | "custom";
-
-// CustomRange holds RFC3339-UTC ISO strings for the "custom" window.
-// `until` may be "" meaning "now" — resolved at request time so a
-// left-open range keeps tracking the present without a re-apply.
-export type CustomRange = { since: string; until: string };
+// carries an explicit [since, until] range on the wire. The type and
+// CustomRange (RFC3339-UTC strings; `until` "" = now) live in the pure
+// lib/filterUrl.ts codec and are re-exported here for existing importers.
+export type { CustomRange, Window };
 
 // WindowParams is the wire-shape a window resolves to. It spreads
 // cleanly into a page's QueryParams object (day preset → {days},
@@ -47,6 +56,9 @@ export type Filters = {
   // makes sense for that surface (Sessions filters by id/project,
   // Actions by target, etc.). Empty string = no filter.
   query: string;
+  // Chart time granularity (`gran=`), global like the window. "auto" =
+  // the shared Auto rule (shared/lib/granularity.ts).
+  gran: GranChoice;
 };
 
 type FilterCtx = Filters & {
@@ -55,6 +67,7 @@ type FilterCtx = Filters & {
   setTool: (t: string) => void;
   setProject: (p: string) => void;
   setQuery: (q: string) => void;
+  setGran: (g: GranChoice) => void;
 };
 
 const Ctx = createContext<FilterCtx | null>(null);
@@ -62,64 +75,20 @@ const Ctx = createContext<FilterCtx | null>(null);
 const WIN_LS_KEY = "sb_win";
 const RANGE_LS_KEY = "sb_win_range";
 
-const WINDOW_VALUES: Window[] = [
-  "1h",
-  "12h",
-  "1d",
-  "7d",
-  "14d",
-  "30d",
-  "90d",
-  "1y",
-  "all",
-  "custom",
-];
-
-function isWindow(v: unknown): v is Window {
-  return typeof v === "string" && (WINDOW_VALUES as string[]).includes(v);
-}
-
-// RFC3339_TZ matches an ISO-8601 datetime that carries an EXPLICIT
-// timezone (either `Z` or a `±HH:MM` offset). Date-only strings
-// ("2026-01-01") and timezone-less datetimes ("2026-01-01T10:00")
-// are deliberately excluded: `Date.parse` accepts them, but the
-// backend is strict RFC3339 and rejects them, which would silently
-// fall the whole window back to 30d while the chip still claims a
-// custom range.
-const RFC3339_TZ =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/;
-
-// canonicalIso normalizes an RFC3339 string to canonical UTC form
-// (`new Date(ms).toISOString()`, always `…Z`), or returns null when
-// the value is not a timezone-explicit, parseable datetime. Every
-// custom-range value that is stored, restored, or sent on the wire
-// passes through here so the strict backend always receives a value
-// it round-trips.
-function canonicalIso(v: unknown): string | null {
-  if (typeof v !== "string" || !RFC3339_TZ.test(v)) return null;
-  const ms = Date.parse(v);
-  if (!Number.isFinite(ms)) return null;
-  return new Date(ms).toISOString();
-}
+// The free-text query is written to the URL only after typing pauses, so a
+// keystroke never rewrites the address bar (the state itself, which pages
+// filter on, updates immediately).
+const QUERY_URL_DEBOUNCE_MS = 400;
 
 // readStoredRange returns a VALIDATED, canonicalized custom range or
 // null. A range is valid when `since` canonicalizes and (if present)
-// `until` canonicalizes AND is strictly after `since`. Both fields
-// are normalized to canonical UTC before being returned.
+// `until` canonicalizes AND is strictly after `since`.
 function readStoredRange(): CustomRange | null {
   try {
     const raw = localStorage.getItem(RANGE_LS_KEY);
     if (!raw) return null;
     const obj = JSON.parse(raw) as { since?: unknown; until?: unknown };
-    const since = canonicalIso(obj.since);
-    if (!since) return null;
-    let until = "";
-    if (typeof obj.until === "string" && obj.until !== "") {
-      const u = canonicalIso(obj.until);
-      if (!u || Date.parse(u) <= Date.parse(since)) return null;
-      until = u;
-    }
-    return { since, until };
+    return validRange(obj.since, typeof obj.until === "string" ? obj.until : "");
   } catch {
     return null;
   }
@@ -141,14 +110,39 @@ function readStoredWin(): Window {
   return "30d";
 }
 
+// initialFilters applies the load precedence: the URL wins, then the
+// viewer's stored window/range (localStorage convenience), then defaults.
+function initialFilters(): UrlFilters {
+  const stored: UrlFilters = {
+    ...FILTER_DEFAULTS,
+    win: readStoredWin(),
+    customRange: readStoredRange() ?? FILTER_DEFAULTS.customRange,
+  };
+  const search = typeof window === "undefined" ? "" : window.location.search;
+  return reconcileFromUrl(stored, search, "pop", stored);
+}
+
+// FilterProvider owns the global filters and keeps them in the URL
+// (route-aware): a change is written with a history REPLACE (never a new
+// entry per keystroke), params are omitted at their default, page-owned
+// params are never touched (lib/filterUrl.ts owns only its own names), an
+// in-app navigation carries the active filters into the new page's URL, and
+// back/forward restores them from the URL. Must render inside the router.
 export function FilterProvider({ children }: { children: ReactNode }) {
-  const [win, setWinState] = useState<Window>(() => readStoredWin());
-  const [customRange, setCustomRangeState] = useState<CustomRange>(
-    () => readStoredRange() ?? { since: "", until: "" },
-  );
-  const [tool, setTool] = useState<string>("all");
-  const [project, setProject] = useState<string>("all");
-  const [query, setQuery] = useState<string>("");
+  const [init] = useState(initialFilters);
+  const [win, setWinState] = useState<Window>(init.win);
+  const [customRange, setCustomRangeState] = useState<CustomRange>(init.customRange);
+  const [tool, setTool] = useState<string>(init.tool);
+  const [project, setProject] = useState<string>(init.project);
+  const [query, setQuery] = useState<string>(init.query);
+  const [gran, setGran] = useState<GranChoice>(init.gran);
+  // urlQuery is the debounced copy of `query` that the URL carries.
+  const [urlQuery, setUrlQuery] = useState<string>(init.query);
+  useEffect(() => {
+    if (query === urlQuery) return;
+    const id = window.setTimeout(() => setUrlQuery(query), QUERY_URL_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [query, urlQuery]);
 
   const setWin = useCallback((w: Window) => {
     setWinState(w);
@@ -175,6 +169,49 @@ export function FilterProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // ---- URL sync --------------------------------------------------------
+  const location = useLocation();
+  const navType = useNavigationType();
+  const navigate = useNavigate();
+  const lastLocationKey = useRef<string | null>(null);
+  useEffect(() => {
+    // What the URL should carry right now (the query debounced).
+    const projected: UrlFilters = { win, customRange, tool, project, query: urlQuery, gran };
+    if (lastLocationKey.current !== location.key) {
+      lastLocationKey.current = location.key;
+      // A location change: back/forward restores from the URL; any other
+      // navigation adopts what the URL carries and keeps the rest. URL-sourced
+      // values are not written to localStorage (a shared link must not
+      // overwrite the viewer's own preference).
+      const next = reconcileFromUrl(
+        projected,
+        location.search,
+        navType === "POP" ? "pop" : "push",
+        { ...FILTER_DEFAULTS, customRange },
+      );
+      if (!sameUrlFilters(next, projected)) {
+        setWinState(next.win);
+        setCustomRangeState(next.customRange);
+        setTool(next.tool);
+        setProject(next.project);
+        setGran(next.gran);
+        if (next.query !== urlQuery) {
+          setQuery(next.query);
+          setUrlQuery(next.query);
+        }
+        // The write-back runs on the re-render with the adopted state.
+        return;
+      }
+    }
+    const desired = applyFilterParams(location.search, projected);
+    if (desired !== location.search) {
+      navigate(
+        { pathname: location.pathname, search: desired, hash: location.hash },
+        { replace: true, state: location.state },
+      );
+    }
+  }, [location, navType, navigate, win, customRange, tool, project, urlQuery, gran]);
+
   const value = useMemo(
     () => ({
       win,
@@ -182,13 +219,15 @@ export function FilterProvider({ children }: { children: ReactNode }) {
       tool,
       project,
       query,
+      gran,
       setWin,
       setCustomRange,
       setTool,
       setProject,
       setQuery,
+      setGran,
     }),
-    [win, customRange, tool, project, query, setWin, setCustomRange],
+    [win, customRange, tool, project, query, gran, setWin, setCustomRange],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -289,8 +328,9 @@ const WINDOW_SPAN_HOURS: Record<
 };
 
 // windowSpanHours returns the window's span in hours (Infinity for
-// "all"). Pages use it to decide `bucket=hour` (span <= 48h) on the
-// timeseries endpoints.
+// "all"). The chart granularity (useGranularity) derives from it through
+// the shared rule in shared/lib/granularity.ts - never an inline span
+// threshold.
 export function windowSpanHours(win: Window, custom: CustomRange): number {
   if (win === "all") return Infinity;
   if (win === "custom") {
@@ -341,4 +381,34 @@ export function windowLabel(win: Window, custom: CustomRange): string {
     return `${start} → ${end}`;
   }
   return WINDOW_SHORT_LABEL[win] ?? win;
+}
+
+// GranularityState is what a time-series card needs: the viewer's choice
+// (for the control), the window span, the query params to send, and the
+// setter. `params.gran` is the EFFECTIVE choice (a choice the span no
+// longer allows falls back to "auto", so a stale `gran=5m` after widening
+// the window never produces a server 400).
+export type GranularityState = {
+  choice: GranChoice;
+  spanMs: number;
+  /** The granularity Auto (or the choice) resolves to for this span. */
+  expected: Granularity;
+  params: { gran: GranChoice; tz: string };
+  setGran: (g: GranChoice) => void;
+};
+
+// useGranularity binds the global `gran=` choice to the global window. An
+// optional `only` restricts the surface (e.g. DAILY_ONLY).
+export function useGranularity(only?: readonly Granularity[]): GranularityState {
+  const { win, customRange, gran, setGran } = useFilters();
+  const spanMs = windowSpanHours(win, customRange) * 3_600_000;
+  const eff = effectiveChoice(gran, spanMs, only);
+  const params = useMemo(() => granParams(eff), [eff]);
+  return {
+    choice: gran,
+    spanMs,
+    expected: resolveGranularity(gran, spanMs, only),
+    params,
+    setGran,
+  };
 }

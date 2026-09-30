@@ -9,6 +9,7 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import clsx from "clsx";
+import { History, Play, Search, Zap, type LucideIcon } from "lucide-react";
 import { NAV_ITEMS } from "@/lib/nav";
 import { useTour } from "@/components/tour/TourProvider";
 import { useFilters } from "@/lib/filters";
@@ -20,7 +21,7 @@ import type {
   SessionRow,
   SessionsResponse,
 } from "./../lib/types";
-import { ToolDot, TruncatedPath } from "./primitives";
+import { Icon, InlineLoading, ToolDot, TruncatedPath } from "./primitives";
 
 // CommandPalette — ⌘K / Ctrl-K modal palette. Three sections:
 // Jump (pages), Sessions (recent N), Actions (recent N). Filters by
@@ -34,6 +35,9 @@ type JumpItem = {
   label: string;
   hint: string;
   path: string;
+  // The page's own nav glyph (lib/nav.ts is the one owner), so every Jump
+  // row reads like its sidebar entry instead of one generic page icon.
+  icon: LucideIcon;
 };
 
 type SessionItem = {
@@ -67,6 +71,15 @@ type CommandItem = {
 };
 
 type Item = JumpItem | SessionItem | ActionItem | CommandItem;
+
+// KIND_ICON — the glyph for every non-page row kind, table-driven so a new
+// kind is one row here (pages take their glyph from the nav table instead).
+// Tone rides along so the command row keeps its accent play marker.
+const KIND_ICON: Record<Exclude<Item["kind"], "page">, { icon: LucideIcon; tone: string }> = {
+  command: { icon: Play, tone: "text-accent" },
+  session: { icon: History, tone: "text-fg-3" },
+  action: { icon: Zap, tone: "text-fg-3" },
+};
 
 const RECENT_LIMIT = 8;
 
@@ -157,6 +170,7 @@ export function CommandPalette({
       label: n.label,
       hint: `Jump to ${n.label}`,
       path: n.path,
+      icon: n.icon,
     }));
     const sessRows: SessionItem[] = (sessions ?? []).map((r) => ({
       kind: "session",
@@ -287,7 +301,7 @@ export function CommandPalette({
           >
             <div className="w-[min(560px,92vw)] overflow-hidden rounded-3 border border-line-2 bg-bg-1 shadow-drawer">
               <div className="flex items-center gap-2 border-b border-line-1 bg-bg-2/70 px-3 py-2.5">
-                <SearchIcon />
+                <Icon icon={Search} size={14} className="shrink-0 text-fg-3" />
                 <input
                   ref={inputRef}
                   type="search"
@@ -314,7 +328,7 @@ export function CommandPalette({
                 {sections.length === 0 ? (
                   <p className="px-3 py-6 text-center text-[11.5px] text-fg-3">
                     {sessions == null
-                      ? "Loading recents…"
+                      ? <InlineLoading label="Loading recents" />
                       : query.trim()
                         ? `No matches for "${query.trim()}".`
                         : "No recent data."}
@@ -398,7 +412,7 @@ function renderRow(item: Item): ReactNode {
   if (item.kind === "command") {
     return (
       <>
-        <PlayIcon />
+        <KindIcon kind={item.kind} />
         <span className="text-[12px] font-semibold">{item.label}</span>
         <span className="ml-auto text-[10.5px] text-fg-3">{item.hint}</span>
       </>
@@ -407,7 +421,7 @@ function renderRow(item: Item): ReactNode {
   if (item.kind === "page") {
     return (
       <>
-        <PageIcon />
+        <Icon icon={item.icon} size="xs" className="shrink-0 text-fg-3" />
         <span className="text-[12px] font-semibold">{item.label}</span>
         <span className="ml-auto font-mono text-[10.5px] text-fg-3">
           {item.path}
@@ -418,6 +432,7 @@ function renderRow(item: Item): ReactNode {
   if (item.kind === "session") {
     return (
       <>
+        <KindIcon kind={item.kind} />
         <ToolDot tool={item.tool} />
         <span className="font-mono text-[11px] text-accent">
           {fmtShortId(item.id, 12)}
@@ -435,6 +450,7 @@ function renderRow(item: Item): ReactNode {
   }
   return (
     <>
+      <KindIcon kind={item.kind} />
       <ToolDot tool={item.tool} />
       <span className="text-[11.5px] text-fg-0">{item.action_type}</span>
       <span className="min-w-0 truncate font-mono text-[10.5px] text-fg-3">
@@ -455,63 +471,8 @@ function Kbd({ children }: { children: ReactNode }) {
   );
 }
 
-function SearchIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.4" />
-      <path
-        d="m10.5 10.5 3 3"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function PageIcon() {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden
-      className="text-fg-3"
-    >
-      <path
-        d="M4 2.5h5l3 3V13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1Z"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M9 2.5V6h3"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function PlayIcon() {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden
-      className="text-accent"
-    >
-      <path
-        d="M5 3.5v9l7-4.5-7-4.5Z"
-        fill="currentColor"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
+// KindIcon renders the KIND_ICON row for a non-page item kind.
+function KindIcon({ kind }: { kind: keyof typeof KIND_ICON }) {
+  const k = KIND_ICON[kind];
+  return <Icon icon={k.icon} size="xs" className={clsx("shrink-0", k.tone)} />;
 }

@@ -8,9 +8,9 @@ import (
 )
 
 // seedTokenBudgetFixture mirrors seedBudgetFixture's SHAPE in tokens: a
-// proxy-only session, a watcher-only session, a double-observed session (whose
-// two substrates must count ONCE, at the larger sum), an unattributed proxy
-// turn, and rows outside the day/week windows.
+// proxy-only session, a watcher-only session, a double-observed turn (whose
+// two copies must count ONCE - the stored sessionmsg dedup verdicts), an
+// unattributed proxy turn, and rows outside the day/week windows.
 func seedTokenBudgetFixture(t *testing.T, s *Store, database *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
@@ -45,10 +45,19 @@ func seedTokenBudgetFixture(t *testing.T, s *Store, database *sql.DB) {
 			t.Fatalf("seed token_usage: %v", err)
 		}
 	}
+	twin := func(sid string, ts time.Time, in, out int64) {
+		if _, err := database.ExecContext(ctx, `
+			INSERT INTO token_usage (session_id, timestamp, tool, model, input_tokens, output_tokens,
+			                         cache_read_tokens, cache_creation_tokens, source, reliability, source_event_id)
+			VALUES (?, ?, 'claude-code', 'claude-x', ?, ?, 9999, 9999, 'jsonl', 'estimated', 'tk-twin')`,
+			sid, timestamp(ts.Add(2*time.Second)), in, out); err != nil {
+			t.Fatalf("seed token_usage twin: %v", err)
+		}
+	}
 	turn("t-proxy", now, 100, 50)                     // proxy-only: 150
 	usage("t-watch", now, 200, 0)                     // watcher-only: 200
-	turn("t-both", now, 300, 0)                       // double-observed:
-	usage("t-both", now, 250, 0)                      //   MAX(300, 250) = 300
+	turn("t-both", now, 300, 0)                       // double-observed turn: the
+	twin("t-both", now, 300, 0)                       //   proxy row counts, 300
 	turn(nil, now, 25, 0)                             // unattributed proxy turn: 25
 	turn("t-old", now.Add(-48*time.Hour), 1000, 0)    // week/month, not today
 	turn("t-month", now.Add(-10*24*time.Hour), 77, 0) // month only
@@ -76,7 +85,7 @@ func TestGuardBudgetTokens(t *testing.T) {
 	}{
 		{"proxy-only session", "t-proxy", 150},
 		{"watcher-only session", "t-watch", 200},
-		{"double-observed session takes the max", "t-both", 300},
+		{"double-observed turn counts once", "t-both", 300},
 		{"unknown session", "nope", 0},
 		{"empty session id skips the session half", "", 0},
 	}
@@ -111,20 +120,20 @@ func TestGuardBudgetTokens(t *testing.T) {
 	}
 }
 
-// TestManagedTokenBudgetProxyAndNativeOverlapTotalsByMaximum is the token
-// sibling of TestManagedBudgetProxyAndNativeOverlapTotalsByMaximum: it pins
-// the removal of the sources==3 rule here too. A session the daemon both
-// proxies and parses is the ordinary shape, per-session MAX is the
-// de-duplication rule, and the window stays AVAILABLE — marking it unavailable
-// denied every proxied-and-parsed tool under a managed hard cap.
-func TestManagedTokenBudgetProxyAndNativeOverlapTotalsByMaximum(t *testing.T) {
+// TestManagedTokenBudgetProxyAndNativeOverlapCountsTheTurnOnce is the token
+// sibling of TestManagedBudgetProxyAndNativeOverlapCountsTheTurnOnce: it pins
+// the removal of the sources==3 rule here too. A turn the daemon both
+// proxies and parses is the ordinary shape, the one session rule counts it
+// once, and the window stays AVAILABLE — marking it unavailable denied every
+// proxied-and-parsed tool under a managed hard cap.
+func TestManagedTokenBudgetProxyAndNativeOverlapCountsTheTurnOnce(t *testing.T) {
 	t.Parallel()
 	st, database := newTestStore(t)
 	guardBudgetTestSession(t, st, "overlap")
 	day, week, month := guardBudgetTestWindows()
 	at := day.Add(3 * time.Hour)
 	insertManagedGuardBudgetAPI(t, database, "overlap", "proxy-model", at, 200, 20)
-	insertManagedGuardBudgetUsage(t, database, "overlap", "opencode", "native-model", "overlap-native", at, 150, 10)
+	insertManagedGuardBudgetUsage(t, database, "overlap", "opencode", "proxy-model", "overlap-native", at.Add(2*time.Second), 200, 20)
 
 	tokens, err := st.GuardBudgetTokens(context.Background(), "overlap", day, week, month,
 		GuardBudgetReadOptions{Managed: true})
@@ -139,7 +148,7 @@ func TestManagedTokenBudgetProxyAndNativeOverlapTotalsByMaximum(t *testing.T) {
 		"weekly": tokens.WeeklyTokens, "monthly": tokens.MonthlyTokens,
 	} {
 		if got != 220 {
-			t.Fatalf("%s tokens = %d, want the larger substrate counted once (220)", name, got)
+			t.Fatalf("%s tokens = %d, want the turn counted once (220)", name, got)
 		}
 	}
 }

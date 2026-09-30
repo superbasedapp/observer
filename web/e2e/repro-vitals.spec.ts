@@ -56,7 +56,7 @@ test("uncorrelated: Open the live vitals panel opens the cockpit", async ({ page
   await expect(pill).toBeVisible({ timeout: 10000 });
   await pill.click();
 
-  const sessionBtn = page.getByRole("button").filter({ hasText: "⊙ Session" }).first();
+  const sessionBtn = page.getByRole("button").filter({ hasText: "Session" }).first();
   await expect(sessionBtn).toBeVisible({ timeout: 10000 });
   console.log("BTN-DISABLED:", await sessionBtn.isDisabled());
   console.log(

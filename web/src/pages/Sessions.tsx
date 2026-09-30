@@ -1,13 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { Pencil } from "lucide-react";
+import {
+  CalendarDays,
+  Check,
+  Info,
+  List,
+  Pencil,
+  Star,
+  Table2,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import type { ColumnDef, SortingState } from "@tanstack/react-table";
 import {
   ActiveFilterChips,
   ChartShell,
   type FilterChip,
-  ModelDot,
+  Icon,
+  LiveDot,
+  ModelMark,
   PageHeader,
   Pill,
   SegmentedControl,
@@ -22,6 +34,7 @@ import { AnchoredPopover } from "@/components/primitives/AnchoredPopover";
 import { shortModel } from "@/lib/models";
 import { HelpInd } from "@/components/HelpInd";
 import { CopyOnClick } from "@/components/CopyOnClick";
+import { Summary } from "@/components/Summary";
 import { DataTable, Pagination } from "@/components/DataTable";
 import { ChartState } from "@/components/ChartState";
 import { SessionDetailPanel } from "@/components/SessionDetailPanel";
@@ -36,7 +49,9 @@ import type { CloudStatusWithDigestPlan } from "@/lib/cloud";
 import { CloudDigestCard } from "@/components/CloudDigestCard";
 import { CloudEnrichmentSummary } from "@/components/CloudEnrichmentSummary";
 import { CloudRow } from "@/components/sessiondetail/CloudRow";
-import { cloudProgressAction } from "@/lib/cloudProgress";
+import { cloudProgressAction, cloudProgressMeta } from "@/lib/cloudProgress";
+import { vocabIcon } from "@shared/lib/vocabIcons";
+import { CodeCommentSplit } from "@shared/primitives/CodeCommentSplit";
 import {
   fmtCompact,
   fmtDateTime,
@@ -44,6 +59,7 @@ import {
   fmtInt,
   fmtPct,
   fmtUSD,
+  localeString,
 } from "@/lib/format";
 import type {
   AttachSessionsResponse,
@@ -62,8 +78,32 @@ import {
   type SessionFilters,
   SessionsFiltersDrawer,
 } from "./sessions/FiltersDrawer";
+import { navIcon } from "@/lib/nav";
+
+// One glyph per sessions section card title (the ChartShell `icon` slot): the
+// chart or table shape the section shows, never decoration.
+const SECTION_ICONS = {
+  allSessions: List,
+} satisfies Record<string, LucideIcon>;
 
 const PAGE_LIMIT = 50;
+
+// selectLiveRunIds / selectActiveIds narrow the two liveness polls to the id
+// lists the table reads (useApi `select`), so a poll that changes nothing
+// the table shows keeps the sets, the column defs and every row as they are.
+function selectLiveRunIds(d: AttachSessionsResponse): string[] {
+  const out: string[] = [];
+  for (const r of d.sessions ?? []) {
+    if (r.session_id && !r.exited) out.push(r.session_id);
+  }
+  return out;
+}
+
+function selectActiveIds(d: { active_ids?: string[] }): string[] {
+  return (d.active_ids ?? []).filter((id) => !!id);
+}
+// SESSIONS_POLL_MS is the list poll (see the useApi call below).
+const SESSIONS_POLL_MS = 30_000;
 
 // SORT_OPTIONS backs the toolbar's Sort menu. Since the Rating column was
 // removed (rating is now a click-popover only, not a whole column), there is
@@ -229,6 +269,9 @@ export function SessionsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useMemo(() => setPage(1), [lastKey]);
 
+  // The detail drawer and the enrichment panel are modal (scrim + scroll
+  // lock): while either is open, nothing behind them is visible to refresh.
+  const tableCovered = selected != null || enrichmentSession !== null;
   const sessions = useApi<SessionsResponse>(
     "/api/sessions",
     {
@@ -261,10 +304,17 @@ export function SessionsPage() {
       favoriteOnly,
       surfaceFilter,
     ],
-    // Live-capture refresh: 5s while the tab is visible. Lets fresh
-    // Antigravity-CLI .pb files (and any other in-progress session)
-    // appear without requiring the operator to manually reload.
-    { refreshMs: 5000 },
+    // Live-capture refresh: every 30 s while the tab is visible and the
+    // table is not covered by a modal panel. Lets fresh Antigravity-CLI .pb
+    // files (and any other in-progress session) appear without a manual
+    // reload. It was 5 s, but on a large database one /api/sessions costs
+    // several seconds server-side, so a 5 s poll kept a request permanently
+    // in flight and re-rendered the table on every settle. The per-row live
+    // signal does not depend on this cadence: the "live" pills come from the
+    // cheap /api/live + /api/attach/sessions polls below. While the session
+    // drawer (or the enrichment panel) covers the table, the poll pauses;
+    // on close the query cache revalidates at once if the list is overdue.
+    { refreshMs: tableCovered ? 0 : SESSIONS_POLL_MS },
   );
 
   // Per-day rollup over the full window — drives the Calendar view
@@ -293,19 +343,19 @@ export function SessionsPage() {
   // "new terminal" session gets the chip too once the correlation sweep links
   // it (~10-30s after launch). A dashboard without the attach seam 503s →
   // empty set → no chips.
-  const attach = useApi<AttachSessionsResponse>(
+  // Paused while the table is covered (see tableCovered); resumes, with an
+  // immediate revalidation when overdue, the moment the panel closes.
+  //
+  // Only the ids of running runs are read, selected BY VALUE: the payload
+  // carries per-run fields that move on every poll, and a new liveSet
+  // rebuilds the column defs and re-renders every row.
+  const liveRunIds = useApi<AttachSessionsResponse, string[]>(
     "/api/attach/sessions",
     undefined,
     [],
-    { refreshMs: 15000 },
-  );
-  const liveSet = useMemo(() => {
-    const s = new Set<string>();
-    for (const r of attach.data?.sessions ?? []) {
-      if (r.session_id && !r.exited) s.add(r.session_id);
-    }
-    return s;
-  }, [attach.data]);
+    { refreshMs: tableCovered ? 0 : 15000, select: selectLiveRunIds },
+  ).data;
+  const liveSet = useMemo(() => new Set(liveRunIds ?? []), [liveRunIds]);
 
   // Canonical liveness for BARE (non-attachable) sessions: /api/live
   // marks a session active if any row landed in the last 15 minutes.
@@ -315,19 +365,13 @@ export function SessionsPage() {
   // ids_only mode: EVERY active session id in the window (the card-view
   // default caps at the newest 8, which would silently drop the ninth
   // concurrent session's "live · watch" pill).
-  const live = useApi<{ active_ids?: string[] }>(
+  const activeIds = useApi<{ active_ids?: string[] }, string[]>(
     "/api/live",
     { window_minutes: 15, ids_only: 1 },
     [],
-    { refreshMs: 15000 },
-  );
-  const activeSet = useMemo(() => {
-    const s = new Set<string>();
-    for (const id of live.data?.active_ids ?? []) {
-      if (id) s.add(id);
-    }
-    return s;
-  }, [live.data]);
+    { refreshMs: tableCovered ? 0 : 15000, select: selectActiveIds },
+  ).data;
+  const activeSet = useMemo(() => new Set(activeIds ?? []), [activeIds]);
 
   // Tag vocabulary + per-tag rollup. Drives the Tags panel and is reloaded
   // after every classification mutation so counts/cost stay honest.
@@ -577,7 +621,11 @@ export function SessionsPage() {
     const c: FilterChip[] = [];
     if (favoriteOnly) {
       c.push({
-        label: "★ favorites",
+        label: (
+          <span className="inline-flex items-center gap-1">
+            <Icon icon={Star} size={10} fill="currentColor" /> favorites
+          </span>
+        ),
         title: "Show all sessions again",
         onClear: () => setFavoriteOnly(false),
       });
@@ -618,16 +666,17 @@ export function SessionsPage() {
   );
 
   return (
-    <div className="space-y-4 p-6">
+    <div className="space-y-6 p-4 sm:p-6">
       <PageHeader
+        icon={navIcon("sessions")}
         title="Sessions"
         sub="One row per AI-coding session. Click a row to see action breakdown, token buckets, cost summary, and a full messages timeline with expandable tool calls."
         helpId="tab.sessions"
         right={
           <SegmentedControl<View>
             options={[
-              { value: "table", label: "Table" },
-              { value: "calendar", label: "Calendar" },
+              { value: "table", label: "Table", icon: Table2 },
+              { value: "calendar", label: "Calendar", icon: CalendarDays },
             ]}
             value={view}
             onChange={setView}
@@ -659,15 +708,17 @@ export function SessionsPage() {
             )}
           </span>
         }
+        icon={SECTION_ICONS.allSessions}
         sub="click any row for the per-session breakdown"
+        stale={sessions.isStale}
         right={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <input
               type="search"
               placeholder="filter by id, project…"
               value={localQuery}
               onChange={(e) => setLocalQuery(e.target.value)}
-              className="h-7 w-[240px] rounded-2 border border-line-2 bg-bg-2 px-2 font-mono text-[11px] text-fg-1 placeholder:text-fg-4 focus:border-accent focus:outline-none"
+              className="h-7 w-full min-w-0 rounded-2 sm:w-[240px] border border-line-2 bg-bg-2 px-2 font-mono text-[11px] text-fg-1 placeholder:text-fg-4 focus:border-accent focus:outline-none"
             />
             <Tooltip
               content={
@@ -711,7 +762,8 @@ export function SessionsPage() {
                     : "inline-flex items-center gap-1.5 rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
                 }
               >
-                ★ Favorites
+                <Icon icon={Star} size="xs" fill={favoriteOnly ? "currentColor" : "none"} />
+                Favorites
               </button>
             </Tooltip>
             <Tooltip
@@ -766,7 +818,7 @@ export function SessionsPage() {
                       )}
                     >
                       {opt.label}
-                      {active && <span aria-hidden>✓</span>}
+                      {active && <Icon icon={Check} size="xs" />}
                     </button>
                   );
                 })}
@@ -856,6 +908,8 @@ export function SessionsPage() {
             <ChartState
               loading={sessions.loading && !sessions.data}
               error={sessions.error}
+              denied={sessions.denied}
+              deniedPermission={sessions.deniedPermission}
               empty={!sessions.loading && filtered.length === 0}
               emptyHint={
                 pickedDay
@@ -871,6 +925,7 @@ export function SessionsPage() {
                 columns={columns}
                 onRowClick={(r) => setSelected(r.id)}
                 rowKey={(r) => r.id}
+                zebra
                 // Every column declares meta.width (COL_W), so the fixed
                 // layout can hold the budget: no single long project path or
                 // tool label can inflate its column and push Output / Total $
@@ -916,7 +971,7 @@ export function SessionsPage() {
         {enrichmentSession && <div className="space-y-4 p-4">
           <CloudRow key={enrichmentSession.id} sessionId={enrichmentSession.id} onChanged={() => { sessions.reload(); cloudStatus.reload(); }} />
           {cloudStatus.data && <details className="space-y-2">
-            <summary className="w-fit cursor-pointer text-[11px] font-medium text-fg-3">Enrichment settings and allowance</summary>
+            <Summary className="w-fit text-caption font-medium text-fg-3">Enrichment settings and allowance</Summary>
             <CloudEnrichmentSummary data={cloudStatus.data} />
           </details>}
         </div>}
@@ -1048,7 +1103,7 @@ function TagsRollupPanel({
                   "inline-flex items-center gap-1.5 rounded-2 border px-1.5 py-1 transition-colors " +
                   (on
                     ? "border-accent bg-accent-soft"
-                    : "border-line-2 bg-bg-1 hover:bg-bg-3")
+                    : "border-line-2 bg-bg-3 hover:bg-bg-4")
                 }
               >
                 <TagPill tag={r.tag} />
@@ -1066,7 +1121,7 @@ function TagsRollupPanel({
           <button
             type="button"
             onClick={() => setExpanded(true)}
-            className="rounded-2 border border-line-2 bg-bg-1 px-2 py-1 text-[10.5px] text-fg-3 hover:bg-bg-3 hover:text-fg-1"
+            className="rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-[10.5px] text-fg-3 hover:bg-bg-4 hover:text-fg-1"
           >
             +{sorted.length - shown.length} more
           </button>
@@ -1085,9 +1140,7 @@ function TagsRollupPanel({
 function CloudProviderWaitingBanner({ onDismiss }: { onDismiss: () => void }) {
   return (
     <div className="flex items-start gap-3 rounded-3 border border-info/30 bg-info-soft/60 px-4 py-2.5 text-[11.5px]">
-      <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border border-info/40 text-info">
-        i
-      </span>
+      <Icon icon={Info} size="md" className="mt-px shrink-0 text-info" />
       <div className="flex-1 text-fg-2">
         Cloud Intelligence: your sessions are queued. The hosted enrichment
         provider is not accepting jobs yet, so titles will appear once it is.
@@ -1099,7 +1152,7 @@ function CloudProviderWaitingBanner({ onDismiss }: { onDismiss: () => void }) {
         className="shrink-0 text-fg-3 hover:text-fg-1"
         aria-label="Dismiss"
       >
-        ×
+        <Icon icon={X} size="sm" />
       </button>
     </div>
   );
@@ -1108,19 +1161,19 @@ function CloudProviderWaitingBanner({ onDismiss }: { onDismiss: () => void }) {
 function ScoringHintBanner() {
   return (
     <div className="flex items-start gap-3 rounded-3 border border-warn/30 bg-warn-soft/60 px-4 py-2.5 text-[11.5px]">
-      <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border border-warn/40 text-warn">
-        i
-      </span>
+      <Icon icon={Info} size="md" className="mt-px shrink-0 text-warn" />
       <div className="text-fg-2">
         <b className="text-fg-1">
-          Quality / Errors / Redundancy scoring is hidden.
+          No session in this view has a quality score yet.
         </b>{" "}
-        Run{" "}
+        The running daemon scores each session once it has been idle for a
+        while (30 minutes by default), and the Quality / Errors / Redundancy
+        columns appear as soon as one is scored. To score everything now, run{" "}
         <code className="rounded-1 border border-line-3 bg-bg-3 px-1.5 py-0.5 font-mono text-[11px] text-fg-1">
           observer score
-        </code>{" "}
-        to populate the columns. Sessions get a 0–100 quality score and a
-        redundancy index that flags repeat-work patterns.
+        </code>
+        . Sessions get a 0-100 quality score and a redundancy index that flags
+        repeat-work patterns.
       </div>
     </div>
   );
@@ -1193,10 +1246,7 @@ function CalendarView({
             {byDay.size} active day{byDay.size === 1 ? "" : "s"}
           </span>
           {loading && (
-            <span
-              aria-label="loading"
-              className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent"
-            />
+            <LiveDot tone="info" label="Loading" className="h-2 w-2" />
           )}
         </div>
         <div className="flex items-baseline gap-3 font-mono text-[10.5px] text-fg-3">
@@ -1495,7 +1545,7 @@ function SessionTitleCell({
               setEditing(false);
             }
           }}
-          className="w-full rounded-1 border border-line-2 bg-bg-1 px-1 py-0.5 text-[11px] text-fg-1 outline-none focus:border-accent"
+          className="w-full rounded-1 border border-line-2 bg-bg-3 px-1 py-0.5 text-caption text-fg-1 outline-none focus:border-accent"
         />
         {err && <span className="text-[9px] text-danger">{err}</span>}
       </span>
@@ -1517,17 +1567,19 @@ function SessionTitleCell({
       >
         <span className="truncate">{primaryText}</span>
       </CopyOnClick>
-      <button
-        type="button"
-        title={userTitle ? "Edit your title" : "Set your own title"}
-        onClick={(e) => {
-          e.stopPropagation();
-          openEditor();
-        }}
-        className="shrink-0 opacity-0 transition-opacity hover:text-accent focus:opacity-100 group-hover/title:opacity-100"
-      >
-        <Pencil size={10} aria-hidden />
-      </button>
+      <Tooltip content={userTitle ? "Edit your title" : "Set your own title"}>
+        <button
+          type="button"
+          aria-label={userTitle ? "Edit your title" : "Set your own title"}
+          onClick={(e) => {
+            e.stopPropagation();
+            openEditor();
+          }}
+          className="shrink-0 opacity-0 transition-opacity hover:text-accent focus:opacity-100 group-hover/title:opacity-100"
+        >
+          <Icon icon={Pencil} size={10} />
+        </button>
+      </Tooltip>
     </span>
   );
 }
@@ -1554,7 +1606,7 @@ function buildColumns(
       // toolbar's Sort menu instead of a clickable header. Still
       // server-sortable via sort_by=favorite (the header click toggles it).
       id: "favorite",
-      header: () => <span title="Favorites">★</span>,
+      header: () => <Icon icon={Star} size="xs" label="Favorites" />,
       accessorFn: (r) => (r.favorite ? 1 : 0),
       meta: { width: COL_W.favorite },
       cell: ({ row }) => {
@@ -1593,12 +1645,22 @@ function buildColumns(
       cell: ({ row }) => (
         <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
           <SessionTitleCell row={row.original} onSetTitle={tagsCtx.onSetTitle} />
-          <button type="button" className="rounded-1 border border-accent/30 px-1.5 py-0.5 text-[10px] font-medium text-accent hover:bg-accent/10"
+          <Tooltip content="Open this session's enrichment status and controls">
+          <button type="button" className="inline-flex items-center gap-1 rounded-1 border border-accent/30 px-1.5 py-0.5 text-micro font-medium text-accent hover:bg-accent/10"
             onClick={(event) => { event.stopPropagation(); onEnrich(row.original); }}
-            onKeyDown={(event) => event.stopPropagation()}
-            title="Open this session's enrichment status and controls">
+            onKeyDown={(event) => event.stopPropagation()}>
+            {/* An upload under way (cloudProgressMeta inFlight) pulses its
+                VOCAB_ICONS.cloudProgress glyph (CloudUpload). */}
+            {cloudProgressMeta(row.original.cloud_enrichment).inFlight && (
+              <Icon
+                icon={vocabIcon("cloudProgress", row.original.cloud_enrichment?.state)}
+                size={10}
+                className="shrink-0 animate-pulse"
+              />
+            )}
             {cloudProgressAction(row.original.cloud_enrichment, !!row.original.cloud_enriched)}
           </button>
+          </Tooltip>
           {row.original.id.includes(":agent:") && (
             <span className="text-[10px] text-fg-3">subagent</span>
           )}
@@ -1610,21 +1672,26 @@ function buildColumns(
             // is displayed instead (the dot's tooltip then surfaces the
             // DIFFERENT AI title) or when enrichment exists with no title yet.
             !(!row.original.title && row.original.cloud_title) && (
-              <span
-                aria-label="Cloud-enriched session"
-                title={
+              <Tooltip
+                content={
                   row.original.cloud_title
                     ? `Cloud enrichment: ${row.original.cloud_title}`
                     : "Cloud-enriched session"
                 }
-                className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
-              />
+              >
+                <span
+                  tabIndex={0}
+                  aria-label="Cloud-enriched session"
+                  className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring"
+                />
+              </Tooltip>
             )}
           {liveSet.has(row.original.id) ? (
             <Pill
               variant="success"
               title="Running as an attachable `observer --attach` session - open it and click Jump in to join the live terminal."
             >
+              <LiveDot tone="success" className="h-1.5 w-1.5 shrink-0" />
               live · joinable
             </Pill>
           ) : (
@@ -1652,6 +1719,7 @@ function buildColumns(
                   variant="success"
                   title="Running outside observer - watch the conversation read-only; joining requires an observer-launched session"
                 >
+                  <LiveDot tone="success" className="h-1.5 w-1.5 shrink-0" />
                   live · watch
                 </Pill>
               </span>
@@ -1675,6 +1743,7 @@ function buildColumns(
         <span className="flex min-w-0">
           <ToolBadge
             tool={row.original.tool}
+            pip={false}
             className="min-w-0 [&>span:last-child]:min-w-0 [&>span:last-child]:truncate"
           />
         </span>
@@ -1753,9 +1822,9 @@ function buildColumns(
                 <span
                   tabIndex={0}
                   aria-label="has note"
-                  className="cursor-help text-[10px] text-fg-3 focus:outline-none"
+                  className="inline-flex cursor-help text-fg-3 focus:outline-none"
                 >
-                  ✎
+                  <Icon icon={Pencil} size={10} />
                 </span>
               </Tooltip>
             )}
@@ -1798,7 +1867,8 @@ function buildColumns(
               tabIndex={0}
               className="flex min-w-0 cursor-help items-center gap-1.5 focus:outline-none"
             >
-              <ModelDot model={primary} />
+              {/* Family mark (no own tooltip: the cell's tooltip lists every model). */}
+              <ModelMark model={primary} tooltip={false} />
               <span className="min-w-0 truncate font-mono text-[10.5px] text-fg-1">
                 {shortModel(primary)}
               </span>
@@ -1859,10 +1929,12 @@ function buildColumns(
       // /api/loc/summary supplies human_capture.
       id: "ai_code_lines",
       header: () => (
-        <span title="Code lines the agent added or modified. Comments and blank lines are excluded; deleted lines are not included.">
-          AI code
-          <HelpInd id="column.sessions.ai_code_lines" />
-        </span>
+        <Tooltip content="Code lines the agent added or modified. Comments and blank lines are excluded; deleted lines are not included. The muted percentage is the comment share: comment lines over code plus comment lines the agent wrote in code files.">
+          <span>
+            AI code
+            <HelpInd id="column.sessions.ai_code_lines" />
+          </span>
+        </Tooltip>
       ),
       accessorKey: "ai_code_lines",
       meta: { align: "right", mono: true, width: COL_W.aiCode },
@@ -1873,16 +1945,28 @@ function buildColumns(
         const v = row.original.ai_code_lines;
         if (v === undefined || v === null) {
           return (
-            <span
-              className="text-fg-4"
-              title="No agent code lines recorded: either this session changed no code, or its line counts have not been computed yet. Run `observer backfill --loc` to populate history."
-            >
-              -
-            </span>
+            <Tooltip content="No agent code lines recorded: either this session changed no code, or its line counts have not been computed yet. Run `observer backfill --loc` to populate history.">
+              <span tabIndex={0} className="text-fg-4 focus:outline-none">
+                -
+              </span>
+            </Tooltip>
           );
         }
+        // The comment share is server-computed (internal/loc.SplitAuthored)
+        // over the same rows as the number, and rendered by the one shared
+        // renderer; the cell does no arithmetic. Absent split = no suffix.
         return (
-          <span className="tabular-nums text-fg-1">{fmtCompact(v)}</span>
+          <span className="whitespace-nowrap">
+            <span className="tabular-nums text-fg-1">{fmtCompact(v)}</span>
+            {row.original.ai_split && (
+              <CodeCommentSplit
+                split={row.original.ai_split}
+                variant="share"
+                compact
+                className="ml-1 text-[10px] text-fg-3"
+              />
+            )}
+          </span>
         );
       },
     },
@@ -2064,12 +2148,14 @@ function buildColumns(
           // without cache_events keep the legacy single value.
           if (r.redundancy_ratio_wasteful != null) {
             return (
-              <span title="total / wasteful subset (spec §14.1)">
-                {fmtPct(r.redundancy_ratio)}
-                <span className="ml-1 text-fg-3">
-                  ({fmtPct(r.redundancy_ratio_wasteful)} wasteful)
+              <Tooltip content="total / wasteful subset (spec §14.1)">
+                <span tabIndex={0} className="focus:outline-none">
+                  {fmtPct(r.redundancy_ratio)}
+                  <span className="ml-1 text-fg-3">
+                    ({fmtPct(r.redundancy_ratio_wasteful)} wasteful)
+                  </span>
                 </span>
-              </span>
+              </Tooltip>
             );
           }
           return fmtPct(r.redundancy_ratio);
@@ -2082,11 +2168,12 @@ function buildColumns(
 }
 
 // Format an ISO timestamp as "MMM DD HH:MM" — matches design's
-// dim mono treatment for the Started column.
+// dim mono treatment for the Started column. localeString is the cached,
+// byte-identical toLocaleString (one formatter, not one per cell).
 function fmtTimestamp(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("en-US", {
+  return localeString(d, "en-US", {
     month: "short",
     day: "2-digit",
     hour: "2-digit",

@@ -98,8 +98,8 @@ func newStartCmd() *cobra.Command {
 			setDaemonConfigPath(configPath)
 
 			// Config schema auto-migration (daemon-only write owner):
-			// rewrite deprecated keys (e.g. [compression.code_graph] →
-			// [codeintel]) in place before anything Loads the file, so
+			// rewrite deprecated keys (renamed or removed config keys, see
+			// internal/config/migrate) in place before anything Loads the file, so
 			// this run and every short-lived subprocess afterwards see
 			// the current schema and stop emitting deprecation warnings.
 			// Runs here — NOT in config.Load — because Load fires in many
@@ -211,6 +211,10 @@ func newStartCmd() *cobra.Command {
 			if autoRegister {
 				autoRegisterHooks(cmd.OutOrStdout(), cmd.ErrOrStderr(), configPath, promptLaneEnabled)
 			}
+			// Command wrapping (backlog item 7): re-point already-applied
+			// shims at this binary when the one they name is gone. Inert unless
+			// [shell_wrap].enabled; never creates a shim; fail-soft.
+			refreshShellWrapShims(cmdContext(cmd), cmd.OutOrStdout(), cmd.ErrOrStderr(), configPath)
 
 			// Org push client (Teams) — constructed only when
 			// orgClientShouldStart says so, so a solo-local install never
@@ -317,6 +321,11 @@ func newStartCmd() *cobra.Command {
 			// on a build with no DB) the handle resolves to the dormant
 			// posture, which is exactly an ungranted node.
 			ngov := newNodeGovernanceHandle(nil, slog.Default())
+			// Agent Access P4 (mcprelay_wire.go): the relay handle was bound
+			// by buildProxy before ngov existed; attach the governance handle
+			// now so the managed-vs-individual rule reads the live grant.
+			// nil handle ([mcp_relay].enabled=false) = no-op.
+			processMCPRelay.Load().SetGovernance(ngov)
 			// ONE daemon-lifetime node.features install seam (org-parity
 			// W5.1): holds the accepted per-feature governance body, read by
 			// the dashboard's terminal/remote/routing-apply/patterns-write
@@ -596,8 +605,21 @@ func newStartCmd() *cobra.Command {
 				// operator who never turned archival on pays nothing.
 				processArchive, closeArchive := openProcessArchiveReader(ctx, cfg)
 				defer closeArchive()
+				// Projects-page ROI + commit-alignment arc (docs/plans/
+				// projects-page-roi-and-commit-alignment-plan-2026-09-21.md
+				// §4 W3): the §3.6 "J" judge-tier seam is build-tag-split
+				// (projects_wire.go/projects_judge_wire.go).
+				projectsJudgeGrade, projectsJudgeGradeReason := projectsDashboardOptions(&cfg)
 				opts := dashboard.Options{
 					ProcessArchive: processArchive,
+					Projects:       cfg.Projects,
+					// CommitAlignmentAvailability (cloud_gradecommit.go) is the
+					// SAME function `observer cloud grade-commit` itself calls,
+					// so the dashboard and the CLI never disagree about why
+					// cloud grading is unavailable.
+					CloudGradeAvailability: CommitAlignmentAvailability,
+					JudgeGrade:             projectsJudgeGrade,
+					JudgeGradeReason:       projectsJudgeGradeReason,
 					// Admin-controlled Plane B (spec §3.5): the ONE seam the
 					// dashboard has onto governance. nil on an ungoverned
 					// build; here it is the daemon's single install seam, so
@@ -614,9 +636,14 @@ func newStartCmd() *cobra.Command {
 					DB:                  database,
 					DBPath:              cfg.Observer.DBPath,
 					CostEngine:          acquireProcessCostEngine(ctx, cfg, database, slog.Default()),
-					Predict:             cfg.Predict,
-					CacheWarm:           cfg.CacheWarm,
-					Tasks:               cfg.Tasks,
+					// Production read caches: page loads fan several spend panels out at
+					// once and share one row read; watcher health is served SWR
+					// (optimization review 2026-09-27, findings N4/N5).
+					ReadCaches: true,
+					Predict:    cfg.Predict,
+					Scoring:    cfg.Intelligence.Scoring,
+					CacheWarm:  cfg.CacheWarm,
+					Tasks:      cfg.Tasks,
 					// LOC editor endpoint credential: generated on first
 					// start into [loc].editor_token_file, read back after.
 					// Never fatal — an unreadable file yields "" and the
@@ -686,6 +713,12 @@ func newStartCmd() *cobra.Command {
 					ToolPreflight:    toolPreflightSeam(resolvedConfigPath, allowToolInstallSeam(resolvedConfigPath)),
 					AllowToolInstall: allowToolInstallSeam(resolvedConfigPath),
 					ToolInstallHint:  toolInstallHintSeam(),
+					// Command wrapping (backlog item 7): the one shim / start-up-file
+					// applier, behind the Settings -> Terminal card.
+					ShellWrap: newShellWrapService(resolvedConfigPath, dashResolveEnv),
+					// Re-pricing stored costs (PRICE-REPRICE-1): the one plan/apply/
+					// revert service `observer reprice` also uses, behind the Settings card.
+					Reprice: newRepriceService(ctx, cfg, database, slog.Default(), ngov.Effective),
 					// After New Terminal install/launch: re-detect adapters
 					// and hot-add newly-existing session dirs into the live
 					// watcher (Muse/Prime-after-install capture gap).
@@ -751,6 +784,11 @@ func newStartCmd() *cobra.Command {
 					// own, so the extension tells it once per activation and
 					// the org board can show editor/daemon skew.
 					UpdateExtensionVersionFunc: updateRuntimeFor(cfg, resolvedConfigPath, store.New(database), orgClient, surfaces.mgr, slog.Default()).ExtensionVersionSeam(),
+					// Agent Access P10 (mcp_access_dashboard.go): GET
+					// /api/mcp-access/status for the Security page and the
+					// VS Code status item - the `observer mcp status` body
+					// plus coverage rows, effective state and connect URL.
+					MCPAccessStatus: mcpAccessStatusSeam(resolvedConfigPath, database),
 				}
 				// Assign the concrete client only when present so Options.OrgClient
 				// stays a nil interface (not a non-nil interface holding a nil
@@ -987,6 +1025,39 @@ func newStartCmd() *cobra.Command {
 				guidanceScanLoop(gctx, configPath)
 				return nil
 			})
+			// Commit-history capture (internal/commitscan): a read-only `git
+			// log` scanner over every active project root, feeding the
+			// Projects page's commit ledger and ROI proxies. Never installs a
+			// git hook. Self-gating on [projects].commit_scan and P1
+			// fail-soft like every sibling loop — a failed root is logged and
+			// retried with backoff, and a missing git binary just idles the
+			// scanner (doctor + the page surface the reason honestly).
+			g.Go(func() error {
+				commitScanLoop(gctx, configPath)
+				return nil
+			})
+			// Session quality scoring (spec §15.2, internal/intelligence/
+			// scoring): scores each session once it has been idle for
+			// [intelligence.scoring].idle_minutes, re-scores sessions that saw
+			// new activity, and works the never-scored backlog off in capped
+			// passes. Before this loop the score only existed after a manual
+			// `observer score`, so the Sessions table's quality columns and the
+			// session Quality card stayed empty. Self-gating on
+			// [intelligence.scoring].auto (default on); P1 fail-soft.
+			g.Go(func() error {
+				sessionScoreLoop(gctx, configPath)
+				return nil
+			})
+			// Stored spend-dedup verdicts (internal/spendverdict, agent
+			// migration 143): re-derives every session whose api_turns /
+			// token_usage rows changed, so the windowed spend surfaces (Cost,
+			// Analysis, the guard's budget windows) apply the session
+			// header's rule without re-deriving on the read path. P1
+			// fail-soft.
+			g.Go(func() error {
+				spendVerdictLoop(gctx, configPath)
+				return nil
+			})
 			// One-time DB integrity probe + path-hash backfill, moved OFF the
 			// readiness path (2026-07-16). db.Open never verifies by default, so
 			// the listener binds fast; the multi-GB
@@ -1216,19 +1287,29 @@ func newStartCmd() *cobra.Command {
 				routingHandle.SetManagedEnforce(func() bool {
 					return ngov.Effective(context.Background()).GrantsRoutingEnforcement()
 				})
-				// P0-5 policy-resource → P0-6 reporter seam: when the
-				// policy-state reporter is enabled below, its
+				// P0-5 policy-resource → P0-6 reporter seam: the policy-state
+				// reporter is constructed below on every org-client node, and its
 				// recordPolicyResource sink is handed to the policy-resource
 				// poller so admitter/egress last-fetch slots populate.
 				var policyResourceSink policyResourceOutcomeSink
 				// P0-6 effective-policy-state reporter (docs/plans/plane-a-p0-6-
 				// effective-policy-state-plan.md §4.3): an independent daemon reporter
 				// emits a four-row desired/effective snapshot at startup + heartbeat +
-				// on-change. Gated by [org_client.share].policy_state (default off).
-				// Self-contained DB handle + the shared (memoized) process guard; the
-				// two outcome sinks are registered BEFORE the poll loops so the first
+				// on-change. The SEND gate is the reporter's own effectiveEnabled:
+				// the local [org_client.share].policy_state opt-in (default off),
+				// LOWERED by a node.governance share directive and — on a managed
+				// node holding extract.policy_state — RAISED by one. The reporter
+				// is therefore CONSTRUCTED whenever the org client is on, never
+				// only when the local file already says yes: a node whose TOML
+				// left the key off would otherwise have no reporter for the org's
+				// raise to act on, and the org would read every governed developer
+				// as governance_lapsed forever (D-DEMO-13, demo estate 2026-09-21).
+				// A node that is neither opted in nor raised keeps the reporter
+				// DORMANT (report() returns before any read or send). Self-
+				// contained DB handle + the shared (memoized) process guard; the two
+				// outcome sinks are registered BEFORE the poll loops so the first
 				// fetch outcome is captured. Nil-sink no-op until registered (R6-1).
-				if cfgForLock.OrgClient.Share.PolicyState {
+				{
 					if rcfg, rdb, rcleanup, rerr := loadConfigAndDB(gctx, configPath); rerr == nil {
 						rlogger := newLogger(rcfg.Observer.LogLevel)
 						rst := store.New(rdb)
@@ -1331,6 +1412,31 @@ func newStartCmd() *cobra.Command {
 					return nil
 				})
 			}
+			// Agent Access P4 (mcprelay_wire.go): the node MCP relay runtime
+			// under [mcp_relay].enabled — relay + hash-chained record store +
+			// the optional dedicated loopback listener. Runs on enrolled AND
+			// individual nodes (an individual node dials a gateway only when
+			// [mcp_relay].gateway_url is set). P1 like every sibling: never
+			// propagates an error; a failed start logs and the seams bound by
+			// buildProxy keep answering from the cached table.
+			g.Go(func() error {
+				h := processMCPRelay.Load()
+				if h == nil {
+					return nil
+				}
+				mcfg, mdb, mcleanup, merr := loadConfigAndDB(gctx, configPath)
+				if merr != nil {
+					return nil
+				}
+				defer mcleanup()
+				mlogger := newLogger(mcfg.Observer.LogLevel)
+				if _, rerr := startMCPRelayRuntime(gctx, mcfg, mdb, store.New(mdb), h, mlogger); rerr != nil {
+					mlogger.Warn("mcp-relay: runtime start failed; node-side seams keep answering from the cached table", "err", rerr)
+					return nil
+				}
+				<-gctx.Done()
+				return nil
+			})
 			// Guard cloud tier (guard spec §15, D1 explicit opt-in):
 			// daemon-resident dispatcher sweeping the guard_events tail
 			// to the configured webhooks + LLM judge through the single

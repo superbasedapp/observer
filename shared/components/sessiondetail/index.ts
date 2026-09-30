@@ -55,6 +55,16 @@ export {
 
 export { IntelResultCard, type IntelResultCardProps } from "./IntelResultCard";
 
+// Agent Access P11(a): the MCP calls panel both drawers render over the ONE
+// correlate.Result wire shape; its wording rules live in lib/mcpCalls.ts.
+export { MCPCallsPanel, type MCPCallsPanelProps } from "./MCPCallsPanel";
+
+// BL2 (post-Agent-Access backlog item 2): the session quality score card. The
+// node drawer renders it over GET /api/session/<id>/quality; its wording and
+// arithmetic live in lib/sessionQuality.ts.
+export { QualityPanel, type QualityPanelProps } from "./QualityPanel";
+export type { SessionQualityLike } from "../../lib/sessionQuality";
+
 // Row shapes the two components above consume (they live in lib/types with the
 // other structural aliases; re-exported here so a caller has one import site).
 export type {
@@ -66,3 +76,5 @@ export type {
   TaskReportLike,
   TaskTokenTotalsLike,
 } from "../../lib/types";
+export { SESSION_TAB_ICONS, sessionTabIcon } from "./tabIcons";
+export { GaugeStat, type GaugeStatProps, type GaugeRing } from "./GaugeStat";

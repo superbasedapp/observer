@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import { fmtBytes, fmtCompact, fmtPct, fmtUSD } from "../lib/format";
 import type { CompressionTimeseries } from "../lib/types";
@@ -40,7 +40,7 @@ const MECH_LABEL: Record<string, string> = {
   compaction: "compaction",
 };
 
-export function SavingsByMechanismDonut({
+export const SavingsByMechanismDonut = memo(function SavingsByMechanismDonut({
   data,
   unit,
   height = 240,
@@ -61,7 +61,7 @@ export function SavingsByMechanismDonut({
   }
 
   return (
-    <div className="grid grid-cols-[180px_1fr] items-center gap-4">
+    <div className="grid grid-cols-1 items-center gap-4 sm:grid-cols-[180px_1fr]">
       <div className="relative" style={{ height }}>
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
@@ -72,7 +72,7 @@ export function SavingsByMechanismDonut({
               innerRadius="65%"
               outerRadius="92%"
               paddingAngle={1.5}
-              stroke="var(--bg-1)"
+              stroke="var(--bg-2)"
               strokeWidth={2}
               isAnimationActive={false}
             >
@@ -108,26 +108,35 @@ export function SavingsByMechanismDonut({
           </div>
         </div>
       </div>
-      <ul className="space-y-1">
-        {rolled.map((r) => (
-          <li
-            key={r.mech}
-            className="grid grid-cols-[8px_1fr_auto] items-baseline gap-2 text-[11px]"
-          >
-            <span
-              className="block h-2 w-2 self-center rounded-pill"
-              style={{ background: r.color }}
-            />
-            <span className="truncate text-fg-1">{r.name}</span>
-            <span className="shrink-0 tabular-nums text-fg-3">
-              {fmtPct(r.value / total)}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <div className="min-w-0">
+        {/* Legend key: names the two columns (the swatch rows below are
+            the donut's legend). */}
+        <div className="mb-1 grid grid-cols-[8px_1fr_auto] gap-2 border-b border-line-1 pb-1 text-[10px] uppercase tracking-[0.06em] text-fg-4">
+          <span />
+          <span>mechanism</span>
+          <span>share</span>
+        </div>
+        <ul className="space-y-1">
+          {rolled.map((r) => (
+            <li
+              key={r.mech}
+              className="grid grid-cols-[8px_1fr_auto] items-baseline gap-2 text-[11px]"
+            >
+              <span
+                className="block h-2 w-2 self-center rounded-pill"
+                style={{ background: r.color }}
+              />
+              <span className="truncate text-fg-1">{r.name}</span>
+              <span className="shrink-0 tabular-nums text-fg-3">
+                {fmtPct(r.value / total)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
-}
+});
 
 type RolledRow = {
   mech: string;

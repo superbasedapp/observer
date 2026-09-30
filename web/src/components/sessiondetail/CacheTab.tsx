@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import {
   CacheKpiStrip,
   CacheTierBadge,
@@ -25,7 +25,10 @@ import type {
 // engine never graded a turn for this session). Rather than leave a blank
 // tab, the tab names the exact missing dependency — the same rule the
 // disabled Jump in / Resume controls follow.
-export function CacheTab({ d }: { d: SessionDetail }) {
+// Memoized: the drawer re-renders on every detail poll (and on each poll's
+// fetching flip). `d` keeps its identity while the detail is unchanged (the
+// query cache shares unchanged subtrees), so an idle poll skips this tab.
+export const CacheTab = memo(function CacheTab({ d }: { d: SessionDetail }) {
   return (
     <div className="space-y-5">
       <CacheExpiryCard sessionId={d.id} />
@@ -48,7 +51,7 @@ export function CacheTab({ d }: { d: SessionDetail }) {
       </p>
     </div>
   );
-}
+});
 
 // ----- Cache panel (C16) ------------------------------------------
 //
@@ -98,7 +101,11 @@ function CachePanel({
       {showTimeline && (
         <ChartState
           loading={timeline.loading}
+          stale={timeline.isStale}
+          onRetry={timeline.reload}
           error={timeline.error}
+          denied={timeline.denied}
+          deniedPermission={timeline.deniedPermission}
           empty={!timeline.data?.timeline?.length}
           emptyHint="No cache events recorded for this session."
           height={120}

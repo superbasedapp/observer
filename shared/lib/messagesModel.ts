@@ -26,6 +26,7 @@ export type MessageSortKey =
   | "cache_creation"
   | "output"
   | "elapsed_ms"
+  | "response_ms"
   | "tokens_per_sec"
   | "tool_call_count"
   | "attachments"
@@ -75,8 +76,9 @@ export type MessageColumn = {
 // header: one row per column, in table order, carrying its sort key, label,
 // alignment and optional tooltip. Adding a column is one row here plus one
 // row in the server's messageSortKeys table — never a new conditional.
-// Nineteen columns; the widths below sum to 1700 (the account column added
-// 190 to the pre-presets 1460 literal; the Att column added 50).
+// Twenty columns; the widths below sum to 1780 (the account column added
+// 190 to the pre-presets 1460 literal; the Att column added 50; the
+// Response column added 80).
 export const MESSAGE_COLUMNS: MessageColumn[] = [
   { key: "seq", label: "#", className: "pl-3", width: 40 },
   { key: "timestamp", label: "Time", width: 80 },
@@ -96,15 +98,32 @@ export const MESSAGE_COLUMNS: MessageColumn[] = [
   { key: "cache_read", label: "Cache R", right: true, width: 76 },
   { key: "cache_creation", label: "Cache W", right: true, width: 76 },
   { key: "output", label: "Out", right: true, width: 62 },
-  { key: "elapsed_ms", label: "Elapsed", right: true, width: 74 },
+  {
+    key: "elapsed_ms",
+    label: "Elapsed",
+    right: true,
+    width: 74,
+    tooltip:
+      "Wall-clock gap from this row to the next row in the timeline. It spans tool runs, the next call and idle time, so it is never used to compute Tok/s.",
+    tooltipMaxWidth: 380,
+  },
+  {
+    key: "response_ms",
+    label: "Response",
+    right: true,
+    width: 80,
+    tooltip:
+      "Request duration the capture measured for this row's model calls (proxy or OTel): request sent to response complete, time to first token included. Blank when the row was captured from a transcript only.",
+    tooltipMaxWidth: 400,
+  },
   {
     key: "tokens_per_sec",
     label: "Tok/s",
     right: true,
     width: 64,
     tooltip:
-      "Output tokens per second - this turn's output tokens ÷ its elapsed time. Only output (generated) tokens count. Blank for turns with no output or no timing; those rows sort to the bottom in both directions.",
-    tooltipMaxWidth: 420,
+      "End-to-end output throughput: generated tokens of this row's timed model calls divided by those calls' captured durations (time to first token included, so it reads lower than a model's decode speed). Shown only when a real per-call duration was captured; a timestamp gap is never used. Blank with a reason otherwise (not measured, too few tokens, implausible); blank rows sort to the bottom in both directions.",
+    tooltipMaxWidth: 440,
   },
   { key: "tool_call_count", label: "Tools", right: true, width: 58 },
   {
@@ -185,7 +204,7 @@ export const MESSAGE_PRESETS: {
   {
     id: "speed",
     label: "Speed",
-    hint: "how fast it ran - elapsed time and output tokens/sec, with the effort knob and output volume that drive them",
+    hint: "how fast it ran - measured response time and output throughput (tok/s), with the effort knob and output volume that drive them",
     keys: [
       "seq",
       "timestamp",
@@ -194,6 +213,7 @@ export const MESSAGE_PRESETS: {
       "effort_level",
       "output",
       "elapsed_ms",
+      "response_ms",
       "tokens_per_sec",
       "content",
     ],

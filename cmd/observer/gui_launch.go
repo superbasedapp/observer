@@ -75,37 +75,18 @@ func (g *guiLauncher) SpawnGUI(req termsvc.GUISpawnRequest) (termsvc.GUISpawnRes
 	// reads the declared class and applies the org's existing partial-coverage
 	// posture instead of refusing an under-cap launch at $0. An unknown launch
 	// id resolves to nothing and keeps the fail-closed refusal.
-	guiEvidence := budgetLaunchEvidence{Route: budgetLaunchRouteUnknown}
-	if class, ok := integration.GUILaunchSurfaceClass(req.ID); ok {
-		guiEvidence.SurfaceClass = class
-	}
 	if err := enforceBudgetControlledLaunch(context.Background(), configPath, req.ID,
-		guiEvidence); err != nil {
+		guiBudgetEvidence(req.ID)); err != nil {
 		return termsvc.GUISpawnResult{}, err
 	}
-	bin, viaInterop, notes := g.resolveGUIBin(req.ID, req.Spec)
-
-	plan, err := guilaunch.Compose(req.Spec, guilaunch.Inputs{
-		GOOS:        runtime.GOOS,
-		Bin:         bin,
-		ProjectRoot: req.ProjectRoot,
-		ProxyURL:    resolveProxyURL(g.proxyPort, ""),
-		ViaInterop:  viaInterop,
-	})
+	composed, err := g.composeLaunch(req.ID, req.Spec, req.ProjectRoot, resolveProxyURL(g.proxyPort, ""), nil)
 	if err != nil {
 		return termsvc.GUISpawnResult{}, err
 	}
+	plan, bin, notes := composed.plan, composed.bin, composed.notes
 
 	env := guiChildEnv(plan.Env)
-	// The working directory follows the SAME rule as the argv: a row that takes
-	// no project-directory argument ignores the requested directory entirely
-	// (Compose notes "the requested directory was ignored"), so cmd.Dir must not
-	// quietly apply it either.
-	dir := ""
-	if req.Spec.ProjectDirArgv {
-		dir = req.ProjectRoot
-	}
-	proc, err := spawnDetached(plan.Argv, dir, env)
+	proc, err := spawnDetached(plan.Argv, composed.dir, env)
 	if err != nil {
 		return termsvc.GUISpawnResult{}, err
 	}
@@ -125,6 +106,55 @@ func (g *guiLauncher) SpawnGUI(req termsvc.GUISpawnRequest) (termsvc.GUISpawnRes
 		Notes:       append(notes, plan.Notes...),
 		Bin:         bin,
 	}, nil
+}
+
+// guiBudgetEvidence is the managed-budget admission evidence for a GUI launch:
+// the route stays unknown (a GUI routing hint does not prove which provider an
+// IDE's extensions select) and the surface class is the registry's declared
+// class for the row. Shared by the dashboard spawn and `observer ide` so both
+// admit a GUI launch identically.
+func guiBudgetEvidence(id string) budgetLaunchEvidence {
+	evidence := budgetLaunchEvidence{Route: budgetLaunchRouteUnknown}
+	if class, ok := integration.GUILaunchSurfaceClass(id); ok {
+		evidence.SurfaceClass = class
+	}
+	return evidence
+}
+
+// guiComposedLaunch is a resolved, composed, not-yet-spawned GUI launch.
+type guiComposedLaunch struct {
+	plan  guilaunch.Plan
+	bin   string
+	notes []string
+	// dir is the child's working directory: the project root only for a row
+	// that takes one as its argv, so cmd.Dir never quietly applies a directory
+	// Compose reported as ignored.
+	dir string
+}
+
+// composeLaunch is THE wrapped-GUI-launch seam: it resolves the row's binary
+// through the one resolution ladder and composes argv + wrap env through
+// guilaunch.Compose. The dashboard's SpawnGUI and the `observer ide` CLI verb
+// both call it, so a wrapped IDE launch means the same thing from either
+// entry point. Nothing is spawned here.
+func (g *guiLauncher) composeLaunch(id string, spec integration.GUILaunchSpec, projectRoot, proxyURL string, extraArgs []string) (guiComposedLaunch, error) {
+	bin, viaInterop, notes := g.resolveGUIBin(id, spec)
+	plan, err := guilaunch.Compose(spec, guilaunch.Inputs{
+		GOOS:        runtime.GOOS,
+		Bin:         bin,
+		ProjectRoot: projectRoot,
+		ProxyURL:    proxyURL,
+		ViaInterop:  viaInterop,
+		ExtraArgs:   extraArgs,
+	})
+	if err != nil {
+		return guiComposedLaunch{}, err
+	}
+	out := guiComposedLaunch{plan: plan, bin: bin, notes: notes}
+	if spec.ProjectDirArgv {
+		out.dir = projectRoot
+	}
+	return out, nil
 }
 
 // reap waits for the detached child and reports its exit exactly once.

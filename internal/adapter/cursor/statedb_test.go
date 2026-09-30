@@ -243,7 +243,10 @@ func TestParseStateDBFile_V14V15Shapes(t *testing.T) {
 		{
 			"composerData:" + v14,
 			`{"name":null,"createdAt":"2026-08-29T09:00:00.000Z","unifiedMode":"ask","isAgentic":false,` +
-				`"modelConfig":{"modelName":"","maxMode":false,"selectedModels":[{"modelId":"composer-1","parameters":[]}]},"_v":14}`,
+				`"modelConfig":{"modelName":"","maxMode":false,"selectedModels":[{"modelId":"composer-1","parameters":[]}]},"_v":14,` +
+				// A header entry: a root-less composer with no content
+				// no longer bootstraps a session (RootlessDraftsDoNotBootstrap).
+				`"fullConversationHeadersOnly":[{"bubbleId":"b1","type":1}]}`,
 		},
 	}
 	for _, r := range rows {
@@ -348,5 +351,51 @@ func TestParseStateDBFile_SkipsSiblingCoveredSession(t *testing.T) {
 	}
 	if len(res.ToolEvents) != 0 {
 		t.Errorf("got %d tool events for a sibling-covered session, want 0: %+v", len(res.ToolEvents), res.ToolEvents)
+	}
+}
+
+// TestParseStateDBFile_RootlessDraftsDoNotBootstrap pins S10-CURSOR
+// review finding 4: under the "[cursor]" placeholder root only a
+// conversation with content bootstraps a session. A draft or an
+// opened-but-unused chat (no header list entries, no bubbles) stays
+// dropped, exactly as before the placeholder existed.
+func TestParseStateDBFile_RootlessDraftsDoNotBootstrap(t *testing.T) {
+	path := newTestStateDB(t)
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string]string{
+		"composerData:draft-aaaa":                              `{"name":"","fullConversationHeadersOnly":[]}`,
+		"composerData:22222222-2222-2222-2222-222222222222":    `{"name":"Untitled","fullConversationHeadersOnly":[]}`,
+		"composerData:33333333-3333-3333-3333-333333333333":    `{"name":"Headers only","fullConversationHeadersOnly":[{"bubbleId":"b1","type":1}]}`,
+		"composerData:bc-44444444-4444-4444-4444-444444444444": `{"name":"Cloud agent"}`,
+	}
+	for k, v := range rows {
+		if _, err := db.Exec(`INSERT INTO cursorDiskKV VALUES(?, ?)`, k, []byte(v)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	res, err := New().parseStateDBFile(context.Background(), path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, ev := range res.ToolEvents {
+		got[ev.SessionID] = ev.ProjectRoot
+	}
+	want := map[string]string{
+		"33333333-3333-3333-3333-333333333333":    SyntheticProjectRoot,
+		"bc-44444444-4444-4444-4444-444444444444": SyntheticProjectRoot,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("bootstrapped sessions = %v, want %v", got, want)
+	}
+	for sid, root := range want {
+		if got[sid] != root {
+			t.Errorf("session %s root = %q, want %q", sid, got[sid], root)
+		}
 	}
 }

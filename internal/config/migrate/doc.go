@@ -1,9 +1,8 @@
 // Package migrate is the pure-logic core of the config auto-migration
-// rail (docs/codeintel/migration-from-codegraph.md). It rewrites a
-// config.toml's TEXT to rename deprecated keys onto their new homes
-// (e.g. the decommissioned [compression.code_graph] /
-// [intelligence.code_graph] blocks onto [codeintel]) while preserving
-// comments, ordering, and every untouched line byte-for-byte.
+// rail. It rewrites a config.toml's TEXT to rename deprecated keys onto
+// their new homes, or drop removed ones (the registry in migrate.go is
+// the record of every such key), while preserving comments, ordering,
+// and every untouched line byte-for-byte.
 //
 // The package is pure: string in, string out. It performs NO file I/O
 // (no os), no SQL, no HTTP, no fsnotify — the read/write boundary lives

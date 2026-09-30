@@ -1,0 +1,18 @@
+Runs the node-side Agent Access probes top-down and prints one line per
+check (pass / warn / fail / skip): [mcp_relay] valid, enrolled with an
+org that answers /healthz, the agent-access registration, ONE STS token
+mint for the first approved vserver (the token is never printed or
+stored), every journaled client config still routing its stdio entries
+through the relay, the launch journal's backups and bindings, and the
+hash-chained decision record. Exits non-zero when any check fails.
+
+With [mcp_relay].enabled = false no network probe runs; it only checks
+that no client config is left wrapped.
+
+Usage:
+  observer mcp doctor [flags]
+
+Flags:
+      --config string   path to config.toml (default ~/.observer/config.toml)
+  -h, --help            help for doctor
+      --json            print JSON

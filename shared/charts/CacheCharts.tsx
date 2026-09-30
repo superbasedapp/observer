@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import {
   Bar,
   BarChart,
@@ -13,27 +14,32 @@ import {
 import { ChartTooltip } from "./ChartTooltip";
 import { ChartLegend } from "./ChartLegend";
 import { fmtCompact } from "../lib/format";
+import type { Granularity } from "../lib/granularity";
 import type { CacheTimeseriesPoint } from "../lib/types";
-import { CHART_AXIS, CHART_GRID } from "./common";
+import { bucketTooltipLabel, categoryAxis, CHART_AXIS, CHART_GRID, timeAxis } from "./common";
+import { useChartMotion } from "./useChartMotion";
 
-// CacheTrafficChart — per-day stacked bars of cache_read +
+// CacheTrafficChart — per-bucket stacked bars of cache_read +
 // cache_write tokens. Matches the Cost-page TokensByDayChart
 // rhythm so the two pages read in the same visual idiom.
-export function CacheTrafficChart({
+export const CacheTrafficChart = memo(function CacheTrafficChart({
   data,
   height = 220,
+  granularity = "1d",
 }: {
   data: CacheTimeseriesPoint[];
   height?: number;
+  /** Bucket granularity the rows were served at (the response `bucket`); drives the axis/tooltip labels. */
+  granularity?: Granularity;
 }) {
+  const motion = useChartMotion(data, "bucket", "", 2);
   return (
     <ResponsiveContainer width="100%" height={height + 28}>
       <BarChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
         <Legend
           verticalAlign="top"
           align="left"
-          height={28}
-          content={<ChartLegend />}
+          content={<ChartLegend colors={{ "Cache Write": "var(--tok-write)", "Cache Read": "var(--tok-read)" }} />}
         />
         <defs>
           {(["read", "write"] as const).map((k) => (
@@ -59,19 +65,20 @@ export function CacheTrafficChart({
           ))}
         </defs>
         <CartesianGrid {...CHART_GRID} />
-        <XAxis dataKey="bucket" {...CHART_AXIS} tickFormatter={shortDate} />
+        <XAxis {...CHART_AXIS} {...categoryAxis(data, granularity)} />
         <YAxis {...CHART_AXIS} tickFormatter={fmtCompact} />
         <Tooltip
           content={
             <ChartTooltip
               labelKey="bucket"
-              labelFormatter={shortDate}
+              labelFormatter={bucketTooltipLabel(granularity)}
               formatItem={(name, value) => `${name}: ${fmtCompact(value)}`}
             />
           }
           cursor={{ fill: "var(--bg-4)", opacity: 0.4 }}
         />
         <Bar
+          {...motion}
           dataKey="written_tokens"
           name="Cache Write"
           stackId="tok"
@@ -79,6 +86,7 @@ export function CacheTrafficChart({
           radius={[0, 0, 0, 0]}
         />
         <Bar
+          {...motion}
           dataKey="read_tokens"
           name="Cache Read"
           stackId="tok"
@@ -88,35 +96,44 @@ export function CacheTrafficChart({
       </BarChart>
     </ResponsiveContainer>
   );
-}
+});
 
 // CacheEventsChart — per-day stacked bars of event_count, with
 // rewrite_count rendered as a warn-toned subset of the same stack
 // so the operator sees both the total cadence AND the invalidation
 // pressure at a glance. Bars total to event_count because the
 // rewrites are a subset of events, not additive.
-export function CacheEventsChart({
+export const CacheEventsChart = memo(function CacheEventsChart({
   data,
   height = 220,
+  granularity = "1d",
 }: {
   data: CacheTimeseriesPoint[];
   height?: number;
+  /** Bucket granularity the rows were served at (the response `bucket`); drives the axis/tooltip labels. */
+  granularity?: Granularity;
 }) {
   // Recompute: events minus rewrites as the "healthy" bucket, with
   // rewrites stacked on top. Sum reads as the total event count.
-  const stacked = data.map((p) => ({
-    bucket: p.bucket,
-    healthy: Math.max(0, p.event_count - p.rewrite_count),
-    rewrites: p.rewrite_count,
-  }));
+  // Memoized on `data` so a re-render with the same points hands recharts
+  // the same array (a new one restarts its layout pass and the animation).
+  const stacked = useMemo(
+    () =>
+      data.map((p) => ({
+        bucket: p.bucket,
+        healthy: Math.max(0, p.event_count - p.rewrite_count),
+        rewrites: p.rewrite_count,
+      })),
+    [data],
+  );
+  const motion = useChartMotion(stacked, "bucket", "", 2);
   return (
     <ResponsiveContainer width="100%" height={height + 28}>
       <BarChart data={stacked} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
         <Legend
           verticalAlign="top"
           align="left"
-          height={28}
-          content={<ChartLegend />}
+          content={<ChartLegend colors={{ "Healthy events": "var(--info)", Rewrites: "var(--warn)" }} />}
         />
         <defs>
           <linearGradient id="cache-events-healthy" x1="0" y1="0" x2="0" y2="1">
@@ -129,19 +146,20 @@ export function CacheEventsChart({
           </linearGradient>
         </defs>
         <CartesianGrid {...CHART_GRID} />
-        <XAxis dataKey="bucket" {...CHART_AXIS} tickFormatter={shortDate} />
+        <XAxis {...CHART_AXIS} {...categoryAxis(stacked, granularity)} />
         <YAxis {...CHART_AXIS} tickFormatter={fmtCompact} />
         <Tooltip
           content={
             <ChartTooltip
               labelKey="bucket"
-              labelFormatter={shortDate}
+              labelFormatter={bucketTooltipLabel(granularity)}
               formatItem={(name, value) => `${name}: ${fmtCompact(value)}`}
             />
           }
           cursor={{ fill: "var(--bg-4)", opacity: 0.4 }}
         />
         <Bar
+          {...motion}
           dataKey="healthy"
           name="Healthy events"
           stackId="ev"
@@ -149,6 +167,7 @@ export function CacheEventsChart({
           radius={[0, 0, 0, 0]}
         />
         <Bar
+          {...motion}
           dataKey="rewrites"
           name="Rewrites"
           stackId="ev"
@@ -158,29 +177,38 @@ export function CacheEventsChart({
       </BarChart>
     </ResponsiveContainer>
   );
-}
+});
 
 // CacheRatioChart — per-day point-wise cache_read ÷ cache_write
 // ratio, rendered as a line. Days with zero writes show as a
 // gap (null), avoiding a misleading flat zero. Sibling to Cost's
 // CacheSavingsChart but framed around the engine's headline
 // efficiency ratio rather than dollar savings.
-export function CacheRatioChart({
+export const CacheRatioChart = memo(function CacheRatioChart({
   data,
   height = 180,
+  granularity = "1d",
 }: {
   data: CacheTimeseriesPoint[];
   height?: number;
+  /** Bucket granularity the rows were served at (the response `bucket`); drives the axis/tooltip labels. */
+  granularity?: Granularity;
 }) {
-  const pts = data.map((p) => ({
-    bucket: p.bucket,
-    ratio: p.written_tokens > 0 ? p.read_tokens / p.written_tokens : null,
-  }));
+  const pts = useMemo(
+    () =>
+      data.map((p) => ({
+        bucket: p.bucket,
+        t: p.t,
+        ratio: p.written_tokens > 0 ? p.read_tokens / p.written_tokens : null,
+      })),
+    [data],
+  );
+  const motion = useChartMotion(pts, "bucket");
   return (
     <ResponsiveContainer width="100%" height={height}>
       <LineChart data={pts} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
         <CartesianGrid {...CHART_GRID} />
-        <XAxis dataKey="bucket" {...CHART_AXIS} tickFormatter={shortDate} />
+        <XAxis {...CHART_AXIS} {...timeAxis(pts, granularity)} />
         <YAxis
           {...CHART_AXIS}
           tickFormatter={(v) =>
@@ -191,7 +219,7 @@ export function CacheRatioChart({
           content={
             <ChartTooltip
               labelKey="bucket"
-              labelFormatter={shortDate}
+              labelFormatter={bucketTooltipLabel(granularity)}
               formatItem={(name, value) =>
                 name === "ratio"
                   ? typeof value === "number"
@@ -204,6 +232,7 @@ export function CacheRatioChart({
           cursor={{ stroke: "var(--line-3)" }}
         />
         <Line
+          {...motion}
           type="monotone"
           dataKey="ratio"
           stroke="var(--accent)"
@@ -214,10 +243,4 @@ export function CacheRatioChart({
       </LineChart>
     </ResponsiveContainer>
   );
-}
-
-function shortDate(s: string): string {
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return s;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
+});

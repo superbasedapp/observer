@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { SegmentedControl, Tooltip } from "../../primitives";
+import { ModelId, SegmentedControl, Tooltip } from "../../primitives";
 import { fmtCompact, fmtInt, fmtUSD } from "../../lib/format";
 import type { SessionModelBucketLike } from "../../lib/types";
 import { defaultRenderCost, type RenderCost } from "./cost";
@@ -165,14 +165,8 @@ export function ModelsUsedPanel({
               return (
                 <li key={r.model} className="space-y-1">
                   <div className="flex items-baseline justify-between gap-2">
-                    <Tooltip content={<span className="break-all font-mono">{r.model}</span>} maxWidth={360}>
-                      <span
-                        tabIndex={0}
-                        className="cursor-help truncate text-fg-1 focus:outline-none"
-                      >
-                        {r.model}
-                      </span>
-                    </Tooltip>
+                    {/* ModelId: family mark + id, full id on hover (title). */}
+                    <ModelId model={r.model} mono={false} className="min-w-0" />
                     {mode === "cost" ? (
                       <span className="shrink-0 font-mono tabular-nums font-semibold text-fg-0">
                         {renderCost(r.cost_usd, {

@@ -284,8 +284,98 @@ func TestApply_MatchesNestedIndentStyle(t *testing.T) {
 }
 
 func TestLatestVersion(t *testing.T) {
-	if LatestVersion() != 3 {
-		t.Errorf("LatestVersion = %d, want 3", LatestVersion())
+	if LatestVersion() != 5 {
+		t.Errorf("LatestVersion = %d, want 5", LatestVersion())
+	}
+}
+
+// TestApply_Step4_StripsReemittedLegacyBlocks pins step 4: a file already
+// stamped at v3 that still carries both legacy blocks (the shape a full
+// config.WriteToml re-marshal produced while the structs still existed) has
+// them stripped - every key, both hollow tables - while [codeintel] stays
+// exactly as the operator had it and the stamp advances to the latest. Step 1 never
+// runs here (the file is past v1), so no value is carried over.
+func TestApply_Step4_StripsReemittedLegacyBlocks(t *testing.T) {
+	in := "" +
+		"[observer]\n" +
+		"  config_version = 3\n" +
+		"\n" +
+		"[compression]\n" +
+		"  [compression.code_graph]\n" +
+		"    enabled = true\n" +
+		"    auto_install = true\n" +
+		"    auto_index = true\n" +
+		"    path = \"\"\n" +
+		"  [compression.shell]\n" +
+		"    enabled = true\n" +
+		"\n" +
+		"[intelligence]\n" +
+		"  api_key_env = \"\"\n" +
+		"  [intelligence.code_graph]\n" +
+		"    enabled = true\n" +
+		"\n" +
+		"[codeintel]\n" +
+		"  enabled = false\n" +
+		"  [codeintel.index]\n" +
+		"    on_start = false\n"
+	res, err := Apply(in)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !res.Migrated || res.Skipped {
+		t.Fatalf("want Migrated, got Migrated=%v Skipped=%v (%s)", res.Migrated, res.Skipped, res.SkipReason)
+	}
+	m := mustValidTOML(t, res.Text)
+	if strings.Contains(res.Text, "code_graph") || strings.Contains(res.Text, "auto_install") {
+		t.Errorf("legacy blocks survived step 4:\n%s", res.Text)
+	}
+	ci, _ := m["codeintel"].(map[string]any)
+	idx, _ := ci["index"].(map[string]any)
+	if ci["enabled"] != false || idx["on_start"] != false {
+		t.Errorf("[codeintel] must stay authoritative (false/false): %#v", ci)
+	}
+	for _, keep := range []string{"[compression.shell]", `api_key_env = ""`} {
+		if !strings.Contains(res.Text, keep) {
+			t.Errorf("untouched content %q lost:\n%s", keep, res.Text)
+		}
+	}
+	obs, _ := m["observer"].(map[string]any)
+	if got := obs["config_version"]; got != int64(LatestVersion()) {
+		t.Errorf("config_version = %v, want %d", got, LatestVersion())
+	}
+	removes := 0
+	for _, c := range res.Changes {
+		if c.Kind == "remove" {
+			removes++
+		}
+	}
+	if removes != 5 {
+		t.Errorf("want 5 removals reported, got %d: %+v", removes, res.Changes)
+	}
+}
+
+// TestApply_Step1ThenStep4_NoDoubleCount pins that an unmigrated (v0) file
+// runs step 1 (value carried onto [codeintel]) and step 4 does not report
+// the same legacy key a second time.
+func TestApply_Step1ThenStep4_NoDoubleCount(t *testing.T) {
+	in := "[compression.code_graph]\nenabled = false\n"
+	res, err := Apply(in)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	m := mustValidTOML(t, res.Text)
+	ci, _ := m["codeintel"].(map[string]any)
+	if ci == nil || ci["enabled"] != false {
+		t.Errorf("step 1 must carry enabled=false onto codeintel:\n%s", res.Text)
+	}
+	seen := 0
+	for _, c := range res.Changes {
+		if c.From == "compression.code_graph.enabled" {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Errorf("legacy key reported %d times, want 1: %+v", seen, res.Changes)
 	}
 }
 
@@ -402,5 +492,111 @@ summary = true
 	obs, _ := share["obs"].(map[string]any)
 	if obs == nil || obs["summary"] != true {
 		t.Errorf("nested obs.summary=true must win: %#v", obs)
+	}
+}
+
+// TestApply_Step5_StripsReemittedFlatObsKeys pins step 5: a file already
+// stamped at v4 that still carries the four flat [org_client.share] obs_*
+// keys (the shape a full config.WriteToml re-marshal produced while the
+// struct fields existed) has them removed, and the nested
+// [org_client.share.obs] values stay exactly as they were - including where
+// the stale flat value disagrees with the nested one. Step 2 never runs here.
+func TestApply_Step5_StripsReemittedFlatObsKeys(t *testing.T) {
+	in := "" +
+		"[observer]\n" +
+		"  config_version = 4\n" +
+		"\n" +
+		"[org_client]\n" +
+		"  enabled = true\n" +
+		"  [org_client.share]\n" +
+		"    full_content = true\n" +
+		"    obs_summary = true\n" +
+		"    obs_traces = false\n" +
+		"    obs_content = true\n" +
+		"    obs_eval_summary = false\n" +
+		"    [org_client.share.obs]\n" +
+		"      summary = false\n" +
+		"      traces = true\n" +
+		"      content = false\n" +
+		"      eval_summary = true\n" +
+		"      admission = false\n"
+	res, err := Apply(in)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !res.Migrated || res.Skipped {
+		t.Fatalf("want Migrated, got Migrated=%v Skipped=%v (%s)", res.Migrated, res.Skipped, res.SkipReason)
+	}
+	for _, flat := range []string{"obs_summary", "obs_traces", "obs_content", "obs_eval_summary"} {
+		if strings.Contains(res.Text, flat) {
+			t.Errorf("flat %s survived step 5:\n%s", flat, res.Text)
+		}
+	}
+	m := mustValidTOML(t, res.Text)
+	oc, _ := m["org_client"].(map[string]any)
+	share, _ := oc["share"].(map[string]any)
+	if share == nil || share["full_content"] != true || oc["enabled"] != true {
+		t.Errorf("sibling org_client keys must be untouched: %#v", oc)
+	}
+	obs, _ := share["obs"].(map[string]any)
+	want := map[string]any{"summary": false, "traces": true, "content": false, "eval_summary": true, "admission": false}
+	for k, v := range want {
+		if obs[k] != v {
+			t.Errorf("nested obs.%s = %v, want %v (nested must stay authoritative)", k, obs[k], v)
+		}
+	}
+	stamp, _ := m["observer"].(map[string]any)
+	if got := stamp["config_version"]; got != int64(5) {
+		t.Errorf("config_version = %v, want 5", got)
+	}
+	for _, c := range res.Changes {
+		if c.Kind == "rename" && c.Note != "dropped (target already set)" {
+			t.Errorf("every flat key had a nested target, so each must be dropped, got %+v", c)
+		}
+	}
+}
+
+// TestApply_Step5_CarriesHandAddedFlatKey pins why step 5 keeps the rename
+// shape: a flat key hand-added to an already-stamped file with NO nested
+// counterpart is the value the loader honored until the fields were
+// removed, so it lands on the nested key instead of being silently dropped.
+func TestApply_Step5_CarriesHandAddedFlatKey(t *testing.T) {
+	in := "[observer]\nconfig_version = 4\n\n[org_client.share]\nobs_summary = true\n"
+	res, err := Apply(in)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	m := mustValidTOML(t, res.Text)
+	oc, _ := m["org_client"].(map[string]any)
+	share, _ := oc["share"].(map[string]any)
+	obs, _ := share["obs"].(map[string]any)
+	if obs == nil || obs["summary"] != true {
+		t.Errorf("hand-added obs_summary=true must land on obs.summary:\n%s", res.Text)
+	}
+	if strings.Contains(res.Text, "obs_summary") {
+		t.Errorf("flat obs_summary survived:\n%s", res.Text)
+	}
+}
+
+// TestApply_Step2ThenStep5_NoDoubleCount pins that a never-migrated (v0)
+// file runs step 2 (values carried onto [org_client.share.obs]) and step 5
+// does not report the same flat key a second time.
+func TestApply_Step2ThenStep5_NoDoubleCount(t *testing.T) {
+	in := "[org_client.share]\nobs_traces = true\n"
+	res, err := Apply(in)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	seen := 0
+	for _, c := range res.Changes {
+		if c.From == "org_client.share.obs_traces" {
+			seen++
+			if c.Note != "renamed to org_client.share.obs.traces" {
+				t.Errorf("step 2 must own a v0 file's flat key, got note %q", c.Note)
+			}
+		}
+	}
+	if seen != 1 {
+		t.Errorf("flat key reported %d times, want 1: %+v", seen, res.Changes)
 	}
 }

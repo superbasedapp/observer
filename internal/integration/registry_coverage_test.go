@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	adapterdefaults "github.com/marmutapp/superbased-observer/internal/adapter/defaults"
+	"github.com/marmutapp/superbased-observer/internal/adapter/grokbot"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/tooltax"
@@ -635,6 +636,44 @@ func TestBinarySpecHonesty(t *testing.T) {
 	}
 }
 
+// TestLimitCapabilityHonesty pins the same shape of guard TestBinarySpecHonesty
+// pins for Binary: a row that declares an AUDITED negative finding must
+// carry a real reason. A row with Source set but Note empty would render
+// the dashboard/CLI's "limits not visible for <tool>: " with nothing
+// after the colon — worse than the misleading-but-at-least-actionable
+// "needs proxy" copy it replaces. Structural check over every registered
+// row, not a per-tool hand list, so a future audited-none row is held to
+// the same bar automatically.
+func TestLimitCapabilityHonesty(t *testing.T) {
+	for _, c := range integration.Capabilities() {
+		if c.Limit.Source == integration.LimitSourceUnaudited {
+			continue
+		}
+		if strings.TrimSpace(c.Limit.Note) == "" {
+			t.Errorf("adapter %q: Limit.Source=%q but Limit.Note is empty", c.Tool, c.Limit.Source)
+		}
+	}
+}
+
+// TestLimitCapabilityGrokbotNoteMatchesPackageConst pins that the
+// registry's "grokbot" row and internal/adapter/grokbot.NoLimitSource
+// never drift apart. internal/integration cannot import
+// internal/adapter/grokbot from its own production code without breaking
+// its deliberate zero-internal-import purity (imports_test.go; the
+// package currently imports nothing but "sort"), so the two constants
+// live as independent literals — this test is the only thing that keeps
+// them honest, from the test-only side of that boundary where importing
+// an adapter package is completely ordinary Go.
+func TestLimitCapabilityGrokbotNoteMatchesPackageConst(t *testing.T) {
+	c, ok := integration.For("grokbot")
+	if !ok {
+		t.Fatal(`registry has no "grokbot" row`)
+	}
+	if c.Limit.Note != grokbot.NoLimitSource {
+		t.Errorf("registry grokbot Limit.Note = %q, want it to equal grokbot.NoLimitSource = %q", c.Limit.Note, grokbot.NoLimitSource)
+	}
+}
+
 // TestGuidedInstallGapClosed pins the 2026-08-07 fix (parity plan §15.6a):
 // muse, prime-agent, and kimi-code each carry at least one grounded
 // InstallHint. This is a regression guard specifically for the class of miss
@@ -1121,6 +1160,36 @@ func TestSandboxPathsWellFormed(t *testing.T) {
 		for i, p := range c.Sandbox.StateRO {
 			check(t, c.Tool, "StateRO", i, p)
 		}
+		for i, p := range c.Sandbox.ProtectRO {
+			check(t, c.Tool, "ProtectRO", i, p)
+		}
+		for i, p := range c.Sandbox.ProtectRODirs {
+			check(t, c.Tool, "ProtectRODirs", i, p)
+		}
+	}
+}
+
+// TestSandboxProtectROInsideStateRW pins that every ProtectRO entry lies
+// strictly INSIDE one of the row's own StateRW entries. Outside every rw
+// bind it would already be invisible (tmpfs home) or read-only, so the
+// entry would be dead data; equal to a StateRW entry it would make the
+// tool's whole writable state read-only and break the tool.
+func TestSandboxProtectROInsideStateRW(t *testing.T) {
+	for _, c := range integration.Capabilities() {
+		for _, p := range append(append([]string(nil), c.Sandbox.ProtectRO...), c.Sandbox.ProtectRODirs...) {
+			inside := false
+			for _, rw := range c.Sandbox.StateRW {
+				if strings.HasPrefix(p, rw+"/") {
+					inside = true
+				}
+				if p == rw {
+					t.Errorf("adapter %q: ProtectRO %q equals a StateRW entry (the tool could not write its own state)", c.Tool, p)
+				}
+			}
+			if !inside {
+				t.Errorf("adapter %q: ProtectRO %q is not inside any StateRW entry", c.Tool, p)
+			}
+		}
 	}
 }
 
@@ -1313,5 +1382,131 @@ func TestUnadvertisedRowsAreNeverDispatched(t *testing.T) {
 			t.Errorf("GUI row %q (adapter %q): lifecycle %q but Advertised = true",
 				g.Spec.ID, g.Adapter, string(g.Lifecycle))
 		}
+	}
+}
+
+// TestMCPRemoteTargetsGrounded pins the Agent Access W4a remote-target
+// capability (doc3 §12.1): the exact set of rows carrying a Remote target,
+// which of them a writer projects today (Implemented), and the structural
+// honesty of each row — a spelling for every transport when the client
+// needs a transport key, no spelling table when it does not, a grounding
+// Note, and Implemented only on a parent format internal/mcp has a remote
+// writer for. hermes is the deliberate Implemented=false row (grounded
+// url+headers shape, no writer, no locate row — R8.24.u). Adding a Remote
+// row to any other adapter means grounding it and extending this pin.
+func TestMCPRemoteTargetsGrounded(t *testing.T) {
+	writerFormats := map[integration.MCPFormat]bool{
+		integration.MCPServersJSON:  true,
+		integration.MCPCodexTOML:    true,
+		integration.MCPOpenCodeJSON: true,
+	}
+	wantImplemented := map[string]bool{
+		"claude-code":  true,
+		"cursor":       true,
+		"cline":        true,
+		"droid":        true,
+		"command-code": true,
+		"codex":        true,
+		"opencode":     true,
+		"hermes":       false,
+	}
+	seen := map[string]bool{}
+	for _, c := range integration.Capabilities() {
+		if c.MCP == nil || c.MCP.Remote == nil {
+			if _, want := wantImplemented[c.Tool]; want {
+				t.Errorf("%s: expected a grounded MCPTarget.Remote row", c.Tool)
+			}
+			continue
+		}
+		rm := c.MCP.Remote
+		seen[c.Tool] = true
+		want, pinned := wantImplemented[c.Tool]
+		if !pinned {
+			t.Errorf("%s: carries a Remote row this pin does not know — ground it and extend wantImplemented", c.Tool)
+			continue
+		}
+		if rm.Implemented != want {
+			t.Errorf("%s: Remote.Implemented = %v, want %v", c.Tool, rm.Implemented, want)
+		}
+		if len(rm.Transports) == 0 {
+			t.Errorf("%s: Remote row grounds no transport", c.Tool)
+		}
+		for _, tr := range rm.Transports {
+			if tr != integration.MCPRemoteStreamableHTTP && tr != integration.MCPRemoteSSE {
+				t.Errorf("%s: unknown transport %q", c.Tool, tr)
+			}
+			if !rm.Supports(tr) {
+				t.Errorf("%s: Supports(%q) = false for a listed transport", c.Tool, tr)
+			}
+			if rm.TransportKey != "" && rm.Spelling[tr] == "" {
+				t.Errorf("%s: TransportKey %q set but no spelling for %q", c.Tool, rm.TransportKey, tr)
+			}
+		}
+		if rm.TransportKey == "" && len(rm.Spelling) > 0 {
+			t.Errorf("%s: Spelling table without a TransportKey is dead data", c.Tool)
+		}
+		if rm.Note == "" {
+			t.Errorf("%s: Remote row carries no grounding Note", c.Tool)
+		}
+		if rm.Implemented && (!c.MCP.Implemented || !writerFormats[c.MCP.Format]) {
+			t.Errorf("%s: Remote.Implemented on a parent target with no remote writer (format %q, implemented %v)", c.Tool, c.MCP.Format, c.MCP.Implemented)
+		}
+	}
+	for tool := range wantImplemented {
+		if !seen[tool] {
+			t.Errorf("%s: missing from the registry's Remote rows", tool)
+		}
+	}
+	var nilTarget *integration.MCPRemoteTarget
+	if nilTarget.Supports(integration.MCPRemoteStreamableHTTP) {
+		t.Error("a nil Remote target must support nothing")
+	}
+}
+
+// TestGenerationTimingHonesty pins the S10-SPEED capability fields
+// (TokenTier.GenerationTiming / SynthesizedTimestamps / SessionCumulative):
+// the value set is closed, an adapter that fabricates per-row timestamps may
+// never claim a transcript-derived generation duration (a 1 ms synthetic step
+// would read as a million tokens per second), and a session-cumulative token
+// row is never a single model call, so it can carry no per-call duration.
+func TestGenerationTimingHonesty(t *testing.T) {
+	allowed := map[string]bool{"": true, integration.GenTimingNone: true, integration.GenTimingNative: true, integration.GenTimingTranscript: true}
+	for _, c := range integration.Capabilities() {
+		tt := c.TokenTier
+		if !allowed[tt.GenerationTiming] {
+			t.Errorf("%s: GenerationTiming %q not in the closed set", c.Tool, tt.GenerationTiming)
+		}
+		if tt.GenerationTiming == integration.GenTimingTranscript && tt.SynthesizedTimestamps {
+			t.Errorf("%s: GenerationTiming=transcript on an adapter with SynthesizedTimestamps", c.Tool)
+		}
+		if tt.SessionCumulative && (tt.GenerationTiming == integration.GenTimingNative || tt.GenerationTiming == integration.GenTimingTranscript) {
+			t.Errorf("%s: a SessionCumulative token row cannot carry a per-call generation duration", c.Tool)
+		}
+		if tt.Best == "none" && tt.GenerationTiming != "" && tt.GenerationTiming != integration.GenTimingNone {
+			t.Errorf("%s: no local tokens (Best=none) but GenerationTiming=%q", c.Tool, tt.GenerationTiming)
+		}
+	}
+}
+
+// TestTranscriptTimedTools pins the org push settle-holdback's tool set:
+// exactly the rows declaring GenTimingTranscript, sorted and unique.
+func TestTranscriptTimedTools(t *testing.T) {
+	got := integration.TranscriptTimedTools()
+	want := map[string]bool{}
+	for _, c := range integration.Capabilities() {
+		if c.TokenTier.GenerationTiming == integration.GenTimingTranscript {
+			want[c.Tool] = true
+		}
+	}
+	if len(got) != len(want) || len(got) == 0 {
+		t.Fatalf("integration.TranscriptTimedTools() = %v, want the %d transcript rows %v", got, len(want), want)
+	}
+	for i, tool := range got {
+		if !want[tool] || (i > 0 && got[i-1] >= tool) {
+			t.Fatalf("integration.TranscriptTimedTools() = %v: unsorted, duplicated or not a transcript row", got)
+		}
+	}
+	if !want["claude-code"] || !want["codex"] {
+		t.Errorf("claude-code and codex must be transcript-timed: %v", got)
 	}
 }

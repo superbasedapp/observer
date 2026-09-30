@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"sort"
@@ -166,21 +167,42 @@ func (s *Server) handleWatcherHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
+	var (
+		out map[string]any
+		err error
+	)
+	if s.opts.ReadCaches {
+		out, err = s.watcherHealthCached(r.Context())
+	} else {
+		out, err = s.computeWatcherHealth(r.Context())
+	}
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, out)
+}
+
+// computeWatcherHealth builds the /api/health/watcher payload: one query
+// over parse_cursors plus a bounded-parallel stat of every tracked file.
+// The stat fan-out is the expensive half (thousands of files, a third of
+// them on a DrvFs mount); see watcher_health_cache.go for how the
+// production handler avoids paying it on the request path.
+func (s *Server) computeWatcherHealth(ctx context.Context) (map[string]any, error) {
 	// LEFT JOIN against actions so a single query returns both the
 	// cursor state AND the per-file action count needed for the
 	// suspected_misrouted heuristic. parse_cursors is small (one row
 	// per known session file) so the JOIN is cheap.
 	// s.opts.DB, not s.db(): watcher health describes the live
 	// watcher's real cursors even while demo mode is active (P6.7).
-	rows, err := s.opts.DB.QueryContext(r.Context(),
+	rows, err := s.opts.DB.QueryContext(ctx,
 		`SELECT pc.source_file, pc.byte_offset, pc.last_parsed,
 		        COALESCE(COUNT(a.id), 0) AS action_count
 		   FROM parse_cursors pc
 		   LEFT JOIN actions a ON a.source_file = pc.source_file
 		  GROUP BY pc.source_file, pc.byte_offset, pc.last_parsed`)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -194,14 +216,12 @@ func (s *Server) handleWatcherHealth(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var cr cursorRow
 		if err := rows.Scan(&cr.path, &cr.offset, &cr.lastParsed, &cr.actionCount); err != nil {
-			writeErr(w, err)
-			return
+			return nil, err
 		}
 		cursors = append(cursors, cr)
 	}
 	if err := rows.Err(); err != nil {
-		writeErr(w, err)
-		return
+		return nil, err
 	}
 
 	// Bounded-parallel stat. Independent, latency-bound calls (a third
@@ -327,7 +347,7 @@ func (s *Server) handleWatcherHealth(w http.ResponseWriter, r *http.Request) {
 		truncated = true
 	}
 
-	writeJSON(w, map[string]any{
+	return map[string]any{
 		"files":                       out,
 		"total_files":                 totalFiles,
 		"files_truncated":             truncated,
@@ -339,7 +359,7 @@ func (s *Server) handleWatcherHealth(w http.ResponseWriter, r *http.Request) {
 		"lag_not_applicable_count":    lagNotApplicableCount,
 		"zero_actions_expected_count": zeroActionsExpectedCount,
 		"checked_at":                  now.Format(time.RFC3339),
-	})
+	}, nil
 }
 
 // excludedRank orders the structurally-excluded rows below genuine

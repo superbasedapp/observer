@@ -1078,7 +1078,7 @@ func compressOpenAIResponsesToolResults(extracted []openaiResponsesExtractedMess
 		}
 		// V7-11 / v1.7.7 marker enrichment — same shape as
 		// compressToolResults (anthropic.go). The hinter closure
-		// returns the zero CompressHints when codegraph is
+		// returns the zero CompressHints when the code index is
 		// unavailable / stale / not configured.
 		var out []byte
 		if hc, ok := c.(HintedCompressor); ok && buildHints != nil {

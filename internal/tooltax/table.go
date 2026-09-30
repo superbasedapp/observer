@@ -374,6 +374,23 @@ var openCodeRows = concat(
 	rows(toolOpenCode, SurfaceOrchestration, ActionSpawnSubagent, "task", "agent", "subagent"),
 	rows(toolOpenCode, SurfaceBuiltin, ActionTodoUpdate, "todoread", "todowrite", "todo"),
 	rows(toolOpenCode, SurfaceMeta, ActionHarnessCall, "opencode.step_finish"),
+	// 2026-09-28 (R2-TOOLMAP), grounded against the OpenCode 1.18.32
+	// source (github.com/anomalyco/opencode, packages/opencode/src/tool/)
+	// and live stores (`question` x17, `invalid` x2, `codesearch` x1).
+	rows(toolOpenCode, SurfaceBuiltin, ActionAskUser, "question"),
+	// plan_exit: leave the plan agent for build — Claude Code's
+	// ExitPlanMode bucket.
+	rows(toolOpenCode, SurfaceMeta, ActionPermissionMode, "plan_exit"),
+	rows(toolOpenCode, SurfaceBuiltin, ActionSkillInvoke, "skill"),
+	// lsp: language-server symbol lookups (definition / references /
+	// workspaceSymbol ...) — cursor `semanticsearch` precedent.
+	rows(toolOpenCode, SurfaceBuiltin, ActionSearchText, "lsp"),
+	// codesearch: an Exa WEB search for library/API context (removed
+	// upstream #27019, 2026-05-12), not a project search.
+	rows(toolOpenCode, SurfaceBuiltin, ActionWebSearch, "codesearch"),
+	// invalid: the harness's rewrite of a malformed/unavailable call —
+	// a host-level tool failure, never a real tool.
+	rows(toolOpenCode, SurfaceMeta, ActionToolFailure, "invalid"),
 )
 
 // --- cline (+ roo-code, kilo-code aliases) ---------------------------
@@ -390,6 +407,11 @@ var clineRows = concat(
 	rows(toolCline, SurfaceBuiltin, ActionEditFile, "replace_in_file"),
 	rows(toolCline, SurfaceBuiltin, ActionSearchText, "search_files"),
 	rows(toolCline, SurfaceBuiltin, ActionSearchFiles, "list_files"),
+	// list_code_definition_names (cline/cline apps/vscode/src/shared/
+	// tools.ts LIST_CODE_DEF; x4 live): a directory-level definitions
+	// scan; Cline's SDK aliases it to search_codebase, which cline-cli
+	// maps to search_files.
+	rows(toolCline, SurfaceBuiltin, ActionSearchFiles, "list_code_definition_names"),
 	rows(toolCline, SurfaceBuiltin, ActionBrowserAction, "browser_action"),
 	rows(toolCline, SurfaceMeta, ActionTaskComplete, "attempt_completion"),
 	rows(toolCline, SurfaceMCP, ActionMCPCall, "use_mcp_tool", "access_mcp_resource"),
@@ -768,6 +790,28 @@ var kimiCodeRows = concat(
 	rows(toolKimiCode, SurfaceOrchestration, ActionSpawnSubagent,
 		"agent", "agentswarm", "subagent", "spawnagent", "delegate"),
 	rows(toolKimiCode, SurfaceBuiltin, ActionTodoUpdate, "todolist", "todowrite", "todo"),
+	// kimi-code 2.1.1 built-ins (2026-09-28), grounded in the shipped
+	// bundle and github.com/MoonshotAI/kimi-code packages/agent-core-v2.
+	// Spellings are the classifier's NORMALIZED keys (lower-case,
+	// `_`/`-` stripped); Resolve's normalized pass reaches them from the
+	// native PascalCase names.
+	rows(toolKimiCode, SurfaceBuiltin, ActionAskUser, "askuserquestion"),
+	rows(toolKimiCode, SurfaceMeta, ActionPermissionMode, "enterplanmode", "exitplanmode"),
+	rows(toolKimiCode, SurfaceBuiltin, ActionSkillInvoke, "skill"),
+	rows(toolKimiCode, SurfaceMeta, ActionSchedule, "croncreate", "cronlist", "crondelete"),
+	// TaskList/TaskOutput/TaskStop control BACKGROUND tasks (bash /
+	// agent / question), not a todo list — deepseek job_* precedent.
+	rows(toolKimiCode, SurfaceOrchestration, ActionAgentControl,
+		"tasklist", "taskoutput", "taskstop", "towerinbox", "towerstatus"),
+	rows(toolKimiCode, SurfaceOrchestration, ActionSubagentWait, "waitfor"),
+	rows(toolKimiCode, SurfaceMeta, ActionNotification, "notifyuser"),
+	rows(toolKimiCode, SurfaceMeta, ActionHarnessCall,
+		"creategoal", "getgoal", "setgoalbudget", "updategoal", "towerinit", "towermerge"),
+	rows(toolKimiCode, SurfaceOrchestration, ActionSpawnSubagent, "towerspawn"),
+	rows(toolKimiCode, SurfaceOrchestration, ActionAgentMessage,
+		"towersend", "towerfinding", "towerreview"),
+	rows(toolKimiCode, SurfaceBuiltin, ActionTodoUpdate, "towerplan", "towermission"),
+	rows(toolKimiCode, SurfaceMeta, ActionWorktreeRemove, "towerteardown"),
 )
 
 // --- kiro-cli --------------------------------------------------------
@@ -977,6 +1021,11 @@ var qwenCodeRows = concat(
 	// classifier-domain direction.
 	rows(toolQwenCode, SurfaceBuiltin, ActionMCPCall, "savememory", "memorize"),
 	rows(toolQwenCode, SurfaceMeta, ActionUserPromptExpansion, "qwen-code.slash_command"),
+	// advisor (qwen-code 0.24.6; ToolNames.ADVISOR in
+	// packages/core/src/tools/tool-names.ts, Kind.Think): a tool-less
+	// consultation of a separate Advisor model — a harness builtin, not
+	// a sub-agent spawn.
+	rows(toolQwenCode, SurfaceMeta, ActionHarnessCall, "advisor"),
 )
 
 // --- command-code ----------------------------------------------------
@@ -1159,20 +1208,29 @@ var junieRows = concat(
 )
 
 // --- zed ---------------------------------------------------------------
-// code: internal/adapter/zed/thread.go (mapZedTool). 7 grounded native
-// tool names — the COMPLETE surface a live multi-call session exercised
-// (list_directory / find_path / read_file / write_file / terminal /
-// edit_file / delete_path); no defensive rows.
+// code: internal/adapter/zed/thread.go (mapZedTool). 7 native tool names
+// grounded LIVE (list_directory / find_path / read_file / write_file /
+// terminal / edit_file / delete_path), plus 9 grounded 2026-09-28 in
+// Zed's own sources (zed-industries/zed crates/agent/src/tools/
+// *_tool.rs, each tool's `const NAME`); no defensive rows.
 var zedRows = concat(
-	rows(toolZed, SurfaceBuiltin, ActionReadFile, "read_file"),
-	rows(toolZed, SurfaceBuiltin, ActionWriteFile, "write_file"),
+	// diagnostics reads LSP diagnostics — cursor `readlints` precedent.
+	rows(toolZed, SurfaceBuiltin, ActionReadFile, "read_file", "diagnostics"),
+	// No canonical copy / mkdir type: a NEW path materializes, the same
+	// file-mutation reasoning as delete_path -> edit_file below.
+	rows(toolZed, SurfaceBuiltin, ActionWriteFile, "write_file", "copy_path", "create_directory"),
 	rows(toolZed, SurfaceBuiltin, ActionEditFile, "edit_file",
-		// No canonical delete action type exists; edit_file is the
-		// established precedent (cursor `Delete`, copilot/grok
+		// No canonical delete / move action type exists; edit_file is
+		// the established precedent (cursor `Delete`, copilot/grok
 		// `deletefile`/`removefile`).
-		"delete_path"),
+		"delete_path", "move_path"),
 	rows(toolZed, SurfaceBuiltin, ActionRunCommand, "terminal"),
 	rows(toolZed, SurfaceBuiltin, ActionSearchFiles, "list_directory", "find_path"),
+	rows(toolZed, SurfaceBuiltin, ActionSearchText, "grep"),
+	rows(toolZed, SurfaceBuiltin, ActionWebFetch, "fetch"),
+	rows(toolZed, SurfaceBuiltin, ActionWebSearch, "search_web"),
+	rows(toolZed, SurfaceBuiltin, ActionSkillInvoke, "skill"),
+	rows(toolZed, SurfaceOrchestration, ActionSpawnSubagent, "spawn_agent"),
 )
 
 // toolGlobRows are the tool-specific PREFIX globs. They sort after every

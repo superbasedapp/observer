@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
@@ -145,15 +146,16 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 
 	sessionID, _ := sessionAndAgentFromPath(path)
 	st := &parseState{
-		adapter:       a,
-		path:          path,
-		sessionID:     sessionID,
-		firstOffset:   fromOffset,
-		toolIdx:       map[string]int{},
-		modelByStep:   map[string]string{},
-		thoughtByStep: map[string]string{},
-		unknownTool:   map[string]bool{},
-		cacheAcc:      cacheobs.New(MaxBlocksPerSession),
+		adapter:         a,
+		path:            path,
+		sessionID:       sessionID,
+		firstOffset:     fromOffset,
+		toolIdx:         map[string]int{},
+		modelByStep:     map[string]string{},
+		startTimeByStep: map[string]time.Time{},
+		thoughtByStep:   map[string]string{},
+		unknownTool:     map[string]bool{},
+		cacheAcc:        cacheobs.New(MaxBlocksPerSession),
 	}
 	if err := st.readHeader(f); err != nil {
 		return adapter.ParseResult{}, err
@@ -244,6 +246,18 @@ type parseState struct {
 	// for the step_id currently in flight, consumed by the paired
 	// tool_call.inference.end and every tool call under that step.
 	modelByStep map[string]string
+	// startTimeByStep tracks tool_call.inference.start's own record
+	// timestamp for the step_id currently in flight, so the paired
+	// tool_call.inference.end can compute this ONE inference's real
+	// generation duration (end.timestamp - start.timestamp) — both
+	// records describe the SAME model call, per the doc.go step-grouping
+	// contract (one thought + one assistant_message + zero-or-more tool
+	// calls + exactly one inference start/end share a step_id). Like
+	// modelByStep, this is NEVER recovered across a resumed parse (a new
+	// parseState per ParseSessionFile call) — an inference.end whose
+	// start fell in an earlier window has no entry here and is left
+	// unstamped rather than guessing.
+	startTimeByStep map[string]time.Time
 	// thoughtByStep holds a step's reasoning text between thought.end and
 	// the assistant_message.end (or first tool call) of the SAME step,
 	// which consumes and clears it.
@@ -326,6 +340,9 @@ func (st *parseState) handle(rec *rawRecord, res *adapter.ParseResult) {
 	case typeToolCallInferenceStart:
 		if rec.ToolCallInferenceStart != nil && rec.ToolCallInferenceStart.ChatCompletionRequest.Model != "" {
 			st.modelByStep[rec.StepID] = rec.ToolCallInferenceStart.ChatCompletionRequest.Model
+		}
+		if ts := parseTimestamp(rec.Timestamp); !ts.IsZero() {
+			st.startTimeByStep[rec.StepID] = ts
 		}
 	case typeToolCallInferenceEnd:
 		st.emitTokens(rec, res)
@@ -543,17 +560,18 @@ func (st *parseState) emitTokens(rec *rawRecord, res *adapter.ParseResult) {
 	model := st.modelByStep[rec.StepID]
 	tp := tokenBundle(rec.ToolCallInferenceEnd)
 	tokenSourceEventID := "tok:" + eventKey(rec)
-	if obs := emitCacheObservation(st.cacheAcc, st.path, st.sessionID, tokenSourceEventID, model, parseTimestamp(rec.Timestamp), tp); obs != nil {
+	endTS := parseTimestamp(rec.Timestamp)
+	if obs := emitCacheObservation(st.cacheAcc, st.path, st.sessionID, tokenSourceEventID, model, endTS, tp); obs != nil {
 		res.CacheObservations = append(res.CacheObservations, *obs)
 	}
-	res.TokenEvents = append(res.TokenEvents, models.TokenEvent{
+	ev := models.TokenEvent{
 		SourceFile:          st.path,
 		SourceEventID:       tokenSourceEventID,
 		SessionID:           st.sessionID,
 		ProjectRoot:         st.projectRoot(),
 		GitBranch:           st.branch,
 		GitRemote:           st.remote,
-		Timestamp:           parseTimestamp(rec.Timestamp),
+		Timestamp:           endTS,
 		Tool:                models.ToolPoolside,
 		Model:               model,
 		InputTokens:         tp.inputNet,
@@ -565,7 +583,19 @@ func (st *parseState) emitTokens(rec *rawRecord, res *adapter.ParseResult) {
 		// rows as `unknown` rather than against an invented rate.
 		Source:      models.TokenSourceJSONL,
 		Reliability: models.ReliabilityApproximate,
-	})
+	}
+	// GenMs = this inference's own start->end span, only when the paired
+	// tool_call.inference.start for the SAME step_id was seen in THIS
+	// parse window (no cross-window rewind — see doc.go "no-rewind
+	// guarantee" — and never a negative/zero span from a clock hiccup).
+	if startTS, ok := st.startTimeByStep[rec.StepID]; ok && !endTS.IsZero() {
+		if d := endTS.Sub(startTS); d > 0 {
+			ev.GenMs = d.Milliseconds()
+			ev.GenBasis = models.GenBasisNative
+			ev.GenTimingV = 1
+		}
+	}
+	res.TokenEvents = append(res.TokenEvents, ev)
 }
 
 // eventKey returns the record's deterministic identity for SourceEventID

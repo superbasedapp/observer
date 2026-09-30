@@ -9,6 +9,8 @@ export function Sparkline({
   color = "var(--accent)",
   fill = true,
   strokeWidth = 1.4,
+  stretch = false,
+  reveal = false,
 }: {
   data: number[];
   width?: number;
@@ -16,6 +18,10 @@ export function Sparkline({
   color?: string;
   fill?: boolean;
   strokeWidth?: number;
+  /** Fill the container's width (viewBox + non-scaling stroke). */
+  stretch?: boolean;
+  /** Draw the line in left-to-right on mount (a transform-only reveal). */
+  reveal?: boolean;
 }) {
   if (!data || data.length < 2) {
     return <svg width={width} height={height} />;
@@ -43,10 +49,34 @@ export function Sparkline({
   const fillPath = fill
     ? `${linePath} L${width.toFixed(1)},${height} L0,${height} Z`
     : "";
-  const fillId = `spark-fill-${Math.random().toString(36).slice(2, 8)}`;
+  const uid = Math.random().toString(36).slice(2, 8);
+  const fillId = `spark-fill-${uid}`;
+  const clipId = `spark-clip-${uid}`;
 
   return (
-    <svg width={width} height={height} className="overflow-visible">
+    <svg
+      width={stretch ? "100%" : width}
+      height={height}
+      viewBox={stretch ? `0 0 ${width} ${height}` : undefined}
+      preserveAspectRatio={stretch ? "none" : undefined}
+      className="overflow-visible"
+    >
+      {reveal && (
+        <defs>
+          <clipPath id={clipId}>
+            {/* The clip rect grows with transform: scaleX (sb-bar-grow),
+                revealing the line left to right. */}
+            <rect
+              width={width}
+              height={height + 4}
+              y={-2}
+              className="sb-bar-grow"
+              style={{ transformBox: "fill-box", transformOrigin: "left center" }}
+            />
+          </clipPath>
+        </defs>
+      )}
+      <g clipPath={reveal ? `url(#${clipId})` : undefined}>
       {fill && (
         <defs>
           <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
@@ -63,7 +93,9 @@ export function Sparkline({
         strokeWidth={strokeWidth}
         strokeLinecap="round"
         strokeLinejoin="round"
+        vectorEffect={stretch ? "non-scaling-stroke" : undefined}
       />
+      </g>
     </svg>
   );
 }

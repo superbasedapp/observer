@@ -182,6 +182,40 @@ per-invocation `-c` overrides to the inner spawned app-server
 (either via argv pass-through or IPC handshake). Filed under the v6
 doc's "Suggested upstream fixes" §V6-2.
 
+## Codex 0.157.x routing re-check (2026-09-27, backlog item 14)
+
+Re-verified against codex 0.157.1 (npm `@openai/codex@0.157.1`, run in a
+throwaway `CODEX_HOME` against a local listener, no model call):
+
+- **Both route knobs still work.** Top-level `openai_base_url` (built-in
+  `openai` provider) and the `observer init` shape (`model_provider =
+  "openai-observer"` + `[model_providers.openai-observer] base_url`) both sent
+  `POST /v1/responses` to the loopback listener.
+- **The built-in provider tries a WebSocket first.** With `openai_base_url`,
+  codex (0.154.0 and 0.157.1 alike) opens `GET /v1/responses` WebSocket
+  upgrades before falling back to HTTPS POST. The proxy passes a WebSocket
+  upgrade straight through and records no `api_turns` row for it, so turns
+  that stay on a WebSocket are session-log capture only. The `openai-observer`
+  custom provider made no WebSocket attempt (POST only), which is one more
+  reason `observer init` writes that shape.
+- **Application network policy (new in 0.157.0, PRs #47389 / #47407).** A
+  managed requirements file with an enabled `[application.network]` block
+  (`/etc/codex/requirements.toml`, `%ProgramData%\OpenAI\Codex\requirements.toml`,
+  macOS MDM, or ChatGPT-workspace cloud requirements) restricts codex's own
+  HTTP/WebSocket traffic to "HTTPS or WSS to that exact host"
+  (`codex-rs/http-client/src/network_policy.rs`). The observer proxy is plain
+  http on loopback, so no allow entry admits it: a routed codex is expected to
+  fail under such a policy. `observer doctor codex` warns when the system file
+  enables it (MDM and cloud requirements are not visible to it). Not
+  live-verified: it needs a root-owned requirements file.
+- **Bedrock leaves the proxy.** `model_provider = "amazon-bedrock"` (codex's
+  built-in provider, configured by `aws.profile` / `aws.region`, no
+  `base_url`) signs requests with SigV4 and sends them to AWS. The observer
+  route cannot cover it; those turns are session-log capture only.
+  `observer doctor codex` (`codex.proxy_route`) and the `observer codex`
+  launch notice say so instead of implying proxy-exact capture, and name any
+  profile (`[profiles.<name>]` or `<name>.config.toml`) that selects it.
+
 ## V6-3: proxy TLS handshake adds TTFB on the first request
 
 `docs/observer-platform-issues-v6.md` §V6-3: even when V5-1 +

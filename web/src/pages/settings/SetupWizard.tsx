@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
-import { Button } from "@/components/primitives";
+import { Button, Icon } from "@/components/primitives";
 import { Obs } from "@/components/Obs";
 import { useApi } from "@/lib/useApi";
 import type { CodexHookTrust } from "@/lib/types";
+import { Check, Dot } from "lucide-react";
 
 // SetupWizard — the guided per-tool init flow (usability arc P4.2 /
 // review row B3). One card per integration step (hooks → MCP → proxy
@@ -175,13 +176,13 @@ function CodexTrustCard() {
       <div className="flex flex-wrap items-center gap-2">
         <span
           className={clsx(
-            "inline-flex h-4 w-4 items-center justify-center rounded-full border text-[10px] font-bold",
+            "inline-flex h-4 w-4 items-center justify-center rounded-pill border text-micro font-bold",
             ok
               ? "border-success/40 bg-success-soft text-success"
               : "border-line-2 bg-bg-3 text-fg-4",
           )}
         >
-          {ok ? "✓" : "·"}
+          {ok ? <Icon icon={Check} size={10} label="done" /> : <Icon icon={Dot} size={12} label="not done" />}
         </span>
         <span className="text-[11.5px] font-semibold text-fg-1">
           Hook trust (inside codex)
@@ -326,13 +327,13 @@ function WizardStep({
       <div className="flex flex-wrap items-center gap-2">
         <span
           className={clsx(
-            "inline-flex h-4 w-4 items-center justify-center rounded-full border text-[10px] font-bold",
+            "inline-flex h-4 w-4 items-center justify-center rounded-pill border text-micro font-bold",
             state.done
               ? "border-success/40 bg-success-soft text-success"
               : "border-line-2 bg-bg-3 text-fg-4",
           )}
         >
-          {state.done ? "✓" : "·"}
+          {state.done ? <Icon icon={Check} size={10} label="done" /> : <Icon icon={Dot} size={12} label="not done" />}
         </span>
         <span className="text-[11.5px] font-semibold text-fg-1">
           {spec.title}

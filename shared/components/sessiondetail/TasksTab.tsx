@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
-import { Tooltip } from "../../primitives";
+import { Pill, Tooltip } from "../../primitives";
 import { ChartState } from "../../charts/ChartState";
 import { fmtCompact, fmtElapsed, fmtInt, fmtTaskUSD } from "../../lib/format";
+import { TASK_STATUS } from "../../lib/sessionVocab";
+import { vocabView } from "../../lib/vocabEntry";
 import type { RenderCost } from "./cost";
 import type {
   ExtraTaskColumn,
@@ -41,6 +43,11 @@ export type TasksTabProps = {
   loading?: boolean;
   /** Load error, if any. */
   error?: Error | null;
+  /** The read was a denial (HTTP 403, the apps' useApi `denied`): the panel
+   *  renders the shared permission-denied state instead of an error. */
+  denied?: boolean;
+  /** The permission key the server's 403 named, when it named one. */
+  deniedPermission?: string | null;
   /**
    * Whether token usage was captured for this session. The caller resolves it
    * (the node: `report.token_usage_available ?? hasRecordedUsage(detail)`).
@@ -59,6 +66,8 @@ export function TasksTab({
   report,
   loading = false,
   error = null,
+  denied = false,
+  deniedPermission = null,
   usageAvailable,
   renderCost = defaultTaskRenderCost,
   extraColumns,
@@ -69,6 +78,8 @@ export function TasksTab({
       <ChartState
         loading={loading && !report}
         error={error}
+        denied={denied}
+        deniedPermission={deniedPermission}
         empty={!report}
         emptyHint="Loading task report…"
         height={100}
@@ -244,9 +255,11 @@ function TasksBody({
   );
 }
 
-function statusLabel(item: TaskItemLike): string {
+// statusParts resolves the status a row shows (the vocabulary value that
+// picks the pill's tone and glyph) and its qualifier suffix.
+function statusParts(item: TaskItemLike): { status: string; suffix: string } {
   const base = item.status || item.raw_status || "unknown";
-  if (item.still_open) return `${base} (open)`;
+  if (item.still_open) return { status: base, suffix: " (open)" };
   if (item.never_activated) {
     // NeverActivated means "closed without ever passing through
     // in_progress" — the closing status can be completed, cancelled,
@@ -255,9 +268,22 @@ function statusLabel(item: TaskItemLike): string {
     // than hardcoding "completed": a cancelled- or vanished-before-
     // started task previously lied and said "completed (never
     // activated)".
-    return `${item.terminal_status || base} (never activated)`;
+    return { status: item.terminal_status || base, suffix: " (never activated)" };
   }
-  return base;
+  return { status: base, suffix: "" };
+}
+
+// StatusPill renders a task's status as a glyph + tone pill from the ONE
+// TASK_STATUS table (shared/lib/sessionVocab.ts); in_progress spins.
+function StatusPill({ item }: { item: TaskItemLike }) {
+  const { status, suffix } = statusParts(item);
+  const v = vocabView("taskStatus", TASK_STATUS, status);
+  return (
+    <Pill variant={v.tone} icon={v.icon} spin={v.spin}>
+      {v.label}
+      {suffix}
+    </Pill>
+  );
 }
 
 // VANISHED_GLOSS explains taskflow.StatusVanished — a synthetic status
@@ -309,13 +335,13 @@ function TaskRow({
           <Tooltip content={<span>{statusGloss(item)}</span>} maxWidth={280}>
             <span
               tabIndex={0}
-              className="cursor-help underline decoration-dotted decoration-fg-4 focus:outline-none"
+              className="cursor-help rounded-pill focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
             >
-              {statusLabel(item)}
+              <StatusPill item={item} />
             </span>
           </Tooltip>
         ) : (
-          statusLabel(item)
+          <StatusPill item={item} />
         )}
       </td>
       <td className="py-1.5 text-right tabular-nums text-fg-2">

@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
+import { Icon } from "@/components/primitives";
+import { X } from "lucide-react";
 
 // Toast — a small, generic, module-level toast store rendered as
 // stacked auto-dismiss notices bottom-right. Kept deliberately generic
@@ -106,7 +108,7 @@ export function ToastViewport() {
         >
           <span
             aria-hidden
-            className={clsx("mt-1 h-2 w-2 shrink-0 rounded-full", DOT[t.variant])}
+            className={clsx("mt-1 h-2 w-2 shrink-0 rounded-pill", DOT[t.variant])}
           />
           <span className="text-fg-1">{t.text}</span>
           <button
@@ -115,7 +117,7 @@ export function ToastViewport() {
             className="ml-1 shrink-0 self-start text-[11px] text-fg-4 hover:text-fg-2"
             aria-label="Dismiss"
           >
-            ✕
+            <Icon icon={X} size="xs" />
           </button>
         </div>
       ))}

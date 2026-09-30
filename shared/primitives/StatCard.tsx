@@ -2,7 +2,9 @@ import clsx from "clsx";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Sparkline } from "./Sparkline";
+import { StatDelta } from "./StatDelta";
 import { useHelpSlot } from "./helpSlot";
+import { AnimatedValue, staleClass } from "./Motion";
 
 export type StatCardProps = {
   label: string;
@@ -42,11 +44,17 @@ export type StatCardProps = {
   // sees the data is mid-refresh. Drives off the parent useApi's
   // `loading` flag.
   loading?: boolean;
+  // The value on screen belongs to the previous filter while the new
+  // response is in flight: the card dims (opacity only) until it lands.
+  stale?: boolean;
+  // Tween numeric values (count-up on page entry, tween on change). Default
+  // true; values that are not a single number render unchanged anyway.
+  animate?: boolean;
   children?: ReactNode;
 };
 
 export function StatCard(props: StatCardProps) {
-  const { linkTo, className, accent, warn, spark, sparkColor, loading, ...rest } = props;
+  const { linkTo, className, accent, warn, spark, sparkColor, loading, stale, ...rest } = props;
   // Design intent (design/app.css:404-459):
   //   .stat { position: relative; overflow: hidden }
   //   .stat.accent::before / .stat.warn::before — radial gradient at top right
@@ -57,13 +65,14 @@ export function StatCard(props: StatCardProps) {
   // sparkline floats bottom-right of the card rather than stacking under
   // the sub row (the earlier layout, which made sub+spark fight for room).
   const wrapperClass = clsx(
-    "relative flex min-h-[104px] flex-col gap-1 overflow-hidden rounded-3 border bg-bg-2 px-4 py-3 transition-colors",
+    "relative flex min-h-stat flex-col gap-1 overflow-hidden rounded-3 border bg-bg-2 px-stat-x py-stat-y transition-colors",
     accent
       ? "border-accent/40"
       : warn
         ? "border-warn/30"
         : "border-line-2 hover:border-line-3",
-    linkTo && "hover:bg-bg-3",
+    linkTo && "sb-lift hover:bg-bg-3",
+    staleClass(stale),
     className,
   );
   // Per-variant top-right radial overlay. Even the default variant gets
@@ -86,7 +95,8 @@ export function StatCard(props: StatCardProps) {
       <div
         className={clsx(
           "relative flex min-h-0 flex-1 flex-col gap-1",
-          loading && "animate-pulse",
+          // Theme-aware shimmer (motion.css), not Tailwind's opacity pulse.
+          loading && "animate-shimmer overflow-hidden",
         )}
       >
         <Body {...rest} loading={loading} />
@@ -123,22 +133,13 @@ function Body({
   icon,
   cornerPill,
   loading,
+  animate = true,
   children,
 }: Omit<
   StatCardProps,
-  "linkTo" | "className" | "warn" | "accent" | "spark" | "sparkColor"
+  "linkTo" | "className" | "warn" | "accent" | "spark" | "sparkColor" | "stale"
 >) {
   const renderHelp = useHelpSlot();
-  // Design's cost-aware delta coloring: UP = danger (cost went up),
-  // DOWN = success (cost went down). `design/app.css:442-443`.
-  const deltaColor =
-    delta == null || !Number.isFinite(delta)
-      ? "text-fg-3"
-      : delta > 0
-        ? "text-danger"
-        : delta < 0
-          ? "text-success"
-          : "text-fg-3";
   return (
     <>
       <div className="flex items-start justify-between gap-2">
@@ -173,8 +174,13 @@ function Body({
         )}
       </div>
       <div className="mt-1 flex items-baseline gap-1.5 text-fg-0">
-        <span className="text-[34px] font-bold leading-[1.05] tracking-[-0.025em]">
-          {value}
+        <span
+          className={clsx(
+            "min-w-0 font-bold leading-[1.05] tracking-[-0.025em]",
+            valueSizeClass(value),
+          )}
+        >
+          {animate ? <AnimatedValue value={value} /> : value}
         </span>
         {unit && (
           <span className="text-[16px] font-medium text-fg-2">{unit}</span>
@@ -182,26 +188,23 @@ function Body({
       </div>
       {(sub || delta != null || deltaPrior != null) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 pr-[88px] text-[11px] text-fg-3">
-          {delta != null && Number.isFinite(delta) && (
-            <span
-              className={clsx(
-                "inline-flex items-center gap-0.5 font-semibold",
-                deltaColor,
-              )}
-            >
-              {delta > 0 ? "↑" : delta < 0 ? "↓" : "·"}
-              {(Math.abs(delta) * 100).toFixed(1)}%
-            </span>
-          )}
-          {deltaPrior != null ? (
-            <span>{deltaPrior}</span>
-          ) : (
-            deltaLabel && <span>{deltaLabel}</span>
-          )}
+          {/* Cost-aware delta (UP = danger, DOWN = success), then the prior
+              value or label: the shared StatDelta, also HeroStat's. */}
+          <StatDelta delta={delta} deltaLabel={deltaLabel} deltaPrior={deltaPrior} />
           {sub && <span>{sub}</span>}
         </div>
       )}
       {children}
     </>
   );
+}
+
+// Long values ("$24,835.62", "$181,324.17") clipped at 34px in the 6- and
+// 7-column tile grids. Step the size down by rendered length instead.
+function valueSizeClass(value: ReactNode): string {
+  const len = typeof value === "string" || typeof value === "number" ? String(value).length : 0;
+  if (len > 11) return "text-[22px]";
+  if (len > 9) return "text-[26px]";
+  if (len > 7) return "text-[30px]";
+  return "text-[34px]";
 }

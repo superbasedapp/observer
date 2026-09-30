@@ -1,0 +1,44 @@
+{
+  "_comment": "ONE fixture pinning the chart-granularity table on both sides: internal/timebucket (Go, timebucket_test.go) and shared/lib/granularity.ts (TS, web/src/lib/granularity.test.ts). Spans are milliseconds; null = an unbounded window. Plan: docs/plans/chart-time-granularity-plan-2026-09-29.md.",
+  "max_points": 2000,
+  "table": [
+    { "gran": "5m", "step_ms": 300000, "auto_max_span_ms": 10800000, "always_allowed": false },
+    { "gran": "1h", "step_ms": 3600000, "auto_max_span_ms": 604800000, "always_allowed": false },
+    { "gran": "1d", "step_ms": 86400000, "auto_max_span_ms": 15552000000, "always_allowed": true },
+    { "gran": "1w", "step_ms": 604800000, "auto_max_span_ms": 0, "always_allowed": true }
+  ],
+  "choose": [
+    { "name": "1h window", "span_ms": 3600000, "want": "5m" },
+    { "name": "3h window (edge, inclusive)", "span_ms": 10800000, "want": "5m" },
+    { "name": "just over 3h", "span_ms": 10800001, "want": "1h" },
+    { "name": "7h window", "span_ms": 25200000, "want": "1h" },
+    { "name": "12h window", "span_ms": 43200000, "want": "1h" },
+    { "name": "1d window", "span_ms": 86400000, "want": "1h" },
+    { "name": "7d window (edge, inclusive)", "span_ms": 604800000, "want": "1h" },
+    { "name": "just over 7d", "span_ms": 604800001, "want": "1d" },
+    { "name": "14d window", "span_ms": 1209600000, "want": "1d" },
+    { "name": "30d window", "span_ms": 2592000000, "want": "1d" },
+    { "name": "90d window", "span_ms": 7776000000, "want": "1d" },
+    { "name": "180d window (edge, inclusive)", "span_ms": 15552000000, "want": "1d" },
+    { "name": "1y window", "span_ms": 31536000000, "want": "1w" },
+    { "name": "all (unbounded)", "span_ms": null, "want": "1w" }
+  ],
+  "points": [
+    { "span_ms": 3600000, "gran": "5m", "want": 13 },
+    { "span_ms": 604800000, "gran": "5m", "want": 2017 },
+    { "span_ms": 604800000, "gran": "1h", "want": 169 },
+    { "span_ms": 7171200000, "gran": "1h", "want": 1993 },
+    { "span_ms": 7257600000, "gran": "1h", "want": 2017 },
+    { "span_ms": 86400000, "gran": "1d", "want": 2 },
+    { "span_ms": 0, "gran": "1h", "want": 1 }
+  ],
+  "allowed": [
+    { "name": "1h", "span_ms": 3600000, "want": ["5m", "1h", "1d", "1w"] },
+    { "name": "6.9d (5m still fits)", "span_ms": 596160000, "want": ["5m", "1h", "1d", "1w"] },
+    { "name": "7d (5m over the cap)", "span_ms": 604800000, "want": ["1h", "1d", "1w"] },
+    { "name": "83d (1h still fits)", "span_ms": 7171200000, "want": ["1h", "1d", "1w"] },
+    { "name": "84d (1h over the cap)", "span_ms": 7257600000, "want": ["1d", "1w"] },
+    { "name": "1y", "span_ms": 31536000000, "want": ["1d", "1w"] },
+    { "name": "all (unbounded)", "span_ms": null, "want": ["1d", "1w"] }
+  ]
+}

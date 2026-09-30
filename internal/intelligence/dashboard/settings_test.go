@@ -1029,7 +1029,7 @@ func TestHandleConfigBackup_RestoreSwaps(t *testing.T) {
 
 // TestHandleConfigSection_PreservesPricingOnIntelligenceSave guards a
 // subtle interaction: the intelligence section's PUT handler decodes
-// only the editable subset (CodeGraph / APIKeyEnv / SummaryModel /
+// only the editable subset (APIKeyEnv / SummaryModel /
 // MonthlyBudgetUSD) and must NOT clobber the pricing overrides that
 // /api/config/pricing manages separately.
 func TestHandleConfigSection_PreservesPricingOnIntelligenceSave(t *testing.T) {

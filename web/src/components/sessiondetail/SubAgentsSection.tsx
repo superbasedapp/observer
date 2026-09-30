@@ -62,6 +62,8 @@ export function SubAgentsSection({ sessionId }: { sessionId: string | null }) {
       loaded={Boolean(data)}
       loading={subs.loading}
       error={subs.error}
+      denied={subs.denied}
+      deniedPermission={subs.deniedPermission}
       fetchFullText={(id) =>
         fetchJSON<ActionFullText>(`/api/action/${id}/full_text`)
       }

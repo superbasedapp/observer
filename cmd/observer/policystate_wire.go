@@ -30,13 +30,17 @@ import (
 // heartbeat + on-change), and the Notifier.
 //
 // The start.go wiring HAS SHIPPED: `observer start` constructs the reporter
-// and registers the outcome sinks whenever [org_client.share].policy_state
-// is on. (An earlier revision of this comment said that edit was deferred
-// behind the D1 gate while start.go was an uncommitted carve-out; it is
-// not, and a stale "this is not wired yet" note beside wired code is how the
-// next reader concludes a live reporting path is dead.) Everything here is
-// still DORMANT on a node that has not opted in: with no sinks registered,
-// the orgclient loops behave exactly as before (nil-sink no-op, R6-1).
+// and registers the outcome sinks UNCONDITIONALLY whenever the org client
+// is on (D-DEMO-13, 2026-09-21 — it used to do so only when the local
+// [org_client.share].policy_state was already true, which left an org
+// RAISE of that share with no reporter to act on). Dormancy is enforced at
+// report(), by effectiveEnabled (the local opt-in lowered / raised by the
+// governance directive), never by sink absence: the sinks only record
+// in-memory state and poke the notifier, and report() returns before any
+// read or send when the channel is not enabled. (An earlier revision of
+// this comment said the start.go edit was deferred behind the D1 gate; a
+// stale note beside wired code is how the next reader concludes a live
+// reporting path is dead, so this paragraph tracks the code.)
 
 // policyStatePoster is the sender seam (satisfied by *orgclient.Client). An
 // interface so the reporter unit-tests with a fake poster, no live daemon.
@@ -535,6 +539,9 @@ type policyStateReporter struct {
 	lastGateway  orgclient.PolicyResourceFetchOutcome
 	lastGovern   orgclient.PolicyResourceFetchOutcome
 	lastFeatures orgclient.PolicyResourceFetchOutcome
+	// lastMCPRelay is the tools.mcp_access slot (Agent Access P4, doc3
+	// §12.8) — the node-mcp-relay point's LATEST-FETCH facts.
+	lastMCPRelay orgclient.PolicyResourceFetchOutcome
 
 	running     atomic.Bool // single-flight guard for report()
 	unsupported atomic.Bool // 404/405 latch (S8)
@@ -658,9 +665,18 @@ func (r *policyStateReporter) recordPolicyResource(family string, o orgclient.Po
 		r.lastGovern = mergePolicyResourceOutcome(r.lastGovern, o)
 	case policyfam.FamilyNodeFeatures:
 		r.lastFeatures = mergePolicyResourceOutcome(r.lastFeatures, o)
+	case policyfam.FamilyMCPAccess:
+		r.lastMCPRelay = mergePolicyResourceOutcome(r.lastMCPRelay, o)
 	}
 	r.mu.Unlock()
 	r.notifier.Poke()
+}
+
+// mcpRelaySlot is the tools.mcp_access LATEST-FETCH slot (doc3 §12.8).
+func (r *policyStateReporter) mcpRelaySlot() orgclient.PolicyResourceFetchOutcome {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastMCPRelay
 }
 
 func (r *policyStateReporter) admitterSlot() orgclient.PolicyResourceFetchOutcome {
@@ -821,11 +837,20 @@ func (r *policyStateReporter) effectiveEnabled(ctx context.Context) bool {
 		return r.enabled
 	}
 	eff := r.ngov.Effective(ctx)
-	out := eff.LowerBool("policy_state", r.enabled)
-	if govern.ExtractionAuthorized(eff, "policy_state") {
-		out = eff.RaiseBool("policy_state", out)
-	}
-	return out
+	return policyStateReportingEnabled(r.enabled, eff)
+}
+
+// policyStateReportingEnabled is the pure decision behind effectiveEnabled:
+// the local opt-in, lowered by a "policy_state" share directive, then raised
+// by one only when the node is authorized for that tier. Split out so the
+// three outcomes the D-DEMO-13 regression pins (local off + org raise = ON;
+// local off + no directive = OFF; local on + org lower = OFF) are table
+// tests over a synthetic govern.Effective, with no daemon handle in the way.
+func policyStateReportingEnabled(local bool, eff govern.Effective) bool {
+	// The ONE algebra every share consumer uses (the push seam's
+	// lowerShareOptions, the Privacy card's SourceForBoolGated) — never a
+	// second hand-written copy of it.
+	return eff.MergeBoolGated("policy_state", local)
 }
 
 func (r *policyStateReporter) report(ctx context.Context) {
@@ -1061,13 +1086,18 @@ func rowsAtDepth(rows []orgcontract.PolicyStateRow, depth int) []orgcontract.Pol
 
 // run is the independent-reporter goroutine body (§4.3): one startup emit, then
 // a heartbeat ticker + coalesced on-change pokes, until ctx is done. It never
-// returns a non-nil error (P1). start.go launches this in a g.Go, gated by
-// [org_client.share].policy_state (belt-and-suspenders: report() is also
-// enabled-gated).
+// returns a non-nil error (P1). start.go launches this in a g.Go on every
+// org-client-enabled node; report() is the only enable gate (D-DEMO-13).
 func (r *policyStateReporter) run(ctx context.Context, heartbeat time.Duration) error {
-	if r == nil || !r.enabled {
+	if r == nil {
 		return nil
 	}
+	// No r.enabled short-circuit here: the local opt-in is only ONE input
+	// to effectiveEnabled (a node.governance share directive can lower it
+	// off or, under extract.policy_state, raise it on after the daemon
+	// started), so the loop must stay alive and let each report() decide.
+	// A reporter with no ngov handle and enabled=false still returns from
+	// report() before any read or send, so the loop costs one ticker.
 	if heartbeat <= 0 {
 		heartbeat = time.Duration(config.DefaultPolicyStateHeartbeatSeconds) * time.Second
 	}
@@ -1162,6 +1192,12 @@ func buildPolicyStateReporter(
 		// "this node's terminals/remote/routing-apply/patterns-write are
 		// ungoverned" fact.
 		policystate.PointNodeFeatures: newNodeFeaturesPointReader(nf, rep.featuresSlot, now),
+		// v5 (Agent Access P4, doc3 §12.8): registered UNCONDITIONALLY for
+		// the same optional-point-ladder reason. With [mcp_relay] disabled
+		// the handle is nil and the row is the honest none/no_policy "this
+		// node runs no MCP relay"; with it enabled the row carries the
+		// compiled table's version + effective hash, enum-only.
+		policystate.PointNodeMCPRelay: newMCPRelayPointReader(processMCPRelay.Load(), rep.mcpRelaySlot, now),
 	}
 	return rep
 }

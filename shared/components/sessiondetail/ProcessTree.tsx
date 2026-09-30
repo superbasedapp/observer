@@ -6,9 +6,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Pill } from "../../primitives";
+import { Icon, Pill } from "../../primitives";
 import { fmtBytes, fmtClock, fmtDuration, fmtInt } from "../../lib/format";
 import type { MetricSampleLike, ProcessNodeLike } from "../../lib/types";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, CornerDownRight, MemoryStick, Timer } from "lucide-react";
 
 // ProcessTree — the OS-level process tree/table view of the session-detail
 // System tab: the Tree | Table toggle, Collapse-all, the recursive tree rows
@@ -34,19 +35,19 @@ const LARGE_TREE_THRESHOLD = 150;
 // the active sort) with a "show all" escape hatch.
 const TABLE_ROW_CAP = 100;
 
+// ATTRIBUTION_VARIANT - how a process was attributed to the session: a
+// direct signal (env token, pid bridge, adapter pid) is accent, inherited
+// from the parent is neutral, none is warn; any other source reads info.
+const ATTRIBUTION_VARIANT: Readonly<Record<string, PillVariant>> = {
+  env_token: "accent",
+  bridge: "accent",
+  adapter_pid: "accent",
+  inherited: "neutral",
+  none: "warn",
+};
+
 function attributionVariant(source: string): PillVariant {
-  switch (source) {
-    case "env_token":
-    case "bridge":
-    case "adapter_pid":
-      return "accent";
-    case "inherited":
-      return "neutral";
-    case "none":
-      return "warn";
-    default:
-      return "info";
-  }
+  return ATTRIBUTION_VARIANT[source] ?? "info";
 }
 
 function runtimeLabel(n: ProcessNodeLike): string {
@@ -178,17 +179,21 @@ function MetricBadges({ node }: { node: ProcessNodeLike }) {
   return (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10.5px] text-fg-3">
       {node.cpu_ms != null && node.cpu_ms > 0 && (
-        <span title="cumulative CPU time (user+system)">⏱ {fmtDuration(node.cpu_ms)}</span>
+        <span className="inline-flex items-center gap-0.5" title="cumulative CPU time (user+system)">
+          <Icon icon={Timer} size={10} />
+          {fmtDuration(node.cpu_ms)}
+        </span>
       )}
       {ws > 0 && (
-        <span title={memTitle}>
-          ▦ {fmtBytes(ws)}
+        <span className="inline-flex items-center gap-0.5" title={memTitle}>
+          <Icon icon={MemoryStick} size={10} />
+          {fmtBytes(ws)}
           {peak > ws ? <span className="text-fg-4"> /{fmtBytes(peak)}</span> : null}
         </span>
       )}
       {(rb > 0 || wb > 0) && (
         <span title={`disk read ${fmtBytes(rb)} · write ${fmtBytes(wb)}`}>
-          ↓{fmtBytes(rb)} ↑{fmtBytes(wb)}
+          <DiskIO read={rb} write={wb} />
         </span>
       )}
       {node.thread_count != null && node.thread_count > 0 && (
@@ -245,7 +250,7 @@ function ProcessTreeNode({
                 : "Collapse"
             }
           >
-            {isCollapsed ? "▸" : "▾"}
+            <Icon icon={isCollapsed ? ChevronRight : ChevronDown} size="xs" />
           </button>
         ) : (
           <span className="w-[16px] select-none text-fg-4">·</span>
@@ -287,7 +292,8 @@ function ProcessTreeNode({
         <MetricBadges node={node} />
         {node.command && (
           <span className="truncate text-fg-3" title={node.command}>
-            ↳ {node.command}
+            <Icon icon={CornerDownRight} size={10} className="mr-0.5 inline-block align-middle" />
+            {node.command}
             {node.turn_index != null ? ` · turn ${node.turn_index}` : ""}
           </span>
         )}
@@ -382,8 +388,10 @@ function ProcessTable({
         }
       }}
     >
-      {label}
-      {sortKey === k ? (desc ? " ↓" : " ↑") : ""}
+      <span className="inline-flex items-center gap-0.5">
+        {label}
+        {sortKey === k && <Icon icon={desc ? ArrowDown : ArrowUp} size={10} />}
+      </span>
     </th>
   );
 
@@ -463,7 +471,7 @@ function ProcessTable({
               </td>
               <td className="py-1 pr-2 text-right font-mono tabular-nums text-fg-3">
                 {(n.read_bytes ?? 0) + (n.write_bytes ?? 0) > 0
-                  ? `↓${fmtBytes(n.read_bytes ?? 0)} ↑${fmtBytes(n.write_bytes ?? 0)}`
+                  ? <DiskIO read={n.read_bytes ?? 0} write={n.write_bytes ?? 0} />
                   : "-"}
               </td>
               <td className="py-1 pl-2">
@@ -599,5 +607,22 @@ export function ProcessTree({
         )}
       </div>
     </>
+  );
+}
+
+// DiskIO renders a read/write byte pair as arrow glyphs (down = read,
+// up = write), shared by the metric badges and the flat table.
+function DiskIO({ read, write }: { read: number; write: number }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="inline-flex items-center">
+        <Icon icon={ArrowDown} size={10} label="read" />
+        {fmtBytes(read)}
+      </span>
+      <span className="inline-flex items-center">
+        <Icon icon={ArrowUp} size={10} label="write" />
+        {fmtBytes(write)}
+      </span>
+    </span>
   );
 }

@@ -4,39 +4,39 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 )
 
 // maxToolVersionRunes bounds a captured tool/CLI version string. A real
-// semver-ish token ("0.150.0", "3.17.4-beta.1", a short git sha suffix)
-// is well under this; anything longer is a mis-decoded free-text field,
-// not a version, and is rejected rather than persisted.
-const maxToolVersionRunes = 64
+// version-shaped token ("0.150.0", "3.17.4-beta.1", "v0.130.0",
+// "0.45.0+build.7") is well under this; anything longer is a mis-decoded
+// free-text field, not a version, and is rejected rather than persisted.
+// Re-exported here (rather than referenced as orgcontract.MaxToolVersionRunes
+// at every call site) purely so this file's own doc comments and the
+// existing test file keep their short, unqualified name; the VALUE is
+// orgcontract's, not a second one.
+const maxToolVersionRunes = orgcontract.MaxToolVersionRunes
 
-// validToolVersion reports whether v is a plausible bounded version
-// token: non-empty, at most maxToolVersionRunes runes, valid UTF-8, and
-// free of whitespace and control characters. It deliberately does NOT
-// enforce a semver grammar — vendors stamp all sorts of shapes ("v1.2",
-// "2026.8.2", "7.3.40") and the column is free-form — it only rejects
-// the shapes that betray a mis-decoded PROSE field (a space, a tab, a
-// newline, a control byte). A rejected value is skipped, never stored,
-// so the honest "unknown" empty is preserved.
+// validToolVersion reports whether v is a plausible bounded, ASCII,
+// version-shaped token store.SetSessionToolVersion will persist
+// (TOOLVERSION-1, docs/security.md). It delegates to
+// orgcontract.ValidToolVersion — the single grammar shared with this
+// column's other boundary, internal/orgserver/ingest.go's re-validation of
+// a pushed row, so a value that passes here is guaranteed to also pass
+// there. See that function's doc comment for the exact grammar (an
+// optional leading "v"/"V", then a digit, then up to 62 more
+// alphanumeric/"."/"_"/"+"/"-" characters, AND at least one "." anywhere)
+// and the shapes it excludes: a URL, an email address, a path-traversal
+// segment need a character outside the charset (space, "/", ":", "@");
+// a compact secret such as an AWS access key id or a GitHub PAT is
+// alphanumeric noise with no leading-digit-then-dot structure, which a real
+// vendor-stamped version always has (MAJOR.MINOR[.PATCH] is the one
+// structural feature every version scheme shares). A rejected value is
+// skipped, never stored, so the honest "unknown" empty is preserved.
 func validToolVersion(v string) bool {
-	if v == "" || !utf8.ValidString(v) {
-		return false
-	}
-	if utf8.RuneCountInString(v) > maxToolVersionRunes {
-		return false
-	}
-	for _, r := range v {
-		if unicode.IsSpace(r) || unicode.IsControl(r) {
-			return false
-		}
-	}
-	return true
+	return orgcontract.ValidToolVersion(v)
 }
 
 // SetSessionToolVersion stamps the captured tool/CLI version (migration

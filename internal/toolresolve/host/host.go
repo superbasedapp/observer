@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/shellwrap"
 	"github.com/marmutapp/superbased-observer/internal/toolresolve"
 )
 
@@ -97,6 +98,12 @@ func NewEnv(opts Options) toolresolve.Env {
 		Glob:         filepath.Glob,
 		Getenv:       os.Getenv,
 		ReadHead:     readHead,
+		// Command-wrapping shims (internal/shellwrap) are never the vendor
+		// binary: a shim named `claude` runs `observer claude`, so resolving
+		// to it would recurse. The default dir is skipped outright; the
+		// marker catches a shim anywhere else (a custom [shell_wrap].shim_dir).
+		ExcludeDirs:   []string{shellwrap.DefaultShimDir(shellwrap.Host{GOOS: runtime.GOOS, Home: home})},
+		ExcludeMarker: shellwrap.ShimMarker,
 	}
 
 	// A Windows daemon has no POSIX login shell to consult; leave LoginPath nil.

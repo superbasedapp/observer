@@ -136,7 +136,7 @@ func TestProfileStore_SetKeyPreservesPresence(t *testing.T) {
 
 // TestProfileStore_Guards pins the refusal set: reserved names,
 // invalid names, immutable built-ins, non-compression keys,
-// code_graph, duplicate create, zero-value store.
+// duplicate create, zero-value store.
 func TestProfileStore_Guards(t *testing.T) {
 	ps := ProfileStore{Dir: filepath.Join(t.TempDir(), "profiles")}
 
@@ -162,9 +162,6 @@ func TestProfileStore_Guards(t *testing.T) {
 	}
 	if err := ps.SetKey("mine", "profiles.default", "codex-safe"); err == nil {
 		t.Error("profile files accept only compression.* keys")
-	}
-	if err := ps.SetKey("mine", "compression.code_graph.enabled", "false"); err == nil {
-		t.Error("code_graph keys must be refused")
 	}
 	if err := ps.Delete("codex-safe"); err == nil {
 		t.Error("built-ins must not be deletable")

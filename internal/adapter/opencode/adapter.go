@@ -271,6 +271,12 @@ type subtaskPartData struct {
 type toolInput struct {
 	Command  string `json:"command"`
 	FilePath string `json:"filePath"`
+	// Tool and Error are the two fields of OpenCode's `invalid`
+	// pseudo-tool input: session/llm.ts experimental_repairToolCall
+	// rewrites a malformed or unavailable tool call into
+	// invalid({tool: <attempted name>, error: <validation message>}).
+	Tool  string `json:"tool"`
+	Error string `json:"error"`
 }
 
 func (a *Adapter) loadUserPromptEvents(ctx context.Context, db *sql.DB, sourceFile string, fromOffset int64, rootCache map[string]projectGitInfo) ([]models.ToolEvent, error) {
@@ -503,9 +509,16 @@ func (a *Adapter) toolEvent(sourceFile string, row partRow, rootCache map[string
 	// ToolOutput: capture the tool result body for every tool, not only
 	// failed bash commands. State.Output is OpenCode's canonical output
 	// slot; Metadata.Output is the bash-specific stdout/stderr fallback.
-	output := firstNonEmpty(part.State.Output, part.State.Metadata.Output)
+	// Cap BEFORE scrubbing (the claudecode/qwencode order): the 1 MiB
+	// ToolOutput contract in models.ToolEvent is the adapter's to keep,
+	// and this path was the one OpenCode-family emitter that skipped it.
+	output := contentcap.Cap(firstNonEmpty(part.State.Output, part.State.Metadata.Output), contentcap.DefaultMaxBytes)
 	if a.scrubber != nil {
 		output = a.scrubber.String(output)
+		// errMsg is a tool-output excerpt (a failed bash's stdout, or an
+		// `invalid` call's validation message, which quotes the model's
+		// malformed arguments) — scrub it like the output it came from.
+		errMsg = a.scrubber.String(errMsg)
 	}
 	// DurationMs: derive from the part's own start/end timestamps when
 	// both are present. Source carries epoch-millis so this is an exact
@@ -1174,6 +1187,51 @@ func mapTool(part toolPartData) (actionType, target string, success bool, errMsg
 		// (mapped to ActionTodoUpdate in the claudecode adapter).
 		actionType = models.ActionTodoUpdate
 		target = firstNonEmpty(part.State.Title, part.Tool)
+	case "question":
+		// OpenCode's QuestionTool (packages/opencode/src/tool/question.ts,
+		// Tool.define("question")) asks the user one or more multiple-
+		// choice questions; same semantic as Claude Code's
+		// AskUserQuestion. Title is "Asked N question(s)".
+		actionType = models.ActionAskUser
+		target = firstNonEmpty(part.State.Title, part.Tool)
+	case "plan_exit":
+		// PlanExitTool (tool/plan.ts, Tool.define("plan_exit")) asks the
+		// user to leave the plan agent for the build agent — a mode
+		// switch, same bucket as Claude Code's ExitPlanMode.
+		actionType = models.ActionPermissionMode
+		target = firstNonEmpty(part.State.Title, part.Tool)
+	case "skill":
+		// SkillTool (tool/skill.ts) loads a named skill's instructions
+		// into the conversation — Claude Code's `Skill`.
+		actionType = models.ActionSkillInvoke
+		target = firstNonEmpty(part.State.Title, part.Tool)
+	case "lsp":
+		// LspTool (tool/lsp.ts) queries a language server
+		// (goToDefinition / findReferences / hover / documentSymbol /
+		// workspaceSymbol / call hierarchy) — a symbol-level code
+		// lookup, folded into search_text like cursor's
+		// `semanticsearch`. Target keeps the default filePath.
+		actionType = models.ActionSearchText
+	case "codesearch":
+		// CodeSearchTool (tool/codesearch.ts, removed upstream in
+		// #27019 on 2026-05-12 but still present in older stores) is an
+		// Exa "get_code_context_exa" WEB search for library/API docs,
+		// not a search over the project — so web_search, not
+		// search_text. Title is "Code search: <query>".
+		actionType = models.ActionWebSearch
+		target = firstNonEmpty(part.State.Title, part.Tool)
+	case "invalid":
+		// InvalidTool (tool/invalid.ts) is not a real tool: the harness
+		// rewrites a malformed or unavailable call into
+		// invalid({tool, error}) and returns the error to the model. The
+		// part's own status is "completed" because the pseudo-tool ran,
+		// but the model's call FAILED at the host level — tool_failure,
+		// with Target the attempted tool name (the ActionToolFailure
+		// contract) and the validation message as the error.
+		actionType = models.ActionToolFailure
+		target = firstNonEmpty(input.Tool, part.Tool)
+		success = false
+		errMsg = firstNonEmpty(input.Error, part.State.Output)
 	default:
 		if strings.Contains(strings.ToLower(part.Tool), "mcp") {
 			actionType = models.ActionMCPCall

@@ -1,6 +1,13 @@
+import {
+  Check,
+  Copy,
+  RefreshCw,
+  type LucideIcon,
+} from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import clsx from "clsx";
+import { Summary } from "@/components/Summary";
 import { Button, ChartShell, Pill, Table, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { useApi } from "@/lib/useApi";
@@ -27,36 +34,58 @@ const LAUNCH_TOOLS = new Set(["claude-code", "codex"]);
 // All server probes are read-only; the write paths stay where they
 // are (routing buttons on the Compression page, hooks/MCP via
 // `observer init` until the P4.2 wizard lands).
-export function ConnectedToolsSection() {
+// `icon` is the section glyph from the Settings SECTIONS table.
+export function ConnectedToolsSection({ icon }: { icon?: LucideIcon }) {
   const status = useApi<ToolsStatusResponse>("/api/tools/status");
   const rows = status.data?.tools ?? [];
   const detected = rows.filter((r) => r.detected || r.action_count > 0);
   const others = rows.filter((r) => !r.detected && r.action_count === 0);
+  const missingDefaults = status.data?.missing_default_adapters ?? [];
+  const missingDefaultsSet = new Set(missingDefaults);
 
   return (
     <ChartShell
       title="Connected tools"
+      icon={icon}
       sub="Every AI tool observer can capture, with its live integration state. Detection = the tool's storage directory exists on this machine; capturing = rows in this observer's database."
     >
       <ChartState
         loading={status.loading}
+        stale={status.isStale}
+        onRetry={status.reload}
         error={status.error}
+        denied={status.denied}
+        deniedPermission={status.deniedPermission}
         empty={!status.loading && rows.length === 0}
         emptyHint="No tool catalog - daemon restart may be required after upgrading."
       >
-        <ToolsTable rows={detected} onChanged={status.reload} />
+        {missingDefaults.length > 0 && (
+          <div className="mb-3 rounded-2 border border-warn/40 bg-warn-soft px-3 py-2 text-[11.5px] text-warn">
+            <strong className="font-semibold">
+              {missingDefaults.length} default{" "}
+              {missingDefaults.length === 1 ? "adapter is" : "adapters are"} not enabled
+            </strong>{" "}
+            in config.toml ({missingDefaults.join(", ")}) - sessions from{" "}
+            {missingDefaults.length === 1 ? "it" : "them"} are not captured at all. Fix:{" "}
+            <code className="font-mono text-fg-1">
+              {status.data?.missing_default_remediation ?? "observer config adopt-defaults --write"}
+            </code>
+            , then restart the daemon.
+          </div>
+        )}
+        <ToolsTable rows={detected} missingDefaults={missingDefaultsSet} onChanged={status.reload} />
         {others.length > 0 && (
           <details className="mt-3">
-            <summary className="cursor-pointer text-[11.5px] text-fg-3 hover:text-fg-2">
+            <Summary className="w-fit text-[11.5px] text-fg-3 hover:text-fg-2">
               {others.length} supported tools not detected on this machine
-            </summary>
+            </Summary>
             <div className="mt-2">
-              <ToolsTable rows={others} onChanged={status.reload} />
+              <ToolsTable rows={others} missingDefaults={missingDefaultsSet} onChanged={status.reload} />
             </div>
           </details>
         )}
         <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-line-1 pt-3 text-[11px] text-fg-3">
-          <Button variant="secondary" size="sm" onClick={status.reload}>
+          <Button variant="secondary" size="sm" iconLeft={RefreshCw} onClick={status.reload}>
             Refresh
           </Button>
           <span>
@@ -76,9 +105,11 @@ export function ConnectedToolsSection() {
 
 function ToolsTable({
   rows,
+  missingDefaults,
   onChanged,
 }: {
   rows: ToolStatusRow[];
+  missingDefaults: Set<string>;
   onChanged: () => void;
 }) {
   const [openWizard, setOpenWizard] = useState<string | null>(null);
@@ -108,6 +139,7 @@ function ToolsTable({
         <ToolRow
           key={r.tool}
           row={r}
+          missingDefault={missingDefaults.has(r.tool)}
           wizardOpen={openWizard === r.tool}
           onToggleWizard={() =>
             setOpenWizard(openWizard === r.tool ? null : r.tool)
@@ -121,11 +153,20 @@ function ToolsTable({
 
 function ToolRow({
   row: r,
+  missingDefault,
   wizardOpen,
   onToggleWizard,
   onChanged,
 }: {
   row: ToolStatusRow;
+  // True when this tool is a compiled-in default adapter absent from
+  // the operator's explicit enabled_adapters list (ToolsStatusResponse
+  // .missing_default_adapters) — distinct from a tool the operator
+  // deliberately turned off, or a non-default tool that was never
+  // enabled. Renders a fix-it pill instead of the plain "adapter off"
+  // label so the one-time capture gap this represents (e.g. grokbot's
+  // 2026-09-22 incident) is actionable from the row itself.
+  missingDefault: boolean;
   wizardOpen: boolean;
   onToggleWizard: () => void;
   onChanged: () => void;
@@ -144,18 +185,29 @@ function ToolRow({
             maxWidth={420}
           >
             <span
+              tabIndex={0}
               className={clsx(
-                "cursor-help font-mono",
+                "cursor-help font-mono focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-ring",
                 r.detected || r.action_count > 0 ? "text-fg-1" : "text-fg-3",
               )}
             >
               {r.tool}
             </span>
           </Tooltip>
-          {!r.enabled && (
-            <span className="ml-2 text-[10px] uppercase tracking-[0.05em] text-fg-4">
-              adapter off
-            </span>
+          {missingDefault ? (
+            <Pill
+              variant="warn"
+              className="ml-2"
+              title="A compiled-in default adapter is missing from your enabled_adapters list - run `observer config adopt-defaults --write`, then restart the daemon."
+            >
+              not enabled (new default)
+            </Pill>
+          ) : (
+            !r.enabled && (
+              <Pill variant="neutral" case="upper" className="ml-2">
+                adapter off
+              </Pill>
+            )
           )}
         </td>
         <td className="py-1.5 pr-3">
@@ -330,7 +382,7 @@ function LaunchResult({
           <code className="select-all rounded-2 bg-bg-3 px-2 py-1 font-mono text-fg-1">
             {r.command}
           </code>
-          <Button variant="secondary" size="sm" onClick={copy}>
+          <Button variant="secondary" size="sm" iconLeft={copied ? Check : Copy} onClick={copy}>
             {copied ? "Copied" : "Copy"}
           </Button>
         </div>

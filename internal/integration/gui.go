@@ -90,6 +90,24 @@ type WrapSpec struct {
 	// The launch records this caveat in its wrap note rather than claiming
 	// the wrap took.
 	ColdStartOnly bool
+	// TrafficProof is the dated evidence that a live model turn from an
+	// in-app agent, started through THIS wrap, landed an api_turns row
+	// (e.g. "2026-10-01: claude-code extension turn in a cold-started VS
+	// Code, api_turns provider=anthropic"). Empty = LIVE PROOF OWED: the
+	// wrap is at most plumbing-verified (the child env block was asserted),
+	// and every surface must say "launcher wired, live proof owed" rather
+	// than claim metering. Same honesty rule as flipping a Proxy cell: set
+	// it only after a real turn, never from the plumbing check.
+	TrafficProof string
+	// HandoffPathSegments names path segments that mark a RESOLVED launcher
+	// as a hand-off client: a program that forwards the open request to an
+	// already-running instance over IPC and exits, so the injected child env
+	// can never reach the app (VS Code's server-side `remote-cli/code`, which
+	// is what `code` resolves to inside a VS Code Remote / WSL terminal). A
+	// child-env launch whose resolved binary has any of these as a whole path
+	// segment records the wrap as NOT applied, with that reason. Grounded
+	// spellings only.
+	HandoffPathSegments []string
 }
 
 // GUILaunchSpec is one installable + launchable IDE / desktop-app row. It

@@ -37,38 +37,146 @@ import (
 type codexConfigMisconfig struct {
 	ConfigPath   string
 	Status       configTOMLStatus
-	CurrentValue string // populated only when Status==configTOMLOK (mismatch case)
+	CurrentValue string // populated for the mismatch statuses (configTOMLOK / configTOMLProviderMismatch)
 	WantURL      string // the URL we'd write if --write-config is set
+	// Provider is the selected model_provider id for a
+	// configTOMLProviderMismatch (the table whose base_url is wrong).
+	Provider string
 }
 
-// findCodexConfigMisconfigs returns every CODEX_HOME root whose
-// config.toml is missing or mis-pointing openai_base_url. Unreadable
-// files are skipped (best-effort).
-func findCodexConfigMisconfigs(codexHomeRootsList []string, proxyURL string) []codexConfigMisconfig {
+// fixable reports whether --write-config can repair this misconfig. The
+// writer only rewrites the TOP-LEVEL openai_base_url key; a wrong
+// [model_providers.<id>].base_url is reported, never rewritten here (the
+// provider-shape writer is `observer init --codex --force`).
+func (m codexConfigMisconfig) fixable() bool {
+	return m.Status != configTOMLProviderMismatch
+}
+
+// codexRouteFacts is what one CODEX_HOME root's effective route looks like
+// to the misconfig table: the base file's readability plus the merged
+// (base + active profile) route.
+type codexRouteFacts struct {
+	fileMissing bool
+	unreadable  bool
+	eff         codexEffectiveRoute
+	proxyURL    string
+}
+
+func (f codexRouteFacts) customProvider() bool {
+	return f.eff.provider != "" && f.eff.provider != proxyroute.CodexBuiltinOpenAI
+}
+
+// codexMisconfigVerdict is what the table decides for one root.
+type codexMisconfigVerdict int
+
+const (
+	verdictClean codexMisconfigVerdict = iota
+	verdictSkip
+	verdictMissingFile
+	verdictMissingKey
+	verdictOpenAIMismatch
+	verdictProviderMismatch
+)
+
+// codexMisconfigRules is walked top-down; the first match wins (CLAUDE.md
+// #5). It judges the route codex will actually USE for this launch: the
+// SELECTED provider after the active profile overlay (item 14 follow-up 4).
+//
+// Grounding (openai/codex rust-v0.157.1): openai_base_url only overrides the
+// BUILT-IN openai provider (model-provider-info/src/lib.rs
+// built_in_model_providers); a selected [model_providers.<id>] uses its own
+// base_url; a `<name>.config.toml` profile layers over config.toml
+// (codex-rs/config/src/loader/mod.rs layer list). So a custom provider that
+// already routes to the proxy (the `openai-observer` shape `observer init`
+// writes) is clean even with no openai_base_url - the check used to flag it.
+var codexMisconfigRules = []struct {
+	name    string
+	match   func(codexRouteFacts) bool
+	verdict codexMisconfigVerdict
+}{
+	{"file_missing", func(f codexRouteFacts) bool { return f.fileMissing }, verdictMissingFile},
+	{"unreadable", func(f codexRouteFacts) bool { return f.unreadable }, verdictSkip},
+	{"provider_routes_to_proxy", func(f codexRouteFacts) bool {
+		return f.customProvider() && urlRoutesToProxy(f.eff.providerURL, f.proxyURL)
+	}, verdictClean},
+	// A loopback observer URL on another port/path: the operator meant to
+	// route here, the route is just stale. A non-observer provider (Bedrock,
+	// a third-party host, a self-resolved OSS provider) is a deliberate
+	// bypass reported once by codexProviderBypassNotice, not a misconfig.
+	{"provider_other_observer", func(f codexRouteFacts) bool {
+		return f.customProvider() && proxyroute.IsObserverBaseURL(f.eff.providerURL)
+	}, verdictProviderMismatch},
+	{"provider_bypass", codexRouteFacts.customProvider, verdictSkip},
+	{"openai_routes_to_proxy", func(f codexRouteFacts) bool {
+		return urlRoutesToProxy(f.eff.openaiURL, f.proxyURL)
+	}, verdictClean},
+	{"openai_missing_key", func(f codexRouteFacts) bool { return f.eff.openaiURL == "" }, verdictMissingKey},
+	{"openai_mismatch", func(codexRouteFacts) bool { return true }, verdictOpenAIMismatch},
+}
+
+func decideCodexMisconfig(f codexRouteFacts) (codexMisconfigVerdict, string) {
+	for _, r := range codexMisconfigRules {
+		if r.match(f) {
+			return r.verdict, r.name
+		}
+	}
+	return verdictClean, ""
+}
+
+// codexRouteFactsFor reads one root's facts for the active profile.
+func codexRouteFactsFor(root, proxyURL, profile string) codexRouteFacts {
+	f := codexRouteFacts{proxyURL: proxyURL}
+	base := filepath.Join(root, "config.toml")
+	if _, err := os.Stat(base); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			f.fileMissing = true
+		} else {
+			f.unreadable = true
+		}
+		return f
+	}
+	var probe map[string]any
+	if _, err := toml.DecodeFile(base, &probe); err != nil {
+		f.unreadable = true
+		return f
+	}
+	f.eff = resolveCodexEffectiveRoute(root, profile)
+	return f
+}
+
+// findCodexConfigMisconfigs returns every CODEX_HOME root whose EFFECTIVE
+// route (base config.toml + the active `-p` profile overlay) does not reach
+// the proxy: the built-in openai provider with a missing or wrong
+// openai_base_url, or a selected custom provider whose base_url is a stale
+// observer route. Unreadable files and deliberate provider bypasses are
+// skipped (best-effort; the bypass has its own launch notice).
+func findCodexConfigMisconfigs(codexHomeRootsList []string, proxyURL, profile string) []codexConfigMisconfig {
 	if len(codexHomeRootsList) == 0 {
 		return nil
 	}
-	wantURLs := acceptedProxyBaseURLs(proxyURL)
-	primary := primaryAcceptedURL(wantURLs)
+	primary := primaryAcceptedURL(acceptedProxyBaseURLs(proxyURL))
 	var out []codexConfigMisconfig
 	for _, root := range codexHomeRootsList {
 		configPath := filepath.Join(root, "config.toml")
-		got, status := readConfigTOMLBaseURL(configPath)
-		switch status {
-		case configTOMLOK:
-			if matchesAnyURL(got, wantURLs) {
-				continue
-			}
+		f := codexRouteFactsFor(root, proxyURL, profile)
+		verdict, _ := decideCodexMisconfig(f)
+		switch verdict {
+		case verdictMissingFile:
+			out = append(out, codexConfigMisconfig{ConfigPath: configPath, Status: configTOMLMissingFile, WantURL: primary})
+		case verdictMissingKey:
+			out = append(out, codexConfigMisconfig{ConfigPath: configPath, Status: configTOMLMissingKey, WantURL: primary})
+		case verdictOpenAIMismatch:
+			// The file that SUPPLIED the wrong value is the one to fix: a
+			// profile overlay's openai_base_url wins over the base file.
 			out = append(out, codexConfigMisconfig{
-				ConfigPath: configPath, Status: status,
-				CurrentValue: got, WantURL: primary,
+				ConfigPath: f.eff.openaiSrc, Status: configTOMLOK,
+				CurrentValue: f.eff.openaiURL, WantURL: primary,
 			})
-		case configTOMLMissingKey, configTOMLMissingFile:
+		case verdictProviderMismatch:
 			out = append(out, codexConfigMisconfig{
-				ConfigPath: configPath, Status: status, WantURL: primary,
+				ConfigPath: f.eff.providerSrc, Status: configTOMLProviderMismatch,
+				CurrentValue: f.eff.providerURL, WantURL: primary, Provider: f.eff.provider,
 			})
-		case configTOMLUnreadable:
-			// Skip — best-effort.
 		}
 	}
 	return out
@@ -89,8 +197,8 @@ func findCodexConfigMisconfigs(codexHomeRootsList []string, proxyURL string) []c
 // codexHomeRoots is the caller-supplied list (typically from
 // codexHomeRoots() in codex_capture_check.go) so this function is
 // platform-agnostic and trivial to test.
-func checkCodexConfigTOMLBaseURL(codexHomeRootsList []string, proxyURL string) string {
-	misconfigs := findCodexConfigMisconfigs(codexHomeRootsList, proxyURL)
+func checkCodexConfigTOMLBaseURL(codexHomeRootsList []string, proxyURL, profile string) string {
+	misconfigs := findCodexConfigMisconfigs(codexHomeRootsList, proxyURL, profile)
 	if len(misconfigs) == 0 {
 		return ""
 	}
@@ -111,6 +219,11 @@ func checkCodexConfigTOMLBaseURL(codexHomeRootsList []string, proxyURL string) s
 			warnings = append(warnings, fmt.Sprintf(
 				"observer codex: %s does not exist; codex 0.130+ silently drops the -c openai_base_url override (V6-2). Create the file with `openai_base_url = %q` or expect 0 captures. See docs/codex-shared-app-server-gotcha.md.",
 				m.ConfigPath, m.WantURL,
+			))
+		case configTOMLProviderMismatch:
+			warnings = append(warnings, fmt.Sprintf(
+				"observer codex: %s selects model_provider=%q whose base_url=%q is not the observer proxy (%s); codex sends that provider's turns there, so the proxy captures none. Point [model_providers.%s].base_url at %s (or run `observer init --codex --force`).",
+				m.ConfigPath, m.Provider, m.CurrentValue, m.WantURL, m.Provider, m.WantURL,
 			))
 		}
 	}
@@ -236,6 +349,33 @@ func decodeCodexRouteConfig(path string) codexRouteConfig {
 // the SELECTED provider's base_url is returned — an unselected provider table is
 // inert and must not trigger a conflict.
 func codexEffectiveRoutedSources(root, profile string) []codexRoutedSource {
+	eff := resolveCodexEffectiveRoute(root, profile)
+	var out []codexRoutedSource
+	if eff.openaiURL != "" {
+		out = append(out, codexRoutedSource{eff.openaiURL, eff.openaiSrc})
+	}
+	if eff.providerURL != "" {
+		out = append(out, codexRoutedSource{eff.providerURL, eff.providerSrc})
+	}
+	return out
+}
+
+// codexEffectiveRoute is the merged routing view of one CODEX_HOME for one
+// launch: the top-level openai_base_url, the SELECTED model_provider, and
+// that provider's base_url, each tagged with the file that supplied it.
+type codexEffectiveRoute struct {
+	openaiURL, openaiSrc     string
+	provider                 string
+	providerURL, providerSrc string
+}
+
+// resolveCodexEffectiveRoute layers the profile overlay
+// `<root>/<profile>.config.toml` ON TOP of the base `<root>/config.toml`
+// (finding 3a): a non-empty profile openai_base_url / model_provider overrides
+// the base, and provider tables union with the profile winning per name. Only
+// the SELECTED provider's base_url is resolved — an unselected provider table
+// is inert.
+func resolveCodexEffectiveRoute(root, profile string) codexEffectiveRoute {
 	baseFile := filepath.Join(root, "config.toml")
 	base := decodeCodexRouteConfig(baseFile)
 
@@ -246,42 +386,63 @@ func codexEffectiveRoutedSources(root, profile string) []codexRoutedSource {
 		prof = decodeCodexRouteConfig(profFile)
 	}
 
+	var eff codexEffectiveRoute
 	// Top-level openai_base_url: profile wins when it sets a non-empty value.
-	openaiURL, openaiSrc := strings.TrimSpace(base.OpenAIBaseURL), baseFile
+	eff.openaiURL, eff.openaiSrc = strings.TrimSpace(base.OpenAIBaseURL), baseFile
 	if v := strings.TrimSpace(prof.OpenAIBaseURL); v != "" {
-		openaiURL, openaiSrc = v, profFile
+		eff.openaiURL, eff.openaiSrc = v, profFile
+	}
+	if eff.openaiURL == "" {
+		eff.openaiSrc = ""
 	}
 
 	// Selected provider: profile wins when it sets a non-empty value.
-	modelProvider := strings.TrimSpace(base.ModelProvider)
+	eff.provider = strings.TrimSpace(base.ModelProvider)
 	if v := strings.TrimSpace(prof.ModelProvider); v != "" {
-		modelProvider = v
+		eff.provider = v
 	}
 
 	// Provider tables: union, profile overriding by name.
-	type provSrc struct{ url, file string }
-	providers := map[string]provSrc{}
-	for name, p := range base.ModelProviders {
-		if v := strings.TrimSpace(p.BaseURL); v != "" {
-			providers[name] = provSrc{v, baseFile}
+	if eff.provider != "" {
+		if p, ok := base.ModelProviders[eff.provider]; ok {
+			if v := strings.TrimSpace(p.BaseURL); v != "" {
+				eff.providerURL, eff.providerSrc = v, baseFile
+			}
+		}
+		if p, ok := prof.ModelProviders[eff.provider]; ok {
+			if v := strings.TrimSpace(p.BaseURL); v != "" {
+				eff.providerURL, eff.providerSrc = v, profFile
+			}
 		}
 	}
-	for name, p := range prof.ModelProviders {
-		if v := strings.TrimSpace(p.BaseURL); v != "" {
-			providers[name] = provSrc{v, profFile}
-		}
-	}
+	return eff
+}
 
-	var out []codexRoutedSource
-	if openaiURL != "" {
-		out = append(out, codexRoutedSource{openaiURL, openaiSrc})
-	}
-	if modelProvider != "" {
-		if p, ok := providers[modelProvider]; ok {
-			out = append(out, codexRoutedSource{p.url, p.file})
+// codexProviderBypassNotice returns a one-line launch notice when the codex
+// provider this launch will select (effective CODEX_HOME roots + active
+// profile) never reaches the observer proxy — e.g. model_provider =
+// "amazon-bedrock" — so the `-c openai_base_url` injection cannot capture it.
+// "" when every root's selected provider is proxy-capturable.
+func codexProviderBypassNotice(roots []string, profile string) string {
+	for _, root := range roots {
+		eff := resolveCodexEffectiveRoute(root, profile)
+		if eff.provider == "" || eff.provider == proxyroute.CodexBuiltinOpenAI {
+			// The launcher's own openai_base_url injection covers the built-in
+			// provider; a config.toml value pointing elsewhere is handled by
+			// the existing preflight (checkCodexConfigTOMLBaseURL).
+			continue
+		}
+		posture := proxyroute.ClassifyCodexProvider(proxyroute.CodexProviderInput{
+			Provider:        eff.provider,
+			ProviderBaseURL: eff.providerURL,
+			OpenAIBaseURL:   eff.openaiURL,
+		})
+		if posture.Bypasses() {
+			return "observer codex: note — " + proxyroute.CodexBypassExplanation(posture, eff.provider) +
+				" (" + filepath.Join(root, "config.toml") + "). Run `observer doctor codex` for details."
 		}
 	}
-	return out
+	return ""
 }
 
 // isLoopbackHost reports whether h is one of the interchangeable spellings of
@@ -353,29 +514,11 @@ const (
 	configTOMLMissingKey
 	configTOMLMissingFile
 	configTOMLUnreadable
+	// configTOMLProviderMismatch: the SELECTED custom provider's base_url
+	// is a loopback observer route that is not this proxy. Reported only;
+	// --write-config does not rewrite provider tables.
+	configTOMLProviderMismatch
 )
-
-// readConfigTOMLBaseURL parses configPath and returns the top-level
-// openai_base_url value. Returns the appropriate status code per
-// failure mode so the caller can craft a specific warning.
-func readConfigTOMLBaseURL(configPath string) (string, configTOMLStatus) {
-	if _, err := os.Stat(configPath); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return "", configTOMLMissingFile
-		}
-		return "", configTOMLUnreadable
-	}
-	var cfg struct {
-		OpenAIBaseURL string `toml:"openai_base_url"`
-	}
-	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
-		return "", configTOMLUnreadable
-	}
-	if strings.TrimSpace(cfg.OpenAIBaseURL) == "" {
-		return "", configTOMLMissingKey
-	}
-	return cfg.OpenAIBaseURL, configTOMLOK
-}
 
 // acceptedProxyBaseURLs returns every URL form an operator might
 // legitimately set in config.toml to point at our proxy. The wrapper

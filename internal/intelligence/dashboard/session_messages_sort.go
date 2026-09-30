@@ -40,6 +40,7 @@ type messageSortField struct {
 	CacheWrite     int64
 	Output         int64
 	ElapsedMs      *int64
+	ResponseMs     *int64
 	TokensPerSec   *float64
 	ToolCalls      int
 	Attachments    int
@@ -105,6 +106,10 @@ var messageSortKeys = map[string]messageSortComparator{
 	"elapsed_ms": {
 		less:    func(a, b messageSortField) bool { return *a.ElapsedMs < *b.ElapsedMs },
 		missing: func(f messageSortField) bool { return f.ElapsedMs == nil },
+	},
+	"response_ms": {
+		less:    func(a, b messageSortField) bool { return *a.ResponseMs < *b.ResponseMs },
+		missing: func(f messageSortField) bool { return f.ResponseMs == nil },
 	},
 	"tokens_per_sec": {
 		less:    func(a, b messageSortField) bool { return *a.TokensPerSec < *b.TokensPerSec },

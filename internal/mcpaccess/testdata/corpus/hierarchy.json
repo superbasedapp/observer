@@ -1,0 +1,30 @@
+{
+  "name": "hierarchy merge goldens: org (0) > team (1) > project (2); deny > ask > allow is global, attribution goes to the shallowest level",
+  "spec": {
+    "registry": {"issuer": "https://auth.acme.superbased.app", "org": "acme", "gateway_base_uri": "https://mcp-gw.acme.superbased.app", "policy_gen": 7,
+      "vservers": [{"id": "vs-gh", "slug": "gh", "sender_constraint": "bearer", "servers": [{"id": "gh", "target": "gh"}, {"id": "gh-ent", "target": "gh-ent"}]}]},
+    "grants": [
+      {"id": "org-deny-delete", "ord": 1, "hierarchy_level": 0, "subject": {"kind": "any"}, "resource": {"vserver": "vs-gh", "name": "delete_repo"}, "action": "call", "effect": "deny", "enabled": true},
+      {"id": "org-ask-force", "ord": 2, "hierarchy_level": 0, "subject": {"kind": "any"}, "resource": {"vserver": "vs-gh", "name": "force_push"}, "action": "call", "effect": "ask", "enabled": true},
+      {"id": "org-allow-read", "ord": 3, "hierarchy_level": 0, "subject": {"kind": "any"}, "resource": {"vserver": "vs-gh", "name": "get_file"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "team-allow-delete", "ord": 1, "hierarchy_level": 1, "subject": {"kind": "group", "value": "platform"}, "resource": {"vserver": "vs-gh", "name": "delete_repo"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "team-allow-force", "ord": 2, "hierarchy_level": 1, "subject": {"kind": "group", "value": "platform"}, "resource": {"vserver": "vs-gh", "name": "force_push"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "team-allow-any-ent", "ord": 3, "hierarchy_level": 1, "subject": {"kind": "group", "value": "platform"}, "resource": {"vserver": "vs-gh", "server": "gh-ent"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "project-deny-read", "ord": 1, "hierarchy_level": 2, "subject": {"kind": "env", "value": "prod"}, "resource": {"vserver": "vs-gh", "name": "get_file"}, "action": "call", "effect": "deny", "enabled": true},
+      {"id": "project-allow-read", "ord": 2, "hierarchy_level": 2, "subject": {"kind": "any"}, "resource": {"vserver": "vs-gh", "name": "get_file"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "project-ask-ent-wipe", "ord": 3, "hierarchy_level": 2, "subject": {"kind": "any"}, "resource": {"vserver": "vs-gh", "server": "gh-ent", "name": "wipe"}, "action": "call", "effect": "ask", "enabled": true}
+    ]
+  },
+  "principal_defaults": {"issuer": "https://auth.acme.superbased.app", "org": "acme", "audience": ["https://mcp-gw.acme.superbased.app/mcp/gh"], "policy_gen": 7,
+    "subject": "u1", "groups": ["platform"], "env": "dev", "client_attestation": "process_attested"},
+  "rows": [
+    {"name": "org deny beats team allow", "input": {"vserver": "vs-gh", "action": "call", "name": "delete_repo"}, "want": "deny", "want_grant": "org-deny-delete"},
+    {"name": "org ask beats team allow", "input": {"vserver": "vs-gh", "action": "call", "name": "force_push"}, "want": "ask", "want_grant": "org-ask-force"},
+    {"name": "project deny narrows an org allow (prod env)", "principal": {"env": "prod"}, "input": {"vserver": "vs-gh", "action": "call", "name": "get_file"}, "want": "deny", "want_grant": "project-deny-read"},
+    {"name": "two allows: attribution to the shallowest level", "input": {"vserver": "vs-gh", "action": "call", "name": "get_file"}, "want": "allow", "want_grant": "org-allow-read"},
+    {"name": "team any-name allow on the gh-ent target", "input": {"vserver": "vs-gh", "action": "call", "name": "anything", "server": "gh-ent"}, "want": "allow", "want_grant": "team-allow-any-ent"},
+    {"name": "team target allow does not cover the gh target", "input": {"vserver": "vs-gh", "action": "call", "name": "anything", "server": "gh"}, "want": "deny"},
+    {"name": "project ask on a target tool beats the team any-name allow", "input": {"vserver": "vs-gh", "action": "call", "name": "wipe", "server": "gh-ent"}, "want": "ask", "want_grant": "project-ask-ent-wipe"},
+    {"name": "non-member gets only the org floor", "principal": {"groups": []}, "input": {"vserver": "vs-gh", "action": "call", "name": "anything", "server": "gh-ent"}, "want": "deny"}
+  ]
+}

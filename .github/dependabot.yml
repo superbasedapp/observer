@@ -1,0 +1,14 @@
+# Dependabot for GitHub Actions only (security ledger SR27-SC1).
+# Third-party actions are pinned to full commit SHAs with the release tag in a
+# trailing comment; Dependabot keeps both current by opening a PR per bump, so
+# a pin never goes stale silently and never moves without review.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

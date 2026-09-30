@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -490,5 +491,342 @@ func TestPricingPolicyDecodesAnOlderServersZero(t *testing.T) {
 	// same answer the new spelling gives.
 	if r.WebSearchPerRequest != nil {
 		t.Errorf("web search = %v, want nil", r.WebSearchPerRequest)
+	}
+}
+
+// legacyPricingPolicyRow is PricingPolicyRow as it was BEFORE server
+// migration 175 (b922604c2^), copied field for field: a bare `int64,omitempty`
+// threshold (so a 0 never reached the wire) and no presence markers. It stands
+// for a node built before the nullable threshold, and for the server it
+// shipped with.
+type legacyPricingPolicyRow struct {
+	Model string `json:"model"`
+
+	InputPerMTok        *float64 `json:"input_per_mtok,omitempty"`
+	OutputPerMTok       *float64 `json:"output_per_mtok,omitempty"`
+	CacheReadPerMTok    *float64 `json:"cache_read_per_mtok,omitempty"`
+	CacheWritePerMTok   *float64 `json:"cache_write_per_mtok,omitempty"`
+	CacheWrite1hPerMTok *float64 `json:"cache_write_1h_per_mtok,omitempty"`
+
+	LongContextThreshold           int64    `json:"long_context_threshold,omitempty"`
+	LongContextInputPerMTok        *float64 `json:"long_context_input_per_mtok,omitempty"`
+	LongContextOutputPerMTok       *float64 `json:"long_context_output_per_mtok,omitempty"`
+	LongContextCacheReadPerMTok    *float64 `json:"long_context_cache_read_per_mtok,omitempty"`
+	LongContextCacheWritePerMTok   *float64 `json:"long_context_cache_write_per_mtok,omitempty"`
+	LongContextCacheWrite1hPerMTok *float64 `json:"long_context_cache_write_1h_per_mtok,omitempty"`
+
+	WebSearchPerRequest *float64 `json:"web_search_per_request,omitempty"`
+
+	EffectiveFrom string `json:"effective_from,omitempty"`
+	Source        string `json:"source,omitempty"`
+
+	Peak *PeakRates `json:"peak,omitempty"`
+}
+
+type legacyPricingPolicyBody struct {
+	Version     int64                    `json:"version"`
+	GeneratedAt string                   `json:"generated_at"`
+	Rows        []legacyPricingPolicyRow `json:"rows"`
+}
+
+// legacyOverlay is what a pre-175 node did with a decoded org row's two
+// structural dimensions (b922604c2^:internal/intelligence/cost/orgprice.go:
+// 127,138): BOTH were overlaid unconditionally, so the row's threshold (0 when
+// omitted) and its peak (nil when omitted) always replaced the seed's.
+func legacyOverlay(r legacyPricingPolicyRow) (threshold int64, peakWindows int) {
+	if r.Peak != nil {
+		peakWindows = len(r.Peak.Schedule.Windows)
+	}
+	return r.LongContextThreshold, peakWindows
+}
+
+func windowedPeak() *PeakRates {
+	return &PeakRates{
+		RateSet:  RateSet{Input: 2, Output: 6},
+		Schedule: PeakSchedule{Windows: []PeakWindow{{StartUTC: "01:00", EndUTC: "04:00"}}},
+	}
+}
+
+func threshold(v int64) *int64 { return &v }
+
+// TestPricingPolicyRowOrgRailLegacyCompat pins review finding F1 (session 3,
+// 2026-09-26) at the wire: the org rail's encoding of migration 175's three
+// threshold states and the peak's two presence states, in BOTH directions
+// against a pre-175 peer.
+//
+//   - NEW SERVER -> OLD NODE: every state a pre-175 store could hold (a 0 or
+//     positive threshold; a peak with or without windows) marshals to rows
+//     BYTE-IDENTICAL to the old server's, so an old node verifies the
+//     signature on either verify path and bills exactly as before. The two
+//     states only a post-175 store can hold (NULL threshold, NULL peak) add a
+//     marker the old node ignores; it then reads them as it read every
+//     unstated dimension - flat - which is the best a node that cannot say
+//     "keep my seed" can do.
+//   - OLD SERVER -> NEW NODE: a legacy row decodes, through OrgThreshold /
+//     OrgPeak, to exactly what the old node's unconditional overlay applied.
+func TestPricingPolicyRowOrgRailLegacyCompat(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		storedThresh   *int64
+		storedPeak     *PeakRates
+		legacy         *legacyPricingPolicyRow // the old server's row for the same stored data; nil = inexpressible pre-175
+		wantThresh     int64
+		wantThreshSet  bool
+		wantPeakSet    bool
+		wantPeakWindow int
+		// notByteIdentical names the ONE state the new server cannot spell
+		// as a pre-175 server did (review round 2, finding 3; SetOrgPeak's
+		// doc; docs/pricing.md): a pre-175 row that STORED an explicit
+		// all-zero, window-less peak object decodes to the same value as
+		// the cut-over's '{}', which must be omitted. For that state the
+		// test asserts the documented difference (omitted, not the object)
+		// and that both spellings still overlay flat on an old node.
+		notByteIdentical bool
+	}{
+		{
+			name: "quoted flat, flat peak (every pre-175 row)", storedThresh: threshold(0), storedPeak: &PeakRates{},
+			legacy: &legacyPricingPolicyRow{Model: "m", InputPerMTok: Rate(1)}, wantThreshSet: true, wantPeakSet: true,
+		},
+		{
+			name: "own tier, windowed peak", storedThresh: threshold(272000), storedPeak: windowedPeak(),
+			legacy:     &legacyPricingPolicyRow{Model: "m", InputPerMTok: Rate(1), LongContextThreshold: 272000, Peak: windowedPeak()},
+			wantThresh: 272000, wantThreshSet: true, wantPeakSet: true, wantPeakWindow: 1,
+		},
+		{
+			name: "own tier, window-less peak object WITH rates (validation admits it)", storedThresh: threshold(5), storedPeak: &PeakRates{RateSet: RateSet{Input: 9}},
+			legacy:     &legacyPricingPolicyRow{Model: "m", InputPerMTok: Rate(1), LongContextThreshold: 5, Peak: &PeakRates{RateSet: RateSet{Input: 9}}},
+			wantThresh: 5, wantThreshSet: true, wantPeakSet: true,
+		},
+		{
+			name: "window-less peak with rates and a long-context sub-tier", storedThresh: threshold(0), storedPeak: &PeakRates{RateSet: RateSet{Input: 9, Output: 3, LongContextThreshold: 100, LongContextInput: 18}},
+			legacy:        &legacyPricingPolicyRow{Model: "m", InputPerMTok: Rate(1), Peak: &PeakRates{RateSet: RateSet{Input: 9, Output: 3, LongContextThreshold: 100, LongContextInput: 18}}},
+			wantThreshSet: true, wantPeakSet: true,
+		},
+		{
+			name: "pre-175 STORED all-zero window-less peak object (the one non-byte-identical state)", storedThresh: threshold(0), storedPeak: &PeakRates{},
+			legacy:        &legacyPricingPolicyRow{Model: "m", InputPerMTok: Rate(1), Peak: &PeakRates{}},
+			wantThreshSet: true, wantPeakSet: true, notByteIdentical: true,
+		},
+		{name: "not quoted (post-175 only)", storedThresh: nil, storedPeak: nil, wantThreshSet: false, wantPeakSet: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := PricingPolicyRow{Model: "m", InputPerMTok: Rate(1)}
+			row.SetOrgThreshold(tc.storedThresh)
+			row.SetOrgPeak(tc.storedPeak)
+			raw, err := json.Marshal(row)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			// NEW SERVER -> OLD NODE.
+			if tc.legacy != nil {
+				old, err := json.Marshal(tc.legacy)
+				if err != nil {
+					t.Fatalf("marshal legacy: %v", err)
+				}
+				switch {
+				case !tc.notByteIdentical && !bytes.Equal(raw, old):
+					t.Fatalf("a pre-175-expressible row changed bytes:\n new %s\n old %s", raw, old)
+				case tc.notByteIdentical && (bytes.Equal(raw, old) || bytes.Contains(raw, []byte(`"peak"`))):
+					t.Fatalf("the documented non-byte-identical state changed shape: new %s old %s (want the peak omitted)", raw, old)
+				}
+			} else if !bytes.Contains(raw, []byte(`"long_context_threshold_unquoted":true`)) ||
+				!bytes.Contains(raw, []byte(`"peak_unquoted":true`)) {
+				t.Fatalf("a NULL threshold/peak must carry its marker: %s", raw)
+			}
+			var oldNode legacyPricingPolicyRow
+			if err := json.Unmarshal(raw, &oldNode); err != nil {
+				t.Fatalf("an old node cannot decode the new row: %v", err)
+			}
+			gotT, gotW := legacyOverlay(oldNode)
+			if gotT != tc.wantThresh || gotW != tc.wantPeakWindow {
+				t.Errorf("old node overlays (threshold %d, peak windows %d), want (%d, %d)", gotT, gotW, tc.wantThresh, tc.wantPeakWindow)
+			}
+
+			// NEW SERVER -> NEW NODE: the three states stay distinct.
+			var back PricingPolicyRow
+			if err := json.Unmarshal(raw, &back); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if v, set := back.OrgThreshold(); v != tc.wantThresh || set != tc.wantThreshSet {
+				t.Errorf("OrgThreshold = (%d, %v), want (%d, %v)", v, set, tc.wantThresh, tc.wantThreshSet)
+			}
+			p, set := back.OrgPeak()
+			if set != tc.wantPeakSet {
+				t.Errorf("OrgPeak quoted = %v, want %v", set, tc.wantPeakSet)
+			}
+			if w := 0; p != nil {
+				w = len(p.Schedule.Windows)
+				if w != tc.wantPeakWindow {
+					t.Errorf("OrgPeak windows = %d, want %d", w, tc.wantPeakWindow)
+				}
+			}
+
+			// OLD SERVER -> NEW NODE: the legacy bytes read back as the old
+			// node's overlay, never as "keep the seed".
+			if tc.legacy != nil {
+				old, _ := json.Marshal(tc.legacy)
+				var fromOld PricingPolicyRow
+				if err := json.Unmarshal(old, &fromOld); err != nil {
+					t.Fatalf("new node cannot decode a legacy row: %v", err)
+				}
+				wantT, wantW := legacyOverlay(*tc.legacy)
+				if v, set := fromOld.OrgThreshold(); !set || v != wantT {
+					t.Errorf("legacy row OrgThreshold = (%d, %v), want the old overlay's (%d, true)", v, set, wantT)
+				}
+				p, set := fromOld.OrgPeak()
+				gotW := 0
+				if p != nil {
+					gotW = len(p.Schedule.Windows)
+				}
+				if !set || gotW != wantW {
+					t.Errorf("legacy row OrgPeak = (%+v, %v), want quoted with %d windows", p, set, wantW)
+				}
+			}
+		})
+	}
+}
+
+// TestPricingPolicyLegacyStateBodyVerifiesOnATypedPre175Node pins the
+// strongest form of the byte-compat claim: a body signed by THIS server over
+// rows holding only pre-175-expressible states re-marshals, through a pre-175
+// node's TYPED struct (the verify path every node before rc.8 used), to the
+// exact bytes that were signed - so the signature verifies there too.
+func TestPricingPolicyLegacyStateBodyVerifiesOnATypedPre175Node(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	flat := PricingPolicyRow{Model: "a", InputPerMTok: Rate(1), OutputPerMTok: Rate(2)}
+	flat.SetOrgThreshold(threshold(0))
+	flat.SetOrgPeak(&PeakRates{})
+	tiered := PricingPolicyRow{Model: "b", InputPerMTok: Rate(1), LongContextInputPerMTok: Rate(2)}
+	tiered.SetOrgThreshold(threshold(200000))
+	tiered.SetOrgPeak(windowedPeak())
+	body := PricingPolicyBody{Version: 4, GeneratedAt: "2026-09-26T00:00:00Z", Rows: []PricingPolicyRow{flat, tiered}}
+	doc, err := SignPricingPolicy(priv, "org-1", body)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	wire, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal doc: %v", err)
+	}
+	var old struct {
+		legacyPricingPolicyBody
+		Signature string `json:"signature"`
+	}
+	if err := json.Unmarshal(wire, &old); err != nil {
+		t.Fatalf("pre-175 decode: %v", err)
+	}
+	reMarshal, err := json.Marshal(old.legacyPricingPolicyBody)
+	if err != nil {
+		t.Fatalf("pre-175 re-marshal: %v", err)
+	}
+	sig, err := base64.StdEncoding.DecodeString(old.Signature)
+	if err != nil {
+		t.Fatalf("signature: %v", err)
+	}
+	if !ed25519.Verify(pub, pricingSigningHash("org-1", old.Version, reMarshal), sig) {
+		t.Fatal("a legacy-state document does not verify on a typed pre-175 node: the new server would freeze it")
+	}
+}
+
+// TestPricingPolicyContextWindowsVerifyOnEveryNodeGeneration is the
+// regression for the 2026-09-29 review finding: the context windows lane
+// G-WIRE2 stamped INTO the signed rows broke verification on every node built
+// before the raw-rows verify (v1.33.0 .. rc.7), which re-marshals the struct it
+// decoded and so drops a row key it does not know. The windows now ride as an
+// unsigned top-level sibling (PricingPolicyDoc.ContextWindows), outside the
+// signed body, so the document verifies on:
+//
+//   - the current node (raw received rows),
+//   - a pre-rc.8 node (typed re-marshal of the decoded body, no rawRows),
+//
+// and the signing message is byte-identical with and without windows.
+func TestPricingPolicyContextWindowsVerifyOnEveryNodeGeneration(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := PricingPolicyBody{Version: 7, GeneratedAt: "2026-09-29T00:00:00Z", Rows: []PricingPolicyRow{{
+		Model: "claude-sonnet-4-5", InputPerMTok: Rate(3), OutputPerMTok: Rate(15), Source: "imported",
+	}}}
+	doc, err := SignPricingPolicy(priv, "org-1", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Outside the signature: the server attaches windows AFTER signing, for a
+	// model the price book does not name as well as one it does.
+	doc.ContextWindows = []ModelContextWindow{{Model: "claude-sonnet-4-5", Tokens: 200_000}, {Model: "gpt-5.6", Tokens: 400_000}}
+	wire, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(wire, []byte(`"context_windows"`)) {
+		t.Fatalf("windows missing from the wire: %s", wire)
+	}
+	if bytes.Contains(wire, []byte(`"rows":[{"model":"claude-sonnet-4-5","input_per_mtok":3,"output_per_mtok":15,"source":"imported","context`)) {
+		t.Fatalf("a window leaked into the signed rows: %s", wire)
+	}
+
+	var got PricingPolicyDoc
+	if err := json.Unmarshal(wire, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPricingPolicy(pub, "org-1", got); err != nil {
+		t.Fatalf("current (raw rows) node refuses the windowed document: %v", err)
+	}
+	if len(got.ContextWindows) != 2 || got.ContextWindows[1].Model != "gpt-5.6" || got.ContextWindows[1].Tokens != 400_000 {
+		t.Fatalf("windows lost in transit: %+v", got.ContextWindows)
+	}
+	// A pre-rc.8 node: no rawRows, verifies by re-marshalling the typed body
+	// it decoded. Its struct has no ContextWindows either, which is exactly
+	// what building the doc from the body alone models.
+	old := PricingPolicyDoc{PricingPolicyBody: got.PricingPolicyBody, Signature: got.Signature}
+	if err := VerifyPricingPolicy(pub, "org-1", old); err != nil {
+		t.Fatalf("pre-raw-verify node REFUSES the windowed document: %v", err)
+	}
+	// The signed bytes do not move with the windows.
+	var gotBare PricingPolicyDoc
+	if err := json.Unmarshal(bare, &gotBare); err != nil {
+		t.Fatal(err)
+	}
+	withMsg, err := pricingVerifyMessage("org-1", got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutMsg, err := pricingVerifyMessage("org-1", gotBare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(withMsg, withoutMsg) {
+		t.Fatal("the signing message changed when context_windows were attached")
+	}
+	// But the ETag substrate does move, so a window change re-fetches.
+	d1, _ := PricingPolicyDigest(gotBare)
+	d2, _ := PricingPolicyDigest(got)
+	if d1 == d2 {
+		t.Fatal("the document digest ignores context_windows; a node would never re-fetch a window change")
+	}
+}
+
+// TestPricingPolicyNoWindowsKeepsLegacyBytes pins that a document with no
+// windows marshals exactly as before the sibling existed.
+func TestPricingPolicyNoWindowsKeepsLegacyBytes(t *testing.T) {
+	doc := PricingPolicyDoc{PricingPolicyBody: PricingPolicyBody{
+		Version: 3, GeneratedAt: "2026-09-29T00:00:00Z",
+		Rows: []PricingPolicyRow{{Model: "m", InputPerMTok: Rate(1)}},
+	}, Signature: "c2ln"}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "context_window") {
+		t.Fatalf("a document with no windows must carry no window key: %s", raw)
 	}
 }

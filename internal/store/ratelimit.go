@@ -16,12 +16,21 @@ import (
 // codex adapter persists as ActionRateLimit rows; this is the read side
 // that turns those rows into the same gauge shape the proxy snapshot
 // produces. Optional fields are nil when the source omitted that window.
+//
+// Window5hUtil/Window7dUtil are classified by each reported window's
+// window_minutes (see rateLimitWindowClassifyThresholdMinutes), NOT by
+// whether Codex called it "primary" or "secondary" — live-observed
+// 2026-09-22, an account/plan shape reports only ONE window and it is not
+// always the 5h one (a "prolite"-plan account sends
+// primary.window_minutes==10080, i.e. the weekly cap, with
+// secondary==null). Positional assignment would render that window under
+// the wrong label.
 type RateLimitWindows struct {
-	Window5hUtil  *float64 // primary window, 0..1
-	Window5hReset *int64   // primary resets_at, unix seconds
-	Window7dUtil  *float64 // secondary window, 0..1
-	Window7dReset *int64   // secondary resets_at, unix seconds
-	PlanType      string   // "plus" / "pro" / "team"
+	Window5hUtil  *float64 // 5h-class window (window_minutes <= threshold), 0..1
+	Window5hReset *int64   // 5h-class window resets_at, unix seconds
+	Window7dUtil  *float64 // weekly-class window (window_minutes > threshold), 0..1
+	Window7dReset *int64   // weekly-class window resets_at, unix seconds
+	PlanType      string   // "plus" / "pro" / "team"; "" when the source reported it as JSON null
 	Status        string   // rate_limit_reached_type, "" when not throttled
 	ObservedAt    time.Time
 }
@@ -94,9 +103,19 @@ func (s *Store) latestRateLimitRow(ctx context.Context, query string, args ...an
 	return w, true, nil
 }
 
+// rateLimitWindowClassifyThresholdMinutes separates a "short" (5h-class)
+// window from a "long" (weekly-class) one by its DECLARED DURATION, never
+// by whether Codex reported it as primary or secondary (see
+// RateLimitWindows's doc comment for why position is unsafe). Live-
+// observed values are exactly 300 (5h) and 10080 (7d/weekly) — two orders
+// of magnitude apart, so a coarse 1-day (1440min) threshold has no
+// boundary risk against real data.
+const rateLimitWindowClassifyThresholdMinutes = 1440
+
 // parseRateLimitWindows decodes the codexRateLimits envelope into the
-// gauge shape. used_percent is 0..100 → util 0..1. Returns ok=false when
-// neither window is present.
+// gauge shape. used_percent is 0..100 → util 0..1. Each of Primary/
+// Secondary is classified independently by window_minutes, not position.
+// Returns ok=false when neither window is present.
 func parseRateLimitWindows(raw string) (RateLimitWindows, bool) {
 	var rl rateLimitActionRaw
 	if err := json.Unmarshal([]byte(raw), &rl); err != nil {
@@ -108,23 +127,32 @@ func parseRateLimitWindows(raw string) (RateLimitWindows, bool) {
 		w.Status = *rl.RateLimitReachedType
 	}
 	present := false
-	if rl.Primary != nil {
-		util := rl.Primary.UsedPercent / 100.0
-		w.Window5hUtil = &util
-		if rl.Primary.ResetsAt > 0 {
-			r := rl.Primary.ResetsAt
-			w.Window5hReset = &r
+	for _, win := range []*rateLimitWindow{rl.Primary, rl.Secondary} {
+		if win == nil {
+			continue
 		}
 		present = true
-	}
-	if rl.Secondary != nil {
-		util := rl.Secondary.UsedPercent / 100.0
-		w.Window7dUtil = &util
-		if rl.Secondary.ResetsAt > 0 {
-			r := rl.Secondary.ResetsAt
-			w.Window7dReset = &r
+		util := win.UsedPercent / 100.0
+		var reset *int64
+		if win.ResetsAt > 0 {
+			r := win.ResetsAt
+			reset = &r
 		}
-		present = true
+		if win.WindowMinutes > rateLimitWindowClassifyThresholdMinutes {
+			// Weekly-class. Not observed live, but defensive: on a
+			// same-bucket collision (both primary and secondary land in
+			// the same class) keep the larger used_percent — the more
+			// urgent reading wins rather than an arbitrary last-write.
+			if w.Window7dUtil == nil || util > *w.Window7dUtil {
+				w.Window7dUtil = &util
+				w.Window7dReset = reset
+			}
+			continue
+		}
+		if w.Window5hUtil == nil || util > *w.Window5hUtil {
+			w.Window5hUtil = &util
+			w.Window5hReset = reset
+		}
 	}
 	return w, present
 }

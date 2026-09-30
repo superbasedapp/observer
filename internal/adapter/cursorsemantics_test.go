@@ -126,3 +126,37 @@ func TestResolveCursorSemantics(t *testing.T) {
 		})
 	}
 }
+
+// TestFileCursorSemanticsGates pins which declarations unlock the
+// watcher's unread-delta oversize gate and the cursor rewind: both need
+// a byte-count cursor (byte offset OR no-actions — a tailed usage/replay
+// log is still a byte stream), never a watermark or encrypted store.
+// The no-actions+streams row is the S10-CURSOR P1: before it, a Cursor
+// hooks log past max_file_bytes (2 MB) was never tailed again.
+func TestFileCursorSemanticsGates(t *testing.T) {
+	tests := []struct {
+		name       string
+		sem        FileCursorSemantics
+		wantDelta  bool
+		wantRewind bool
+	}{
+		{"zero value", FileCursorSemantics{}, false, false},
+		{"byte offset streams", FileCursorSemantics{StreamsFromCursor: true}, true, false},
+		{"no-actions streams", FileCursorSemantics{Kind: CursorNoActions, StreamsFromCursor: true}, true, false},
+		{"no-actions streams + rotates", FileCursorSemantics{Kind: CursorNoActions, StreamsFromCursor: true, RewindsOnTruncate: true}, true, true},
+		{"no-actions whole-file reader", FileCursorSemantics{Kind: CursorNoActions}, false, false},
+		{"watermark never", FileCursorSemantics{Kind: CursorWatermark, StreamsFromCursor: true, RewindsOnTruncate: true}, false, false},
+		{"encrypted never", FileCursorSemantics{Kind: CursorEncrypted, StreamsFromCursor: true, RewindsOnTruncate: true}, false, false},
+		{"byte offset rotates without streaming", FileCursorSemantics{RewindsOnTruncate: true}, false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.sem.DeltaGateMeaningful(); got != tc.wantDelta {
+				t.Errorf("DeltaGateMeaningful() = %v, want %v", got, tc.wantDelta)
+			}
+			if got := tc.sem.RewindMeaningful(); got != tc.wantRewind {
+				t.Errorf("RewindMeaningful() = %v, want %v", got, tc.wantRewind)
+			}
+		})
+	}
+}

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/spendverdict"
 )
 
 // GuardBudgetReadOptions selects the evidence required by managed hard caps.
@@ -124,21 +126,20 @@ type GuardBudgetSpendResult struct {
 	//
 	// ONE QUERY, ONE SET OF WINDOWS, ONE DE-DUPLICATION RULE: they are
 	// accumulated in the same row loop as the totals above, over the same
-	// window stamps, folded by the same per-session MAX(proxy, watcher). A
-	// subject total measured over a second query could disagree with the
-	// node-wide total about the same requests, and a per-tool cap that
-	// contradicted the daily cap would be unexplainable to the developer it
-	// stopped.
+	// window stamps and the same rows (the ones the stored sessionmsg dedup
+	// verdicts count). A subject total measured over a second query could
+	// disagree with the node-wide total about the same requests, and a
+	// per-tool cap that contradicted the daily cap would be unexplainable to
+	// the developer it stopped.
 	//
 	// Keys are NORMALIZED (trimmed, ASCII-lowercased): the organization typed
 	// the cap's id, an adapter captured the row's, and they meet on one rule.
 	//
-	// THE HONEST LIMIT. `api_turns` — the PROXY substrate — has no tool column
-	// at all (it never had one; the proxy sees a provider and a model, not
-	// which adapter dialed it). ByTool is therefore built from the natively
-	// captured substrate only, and for a session observed through BOTH the
-	// proxy and its own parser the MAX de-duplication resolves to whichever is
-	// larger, exactly as it does node-wide. ByModel sees both substrates,
+	// A PROXY row's tool is its session's (sessions.tool): `api_turns` has no
+	// tool column of its own (the proxy sees a provider and a model, not
+	// which adapter dialed it), but the session it names does - the org's
+	// spendCTE attributes it the same way. A proxy row outside every session
+	// names no tool and is attributed to none. ByModel sees both substrates,
 	// because both record the model.
 	ByTool  map[string]GuardBudgetSubjectWindows
 	ByModel map[string]GuardBudgetSubjectWindows
@@ -208,20 +209,19 @@ type guardBudgetSpendRow struct {
 	incomplete       bool
 }
 
-// guardBudgetSourceSpend holds one session's spend per capture source so the
-// two can be de-duplicated by maximum rather than summed.
-type guardBudgetSourceSpend struct {
-	proxy   float64
-	watcher float64
-}
-
 // GuardBudgetSpendPriced is the bounded read-time companion to
-// GuardBudgetSpend. It reads proxy and watcher rows in one UNION query. Local
-// advisory reads retain positive stored prices and the existing per-session
-// MAX(proxy, watcher) merge. Managed reads reprice every row using exact/org
-// rates; the same MAX merge de-duplicates a session captured by both sources,
-// and a row that cannot be priced makes ITS TOOL's windows unavailable
-// (UnpricedTools) when it names one, the node's windows otherwise.
+// GuardBudgetSpend. It reads proxy and watcher rows in one UNION query, each
+// arm filtered and shaped by the stored sessionmsg dedup verdicts
+// (internal/spendverdict): a transcript row Derive does not count is not
+// read, a twinned proxy row carries its twin's visible output + reasoning
+// (and, when that twin was fast, the fast tier with its standard-tier stored
+// cost cleared so it is re-priced), and a proxy row the session-cumulative
+// reconciliation dropped is not read. Every remaining row is summed - the
+// session header's rule, replacing the per-session MAX(proxy, watcher) merge
+// (lane R2-ONERULE). Local advisory reads retain positive stored prices;
+// managed reads reprice every row using exact/org rates, and a row that
+// cannot be priced makes ITS TOOL's windows unavailable (UnpricedTools) when
+// it names one, the node's windows otherwise.
 //
 // Normal rows are bounded by the earliest non-zero window start. Managed
 // reads additionally detect malformed timestamps across history, since those
@@ -268,19 +268,21 @@ func (s *Store) GuardBudgetSpendPriced(
 		sessionID, sessionID, earliest.UTC().Format("2006-01-02T15:04:05"), earliestStamp,
 		sessionID, sessionID, earliest.UTC().Format("2006-01-02T15:04:05"), earliestStamp,
 	}
-	where := guardBudgetUsageWhere(managed)
-	//nolint:gosec // G202: where selects closed constant SQL; all caller values are bound in args.
+	s.refreshSpendVerdictsBounded(ctx)
+	//nolint:gosec // G202: the WHERE / verdict fragments are closed constant SQL; all caller values are bound in args.
 	q := `
-		SELECT 0 AS source, COALESCE(session_id, ''), timestamp, '' AS tool,
+		SELECT 0 AS source, COALESCE(session_id, ''), timestamp,
+		       COALESCE((SELECT s.tool FROM sessions s WHERE s.id = api_turns.session_id), ''),
 		       COALESCE(model, ''), COALESCE(input_tokens, 0),
-		       COALESCE(output_tokens, 0), COALESCE(cache_read_tokens, 0),
+		       ` + spendverdict.ProxyOutputOf("api_turns") + `, COALESCE(cache_read_tokens, 0),
 		       COALESCE(cache_creation_tokens, 0),
-		       COALESCE(cache_creation_1h_tokens, 0), 0,
+		       COALESCE(cache_creation_1h_tokens, 0),
+		       ` + spendverdict.ProxyReasoningOf("api_turns") + `,
 		       COALESCE(web_search_requests, 0), COALESCE(cost_usd, 0),
-		       COALESCE(fast, 0),
+		       COALESCE(fast, 0), ` + spendverdict.ProxyInheritedFastOf("api_turns") + `,
 		       input_tokens IS NULL OR output_tokens IS NULL OR
 		       cache_read_tokens IS NULL OR cache_creation_tokens IS NULL
-		  FROM api_turns` + where + `
+		  FROM api_turns` + guardBudgetUsageWhere(managed, spendverdict.CountedProxyRowOf("api_turns")) + `
 		 UNION ALL
 		SELECT 1 AS source, COALESCE(session_id, ''), timestamp,
 		       COALESCE(tool, ''),
@@ -290,13 +292,13 @@ func (s *Store) GuardBudgetSpendPriced(
 		       COALESCE(cache_creation_1h_tokens, 0),
 		       COALESCE(reasoning_tokens, 0),
 		       COALESCE(web_search_requests, 0),
-		       COALESCE(estimated_cost_usd, 0), COALESCE(fast, 0),
+		       COALESCE(estimated_cost_usd, 0), COALESCE(fast, 0), 0,
 		       input_tokens IS NULL OR output_tokens IS NULL OR
 		       cache_read_tokens IS NULL OR cache_creation_tokens IS NULL OR
 		       reasoning_tokens IS NULL OR
 		       COALESCE(reliability, '') NOT IN ('accurate', 'approximate') OR
 		       source NOT IN ('jsonl', 'otel', 'hook', 'proxy')
-		  FROM token_usage` + where
+		  FROM token_usage` + guardBudgetUsageWhere(managed, spendverdict.CountedTokenRow("token_usage"))
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -305,11 +307,6 @@ func (s *Store) GuardBudgetSpendPriced(
 	defer rows.Close()
 
 	result := GuardBudgetSpendResult{PricingSources: map[string]int{}}
-	var sessionRows, dayRows, weekRows, monthRows map[string]guardBudgetSourceSpend
-	sessionRows = make(map[string]guardBudgetSourceSpend)
-	dayRows = make(map[string]guardBudgetSourceSpend)
-	weekRows = make(map[string]guardBudgetSourceSpend)
-	monthRows = make(map[string]guardBudgetSourceSpend)
 	dayStamp := guardBudgetWindowStamp(dayStart)
 	weekStamp := guardBudgetWindowStamp(weekStart)
 	monthStamp := guardBudgetWindowStamp(monthStart)
@@ -319,18 +316,25 @@ func (s *Store) GuardBudgetSpendPriced(
 
 	for rows.Next() {
 		var r guardBudgetSpendRow
-		var source, fast, incomplete int
+		var source, fast, lift, incomplete int
 		if err := rows.Scan(
 			&source, &r.sessionID, &r.timestamp, &r.tool, &r.model,
 			&r.inputTokens, &r.outputTokens, &r.cacheReadTokens,
 			&r.cacheCreation, &r.cacheCreation1h, &r.reasoningTokens,
-			&r.webSearchRequest, &r.storedUSD, &fast, &incomplete,
+			&r.webSearchRequest, &r.storedUSD, &fast, &lift, &incomplete,
 		); err != nil {
 			return GuardBudgetSpendResult{}, fmt.Errorf("store.GuardBudgetSpendPriced: scan: %w", err)
 		}
 		r.source = source
 		r.fast = fast != 0
 		r.incomplete = incomplete != 0
+		if lift != 0 && !r.fast {
+			// The row's fast transcript twin lifts it to the fast tier; its
+			// stored cost was priced at the standard wire tier, so it no
+			// longer stands (the cost engine's rule, loadProxyRows).
+			r.fast = true
+			r.storedUSD = 0
+		}
 
 		usd, sourceName, priced, invalid := priceGuardBudgetRow(r, pricer, managed)
 		// TWO CLASSES, TWO LISTS (BUDGET-COV-3). A row the org's own rates did
@@ -383,16 +387,18 @@ func (s *Store) GuardBudgetSpendPriced(
 		// canonical UTC stamp orderedAt IS the normalized timestamp, so this is
 		// a no-op for every row a writer of ours produced.
 		subjects.add(r, usd, sessionID, dayStamp, weekStamp, monthStamp)
-		addGuardBudgetRow(sessionRows, r, usd)
+		if sessionID != "" && r.sessionID == sessionID {
+			result.SessionUSD += usd
+		}
 		if r.orderedAt >= dayStamp {
-			addGuardBudgetRow(dayRows, r, usd)
+			result.DailyUSD += usd
 		}
 		if r.orderedAt >= weekStamp {
-			addGuardBudgetRow(weekRows, r, usd)
+			result.WeeklyUSD += usd
 			result.WeeklyExpiresAt = nextGuardBudgetWeeklyExpiry(result.WeeklyExpiresAt, r.timestamp, usd)
 		}
 		if r.orderedAt >= monthStamp {
-			addGuardBudgetRow(monthRows, r, usd)
+			result.MonthlyUSD += usd
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -402,19 +408,11 @@ func (s *Store) GuardBudgetSpendPriced(
 	result.ByTool, result.ByModel, result.SessionTool, result.SessionModel = subjects.fold()
 	result.FallbackModels = sortedBoundedModels(fallbackModels, guardBudgetMaxUnpricedModels)
 	result.UnpricedModels = sortedBoundedModels(unpricedModels, guardBudgetMaxUnpricedModels)
-	if sessionID != "" {
-		result.SessionUSD = maxGuardBudgetSpend(sessionRows, sessionID)
-	}
-	result.DailyUSD = sumGuardBudgetSpend(dayRows)
-	result.WeeklyUSD = sumGuardBudgetSpend(weekRows)
-	result.MonthlyUSD = sumGuardBudgetSpend(monthRows)
 	// A session observed through BOTH the proxy and the native parser is the
 	// ordinary shape for any tool the daemon launches through :8820 and also
-	// parses from its own store. It is not ambiguity: per-session
-	// MAX(proxy, watcher) is the established de-duplication rule and is applied
-	// above. Marking the overlap unavailable contradicted that rule and denied
-	// every proxied-and-parsed tool (accounting-readiness correction,
-	// 2026-09-14).
+	// parses from its own store. It is not ambiguity: the stored dedup
+	// verdicts count each turn once, and the overlap is never marked
+	// unavailable (accounting-readiness correction, 2026-09-14).
 	return result, nil
 }
 
@@ -435,36 +433,6 @@ func sortedBoundedModels(set map[string]struct{}, limit int) []string {
 		out = out[:limit]
 	}
 	return out
-}
-
-func addGuardBudgetRow(dst map[string]guardBudgetSourceSpend, r guardBudgetSpendRow, usd float64) {
-	entry := dst[r.sessionID]
-	if r.source == 0 {
-		entry.proxy += usd
-	} else {
-		entry.watcher += usd
-	}
-	dst[r.sessionID] = entry
-}
-
-func maxGuardBudgetSpend(rows map[string]guardBudgetSourceSpend, sessionID string) float64 {
-	entry := rows[sessionID]
-	if entry.proxy > entry.watcher {
-		return entry.proxy
-	}
-	return entry.watcher
-}
-
-func sumGuardBudgetSpend(rows map[string]guardBudgetSourceSpend) float64 {
-	var total float64
-	for _, entry := range rows {
-		if entry.proxy > entry.watcher {
-			total += entry.proxy
-		} else {
-			total += entry.watcher
-		}
-	}
-	return total
 }
 
 func nonNegativeTokenCount(n int64) int64 {
@@ -604,9 +572,10 @@ type guardBudgetReadWindows struct{ sessionID, day, week, month string }
 
 // recordGuardBudgetUnpriced marks the windows an unpriced billable row leaves
 // unaccounted. A managed read attributes the row to its TOOL when it names one
-// and is otherwise well formed; an invalid row, or one with no tool column
-// (proxy turns), stays node-wide because nothing narrower is provable. Advisory
-// reads keep the original node-wide behaviour unchanged.
+// (a proxy turn names its session's) and is otherwise well formed; an invalid
+// row, or one naming no tool (a proxy turn outside every session), stays
+// node-wide because nothing narrower is provable. Advisory reads keep the
+// original node-wide behaviour unchanged.
 func recordGuardBudgetUnpriced(result *GuardBudgetSpendResult, r guardBudgetSpendRow, invalid, managed bool, windows guardBudgetReadWindows) {
 	result.UnpricedRows++
 	result.UnpricedTokens += nonNegativeTokenCount(r.inputTokens) + nonNegativeTokenCount(r.outputTokens)
@@ -646,33 +615,22 @@ func recordGuardBudgetUnpriced(result *GuardBudgetSpendResult, r guardBudgetSpen
 // The organization can cap ONE TOOL or ONE MODEL, and those caps are enforced
 // at the node's chokepoints like any other. What they need from this read is a
 // per-subject slice of the very same numbers, which is why it is computed HERE,
-// in the existing row loop, rather than by a second query: same rows, same
-// window stamps, same per-session MAX(proxy, watcher) de-duplication.
-//
-// The de-duplication is per (subject, session) and per UNIT, mirroring what the
-// two node-wide reads already do — the dollar read folds MAX(proxy, watcher)
-// per session, and the token CTE folds MAX per source-group per session — so a
+// in the existing row loop, rather than by a second query: same rows (the ones
+// the stored dedup verdicts count), same window stamps, same sums - so a
 // session captured by both substrates counts once for a subject exactly as it
 // counts once node-wide.
 
-// subjectWindowKey identifies one accumulation bucket: a window, a subject id,
-// and the session the rows belong to (the session is what the MAX fold is over
-// and is dropped afterwards).
+// subjectWindowKey identifies one accumulation bucket: a window and a subject.
 type subjectWindowKey struct {
-	window  string
-	kind    string
-	id      string
-	session string
+	window string
+	kind   string
+	id     string
 }
 
-// subjectSourceTotals holds one bucket's two substrates. They are kept apart
-// until the fold for the same reason the node-wide read keeps them apart: they
-// are two observations of the same spend, not two spends.
+// subjectSourceTotals is one bucket's running total in both units.
 type subjectSourceTotals struct {
-	proxyUSD      float64
-	watcherUSD    float64
-	proxyTokens   int64
-	watcherTokens int64
+	usd    float64
+	tokens int64
 }
 
 // subjectSpend accumulates every bucket plus the session's tool evidence.
@@ -783,21 +741,17 @@ func (s *subjectSpend) add(r guardBudgetSpendRow, usd float64, sessionID, day, w
 	} {
 		id := s.subjectID(subject.kind, subject.id)
 		if id == "" {
-			// A proxy turn names no tool, and a row with no model names no
-			// model. Neither is attributed to a subject: a cap must never be
-			// measured against usage that merely might belong to it.
+			// A proxy turn outside every session names no tool, and a row
+			// with no model names no model. Neither is attributed to a
+			// subject: a cap must never be measured against usage that
+			// merely might belong to it.
 			continue
 		}
 		for _, w := range windows {
-			key := subjectWindowKey{window: w, kind: subject.kind, id: id, session: r.sessionID}
+			key := subjectWindowKey{window: w, kind: subject.kind, id: id}
 			entry := s.buckets[key]
-			if r.source == 0 {
-				entry.proxyUSD += usd
-				entry.proxyTokens += tokens
-			} else {
-				entry.watcherUSD += usd
-				entry.watcherTokens += tokens
-			}
+			entry.usd += usd
+			entry.tokens += tokens
 			s.buckets[key] = entry
 		}
 	}
@@ -823,8 +777,7 @@ func (s *subjectSpend) fold() (byTool, byModel map[string]GuardBudgetSubjectWind
 			dst = byModel
 		}
 		windows := dst[key.id]
-		addSubjectWindow(&windows, key.window, maxFloat(entry.proxyUSD, entry.watcherUSD),
-			maxInt64(entry.proxyTokens, entry.watcherTokens))
+		addSubjectWindow(&windows, key.window, entry.usd, entry.tokens)
 		dst[key.id] = windows
 	}
 	if len(byTool) == 0 {
@@ -895,18 +848,4 @@ func addSubjectWindow(dst *GuardBudgetSubjectWindows, window string, usd float64
 // guard.NormalizeBudgetSubjectID — the pair is pinned by the store test.
 func normalizeGuardBudgetSubject(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
-}
-
-func maxFloat(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }

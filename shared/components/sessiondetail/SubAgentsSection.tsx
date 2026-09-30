@@ -1,9 +1,11 @@
 import { useState, type ReactNode } from "react";
 import { ChartState } from "../../charts/ChartState";
+import { Icon } from "../../primitives";
 import { fmtCompact, fmtInt, fmtUSD } from "../../lib/format";
 import { fmtDate } from "../../lib/sessionElapsed";
 import type { RenderCost } from "./cost";
 import type { SubAgentLike } from "../../lib/types";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
 // SubAgentsSection lists separately linked child sessions and legacy inline
 // sidechain windows. Exact child identities keep concurrent runtime transcripts
@@ -42,6 +44,11 @@ export type SubAgentsSectionProps = {
   loaded: boolean;
   loading?: boolean;
   error?: Error | null;
+  /** The read was a denial (HTTP 403, the apps' useApi `denied`): the panel
+   *  renders the shared permission-denied state instead of an error. */
+  denied?: boolean;
+  /** The permission key the server's 403 named, when it named one. */
+  deniedPermission?: string | null;
   renderCost?: RenderCost;
   /**
    * Renders a linked child session. Receives the child's session id and its
@@ -61,6 +68,8 @@ export function SubAgentsSection({
   loaded,
   loading = false,
   error = null,
+  denied = false,
+  deniedPermission = null,
   renderCost,
   linkChildSession = defaultLinkChildSession,
   fetchFullText,
@@ -84,7 +93,7 @@ export function SubAgentsSection({
           aria-expanded={open}
         >
           <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">
-            <span className="select-none text-fg-3">{open ? "▾" : "▸"}</span>
+            <Icon icon={open ? ChevronDown : ChevronRight} size="xs" className="text-fg-3" />
             Sub-agents
           </span>
           <span className="text-[10.5px] text-fg-3">{summary}</span>
@@ -95,6 +104,8 @@ export function SubAgentsSection({
         <ChartState
           loading={loading && !loaded}
           error={error}
+          denied={denied}
+          deniedPermission={deniedPermission}
           empty={loaded && rows.length === 0}
           emptyHint="No sub-agent activity on this session."
         >

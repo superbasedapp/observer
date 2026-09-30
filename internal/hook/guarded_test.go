@@ -288,3 +288,60 @@ func TestBuildClaudeCodeEvent(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleGuarded_MCPToolDenyThroughExistingPath pins the Agent Access
+// P4 hook deny (doc3 §12.6): an `mcp__<server>__<tool>` PreToolUse payload
+// is built as a KindMCPCall event (Target = the wire tool name, so the
+// guard's MCP-access seam can resolve server + tool) and an R-306/R-307
+// deny verdict rides the EXISTING deny path — the same dual-shape block
+// reply, stderr line and immediate persist every other deny uses; no MCP-
+// specific channel exists. The watchdog fail-open contract is untouched
+// (memory feedback_hook_fail_open_on_timeout): a deny is a REPLY, never a
+// non-zero exit.
+func TestHandleGuarded_MCPToolDenyThroughExistingPath(t *testing.T) {
+	t.Parallel()
+	body, _ := json.Marshal(map[string]any{
+		"session_id": "sess-mcp",
+		"cwd":        "/home/u/proj",
+		"tool_name":  "mcp__github__create_issue",
+		"tool_input": map[string]any{"title": "x"},
+	})
+	ev, ok := BuildClaudeCodeEvent(body)
+	if !ok || ev.Kind != policy.KindMCPCall || ev.Target != "mcp__github__create_issue" || !ev.Caps.CanBlock {
+		t.Fatalf("mcp event = %+v (ok=%v), want a blockable KindMCPCall on the wire tool name", ev, ok)
+	}
+	for _, ruleID := range []string{"R-306", "R-307"} {
+		t.Run(ruleID, func(t *testing.T) {
+			t.Parallel()
+			v := guard.ActionVerdict{
+				Kind: policy.KindMCPCall, Category: "mcp",
+				Verdict: policy.Verdict{
+					Decision: policy.DecisionDeny, RuleID: ruleID, Severity: policy.SeverityHigh,
+					Reason: "server github (client claude-code): node table: no row matched", Advice: "Route it through the org gateway.", Source: "builtin",
+				},
+			}
+			var stdout, stderr bytes.Buffer
+			persisted := 0
+			blocked, after := HandleGuarded("PreToolUse", body, stubEvaluator{v: v, worthy: true},
+				func(guard.ActionVerdict) { persisted++ }, &stdout, &stderr)
+			if !blocked || after != nil {
+				t.Fatalf("blocked=%v deferred=%v, want blocked with no deferred record", blocked, after != nil)
+			}
+			var reply claudeCodeBlockReply
+			if err := json.Unmarshal(stdout.Bytes(), &reply); err != nil {
+				t.Fatalf("reply not JSON: %v (%s)", err, stdout.String())
+			}
+			if reply.Decision != "block" || reply.HookSpecificOutput.PermissionDecision != "deny" ||
+				reply.HookSpecificOutput.HookEventName != "PreToolUse" ||
+				!strings.Contains(reply.HookSpecificOutput.PermissionDecisionReason, "no row matched") {
+				t.Errorf("reply = %+v", reply)
+			}
+			if !strings.Contains(stderr.String(), "guard deny ("+ruleID) {
+				t.Errorf("stderr = %q", stderr.String())
+			}
+			if persisted != 1 {
+				t.Errorf("persist calls = %d, want 1 (immediate)", persisted)
+			}
+		})
+	}
+}

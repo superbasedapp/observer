@@ -51,12 +51,14 @@ func isOpenAIPath(path string) bool {
 		strings.HasPrefix(path, "/v1/responses") ||
 		strings.HasPrefix(path, "/v1/completions") ||
 		strings.HasPrefix(path, "/v1/embeddings") ||
-		strings.HasPrefix(path, "/v1/models") {
+		strings.HasPrefix(path, "/v1/models") ||
+		strings.HasPrefix(path, "/v1/realtime") {
 		return true
 	}
 	return strings.Contains(path, "/chat/completions") ||
 		strings.Contains(path, "/responses") ||
-		strings.Contains(path, "/embeddings")
+		strings.Contains(path, "/embeddings") ||
+		strings.Contains(path, "/v1/realtime")
 }
 
 func isChatGPTBackendPath(path string) bool {

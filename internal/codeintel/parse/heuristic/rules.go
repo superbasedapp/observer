@@ -8,7 +8,7 @@ import (
 )
 
 // buildRules constructs the per-language rule table once. The patterns
-// generalize the proven shapes in internal/codegraph/livesym (re-
+// generalize the proven shapes in internal/codeintel/parse/livesym (re-
 // implemented here to keep the package self-contained and pure). Symbol
 // rules are ordered MOST-SPECIFIC FIRST since the engine takes the first
 // match per line.

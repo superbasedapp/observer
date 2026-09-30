@@ -398,7 +398,9 @@ UPDATE actions
    SET action_type = 'search_files'
  WHERE tool = 'cline'
    AND action_type = 'unknown'
-   AND raw_tool_name = 'list_files';
+   AND raw_tool_name IN (
+     'list_code_definition_names', 'list_files'
+   );
 
 UPDATE actions
    SET action_type = 'search_text'
@@ -1897,7 +1899,9 @@ UPDATE actions
    SET action_type = 'search_files'
  WHERE tool = 'kilo-code'
    AND action_type = 'unknown'
-   AND raw_tool_name = 'list_files';
+   AND raw_tool_name IN (
+     'list_code_definition_names', 'list_files'
+   );
 
 UPDATE actions
    SET action_type = 'search_text'
@@ -2004,11 +2008,57 @@ UPDATE actions
    );
 
 UPDATE actions
+   SET action_type = 'agent_control'
+ WHERE tool = 'kimi-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name IN (
+     'tasklist', 'taskoutput', 'taskstop', 'towerinbox',
+     'towerstatus'
+   );
+
+UPDATE actions
+   SET action_type = 'agent_message'
+ WHERE tool = 'kimi-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name IN (
+     'towerfinding', 'towerreview', 'towersend'
+   );
+
+UPDATE actions
+   SET action_type = 'ask_user'
+ WHERE tool = 'kimi-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'askuserquestion';
+
+UPDATE actions
    SET action_type = 'edit_file'
  WHERE tool = 'kimi-code'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
      'applypatch', 'edit', 'editfile', 'patch', 'replace'
+   );
+
+UPDATE actions
+   SET action_type = 'harness_call'
+ WHERE tool = 'kimi-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name IN (
+     'creategoal', 'getgoal', 'setgoalbudget', 'towerinit',
+     'towermerge', 'updategoal'
+   );
+
+UPDATE actions
+   SET action_type = 'notification'
+ WHERE tool = 'kimi-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'notifyuser';
+
+UPDATE actions
+   SET action_type = 'permission_mode'
+ WHERE tool = 'kimi-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name IN (
+     'enterplanmode', 'exitplanmode'
    );
 
 UPDATE actions
@@ -2028,6 +2078,14 @@ UPDATE actions
    );
 
 UPDATE actions
+   SET action_type = 'schedule'
+ WHERE tool = 'kimi-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name IN (
+     'croncreate', 'crondelete', 'cronlist'
+   );
+
+UPDATE actions
    SET action_type = 'search_files'
  WHERE tool = 'kimi-code'
    AND action_type = 'unknown'
@@ -2044,19 +2102,32 @@ UPDATE actions
    );
 
 UPDATE actions
+   SET action_type = 'skill_invoke'
+ WHERE tool = 'kimi-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'skill';
+
+UPDATE actions
    SET action_type = 'spawn_subagent'
  WHERE tool = 'kimi-code'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'agent', 'agentswarm', 'delegate', 'spawnagent', 'subagent'
+     'agent', 'agentswarm', 'delegate', 'spawnagent', 'subagent',
+     'towerspawn'
    );
+
+UPDATE actions
+   SET action_type = 'subagent_wait'
+ WHERE tool = 'kimi-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'waitfor';
 
 UPDATE actions
    SET action_type = 'todo_update'
  WHERE tool = 'kimi-code'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'todo', 'todolist', 'todowrite'
+     'todo', 'todolist', 'todowrite', 'towermission', 'towerplan'
    );
 
 UPDATE actions
@@ -2074,6 +2145,12 @@ UPDATE actions
    AND raw_tool_name IN (
      'search', 'websearch'
    );
+
+UPDATE actions
+   SET action_type = 'worktree_remove'
+ WHERE tool = 'kimi-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'towerteardown';
 
 UPDATE actions
    SET action_type = 'write_file'
@@ -2521,6 +2598,12 @@ UPDATE actions
    );
 
 UPDATE actions
+   SET action_type = 'ask_user'
+ WHERE tool = 'opencode'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'question';
+
+UPDATE actions
    SET action_type = 'edit_file'
  WHERE tool = 'opencode'
    AND action_type = 'unknown'
@@ -2534,6 +2617,12 @@ UPDATE actions
  WHERE tool = 'opencode'
    AND action_type = 'unknown'
    AND raw_tool_name = 'opencode.step_finish';
+
+UPDATE actions
+   SET action_type = 'permission_mode'
+ WHERE tool = 'opencode'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'plan_exit';
 
 UPDATE actions
    SET action_type = 'read_file'
@@ -2565,8 +2654,14 @@ UPDATE actions
  WHERE tool = 'opencode'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'grep', 'rg', 'search'
+     'grep', 'lsp', 'rg', 'search'
    );
+
+UPDATE actions
+   SET action_type = 'skill_invoke'
+ WHERE tool = 'opencode'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'skill';
 
 UPDATE actions
    SET action_type = 'spawn_subagent'
@@ -2585,6 +2680,12 @@ UPDATE actions
    );
 
 UPDATE actions
+   SET action_type = 'tool_failure'
+ WHERE tool = 'opencode'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'invalid';
+
+UPDATE actions
    SET action_type = 'web_fetch'
  WHERE tool = 'opencode'
    AND action_type = 'unknown'
@@ -2596,7 +2697,9 @@ UPDATE actions
    SET action_type = 'web_search'
  WHERE tool = 'opencode'
    AND action_type = 'unknown'
-   AND raw_tool_name = 'websearch';
+   AND raw_tool_name IN (
+     'codesearch', 'websearch'
+   );
 
 UPDATE actions
    SET action_type = 'write_file'
@@ -2871,6 +2974,12 @@ UPDATE actions
    );
 
 UPDATE actions
+   SET action_type = 'harness_call'
+ WHERE tool = 'qwen-code'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'advisor';
+
+UPDATE actions
    SET action_type = 'mcp_call'
  WHERE tool = 'qwen-code'
    AND action_type = 'unknown'
@@ -3004,7 +3113,9 @@ UPDATE actions
    SET action_type = 'search_files'
  WHERE tool = 'roo-code'
    AND action_type = 'unknown'
-   AND raw_tool_name = 'list_files';
+   AND raw_tool_name IN (
+     'list_code_definition_names', 'list_files'
+   );
 
 UPDATE actions
    SET action_type = 'search_text'
@@ -3115,14 +3226,16 @@ UPDATE actions
  WHERE tool = 'zed'
    AND action_type = 'unknown'
    AND raw_tool_name IN (
-     'delete_path', 'edit_file'
+     'delete_path', 'edit_file', 'move_path'
    );
 
 UPDATE actions
    SET action_type = 'read_file'
  WHERE tool = 'zed'
    AND action_type = 'unknown'
-   AND raw_tool_name = 'read_file';
+   AND raw_tool_name IN (
+     'diagnostics', 'read_file'
+   );
 
 UPDATE actions
    SET action_type = 'run_command'
@@ -3139,10 +3252,42 @@ UPDATE actions
    );
 
 UPDATE actions
+   SET action_type = 'search_text'
+ WHERE tool = 'zed'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'grep';
+
+UPDATE actions
+   SET action_type = 'skill_invoke'
+ WHERE tool = 'zed'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'skill';
+
+UPDATE actions
+   SET action_type = 'spawn_subagent'
+ WHERE tool = 'zed'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'spawn_agent';
+
+UPDATE actions
+   SET action_type = 'web_fetch'
+ WHERE tool = 'zed'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'fetch';
+
+UPDATE actions
+   SET action_type = 'web_search'
+ WHERE tool = 'zed'
+   AND action_type = 'unknown'
+   AND raw_tool_name = 'search_web';
+
+UPDATE actions
    SET action_type = 'write_file'
  WHERE tool = 'zed'
    AND action_type = 'unknown'
-   AND raw_tool_name = 'write_file';
+   AND raw_tool_name IN (
+     'copy_path', 'create_directory', 'write_file'
+   );
 
 UPDATE actions
    SET action_type = 'ask_user'
@@ -3189,7 +3334,9 @@ UPDATE actions
    SET action_type = 'search_files'
  WHERE tool = 'zoo-code'
    AND action_type = 'unknown'
-   AND raw_tool_name = 'list_files';
+   AND raw_tool_name IN (
+     'list_code_definition_names', 'list_files'
+   );
 
 UPDATE actions
    SET action_type = 'search_text'

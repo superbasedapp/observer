@@ -1,0 +1,30 @@
+The node half of Agent Access (doc3 §15.0). The relay mediates this
+machine's AI clients' MCP traffic against the organization's signed
+tools.mcp_access grant: `wrap` rewrites every installed client's MCP
+entries through the relay (originals journaled first), `unwrap` restores
+them from the journal, `relay` is the stdio wrapper those entries spawn,
+`status` and `doctor` report what is actually mediated, and `connect`
+points you at the org dashboard to sign in to a per-user MCP server.
+
+`observer mcp-relay` is the older spelling of the same surface (it also
+carries enable / disable, which flip [mcp_relay].enabled).
+
+The relay rides the daemon's :8820. Never stop/restart the daemon while an
+MCP session or a proxied route is live: route OFF -> stop -> relaunch ->
+route ON, as one atomic op (docs/daemon-restart-runbook.md).
+
+Usage:
+  observer mcp [command]
+
+Available Commands:
+  connect     Print (or --open) the org dashboard's My Connections URL to sign in to a per-user MCP server
+  doctor      Node probes: relay config, org enrolled + reachable, STS registration + token mint, wrapped client entries, journal, record chain
+  relay       Stdio relay: spawn the journaled original MCP server and mediate every frame (what a wrapped client entry runs)
+  status      Relay state, approved vservers, remote forwarding, effective state and the client x transport coverage matrix (--json)
+  unwrap      Restore every journaled client MCP config from the launch journal (byte-identical when untouched)
+  wrap        Rewrite every installed AI client's MCP entries through the relay (originals journaled first; idempotent)
+
+Flags:
+  -h, --help   help for mcp
+
+Use "observer mcp [command] --help" for more information about a command.

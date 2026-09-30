@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { fmtUSD } from "../lib/format";
 import type { AnalysisCostByHour } from "../lib/types";
 import { Tooltip } from "../primitives";
+import { ScaleLegend } from "./ScaleLegend";
 
 // HourHeatmap — single-row colour-intensity heatmap (24 cells × 1
 // row) replacing the prior HourBars. The design intent is a 2D
@@ -13,17 +14,20 @@ import { Tooltip } from "../primitives";
 // Cells are colour-mapped against the max bucket using `--accent`
 // as the high end. Hovering or selecting a cell publishes a
 // readout below the grid (mirrors the design's hover state).
-export function HourHeatmap({
+export const HourHeatmap = memo(function HourHeatmap({
   buckets,
   timezone,
 }: {
   buckets: AnalysisCostByHour["buckets"];
   timezone?: string;
 }) {
-  const max = useMemo(
-    () => Math.max(1, ...buckets.map((b) => b.cost_usd)),
+  // peak is the real top bucket (the legend's honest high end); max floors
+  // it at 1 only as the intensity divisor.
+  const peak = useMemo(
+    () => Math.max(0, ...buckets.map((b) => b.cost_usd)),
     [buckets],
   );
+  const max = Math.max(1, peak);
   const [selected, setSelected] = useState<number | null>(null);
   const sel = selected != null ? buckets.find((b) => b.hour === selected) : null;
 
@@ -41,7 +45,7 @@ export function HourHeatmap({
             return (
               <Tooltip
                 key={hour}
-                content={`${pad(hour)}:00 — ${fmtUSD(value)}${b?.turn_count ? ` · ${b.turn_count} turns` : ""}`}
+                content={`${pad(hour)}:00 · ${fmtUSD(value)}${b?.turn_count ? ` · ${b.turn_count} turns` : ""}`}
               >
                 <button
                   type="button"
@@ -50,13 +54,7 @@ export function HourHeatmap({
                   onClick={() => setSelected(hour)}
                   className="aspect-square w-full rounded-[2px] transition-opacity hover:opacity-80"
                   style={{
-                    background:
-                      intensity > 0
-                        ? `color-mix(in srgb, var(--accent) ${(
-                            12 +
-                            intensity * 78
-                          ).toFixed(0)}%, var(--bg-3))`
-                        : "var(--bg-3)",
+                    background: cellColor(intensity),
                     border:
                       selected === hour
                         ? "1px solid var(--accent)"
@@ -84,7 +82,7 @@ export function HourHeatmap({
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-2 text-[11px] text-fg-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[11px] text-fg-3">
         <span>
           {sel
             ? `${pad(sel.hour)}:00–${pad((sel.hour + 1) % 24)}:00${
@@ -100,26 +98,23 @@ export function HourHeatmap({
             <span className="ml-1 text-fg-3">· {sel.turn_count} turns</span>
           )}
         </span>
-        <span className="flex items-center gap-1.5 text-[10px] text-fg-4">
-          low
-          <span className="flex h-2 w-24 overflow-hidden rounded-pill">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <span
-                key={i}
-                className="block h-full flex-1"
-                style={{
-                  background: `color-mix(in srgb, var(--accent) ${
-                    12 + i * 16
-                  }%, var(--bg-3))`,
-                }}
-              />
-            ))}
-          </span>
-          high
-        </span>
+        <ScaleLegend
+          colorAt={cellColor}
+          low={fmtUSD(0)}
+          high={fmtUSD(peak)}
+          label="Cost colour scale"
+        />
       </div>
     </div>
   );
+});
+
+// cellColor is the cell ramp (accent over bg-3); the ScaleLegend samples
+// the same function so the legend and the cells cannot drift.
+function cellColor(intensity: number): string {
+  return intensity > 0
+    ? `color-mix(in srgb, var(--accent) ${(12 + intensity * 78).toFixed(0)}%, var(--bg-3))`
+    : "var(--bg-3)";
 }
 
 function pad(n: number): string {

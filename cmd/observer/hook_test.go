@@ -504,11 +504,26 @@ func runPromptSubmitHookOnce(t *testing.T, tool, event, configPath, payload stri
 	return reply
 }
 
+// writePromptGuardConfig writes an enforce-mode prompt-guard config for the
+// deny -> resend-allow tests.
+//
+// [observer.hooks].timeout_ms is raised far above the 500 ms production
+// default on purpose. Every reconsider-once step (Lookup / Record / Confirm,
+// cmd/observer/hook.go buildHookGuard) runs its SQLite statement under that
+// timeout, and guard.EvaluatePrompt degrades a STORE ERROR to a warn
+// (forward + flag, DegradedFrom "store_error") by design. Under full-package
+// load (-race, several packages at once) a statement against the fresh
+// temp DB could pass 500 ms, the first submission then came back allowed
+// instead of blocked, and TestHandleZcodePromptSubmit_EndToEnd flaked
+// (15/15 alone, 1 failure under load). The tests pin the verdict logic, not
+// the production latency budget, so they must not depend on wall-clock
+// speed.
 func writePromptGuardConfig(t *testing.T, dbPath string) string {
 	t.Helper()
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
 	cfgBody := "[observer]\ndb_path = " + strconv.Quote(filepath.ToSlash(dbPath)) + "\n\n" +
+		"[observer.hooks]\ntimeout_ms = 120000\n\n" +
 		"[guard]\nenabled = true\nmode = \"enforce\"\n\n" +
 		"[guard.prompt]\nenabled = true\nmode = \"ask-once\"\nhook_lane = true\nreconsider_min_delay = \"0s\"\n"
 	if err := os.WriteFile(configPath, []byte(cfgBody), 0o600); err != nil {

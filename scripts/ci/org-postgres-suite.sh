@@ -57,7 +57,9 @@ log="${ORG_PG_SUITE_LOG:-$(mktemp -t org-pg-suite.XXXXXX.log)}"
 # internal/aigateway. Then add the fixed baseline packages the task names:
 # the two migration lineages + dbtest (db/...), the advisory-lock leader
 # singleton (leader/...), the live control-store dialect suite
-# (controlstore/...) and the ingest apply/receipt path (ingest/...).
+# (controlstore/...), the ingest apply/receipt path (ingest/...) and the
+# org CLI's own live-PG tests (cmd/observer-org: migrate --store, the upgrade
+# preflight extension row, agent-access reapply after a restore).
 # --------------------------------------------------------------------------
 mapfile -t two_writer_pkgs < <(
   grep -rl "func Test.*TwoWriters" --include='*_test.go' internal/orgserver internal/aigateway \
@@ -70,6 +72,7 @@ fixed_pkgs=(
   ./internal/orgserver/leader/...
   ./internal/orgserver/controlstore/...
   ./internal/orgserver/ingest/...
+  ./cmd/observer-org
 )
 mapfile -t packages < <(printf '%s\n' "${two_writer_pkgs[@]}" "${fixed_pkgs[@]}" | sort -u)
 

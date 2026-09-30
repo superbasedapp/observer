@@ -102,6 +102,15 @@ func TestWireEncodingGolden(t *testing.T) {
 				// in the DEFAULT posture — which is exactly why it belongs on
 				// this metadata-only fixture rather than a *_full_content one.
 				Surface: "ide", SurfaceHost: "vscode",
+				// Tool-version trickle-up (server migration 161 / pg 0027):
+				// a bounded, non-prose, vendor-authored token, METADATA like
+				// Surface/SurfaceHost above — ships in the DEFAULT posture.
+				ToolVersion: "1.2.3",
+				// Parent-thread-id trickle-up (server migration 162 / pg
+				// 0028): an opaque vendor-minted session-lineage pointer,
+				// METADATA like ToolVersion above — ships in the DEFAULT
+				// posture. See docs/security.md ledger row LINEAGE-1.
+				ParentThreadID: "sess-0",
 			}},
 			Actions: []ActionRow{{
 				SessionID: "sess-1", SourceEventID: "evt-9",
@@ -151,6 +160,18 @@ func TestWireEncodingGolden(t *testing.T) {
 				OrgID: "org-acme", UserEmail: "dev@acme.example",
 			}},
 		},
+		// The client-declared request class (server migration 188 / pg 0054,
+		// lane G-WIRE2): a closed enum, METADATA that ships in the DEFAULT
+		// posture. The push_envelope fixture above carries none, so its bytes
+		// stay identical to the pre-188 shape - that absence IS the compat
+		// shape an older server sees.
+		"api_turn_row_with_request_class": APITurnRow{
+			SessionID: "sess-1", ProjectRootHash: "sha256:proj-root-aaa",
+			Timestamp: "2026-05-25T10:05:01Z", Provider: "anthropic", Model: "claude-opus-4-7",
+			RequestID: "req-2", InputTokens: 300, OutputTokens: 40, CostUSD: 0.0031,
+			HTTPStatus: 200, OrgID: "org-acme", UserEmail: "dev@acme.example",
+			RequestClass: "subagent",
+		},
 		// Lines-of-Code wire (W5). Two fixtures for the session row so the
 		// gated field's ABSENCE is pinned as its own shape: the default
 		// metadata-only row carries the counts with no language mix (the
@@ -176,6 +197,41 @@ func TestWireEncodingGolden(t *testing.T) {
 			AIAddedCode: 412, AIModifiedCode: 37, AIDeletedCode: 91,
 			Files: 21, HumanCapture: "none", ClassifierVersion: 1,
 			LanguageMixJSON: `[{"language":"go","category":"code","files":18,"lines":449}]`,
+		},
+		// BL2-ORG session quality score. Two fixtures: a fully recorded row,
+		// and one scored by a node whose scorer left the optional columns NULL
+		// (no cache events, no edit) - those keys must be ABSENT, never 0.
+		"session_quality_row": SessionQualityRow{
+			OrgID: "org-acme", UserEmail: "dev@acme.example", SessionID: "sess-1",
+			QualityScore:    0.8125,
+			RedundancyRatio: float64p(0.125), ErrorRate: float64p(0.05),
+			ExplorationEfficiency: float64p(0.6), ContinuityScore: float64p(0.9179),
+			OnboardingCost: int64p(18234), TurnsToFirstEdit: int64p(4), RetryCostTokens: int64p(912),
+			StaleReadsWasteful: int64p(3), StaleReadsNecessary: int64p(1), RedundancyRatioWasteful: float64p(0.09),
+			ScoredAt: "2026-09-27T10:15:00.123456789Z", ScoredActionCount: int64p(50),
+			WeightRedundancy: 0.4, WeightError: 0.3, WeightExploration: 0.2, WeightContinuity: 0.1,
+		},
+		// Lane F-WIRE per-session rate-limit window. Two fixtures: a full
+		// observation, and one whose provider sent no window headers - those
+		// keys must be ABSENT (unknown on the org), never 0.
+		"session_limit_snapshot_row": SessionLimitSnapshotRow{
+			OrgID: "org-acme", UserEmail: "dev@acme.example",
+			SessionID: "sess-1", Tool: "claude-code", Provider: "anthropic",
+			LocalID: 4211, ObservedAt: 1790000000,
+			Window5hUtil: float64p(0.42), Window7dUtil: float64p(0.17),
+			Window5hReset: int64p(1790012000), Window7dReset: int64p(1790400000),
+		},
+		"session_limit_snapshot_row_sparse": SessionLimitSnapshotRow{
+			SessionID: "sess-2", Tool: "codex", Provider: "openai",
+			LocalID: 4212, ObservedAt: 1790000060,
+		},
+		"session_quality_row_sparse": SessionQualityRow{
+			SessionID: "sess-2", QualityScore: 0.55,
+			RedundancyRatio: float64p(0.3), ErrorRate: float64p(0.2),
+			ExplorationEfficiency: float64p(0), ContinuityScore: float64p(0.39),
+			OnboardingCost: int64p(0), RetryCostTokens: int64p(0),
+			ScoredAt: "2026-09-27T10:16:00.000000000Z", ScoredActionCount: int64p(10),
+			WeightRedundancy: 0.4, WeightError: 0.3, WeightExploration: 0.2, WeightContinuity: 0.1,
 		},
 		// Node session-detail trickle-up W2/W3. Two fixtures per row type so
 		// the GATED half's absence is pinned as its own shape, the same way
@@ -230,6 +286,39 @@ func TestWireEncodingGolden(t *testing.T) {
 			AICodeLines: 449, HumanCodeLines: 28, SystemCodeLines: 18,
 			Files: 21, HumanCapture: "vscode", ClassifierVersion: 1,
 		},
+		// Commit ownership (lane F-PROJ). Three fixtures: the DEFAULT
+		// metadata-only owned row (no subject key), the same row under the
+		// raw-content posture (subject added), and the identity-only
+		// unreachable row. If the subject gate ever inverted, or an author /
+		// path field were ever added, the first fixture would stop being
+		// byte-identical here.
+		"commit_ownership_row": CommitOwnershipRow{
+			OrgID: "org-acme", UserEmail: "dev@acme.example",
+			ProjectRootHash: "sha256:proj-root-aaa", CommitSHA: "0123abcd0123abcd0123abcd0123abcd0123abcd",
+			CommittedAt: "2026-09-28T10:00:00Z", Reachable: true,
+			FilesCount: 3, Added: 42, Deleted: 7, AIFiles: 2, AICodeLines: 30, AICommentLines: 4,
+			OwnerSessionID: "sess-1", OwnerReason: "most_code_lines", ShareBasis: "code_lines",
+			Contributors: []CommitContributorRow{
+				{SessionID: "sess-1", Share: 0.75, CodeLines: 22, CommentLines: 3, Files: 1, Prompts: 2},
+				{SessionID: "sess-2", Share: 0.25, CodeLines: 8, CommentLines: 1, Files: 1, Prompts: 1},
+			},
+			RuleVersion: 1,
+		},
+		"commit_ownership_row_full_content": CommitOwnershipRow{
+			OrgID: "org-acme", UserEmail: "dev@acme.example",
+			ProjectRootHash: "sha256:proj-root-aaa", CommitSHA: "0123abcd0123abcd0123abcd0123abcd0123abcd",
+			CommittedAt: "2026-09-28T10:00:00Z", Reachable: true,
+			FilesCount: 1, Added: 3, AIFiles: 1, AICodeLines: 3,
+			OwnerSessionID: "sess-1", OwnerReason: "sole_contributor", ShareBasis: "code_lines",
+			Contributors: []CommitContributorRow{{SessionID: "sess-1", Share: 1, CodeLines: 3, Files: 1, Prompts: 1}},
+			Subject:      "feat: parser",
+			RuleVersion:  1,
+		},
+		"commit_ownership_row_unreachable": CommitOwnershipRow{
+			ProjectRootHash: "sha256:proj-root-aaa", CommitSHA: "fedc0000fedc0000fedc0000fedc0000fedc0000",
+			CommittedAt: "2026-09-27T09:00:00Z", Reachable: false,
+			OwnerReason: "unreachable", RuleVersion: 1,
+		},
 		// A push from a MANAGED node (Project Identity Resolver v2, W6
 		// correction). Two fields exist only on this shape, and both are
 		// omitempty — which is exactly why the plain push_envelope fixture
@@ -267,6 +356,123 @@ func TestWireEncodingGolden(t *testing.T) {
 		// Note what is NOT here and never can be: a hostname, a username, a
 		// path, a progress percentage, or an error MESSAGE. The failure is an
 		// error CLASS, and the block is a closed reason.
+		// Agent Access P4 W4e (doc3 §9.5 / §11.7, R8.30.a/b, R9.5, R14.5). An
+		// INDIVIDUAL node that opted into [org_client.share].mcp_activity ships
+		// the HMAC-only daily aggregate and the per-device SourceNodeKey.
+		// NOTHING per-call rides along: no plain server/tool name, no payload,
+		// no event rows. The plain push_envelope fixture above stays
+		// byte-identical - both new keys are omitempty, which is the compat
+		// invariant in both directions (a pre-P4 agent sends neither; a pre-P4
+		// server ignores both).
+		"push_envelope_mcp_relay_individual": PushEnvelope{
+			AgentVersion:  "1.35.0",
+			SourceNodeKey: "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+			CursorFrom:    90477,
+			CursorTo:      90480,
+			MCPRelayActivity: []MCPRelayActivityRow{{
+				OrgID: "org-acme", UserEmail: "dev@acme.example",
+				Day: "2026-09-24", VirtualServer: "vs-github", ToolRefHMAC: "hmac-tool-aaa",
+				Decision: "allow", ClientAttestation: "process_attested", N: 17,
+			}},
+		},
+		// The ENROLLED teams/enterprise shape (shipsRawContent()): the same
+		// aggregate PLUS one wire record per node chain record - decision and
+		// completion are SEPARATE records keyed (source_node_key,
+		// local_record_seq, record_kind), gap / gap_resolution ride the same
+		// way (R14.5). The decision carries the PLAIN names + L2 args; the
+		// completion carries the L2 result / error / elicitation with their
+		// own scrub status (R12.9); nullable integers are pointers so a NULL
+		// (a decision's latency, a gap's capture level) never becomes a zero.
+		"push_envelope_mcp_relay_managed": PushEnvelope{
+			AgentVersion:    "1.35.0",
+			MachineIdentity: "3f2a1b0c9d8e7f60514233445566778899aabbccddeeff00112233445566778a",
+			SourceNodeKey:   "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+			CursorFrom:      90480,
+			CursorTo:        90484,
+			MCPRelayActivity: []MCPRelayActivityRow{{
+				OrgID: "org-acme", UserEmail: "dev@acme.example",
+				Day: "2026-09-24", VirtualServer: "vs-github", ToolRefHMAC: "hmac-tool-aaa",
+				Decision: "allow", ClientAttestation: "process_attested", N: 1,
+			}},
+			MCPRelayEvents: []MCPRelayEventRow{
+				{
+					OrgID: "org-acme", UserEmail: "dev@acme.example",
+					LocalRecordSeq: 41, RecordKind: "decision", TS: 1790000000,
+					VirtualServer: "vs-github", Server: "github", Tool: "create_issue", Method: "tools/call",
+					CallID: "call-7f3a", TraceID: "trace-0011", CodingSessionID: "sess-1", TurnRef: "turn-9", ActionRef: "act-12",
+					CorrConfidence: "exact", Decision: "allow", ReasonCode: "grant:github-issues",
+					ClientAttestation: "process_attested", CredentialAssurance: "node_enrolled",
+					CaptureLevel: "L2", ArgsFull: `{"title":"Cursor re-enrol regression"}`, ArgsScrubStatus: "structured",
+				},
+				{
+					OrgID: "org-acme", UserEmail: "dev@acme.example",
+					LocalRecordSeq: 42, RecordKind: "completion", TS: 1790000001,
+					CallID: "call-7f3a", CaptureLevel: "L2", LatencyMS: int64p(830), ResultSizeBytes: int64p(2048),
+					ResultStatus: "ok", ResultFull: `{"number":118}`, ResultScrubStatus: "structured",
+					ErrorFull: `{"code":0}`, ErrorScrubStatus: "redacted",
+					ElicitationFull: `{}`, ElicitationScrubStatus: "truncated",
+				},
+				{
+					OrgID: "org-acme", UserEmail: "dev@acme.example",
+					LocalRecordSeq: 43, RecordKind: "gap", TS: 1790000002,
+					GapFrom: int64p(1789999900), GapTo: int64p(1789999950), LostCount: int64p(2), GapReason: "local_append_failed",
+				},
+				{
+					OrgID: "org-acme", UserEmail: "dev@acme.example",
+					LocalRecordSeq: 44, RecordKind: "gap_resolution", TS: 1790000003,
+					ResolvesSeq: int64p(43), ResolvedRangeStart: int64p(1789999900), ResolvedRangeEnd: int64p(1789999920), Resolution: "late_arrival",
+				},
+			},
+		},
+		// Agent Access P11 (c) shadow-MCP discovery inventory (R12.10 / R13.8 /
+		// R14.6), FULL shape: an ENROLLED teams/enterprise node
+		// (shipsRawContent()) ships the raw locator - client, server name, url
+		// (userinfo stripped), command, SCRUBBED args, env KEY names only and
+		// the config-path HASH - beside the always-present identity.
+		"push_envelope_mcp_inventory_full": PushEnvelope{
+			AgentVersion:  "1.36.0",
+			SourceNodeKey: "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+			CursorFrom:    90484,
+			CursorTo:      90484,
+			MCPInventory: []MCPInventoryRow{
+				{
+					OrgID: "org-acme", UserEmail: "dev@acme.example",
+					SourceScope:        "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+					LocatorFingerprint: "4f6c1d2e3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+					ServerNameHash:     "hmac-sha256:v1:7a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+					Transport:          "stdio", ObservedAt: 1790000100, FirstSeen: 1789740000, LastSeen: 1790000100,
+					Client: "claude-code", ServerName: "files", Command: "npx",
+					Args: []string{"-y", "@acme/files-mcp", "--token=[REDACTED]"}, EnvKeys: []string{"API_KEY", "FILES_ROOT"},
+					ConfigPathHash: "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+				},
+				{
+					OrgID: "org-acme", UserEmail: "dev@acme.example",
+					SourceScope:        "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+					LocatorFingerprint: "8a9b0c1d2e3f405162738495a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f",
+					ServerNameHash:     "hmac-sha256:v1:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+					Transport:          "http", ObservedAt: 1790000100, FirstSeen: 1790000100, LastSeen: 1790000100,
+					Client: "cursor", ServerName: "linear", URL: "https://mcp.linear.app/sse",
+				},
+			},
+		},
+		// The REDUCED (share-off) shape of the same stdio server: an INDIVIDUAL
+		// node under [org_client.share].mcp_activity. Identity + metadata only -
+		// source_scope, locator_fingerprint, server_name_hash, transport,
+		// observed_at and the first/last-seen counts - and NO raw locator key
+		// (every raw field is omitempty), yet still ingestible (R14.6).
+		"push_envelope_mcp_inventory_reduced": PushEnvelope{
+			AgentVersion:  "1.36.0",
+			SourceNodeKey: "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+			CursorFrom:    90484,
+			CursorTo:      90484,
+			MCPInventory: []MCPInventoryRow{{
+				OrgID: "org-acme", UserEmail: "dev@acme.example",
+				SourceScope:        "9d2f6b1c4e8a7f30d1c2b3a4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+				LocatorFingerprint: "4f6c1d2e3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+				ServerNameHash:     "hmac-sha256:v1:7a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+				Transport:          "stdio", ObservedAt: 1790000100, FirstSeen: 1789740000, LastSeen: 1790000100,
+			}},
+		},
 		"push_envelope_with_update_posture": PushEnvelope{
 			AgentVersion: "1.30.0",
 			CursorFrom:   90477,
@@ -421,5 +627,146 @@ func TestLOCWireCompatBothDirections(t *testing.T) {
 	}
 	if len(future.SessionLOC) != 1 || future.SessionLOC[0].AIAddedCode != 5 {
 		t.Fatalf("newer-agent row decoded to %+v, want the known fields preserved", future.SessionLOC)
+	}
+}
+
+// int64p is the golden fixture's nullable-integer helper.
+func int64p(v int64) *int64 { return &v }
+
+// float64p is the golden fixture's nullable-float helper.
+func float64p(v float64) *float64 { return &v }
+
+// TestSessionQualityWireCompatBothDirections pins the two-way compatibility
+// of the BL2-ORG session quality wire (CLAUDE.md "Compat invariant"): an
+// older agent's envelope carries no `session_quality` key and decodes to a nil
+// slice (the server writes nothing, never a zeroed score), an agent with no
+// scored sessions adds no key (an older server sees the pre-BL2-ORG shape
+// exactly, and ignores the key when present), and an unknown future field on a
+// row does not break today's decoder.
+func TestSessionQualityWireCompatBothDirections(t *testing.T) {
+	var env PushEnvelope
+	if err := json.Unmarshal([]byte(`{"agent_version":"1.30.0","cursor_from":1,"cursor_to":2}`), &env); err != nil {
+		t.Fatalf("unmarshal older-agent envelope: %v", err)
+	}
+	if env.SessionQuality != nil {
+		t.Fatalf("older-agent envelope decoded session_quality as %v, want nil", env.SessionQuality)
+	}
+
+	empty, err := json.Marshal(PushEnvelope{AgentVersion: "1.36.0", CursorFrom: 1, CursorTo: 2})
+	if err != nil {
+		t.Fatalf("marshal empty envelope: %v", err)
+	}
+	if bytes.Contains(empty, []byte(`"session_quality"`)) {
+		t.Error("an envelope with no scored sessions carries \"session_quality\" - the key must be omitempty")
+	}
+
+	future := `{"session_quality":[{"session_id":"s1","quality_score":0.7,"scored_at":"2026-09-27T10:00:00.000000000Z","some_future_field":1}]}`
+	var got PushEnvelope
+	if err := json.Unmarshal([]byte(future), &got); err != nil {
+		t.Fatalf("unmarshal newer-agent envelope: %v", err)
+	}
+	if len(got.SessionQuality) != 1 || got.SessionQuality[0].QualityScore != 0.7 || got.SessionQuality[0].RedundancyRatio != nil {
+		t.Fatalf("newer-agent row decoded to %+v, want the known fields kept and absent components nil", got.SessionQuality)
+	}
+}
+
+// TestSessionLimitSnapshotWireCompatBothDirections pins the two-way
+// compatibility of the lane F-WIRE per-session rate-limit window wire
+// (CLAUDE.md "Compat invariant"): an older agent's envelope carries no
+// `session_limit_snapshots` key and decodes to a nil slice (the server writes
+// nothing, and the org gauge reads as not reported, never 0%), an agent with
+// nothing to ship adds no key (an older server sees the pre-F-WIRE shape
+// exactly, and ignores the key when present), an unknown future field on a row
+// does not break today's decoder, and absent windows stay nil.
+func TestSessionLimitSnapshotWireCompatBothDirections(t *testing.T) {
+	var env PushEnvelope
+	if err := json.Unmarshal([]byte(`{"agent_version":"1.30.0","cursor_from":1,"cursor_to":2}`), &env); err != nil {
+		t.Fatalf("unmarshal older-agent envelope: %v", err)
+	}
+	if env.SessionLimitSnapshots != nil {
+		t.Fatalf("older-agent envelope decoded session_limit_snapshots as %v, want nil", env.SessionLimitSnapshots)
+	}
+
+	empty, err := json.Marshal(PushEnvelope{AgentVersion: "1.36.0", CursorFrom: 1, CursorTo: 2})
+	if err != nil {
+		t.Fatalf("marshal empty envelope: %v", err)
+	}
+	if bytes.Contains(empty, []byte(`"session_limit_snapshots"`)) {
+		t.Error("an envelope with no limit windows carries \"session_limit_snapshots\" - the key must be omitempty")
+	}
+
+	future := `{"session_limit_snapshots":[{"session_id":"s1","tool":"claude-code","provider":"anthropic","local_id":7,"observed_at":1790000000,"window_5h_util":0.5,"some_future_field":"x"}]}`
+	var got PushEnvelope
+	if err := json.Unmarshal([]byte(future), &got); err != nil {
+		t.Fatalf("unmarshal newer-agent envelope: %v", err)
+	}
+	if len(got.SessionLimitSnapshots) != 1 {
+		t.Fatalf("newer-agent envelope decoded %d rows, want 1", len(got.SessionLimitSnapshots))
+	}
+	r := got.SessionLimitSnapshots[0]
+	if r.SessionID != "s1" || r.Tool != "claude-code" || r.Provider != "anthropic" || r.LocalID != 7 ||
+		r.ObservedAt != 1790000000 || r.Window5hUtil == nil || *r.Window5hUtil != 0.5 {
+		t.Fatalf("newer-agent row decoded to %+v, want the known fields kept", r)
+	}
+	if r.Window7dUtil != nil || r.Window5hReset != nil || r.Window7dReset != nil {
+		t.Fatalf("absent windows decoded non-nil: %+v - an unreported window must stay unknown, never 0", r)
+	}
+
+	// A sparse row round-trips with its absent windows still absent.
+	sparse, err := json.Marshal(SessionLimitSnapshotRow{SessionID: "s2", Tool: "codex", Provider: "openai", LocalID: 8, ObservedAt: 1})
+	if err != nil {
+		t.Fatalf("marshal sparse row: %v", err)
+	}
+	for _, k := range []string{"window_5h_util", "window_7d_util", "window_5h_reset", "window_7d_reset"} {
+		if bytes.Contains(sparse, []byte(`"`+k+`"`)) {
+			t.Errorf("sparse row carries %q: %s", k, sparse)
+		}
+	}
+}
+
+// TestAPITurnRequestClassWireCompatBothDirections pins the two-way
+// compatibility of APITurnRow.RequestClass (server migration 188 / pg 0054,
+// CLAUDE.md "Compat invariant"): an older agent's row carries no
+// `request_class` key and decodes to "" (the org stores NULL, never a guessed
+// class); a row with no class adds no key (an older server sees the pre-188
+// shape exactly, and ignores the key when present); a classed row
+// round-trips.
+func TestAPITurnRequestClassWireCompatBothDirections(t *testing.T) {
+	var old APITurnRow
+	if err := json.Unmarshal([]byte(`{"session_id":"s1","timestamp":"2026-05-25T10:05:01Z","provider":"anthropic","input_tokens":5,"output_tokens":1,"cache_read_tokens":0,"cache_creation_tokens":0,"cache_creation_1h_tokens":0,"web_search_requests":0,"cost_usd":0,"message_count":0,"tool_use_count":0,"time_to_first_token_ms":0,"total_response_ms":0,"http_status":200,"org_id":"o","user_email":"e"}`), &old); err != nil {
+		t.Fatalf("unmarshal older-agent row: %v", err)
+	}
+	if old.RequestClass != "" {
+		t.Fatalf("older-agent row decoded request_class %q, want empty", old.RequestClass)
+	}
+
+	unclassed, err := json.Marshal(APITurnRow{SessionID: "s1", Provider: "anthropic"})
+	if err != nil {
+		t.Fatalf("marshal unclassed row: %v", err)
+	}
+	if bytes.Contains(unclassed, []byte(`"request_class"`)) {
+		t.Errorf("a row with no class carries \"request_class\": %s - the key must be omitempty", unclassed)
+	}
+
+	classed, err := json.Marshal(APITurnRow{SessionID: "s1", Provider: "anthropic", RequestClass: "compaction"})
+	if err != nil {
+		t.Fatalf("marshal classed row: %v", err)
+	}
+	var back APITurnRow
+	if err := json.Unmarshal(classed, &back); err != nil {
+		t.Fatalf("unmarshal classed row: %v", err)
+	}
+	if back.RequestClass != "compaction" {
+		t.Fatalf("classed row round-tripped to %q, want compaction", back.RequestClass)
+	}
+
+	// An older server's decoder is modelled by a struct without the field:
+	// the unknown key must not break it.
+	var older struct {
+		SessionID string `json:"session_id"`
+		Provider  string `json:"provider"`
+	}
+	if err := json.Unmarshal(classed, &older); err != nil || older.SessionID != "s1" {
+		t.Fatalf("an older decoder rejected the classed row: %+v, %v", older, err)
 	}
 }

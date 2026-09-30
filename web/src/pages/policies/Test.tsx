@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { Pill } from "@/components/primitives";
+import { ChartShell, Pill } from "@/components/primitives";
 import { fetchJSON } from "@/lib/api";
-import { type Verdict, decisionVariant, severityVariant } from "./types";
+import { decisionTone, severityTone } from "@shared/lib/guardCatalog";
+import { VocabPill } from "@shared/lib/vocabPill";
+import { POLICY_MODE } from "@/lib/vocabTones";
+import { type Verdict } from "./types";
 
 // Test tab — a dry-run tester over the LIVE admission policy. It POSTs to
 // /api/obs/admission/test (Persist:false) so it records NOTHING in the audit
@@ -44,14 +47,10 @@ export function TestTab() {
 
   return (
     <div className="space-y-4">
-      <section className="rounded-3 border border-line-1 bg-bg-1 p-4">
-        <h3 className="text-[13px] font-semibold text-fg-0">Test a request</h3>
-        <p className="mb-3 mt-0.5 max-w-3xl text-[11.5px] leading-snug text-fg-3">
-          Runs one message through the live admission policy and shows which layer fired. It records
-          nothing - but it does call the judge for a judged criterion (spending judge tokens) and previews
-          the enforce-mode decision even while the node is in observe.
-        </p>
-
+      <ChartShell
+        title="Test a request"
+        sub="Runs one message through the live admission policy and shows which layer fired. It records nothing - but it does call the judge for a judged criterion (spending judge tokens) and previews the enforce-mode decision even while the node is in observe."
+      >
         <div className="mb-2 flex flex-wrap gap-1.5">
           {SAMPLES.map((s) => (
             <button
@@ -70,7 +69,7 @@ export function TestTab() {
           onChange={(e) => setText(e.target.value)}
           rows={3}
           placeholder="Type an end-user request…"
-          className="w-full rounded-2 border border-line-2 bg-bg-2 px-2.5 py-1.5 text-[12px] text-fg-1 outline-none focus:border-accent"
+          className="w-full rounded-2 border border-line-2 bg-bg-3 px-2.5 py-1.5 text-small text-fg-1 outline-none focus:border-accent"
         />
         <div className="mt-2 flex flex-wrap items-center gap-3">
           <label className="inline-flex items-center gap-2">
@@ -78,14 +77,14 @@ export function TestTab() {
             <input
               value={user}
               onChange={(e) => setUser(e.target.value)}
-              className="rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-[12px] text-fg-1 outline-none focus:border-accent"
+              className="rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-small text-fg-1 outline-none focus:border-accent"
             />
           </label>
           <button
             type="button"
             disabled={busy || !text.trim()}
             onClick={run}
-            className="rounded-2 bg-accent px-3 py-1.5 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="rounded-2 bg-accent px-3 py-1.5 text-small font-medium text-accent-on transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             {busy ? "Running…" : "Run test"}
           </button>
@@ -93,7 +92,7 @@ export function TestTab() {
         </div>
 
         {err && <div className="mt-3 rounded-2 border border-danger/30 bg-danger-soft px-3 py-2 text-[11.5px] text-danger">{err}</div>}
-      </section>
+      </ChartShell>
 
       {verdict && <VerdictCard v={verdict} />}
     </div>
@@ -102,11 +101,11 @@ export function TestTab() {
 
 function VerdictCard({ v }: { v: Verdict }) {
   return (
-    <section className="rounded-3 border border-line-1 bg-bg-1 p-4">
+    <section className="rounded-3 border border-line-2 bg-bg-2 p-4">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[11px] uppercase tracking-[0.06em] text-fg-3">Verdict</span>
-        <Pill variant={decisionVariant(v.decision)}>{v.decision}</Pill>
-        <Pill variant={severityVariant(v.severity)}>{v.severity}</Pill>
+        <VocabPill vocab="guardDecision" value={v.decision} tone={decisionTone(v.decision)} />
+        <VocabPill vocab="guardSeverity" value={v.severity} tone={severityTone(v.severity)} />
         {v.judge_used ? (
           <Pill variant="info">judge used</Pill>
         ) : (
@@ -116,12 +115,12 @@ function VerdictCard({ v }: { v: Verdict }) {
       </div>
 
       <dl className="mt-3 space-y-1.5 text-[12px]">
-        <Row k="Effective mode" v={<Pill variant={v.mode === "enforce" ? "warn" : "neutral"}>{v.mode}</Pill>} />
+        <Row k="Effective mode" v={<VocabPill vocab="guardMode" table={POLICY_MODE} value={v.mode} />} />
         <Row
           k="Would enforce"
           v={
             <span className="inline-flex items-center gap-1.5">
-              <Pill variant={decisionVariant(v.enforce_decision)}>{v.enforce_decision}</Pill>
+              <VocabPill vocab="guardDecision" value={v.enforce_decision} tone={decisionTone(v.enforce_decision)} />
               {v.mode !== "enforce" && <span className="text-[11px] text-fg-3">(preview - node is in {v.mode})</span>}
             </span>
           }

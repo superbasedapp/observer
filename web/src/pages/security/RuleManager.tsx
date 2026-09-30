@@ -1,3 +1,4 @@
+import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Button,
@@ -6,8 +7,10 @@ import {
   type ComboOption,
   EntityMultiPicker,
   type EntityMultiPickerOption,
+  InlineLoading,
   Pill,
   SegmentedControl,
+  Table,
 } from "@/components/primitives";
 import { fetchJSON } from "@/lib/api";
 import type { ApiState } from "@/lib/useApi";
@@ -27,8 +30,11 @@ import {
   emptyGuardOverride,
   guardRuleInfo,
   parseRules,
+  decisionTone,
+  severityTone,
 } from "@shared/lib/guardCatalog";
-import { DECISION_VARIANT, RuleCell, SEVERITY_VARIANT } from "../Security";
+import { VocabPill } from "@shared/lib/vocabPill";
+import { RuleCell } from "../Security";
 import { RuleEditor } from "./RuleEditor";
 
 // RuleManager — the structured guard-rule editor (spec §1/§6 Track B). Two
@@ -320,7 +326,7 @@ export function RuleManager({
       {scope === "project" && !projectRoot && (
         <div className="py-3 text-[11.5px] text-fg-3">
           Pick a project above. Project rules write a trusted daemon-local file the agent cannot
-          edit (R-160-protected) — unlike the in-repo project policy file, this layer MAY weaken or
+          edit (R-160-protected) - unlike the in-repo project policy file, this layer MAY weaken or
           disable a rule for just this project.
         </div>
       )}
@@ -331,7 +337,7 @@ export function RuleManager({
             <div className="rounded-2 border border-warn/30 bg-warn-soft px-3 py-2 text-[11.5px] text-warn">
               This layer's current file uses a construct the structured editor can't represent
               (or a hand-written comment/format it won't faithfully round-trip). Use the Advanced
-              raw-TOML editor below instead — editing here and saving would discard it.
+              raw-TOML editor below instead - editing here and saving would discard it.
             </div>
           )}
 
@@ -363,7 +369,7 @@ export function RuleManager({
               >
                 {overrides.length === 0 ? (
                   <p className="py-2 text-[11.5px] text-fg-3">
-                    No overrides — every built-in stays at its catalog decision.
+                    No overrides - every built-in stays at its catalog decision.
                   </p>
                 ) : (
                   overrides.map((r, i) => (
@@ -390,7 +396,7 @@ export function RuleManager({
                 />
                 <p className="mt-1 text-[11px] text-fg-3">
                   {scope === "global"
-                    ? "Global disables are unconditional — prefer a scoped approval or an override first."
+                    ? "Global disables are unconditional - prefer a scoped approval or an override first."
                     : "Project disables apply only to sessions rooted here, and can never remove an org-protected budget rule."}
                 </p>
               </div>
@@ -455,7 +461,7 @@ function RuleSection({
     <div>
       <div className="mb-1.5 flex items-center justify-between">
         <h4 className="text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">{title}</h4>
-        <Button size="sm" variant="secondary" onClick={onAdd}>
+        <Button size="sm" variant="secondary" iconLeft={Plus} onClick={onAdd}>
           {addLabel}
         </Button>
       </div>
@@ -466,18 +472,18 @@ function RuleSection({
 
 function RuleRow({ r, onEdit, onRemove }: { r: GuardRuleRow; onEdit: () => void; onRemove: () => void }) {
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-2 border border-line-1 bg-bg-1 px-3 py-1.5 text-[11.5px]">
+    <div className="flex flex-wrap items-center gap-2 rounded-2 border border-line-2 bg-bg-3 px-3 py-1.5 text-[11.5px]">
       <span className="font-mono text-fg-1">{r.id}</span>
       <span className="text-fg-3">{r.category}</span>
-      <Pill variant={SEVERITY_VARIANT[r.severity] ?? "neutral"}>{r.severity}</Pill>
-      <Pill variant={DECISION_VARIANT[r.decision] ?? "neutral"}>{r.decision}</Pill>
+      <VocabPill vocab="guardSeverity" value={r.severity} tone={severityTone(r.severity)} />
+      <VocabPill vocab="guardDecision" value={r.decision} tone={decisionTone(r.decision)} />
       {r.enforce && <Pill variant="warn">enforced</Pill>}
       <span className="text-fg-3">{r.scope} matcher</span>
       <span className="ml-auto flex items-center gap-1">
         <Button size="sm" variant="ghost" onClick={onEdit}>
           Edit
         </Button>
-        <Button size="sm" variant="ghost" onClick={onRemove}>
+        <Button size="sm" variant="ghost" iconLeft={Trash2} onClick={onRemove}>
           Remove
         </Button>
       </span>
@@ -488,11 +494,11 @@ function RuleRow({ r, onEdit, onRemove }: { r: GuardRuleRow; onEdit: () => void;
 function OverrideRow({ r, onEdit, onRemove }: { r: GuardOverrideRow; onEdit: () => void; onRemove: () => void }) {
   const info = guardRuleInfo(r.rule);
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-2 border border-line-1 bg-bg-1 px-3 py-1.5 text-[11.5px]">
+    <div className="flex flex-wrap items-center gap-2 rounded-2 border border-line-2 bg-bg-3 px-3 py-1.5 text-[11.5px]">
       <span className="font-mono text-fg-1">{r.rule}</span>
       {info && <span className="text-fg-3">{info.category}</span>}
       {r.decision ? (
-        <Pill variant={DECISION_VARIANT[r.decision] ?? "neutral"}>{r.decision}</Pill>
+        <VocabPill vocab="guardDecision" value={r.decision} tone={decisionTone(r.decision)} />
       ) : (
         <Pill variant="neutral">no change</Pill>
       )}
@@ -501,7 +507,7 @@ function OverrideRow({ r, onEdit, onRemove }: { r: GuardOverrideRow; onEdit: () 
         <Button size="sm" variant="ghost" onClick={onEdit}>
           Edit
         </Button>
-        <Button size="sm" variant="ghost" onClick={onRemove}>
+        <Button size="sm" variant="ghost" iconLeft={Trash2} onClick={onRemove}>
           Remove
         </Button>
       </span>
@@ -531,45 +537,44 @@ function EffectiveRulesTable({
         Effective rules ({ids.length})
       </h4>
       {loading ? (
-        <div className="py-4 text-center text-[12px] text-fg-3">Loading…</div>
+        <InlineLoading label="Loading rules" block />
       ) : (
-        <div className="max-h-72 overflow-y-auto">
-          <table className="w-full text-left text-[11.5px]">
-            <thead>
-              <tr className="border-b border-line-1 text-[10.5px] uppercase tracking-[0.06em] text-fg-3">
-                <th className="py-1 pr-3 font-semibold">Rule</th>
-                <th className="py-1 pr-3 font-semibold">Source</th>
-                <th className="py-1 font-semibold"></th>
+        <Table
+          maxHeight={288}
+          stickyHead
+          head={
+            <tr>
+              <th className="py-1 pr-3 font-medium">Rule</th>
+              <th className="py-1 pr-3 font-medium">Source</th>
+              <th className="py-1 font-medium"></th>
+            </tr>
+          }
+        >
+          {ids.map((id) => {
+            const defs = ruleDefs.get(id) ?? [];
+            const source = defs[0]?.source ?? "builtin";
+            return (
+              <tr key={id} className="border-b border-line-1/60 last:border-0">
+                <td className="py-1.5 pr-3">
+                  <RuleCell id={id} category={defs[0]?.category} defs={defs} />
+                </td>
+                <td className="py-1.5 pr-3">
+                  <Pill variant={source === "builtin" ? "neutral" : "accent"}>{source}</Pill>
+                </td>
+                <td className="py-1.5 text-right">
+                  <span className="inline-flex items-center gap-1">
+                    <Button size="sm" variant="ghost" onClick={() => onOverride(id)}>
+                      Override
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => onDisable(id)}>
+                      Disable
+                    </Button>
+                  </span>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {ids.map((id) => {
-                const defs = ruleDefs.get(id) ?? [];
-                const source = defs[0]?.source ?? "builtin";
-                return (
-                  <tr key={id} className="border-b border-line-1/60">
-                    <td className="py-1.5 pr-3">
-                      <RuleCell id={id} category={defs[0]?.category} defs={defs} />
-                    </td>
-                    <td className="py-1.5 pr-3">
-                      <Pill variant={source === "builtin" ? "neutral" : "accent"}>{source}</Pill>
-                    </td>
-                    <td className="py-1.5 text-right">
-                      <span className="inline-flex items-center gap-1">
-                        <Button size="sm" variant="ghost" onClick={() => onOverride(id)}>
-                          Override
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => onDisable(id)}>
-                          Disable
-                        </Button>
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+            );
+          })}
+        </Table>
       )}
     </div>
   );

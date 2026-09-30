@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -49,6 +50,13 @@ func (p *Proxy) captureProcessNetwork(ctx context.Context, in networkCaptureInpu
 	if reqID == "" {
 		reqID = newRequestID()
 	}
+	// SR27-D3: a direct-provider Gemini call carries the developer's API key
+	// in ?key=, and both the upstream URL and a transport error's text (a
+	// *url.Error embeds the full URL) would otherwise land verbatim in
+	// process_events / process_network_bodies - and ship to the org on a
+	// full-content node. Redact at this one capture seam.
+	in.URL = redactCredentialQueryText(in.URL)
+	in.Error = redactCredentialQueryText(in.Error)
 	bodyMode := p.networkCapture.CaptureBodies
 	captureBodies := bodyMode == "proxied" || bodyMode == "available"
 
@@ -253,4 +261,25 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// credentialQueryRe matches a gatewayCredentialQueryParams query parameter
+// (Gemini's ?key=) anywhere in a URL or in error text that embeds one, up to
+// the next parameter / whitespace / quote.
+var credentialQueryRe = func() *regexp.Regexp {
+	names := make([]string, 0, len(gatewayCredentialQueryParams))
+	for _, n := range gatewayCredentialQueryParams {
+		names = append(names, regexp.QuoteMeta(n))
+	}
+	return regexp.MustCompile(`([?&](?:` + strings.Join(names, "|") + `)=)[^&#\s"']+`)
+}()
+
+// redactCredentialQueryText replaces the value of every provider-credential
+// query parameter in s with REDACTED (security review 2026-09-27, SR27-D3).
+// Used for text that is persisted or logged, never for the forwarded URL.
+func redactCredentialQueryText(s string) string {
+	if s == "" || !strings.Contains(s, "=") {
+		return s
+	}
+	return credentialQueryRe.ReplaceAllString(s, "${1}REDACTED")
 }

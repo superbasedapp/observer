@@ -1,0 +1,18 @@
+Restores each AI client's MCP config from the launch journal:
+byte-identically from the hash-checked backup when the file still holds
+exactly what the relay wrote, else by reversing ONLY the relay-owned
+entries (a later edit is preserved, never clobbered). A config that
+cannot be restored keeps its journal row and backup and is reported.
+
+Works whether or not the relay is enabled (it is the recovery path for
+a config left wrapped after the relay was switched off). It does not
+change [mcp_relay].enabled: while the relay stays enabled the daemon
+re-projects on its next start - `observer mcp-relay disable` keeps the
+originals.
+
+Usage:
+  observer mcp unwrap [flags]
+
+Flags:
+      --config string   path to config.toml (default ~/.observer/config.toml)
+  -h, --help            help for unwrap

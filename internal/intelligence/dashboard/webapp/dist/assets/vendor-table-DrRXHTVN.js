@@ -20,4 +20,3 @@ import{f as j}from"./vendor-react-BT-Z05uK.js";/**
    *
    * @license MIT
    */function ut(e,o){return e?tt(e)?j.createElement(e,o):e:null}function tt(e){return nt(e)||typeof e=="function"||ot(e)}function nt(e){return typeof e=="function"&&(()=>{const o=Object.getPrototypeOf(e);return o.prototype&&o.prototype.isReactComponent})()}function ot(e){return typeof e=="object"&&typeof e.$$typeof=="symbol"&&["react.memo","react.forward_ref"].includes(e.$$typeof.description)}function st(e){const o={state:{},onStateChange:()=>{},renderFallbackValue:null,...e},[t]=j.useState(()=>({current:et(o)})),[n,i]=j.useState(()=>t.current.initialState);return t.current.setOptions(r=>({...r,...e,state:{...n,...e.state},onStateChange:l=>{i(l),e.onStateChange==null||e.onStateChange(l)}})),t.current}export{lt as a,ut as f,rt as g,st as u};
-//# sourceMappingURL=vendor-table-DrRXHTVN.js.map

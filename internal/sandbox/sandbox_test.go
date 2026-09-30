@@ -24,6 +24,7 @@ func canonicalReq() Request {
 		RuntimeLadder: []string{".nvm"},
 		MaskPaths:     []string{"/mnt/c"},
 		HomeMode:      "tmpfs",
+		Net:           NetRequest{Egress: EgressHost},
 	}
 }
 
@@ -40,6 +41,7 @@ func TestBuildPlanArgvGolden(t *testing.T) {
 
 	want := []string{
 		"--ro-bind", "/", "/",
+		"--unshare-pid",
 		"--proc", "/proc",
 		"--dev", "/dev",
 		"--tmpfs", "/tmp",
@@ -55,6 +57,20 @@ func TestBuildPlanArgvGolden(t *testing.T) {
 		"--bind", "/home/dev/.observer/workspaces/abc/repo", "/home/dev/.observer/workspaces/abc/repo",
 		"--bind-try", "/home/dev/.claude", "/home/dev/.claude",
 		"--bind-try", "/home/dev/.claude.json", "/home/dev/.claude.json",
+		"--unsetenv", "WSL_INTEROP",
+		"--unsetenv", "WSLENV",
+		"--unsetenv", "DBUS_SESSION_BUS_ADDRESS",
+		"--unsetenv", "DBUS_SYSTEM_BUS_ADDRESS",
+		"--unsetenv", "SSH_AUTH_SOCK",
+		"--unsetenv", "SSH_AGENT_PID",
+		"--unsetenv", "GPG_AGENT_INFO",
+		"--unsetenv", "DOCKER_HOST",
+		"--unsetenv", "CONTAINER_HOST",
+		"--unsetenv", "DISPLAY",
+		"--unsetenv", "WAYLAND_DISPLAY",
+		"--unsetenv", "XAUTHORITY",
+		"--unsetenv", "PULSE_SERVER",
+		"--unsetenv", "OBSERVER_LOC_EDITOR_TOKEN",
 		"--chdir", "/home/dev/.observer/workspaces/abc/repo",
 		"--die-with-parent",
 		"--", "observer", "claude",
@@ -209,6 +225,9 @@ func TestBuildPlanComposition(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			if tc.req.Net.Egress == "" {
+				tc.req.Net.Egress = EgressHost
+			}
 			plan, err := BuildPlan(tc.req)
 			if err != nil {
 				t.Fatalf("BuildPlan: %v", err)
@@ -280,6 +299,7 @@ func TestBuildPlanInjectionGuards(t *testing.T) {
 		ObserverDir:   "/home/dev/.observer",
 		WorkspaceRoot: "/home/dev/ws",
 		HomeMode:      "tmpfs",
+		Net:           NetRequest{Egress: EgressHost},
 	}
 	mut := func(f func(r *Request)) Request {
 		r := base
@@ -379,6 +399,25 @@ func TestProbe(t *testing.T) {
 		wantAvail   bool
 		wantVersion string
 	}{
+		{
+			name: "net canary fails -> netns_denied",
+			env: Env{
+				GOOS: "linux", LookBwrap: ok("/usr/bin/bwrap"), Version: ver("bubblewrap 0.4.0"),
+				Canary: func() error { return nil }, NetCanary: func() error { return errors.New("EPERM") },
+			},
+			wantVerdict: VerdictNetNSDenied,
+			wantVersion: "0.4.0",
+		},
+		{
+			name: "net canary passes -> available",
+			env: Env{
+				GOOS: "linux", LookBwrap: ok("/usr/bin/bwrap"), Version: ver("bubblewrap 0.4.0"),
+				Canary: func() error { return nil }, NetCanary: func() error { return nil },
+			},
+			wantVerdict: VerdictAvailable,
+			wantAvail:   true,
+			wantVersion: "0.4.0",
+		},
 		{
 			name:        "non-linux platform",
 			env:         Env{GOOS: "darwin", LookBwrap: ok("/usr/bin/bwrap"), Version: ver("0.11.0")},

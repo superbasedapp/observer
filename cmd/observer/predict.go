@@ -10,9 +10,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/predict"
+	"github.com/marmutapp/superbased-observer/internal/sessiongauge"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -106,16 +108,29 @@ func newPredictCmd() *cobra.Command {
 				}
 			}
 
+			// An AUDITED registry finding (no local signal can ever exist
+			// for this tool — cursor/grokbot) short-circuits the limit
+			// half entirely, mirroring the dashboard's loadLimitGauge:
+			// never render the misleading "route through the proxy" hint
+			// for a tool that structurally can never be proxied.
+			var noSourceNote string
+			if ic, ok := integration.For(shape.Tool); ok && ic.Limit.Source != integration.LimitSourceUnaudited {
+				noSourceNote = ic.Limit.Note
+			}
+
 			if jsonOut {
 				out := map[string]any{"session_id": sessionID, "estimate": est}
-				if snapOK {
+				switch {
+				case noSourceNote != "":
+					out["limit"] = map[string]any{"no_source": true, "source_note": noSourceNote}
+				case snapOK:
 					out["limit"] = snap
 				}
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
 				return enc.Encode(out)
 			}
-			printPredict(cmd, sessionID, shape, est, snap, snapOK)
+			printPredict(cmd, sessionID, shape, est, snap, snapOK, noSourceNote)
 			return nil
 		},
 	}
@@ -150,18 +165,14 @@ func predictRatePair(engine *cost.Engine, model string) (predict.RatePair, bool)
 	}, true
 }
 
-// predictProviderForTool mirrors the dashboard's tool→provider mapping
-// for the limit-snapshot lookup.
+// predictProviderForTool is the shared tool→provider mapping the dashboard
+// and the org drawer use for the limit-snapshot lookup (one copy, in
+// internal/sessiongauge).
 func predictProviderForTool(tool string) string {
-	switch tool {
-	case "codex", "copilot", "copilot-cli":
-		return "openai"
-	default:
-		return "anthropic"
-	}
+	return sessiongauge.ProviderForTool(tool)
 }
 
-func printPredict(cmd *cobra.Command, sessionID string, shape store.PredictShape, est predict.EstimateResult, snap models.LimitSnapshot, snapOK bool) {
+func printPredict(cmd *cobra.Command, sessionID string, shape store.PredictShape, est predict.EstimateResult, snap models.LimitSnapshot, snapOK bool, noSourceNote string) {
 	w := cmd.OutOrStdout()
 	fmt.Fprintf(w, "Next-message cost — session %s\n", sessionID)
 	fmt.Fprintf(w, "model %s · cached prefix %s tok · fan-out %s", shape.Model, fmtTokens(est.PrefixTokens), est.TurnsTier)
@@ -193,6 +204,10 @@ func printPredict(cmd *cobra.Command, sessionID string, shape store.PredictShape
 	}
 
 	fmt.Fprintln(w, "\n5-hour / weekly limit:")
+	if noSourceNote != "" {
+		fmt.Fprintf(w, "  not visible for %s: %s\n", shape.Tool, noSourceNote)
+		return
+	}
 	if !snapOK {
 		fmt.Fprintln(w, "  unavailable — route this client through the observer proxy (observer init) to capture rate-limit windows.")
 		return

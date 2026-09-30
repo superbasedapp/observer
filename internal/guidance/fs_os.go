@@ -39,6 +39,21 @@ func OSFS(root string) FS {
 	return o
 }
 
+// OSFSProject is OSFS confined to the project root ALONE - no home anchor
+// (security review 2026-09-27, SR27-A3). A project-scope pass must use it: a
+// repository controls its own tree, so with home as a second anchor a
+// committed `CLAUDE.md -> ../../../.pgpass` symlink resolved "inside" an
+// anchor and the target file's first line became a stored description served
+// to agents over MCP. Only the user-scope pass (whose anchor IS home) may read
+// under home. Pass root == "" to disable containment, as with OSFS.
+func OSFSProject(root string) FS {
+	var o osFS
+	if r := normalizeRoot(root); r != "" {
+		o.addAnchor(r)
+	}
+	return o
+}
+
 type osFS struct {
 	// roots is the allow-list. Empty means containment is disabled.
 	roots []string

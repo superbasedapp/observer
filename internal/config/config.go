@@ -20,6 +20,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/notify/digest"
 	"github.com/marmutapp/superbased-observer/internal/notify/email"
+	"github.com/marmutapp/superbased-observer/internal/sandboxnet"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/sshprofile"
 	"github.com/marmutapp/superbased-observer/internal/update"
@@ -42,6 +43,7 @@ type Config struct {
 	Predict      PredictConfig      `toml:"predict"`
 	Loc          LocConfig          `toml:"loc"`
 	Guidance     GuidanceConfig     `toml:"guidance"`
+	Projects     ProjectsConfig     `toml:"projects"`
 	Update       UpdateConfig       `toml:"update"`
 	Tasks        TasksConfig        `toml:"tasks"`
 	Browser      BrowserConfig      `toml:"browser"`
@@ -49,12 +51,20 @@ type Config struct {
 	Terminal     TerminalConfig     `toml:"terminal"`
 	Launch       LaunchConfig       `toml:"launch"`
 	CodeIntel    CodeIntelConfig    `toml:"codeintel"`
+	// ShellWrap is the opt-in [shell_wrap] "wrapped command" shell
+	// integration (backlog item 7); see ShellWrapConfig. Zero value = off.
+	ShellWrap ShellWrapConfig `toml:"shell_wrap"`
 	// Archive is the [archive] surface — cold storage for the corpus
 	// archival arc (docs/plans/observer-corpus-archival-lazyload-design-
 	// 2026-08-26.md). LOCAL-ONLY, never distributed to an org server, and
 	// OPT-IN: with the zero value the retention pass behaves exactly as it
 	// did before the arc existed.
-	Archive  ArchiveConfig  `toml:"archive"`
+	Archive ArchiveConfig `toml:"archive"`
+	// MCPRelay is the [mcp_relay] surface — the node MCP relay (Agent Access
+	// P4, doc3 §8.2/§12). LOCAL-ONLY, never distributed, and OPT-IN: the zero
+	// value is byte-identical to a build without the relay (no client config
+	// rewrite, no listener, no table cache).
+	MCPRelay MCPRelayConfig `toml:"mcp_relay"`
 	Advisor  AdvisorConfig  `toml:"advisor"`
 	Routing  RoutingConfig  `toml:"routing"`
 	Guard    GuardConfig    `toml:"guard"`
@@ -1285,6 +1295,64 @@ type GuidanceConfig struct {
 	FirstScanPollSeconds int `toml:"first_scan_poll_seconds"`
 }
 
+// ProjectsConfig is the [projects] surface — the Projects-page spend/ROI/
+// commit-alignment arc (docs/plans/projects-page-roi-and-commit-alignment-
+// plan-2026-09-21.md §2/§3.2). LOCAL-ONLY: every knob here governs the
+// node's own read-only git-commit scanner (internal/commitscan) and the
+// pure attribution/ROI math (internal/projectroi); nothing is distributed
+// to an org server.
+//
+// Same partial-merge invariant as GuidanceConfig/CacheTrackConfig: an
+// install with no [projects] section — or one that sets only, say,
+// commit_link_window_days — gets the Default() seed for every other
+// field, NOT the zero value, because Load() starts from Default() and
+// unmarshals TOML on top.
+type ProjectsConfig struct {
+	// CommitScan gates the daemon-lifetime read-only `git log` scanner
+	// (plan R2). Default TRUE — commit capture is local, passive, and
+	// network-free, the same posture as Guidance/CacheTrack/Predict.
+	// Disabling it leaves the Projects page's commit ledger and every ROI
+	// proxy that depends on it honestly empty (capture:"never_scanned").
+	CommitScan bool `toml:"commit_scan"`
+	// CommitScanIntervalSeconds is the tick period between scanner passes
+	// over every active project root. Default 120.
+	CommitScanIntervalSeconds int `toml:"commit_scan_interval_seconds"`
+	// CommitLinkWindowDays bounds how long after a prompt a later commit
+	// may still "carry" the files it touched (plan R4.4's attribution
+	// rule) — also sizes the reachability-revalidation lookback
+	// (internal/commitscan's LinkWindow). Default 14.
+	CommitLinkWindowDays int `toml:"commit_link_window_days"`
+	// ActiveProjectDays bounds which projects the scanner considers
+	// ACTIVE (a session started within this many days) and therefore
+	// worth polling (plan R2). Default 30.
+	ActiveProjectDays int `toml:"active_project_days"`
+	// AlignmentJudge gates the §3.6 "J" alignment-grading tier (W5a):
+	// "off" (default) leaves prompt-to-commit grading to the always-on
+	// local heuristic (internal/projectroi) only; "obs_judge" reuses the
+	// SAME judge endpoint/model the operator already configured under
+	// [observability.judge] (or its [observability.eval] override) —
+	// which MAY be a remote/hosted judge, in which case
+	// cmd/observer/alignment_wire.go applies the same egress scrub
+	// (secret redaction + payload cap) the eval/admission judge adapters
+	// already apply to a non-loopback judge. No other value is
+	// recognized; an unrecognized value is treated as "off".
+	AlignmentJudge string `toml:"alignment_judge"`
+	// SkillHistory gates the Projects-page Skills history capture
+	// (S10-SKILLS): the Claude Code hook snapshots of every SKILL.md at
+	// SessionStart / PostToolUse(Skill), and the read-only git step that
+	// runs after each successful commit scan (reflog, skill-directory
+	// trees, working-tree status). Default TRUE - local, passive and
+	// network-free, the same posture as CommitScan. Disabling it stops
+	// new capture; already-captured history still renders.
+	SkillHistory bool `toml:"skill_history"`
+	// SkillHistorySkewSeconds is how close a HEAD move may be to a
+	// session's start before the Skills tab refuses to say which commit
+	// HEAD was on ("head moved near start", both candidates shown).
+	// Covers clock skew between the AI tool's clock and the repository's
+	// (e.g. a Windows tool and a WSL daemon). Default 120.
+	SkillHistorySkewSeconds int `toml:"skill_history_skew_seconds"`
+}
+
 // DefaultPricingFeedURL is the public edge route serving the signed pricing
 // feed (docs/plans/pricing-sync-tokenomics-to-platform-plan-2026-09-11.md §B.4).
 // The body names no org and no subject, so it is cacheable and verified offline
@@ -1736,7 +1804,7 @@ type HandoffConfig struct {
 // LOCAL-ONLY: it never appears in [org_client.share] and is never distributed
 // to an org. Terminal-wide knobs live at the top; fresh-agent launch is a
 // SEPARATE, default-OFF opt-in under [terminal.launch] — it EXPANDS execution
-// authority, so (unlike the code_graph→codeintel rename) it is never migrated
+// authority, so (unlike a plain key rename) it is never migrated
 // on. [terminal].enabled gates the terminal-wide surface; it does NOT grant
 // fresh-launch (that needs [terminal.launch].allow_fresh_agent too).
 //
@@ -2093,6 +2161,35 @@ type TerminalSandboxConfig struct {
 	// PrepTimeoutSeconds bounds workspace-preparation subprocesses (git
 	// clone/worktree). Default 300.
 	PrepTimeoutSeconds int `toml:"prep_timeout_seconds"`
+	// Egress selects the sandbox network tier (security ledger SR27-SBX-1):
+	// "internet" (the default, also what an empty value means) gives the
+	// sandbox its own network namespace with the observer model proxy
+	// forwarded in and other traffic sent through a host-side egress gateway
+	// that refuses every host-local address, so the sandboxed agent cannot
+	// reach the dashboard's loopback control plane; "proxy_only" forwards
+	// only the model proxy; "none" forwards nothing; "host" shares the host
+	// network (the v1 behaviour, which leaves the dashboard reachable from
+	// inside the sandbox). A tier this host cannot build fails the launch;
+	// it never falls back to "host".
+	Egress string `toml:"egress"`
+	// EgressAllowCIDRs is an authority-EXPANDING allow-list for the
+	// "internet" tier's egress gateway. The gateway refuses every private
+	// destination by default (RFC 1918, 100.64.0.0/10 carrier-grade NAT and
+	// tailnets, IPv6 unique-local and site-local): that is where the WSL2
+	// NAT gateway (the Windows host), Docker bridge containers and LAN
+	// services live. List a CIDR here (for example "10.20.0.0/16") to let a
+	// sandboxed agent reach a corporate registry or git server on a private
+	// address. Each entry must be a canonical CIDR inside one of those
+	// private ranges; loopback, link-local and the host's own addresses can
+	// never be listed. Empty by default.
+	EgressAllowCIDRs []string `toml:"egress_allow_cidrs"`
+	// AllowToolConfigWrites is an authority-EXPANDING opt-in. Default FALSE:
+	// files a later UNSANDBOXED session executes (the daemon config, the
+	// user guard policy, shell-wrap shims, each tool's hook/MCP/plugin
+	// config, and the workspace's repository config + hooks dir) are
+	// re-bound read-only inside the sandbox. Set true only if a sandboxed
+	// tool must change its own user-level settings.
+	AllowToolConfigWrites bool `toml:"allow_tool_config_writes"`
 }
 
 // TerminalStatusConfig is the [terminal.status] block — agent-status
@@ -2217,6 +2314,75 @@ type CodeIntelConfig struct {
 	Compression CodeIntelCompressionConfig `toml:"compression"`
 	Semantic    CodeIntelSemanticConfig    `toml:"semantic"`
 }
+
+// MCPRelayConfig is the [mcp_relay] block — the node-side MCP relay of the
+// Agent Access arc (doc3 §8.2, §11.7 P4, §12). The relay fronts the AI
+// clients' MCP servers on this node: it pulls the org's signed
+// tools.mcp_access policy through the four-gate accept, compiles it into the
+// node decision table (internal/mcprelay/localpdp), projects the approved
+// remote entries into every verified client's config
+// (internal/mcprelay/project, journaled before every write), and mediates
+// node-local stdio servers through the stdio wrapper.
+//
+// LOCAL-ONLY (like [guard] / [routing]) and entirely additive: with Enabled
+// false nothing below is read, no client config is rewritten, no listener
+// binds and no table cache is written — byte-identical to a build without
+// the relay. Enabling is per node (per-node opt-in IS the canary).
+type MCPRelayConfig struct {
+	// Enabled turns the relay on. Default false. Turning it on rewrites each
+	// AI client's MCP entry to point at the relay (the original is journaled
+	// in mcp_relay_launch_spec first, so disabling restores it byte-for-byte).
+	Enabled bool `toml:"enabled"`
+	// Mode selects the PRIMARY mediation path: "stdio_wrapper" (default —
+	// the relay is the process the client spawns, process-attested),
+	// "ipc" (owner-only unix socket / named pipe, ipc_bound) or "loopback"
+	// (a loopback HTTP listener the client config points at; configured,
+	// so product-scoped grants are NOT honoured on it).
+	Mode string `toml:"mode"`
+	// GatewayURL is the org MCP gateway base URL (https://…). On a managed
+	// node it comes from the enrolment grant, not from TOML; set it here
+	// only for an individual node that dials a gateway directly.
+	GatewayURL string `toml:"gateway_url"`
+	// AuditMode is the local audit posture (doc3 §12.4, R14.4): "async"
+	// (default — durable local append, sidecar-before-forward when the DB
+	// append fails, a gap record on the next append) or "strict" (block the
+	// call on ANY append failure). The effective posture is strict when
+	// THIS is strict OR a signed policy marks the vserver audit_strict.
+	AuditMode string `toml:"audit_mode"`
+	// Listen is the host:port of the relay's DEDICATED loopback HTTP
+	// listener, serving the streamable-HTTP relay at /mcp/<vserver-slug>.
+	// When set, the daemon binds it on start (whatever Mode is) and projects
+	// each approved vserver into the AI clients' configs as a remote entry
+	// http://<listen>/mcp/<slug> (when remote forwarding is wired). Empty
+	// (the default) binds nothing: no /mcp/ route is served on this node -
+	// the daemon's proxy listener does not host one - and no remote entry is
+	// projected; the stdio wrap still applies. It MUST be a loopback
+	// host:port (127.0.0.1 / localhost / ::1) — the relay is never exposed
+	// beyond this machine.
+	Listen string `toml:"listen"`
+	// IPCPath is the owner-only IPC endpoint for Mode "ipc": a unix socket
+	// path (0700 directory, 0600 socket) on unix; on Windows the value names
+	// the pipe (`\.\pipe\…`). Empty resolves beside the observer database
+	// (~/.observer/mcp-relay.sock). `~` is expanded at load.
+	IPCPath string `toml:"ipc_path"`
+	// PollIntervalSeconds is the relay's local reconcile cadence: how often
+	// it recompiles the node table from the latest ACCEPTED tools.mcp_access
+	// resource and re-projects approved entries into client configs. It is
+	// NOT the signed-policy pull cadence — that is
+	// [org_client].policy_poll_interval_seconds. Default 300; bounds 10–3600.
+	PollIntervalSeconds int `toml:"poll_interval_seconds"`
+}
+
+// MCPRelay vocabularies (closed; validated at load).
+const (
+	MCPRelayModeStdioWrapper = "stdio_wrapper"
+	MCPRelayModeIPC          = "ipc"
+	MCPRelayModeLoopback     = "loopback"
+	MCPRelayAuditAsync       = "async"
+	MCPRelayAuditStrict      = "strict"
+	// DefaultMCPRelayPollIntervalSeconds is the default reconcile cadence.
+	DefaultMCPRelayPollIntervalSeconds = 300
+)
 
 // ArchiveConfig is the [archive] block — cold storage for data that is not
 // garbage but is no longer part of the hot working set
@@ -2607,8 +2773,10 @@ type OrgClientConfig struct {
 	// PolicyStateHeartbeatSeconds is the cadence of the P0-6 effective-
 	// policy-state reporter's heartbeat POST (docs/plans/
 	// plane-a-p0-6-effective-policy-state-plan.md §4.3). Default 300 (5m).
-	// Content-free: only meaningful when [org_client.share].policy_state is
-	// set — the reporter goroutine is not launched otherwise.
+	// Content-free: only meaningful while the channel is enabled (the local
+	// [org_client.share].policy_state opt-in, or an org raise of it on a
+	// managed node) — the reporter goroutine always runs but stays dormant
+	// otherwise.
 	PolicyStateHeartbeatSeconds int `toml:"policy_state_heartbeat_seconds"`
 	// MaxPushBytes caps the uncompressed JSON size of a single batch.
 	// Default 1 MiB; the client clamps to MaxPushBytesCeiling (16 MiB).
@@ -2773,8 +2941,9 @@ type OrgClientScopeConfig struct {
 //     FullContent, TargetActionAllowlist, AdminManaged, RoutingSummary,
 //     PolicyState.
 //   - Plane A (general observability of an admin/org-hosted LLM app whose
-//     END-USERS route through Observer): ObsSummary, ObsTraces, ObsContent,
-//     ObsEvalSummary.
+//     END-USERS route through Observer): the nested Obs sub-table
+//     ([org_client.share.obs]: summary, traces, content, eval_summary,
+//     admission, eval_items, egress).
 //
 // The wire paths are already separate (obs tiers compose via the
 // store.ObsOrgProviders func seam; the privacy sentinel forbids obs_*
@@ -2880,30 +3049,45 @@ type OrgClientShareConfig struct {
 	// node-side only on an individual node; org-raisable on a managed node via
 	// the DISTINCT extract.tool_accounts authority.
 	ToolAccountDetail bool `toml:"tool_account_detail"`
+	// MCPActivity opts an INDIVIDUAL (non-org-enrolled) node's HMAC-only daily
+	// MCP relay aggregate (day x virtual server x keyed tool HMAC x decision x
+	// client attestation counts, orgcontract.MCPRelayActivityRow) onto the
+	// wire — Agent Access ruling R8.30.b, docs/plans/agent-access-
+	// implementation-plan-2026-09-23.md §9.5 / §11.7 W4e. No plain server or
+	// tool name, no arguments, no result, no per-call row. Default false,
+	// node-side only, and it applies ONLY to an individual node: an ENROLLED
+	// teams/enterprise node ships the aggregate AND the per-record L2 events
+	// by capture posture (full_content / admin_managed, or the org-signed
+	// EnterpriseGranted raise on an already-enrolled node — R9.5 / R11.10),
+	// where this key neither adds nor removes anything. It is deliberately
+	// NOT an org-raisable share tier (absent from the node-governance share
+	// vocabulary): there is nothing for an org to raise on a node it does not
+	// manage.
+	MCPActivity bool `toml:"mcp_activity"`
 	// PolicyState opts the P0-6 effective-policy-state reverse channel
 	// (docs/plans/plane-a-p0-6-effective-policy-state-plan.md §2.3) onto a
 	// dedicated POST /api/agent/policy-ack. CONTENT-FREE — the report carries
 	// only hash/version/enum/timestamp rows (attribution empty-on-wire,
-	// server-stamped). Its own consent toggle, default false, node-side only
-	// — the org admin cannot force it (the share-mode posture).
+	// server-stamped). Its own consent toggle, default false. On an
+	// INDIVIDUAL node the org cannot raise it; on a MANAGED node whose grant
+	// carries the strict `extract.policy_state` authority the org's
+	// node.governance body MAY raise it (the enterprise default body does),
+	// and a directive may lower it off on either — see
+	// internal/govern/sharetiers.go and the Privacy card's source column.
 	PolicyState bool `toml:"policy_state"`
 	// --- Plane A: general observability of an admin/org-hosted LLM app ---
-	// Org-tier observability opt-ins now live under the nested
-	// [org_client.share.obs] sub-table (Obs below) so the config namespace
-	// reflects the plane split (plane-separation audit M1). The four flat
-	// keys after it (obs_summary/obs_traces/obs_content/obs_eval_summary)
-	// are DEPRECATED but still parsed for one release: migrateLegacyOrgShareObs
-	// maps them onto Obs.* at load (deprecation-warning once per key), and
-	// `observer config migrate` (step 2) physically rewrites them.
+	// Org-tier observability opt-ins live under the nested
+	// [org_client.share.obs] sub-table so the config namespace reflects the
+	// plane split (plane-separation audit M1). The four flat keys that
+	// preceded it (org_client.share.obs_summary / obs_traces / obs_content /
+	// obs_eval_summary) are REMOVED from the struct (post-Agent-Access
+	// backlog item 12): while they were declared, every full re-marshal
+	// (WriteToml: dashboard save, `observer config set`) wrote them back and
+	// the deprecation warnings never stopped. A file still carrying them
+	// loads (the decoder ignores keys with no field); the config-migrate
+	// registry (internal/config/migrate, steps 2 and 5) is the one owner of
+	// the removed keys and moves or strips them on disk.
 	Obs OrgClientShareObsConfig `toml:"obs"`
-
-	// Deprecated flat obs share keys — kept parseable for one release for
-	// config-compat. Prefer [org_client.share.obs] (Obs above). Consumers
-	// read Obs.*; the load-time shim copies these onto it when Obs.* is unset.
-	ObsSummary     bool `toml:"obs_summary"`
-	ObsTraces      bool `toml:"obs_traces"`
-	ObsContent     bool `toml:"obs_content"`
-	ObsEvalSummary bool `toml:"obs_eval_summary"`
 }
 
 // OrgClientShareObsConfig is [org_client.share.obs] — the Plane-A org-tier
@@ -3087,9 +3271,11 @@ type DBConfig struct {
 	// exhaustion-audit-2026-08-26.md). Above this many GB the automatic
 	// pass is skipped with one calm log line; the schema-034 path-hash
 	// backfill still runs regardless (idempotent, cheap after its
-	// done-marker). This gates ONLY the automatic startup pass —
-	// `observer doctor` always runs its own quick_check unconditionally,
-	// on demand, regardless of size. Default 8 (GB). ≤ 0 disables the
+	// done-marker). `observer doctor` asks the SAME gate
+	// (db.IntegrityCheckShouldSkip): an unscoped doctor over the cap
+	// reports the probe as skipped, a per-tool doctor defers it, and
+	// `observer doctor db` / `observer doctor --integrity` run it on
+	// demand regardless of size. Default 8 (GB). ≤ 0 disables the
 	// gate (quick_check always runs, matching pre-2026-08-26 behavior).
 	IntegrityCheckMaxGB int `toml:"integrity_check_max_gb"`
 }
@@ -3664,28 +3850,9 @@ type DashboardConfig struct {
 
 // CompressionConfig groups all four compression layers' toggles.
 type CompressionConfig struct {
-	CodeGraph    CodeGraphConfig    `toml:"code_graph"`
 	Shell        ShellConfig        `toml:"shell"`
 	Indexing     IndexingConfig     `toml:"indexing"`
 	Conversation ConversationConfig `toml:"conversation"`
-}
-
-// CodeGraphConfig is the DEPRECATED [compression.code_graph] block.
-//
-// Deprecated: the external code-graph companion was
-// decommissioned in Phase 4 in favour of the in-process [codeintel]
-// module. The block is parsed for one release window only so existing
-// configs don't break: on load, migrateLegacyCodeGraph maps `enabled`
-// onto [codeintel].enabled and `auto_index` onto
-// [codeintel.index].on_start, emits a per-key deprecation warning, then
-// the values are otherwise unused. `auto_install` and `path` have no
-// in-process analog (no binary is downloaded, no graph.db is read) and
-// are reported as removed. See docs/codeintel/migration-from-codegraph.md.
-type CodeGraphConfig struct {
-	Enabled     bool   `toml:"enabled"`
-	AutoInstall bool   `toml:"auto_install"`
-	AutoIndex   bool   `toml:"auto_index"`
-	Path        string `toml:"path"`
 }
 
 // ShellConfig controls shell output filtering.
@@ -3850,13 +4017,12 @@ type StashConfig struct {
 // page's Budget card or `observer config set
 // intelligence.project_budgets_usd.<root> <usd>`.
 type IntelligenceConfig struct {
-	CodeGraph         IntelligenceCodeGraphConfig `toml:"code_graph"`
-	Pricing           PricingConfig               `toml:"pricing"`
-	APIKeyEnv         string                      `toml:"api_key_env"`
-	SummaryModel      string                      `toml:"summary_model"`
-	MonthlyBudgetUSD  float64                     `toml:"monthly_budget_usd"`
-	ProjectBudgetsUSD map[string]float64          `toml:"project_budgets_usd"`
-	MCP               IntelligenceMCPConfig       `toml:"mcp"`
+	Pricing           PricingConfig         `toml:"pricing"`
+	APIKeyEnv         string                `toml:"api_key_env"`
+	SummaryModel      string                `toml:"summary_model"`
+	MonthlyBudgetUSD  float64               `toml:"monthly_budget_usd"`
+	ProjectBudgetsUSD map[string]float64    `toml:"project_budgets_usd"`
+	MCP               IntelligenceMCPConfig `toml:"mcp"`
 	// OrgEnrichment opts this node into pulling Cloud Intelligence enrichment
 	// from the ORG server it is enrolled with, instead of the hosted personal
 	// plane (org-served-cloud-intelligence plan §2.1, W3). Read-only here; the
@@ -3866,6 +4032,55 @@ type IntelligenceConfig struct {
 	// "never server-forced" floor. Default false:
 	// a node that never sets it makes no org-intelligence request at all.
 	OrgEnrichment bool `toml:"org_enrichment"`
+	// Scoring tunes the daemon's automatic session quality scoring
+	// (spec §15.2, internal/intelligence/scoring.AutoScorer).
+	Scoring IntelligenceScoringConfig `toml:"scoring"`
+}
+
+// IntelligenceScoringConfig tunes the daemon-lifetime session quality scorer
+// (spec §15.2). Default-ON with the partial-merge rule: Default() seeds Auto
+// true, so an install whose config.toml has no [intelligence.scoring] block
+// inherits it. Local, read-only over actions/token_usage/cache_events, zero
+// LLM cost, writes only the sessions score columns. Zero / negative numeric
+// values fall back to the built-in defaults (see the accessor methods), so a
+// half-written block never disables scoring by accident.
+type IntelligenceScoringConfig struct {
+	// Auto runs the scorer inside `observer start`. false leaves scoring to
+	// the manual `observer score` CLI.
+	Auto bool `toml:"auto"`
+	// IntervalMinutes is the pause between scoring passes (default 5).
+	IntervalMinutes int `toml:"interval_minutes"`
+	// IdleMinutes is how long a session must be quiet before it is scored
+	// (default 30) - the stand-in for "session ended", which most tools
+	// never record.
+	IdleMinutes int `toml:"idle_minutes"`
+	// MaxPerPass bounds the sessions scored in one pass (default 200), so a
+	// large never-scored history is worked off gradually.
+	MaxPerPass int `toml:"max_per_pass"`
+}
+
+// Interval returns the pass interval, defaulting to 5 minutes.
+func (c IntelligenceScoringConfig) Interval() time.Duration {
+	if c.IntervalMinutes <= 0 {
+		return 5 * time.Minute
+	}
+	return time.Duration(c.IntervalMinutes) * time.Minute
+}
+
+// Idle returns the idle threshold, defaulting to 30 minutes.
+func (c IntelligenceScoringConfig) Idle() time.Duration {
+	if c.IdleMinutes <= 0 {
+		return 30 * time.Minute
+	}
+	return time.Duration(c.IdleMinutes) * time.Minute
+}
+
+// PassLimit returns the per-pass cap, defaulting to 200.
+func (c IntelligenceScoringConfig) PassLimit() int {
+	if c.MaxPerPass <= 0 {
+		return 200
+	}
+	return c.MaxPerPass
 }
 
 // IntelligenceMCPConfig groups settings for the V7-12 retrieval-surface
@@ -4022,17 +4237,6 @@ func hasUnsupportedDenyGlob(pattern string) bool {
 		}
 	}
 	return false
-}
-
-// IntelligenceCodeGraphConfig is the DEPRECATED [intelligence.code_graph]
-// block.
-//
-// Deprecated: superseded by the in-process [codeintel] module (Phase 4).
-// Parsed for one release window; on load `enabled` maps onto
-// [codeintel].enabled with a deprecation warning. See
-// docs/codeintel/migration-from-codegraph.md.
-type IntelligenceCodeGraphConfig struct {
-	Enabled bool `toml:"enabled"`
 }
 
 // PricingConfig carries per-model input/output/cache pricing.
@@ -4345,6 +4549,24 @@ func Default() Config {
 			StartupDelaySeconds:   90,
 			FirstScanPollSeconds:  60,
 		},
+		// Projects (the read-only git-commit-history scanner behind the
+		// Projects-page ROI/commit-alignment arc) is default-ON for the
+		// same reasons Guidance is: local, passive, network-free. Same
+		// partial-merge rule — an install with no [projects] section gets
+		// CommitScan=true here, not a zero-valued false.
+		Projects: ProjectsConfig{
+			CommitScan:                true,
+			CommitScanIntervalSeconds: 120,
+			CommitLinkWindowDays:      14,
+			ActiveProjectDays:         30,
+			// AlignmentJudge default OFF (W5a): unlike CommitScan, calling
+			// a configured judge is a per-turn LLM cost (and, for a
+			// remote judge, egress) the operator opts into explicitly —
+			// not a passive local capture.
+			AlignmentJudge:          "off",
+			SkillHistory:            true,
+			SkillHistorySkewSeconds: 120,
+		},
 		// Pricing feed (standalone-node pricing sync) is ON by default,
 		// including its background poller (Auto). This is a deliberate
 		// reversal (operator decision 2026-09-20) of the former
@@ -4525,6 +4747,7 @@ func Default() Config {
 				AllowWorktreeSource:    false,
 				WorkspaceRetentionDays: 0,
 				PrepTimeoutSeconds:     300,
+				Egress:                 "internet",
 			},
 			// [terminal.ssh] — default ON for VISIBILITY (2026-08-28 operator
 			// ruling); the surface still launches nothing without an
@@ -4574,6 +4797,14 @@ func Default() Config {
 			Path:               "~/.observer/archive.db",
 			MaxProjectsPerPass: 8,
 			BatchRows:          512,
+		},
+		// MCPRelay is default OFF (byte-identical); the non-zero defaults
+		// only decide HOW it behaves once a node opts in.
+		MCPRelay: MCPRelayConfig{
+			Enabled:             false,
+			Mode:                MCPRelayModeStdioWrapper,
+			AuditMode:           MCPRelayAuditAsync,
+			PollIntervalSeconds: DefaultMCPRelayPollIntervalSeconds,
 		},
 		// Advisor (the suggestions engine, docs/advisor.md) is default-ON:
 		// read-layer only, local, zero LLM cost. Same partial-merge
@@ -4712,11 +4943,6 @@ func Default() Config {
 			},
 		},
 		Compression: CompressionConfig{
-			CodeGraph: CodeGraphConfig{
-				Enabled:     true,
-				AutoInstall: true,
-				AutoIndex:   true,
-			},
 			Shell: ShellConfig{
 				Enabled:         true,
 				ExcludeCommands: []string{"curl", "playwright"},
@@ -4790,8 +5016,13 @@ func Default() Config {
 			},
 		},
 		Intelligence: IntelligenceConfig{
-			CodeGraph: IntelligenceCodeGraphConfig{Enabled: true},
-			Pricing:   PricingConfig{Models: map[string]ModelPricing{}},
+			Pricing: PricingConfig{Models: map[string]ModelPricing{}},
+			Scoring: IntelligenceScoringConfig{
+				Auto:            true,
+				IntervalMinutes: 5,
+				IdleMinutes:     30,
+				MaxPerPass:      200,
+			},
 			MCP: IntelligenceMCPConfig{
 				GetFile: IntelligenceMCPGetFileConfig{
 					Enabled: true,
@@ -4950,28 +5181,15 @@ func LoadGovernance(opts LoadOptions) (Config, GovernanceOutcome, error) {
 		}
 	}
 
-	// Phase 4 decommission: map the deprecated [compression.code_graph]
-	// and [intelligence.code_graph] blocks onto [codeintel] and warn once
-	// per legacy key. Honored for one release window, then removed.
-	for _, w := range migrateLegacyCodeGraph(&cfg, metas) {
-		emitDeprecationOnce(w)
-	}
-
 	// Corpus-archival P4: [codeintel] keys that were removed outright rather
 	// than renamed. Nothing to map — the warning IS the migration.
 	for _, w := range migrateRemovedCodeIntelKeys(&cfg, metas) {
 		emitDeprecationOnce(w)
 	}
 
-	// M1 plane-separation: map the deprecated flat [org_client.share]
-	// obs_* keys onto the nested [org_client.share.obs] sub-table and warn
-	// once per legacy key. Honored for one release window, then removed.
-	for _, w := range migrateLegacyOrgShareObs(&cfg, metas) {
-		emitDeprecationOnce(w)
-	}
-
 	cfg.Observer.DBPath = expandHome(cfg.Observer.DBPath)
 	cfg.Archive.Path = expandHome(cfg.Archive.Path)
+	cfg.MCPRelay.IPCPath = expandHome(cfg.MCPRelay.IPCPath)
 	cfg.Compression.Conversation.Stash.Dir = expandHome(cfg.Compression.Conversation.Stash.Dir)
 	cfg.Loc.EditorTokenFile = expandHome(cfg.Loc.EditorTokenFile)
 	cfg.Update.StateDir = expandHome(cfg.Update.StateDir)
@@ -5015,9 +5233,9 @@ func LoadGovernance(opts LoadOptions) (Config, GovernanceOutcome, error) {
 // goroutine, hooks auto-register) — each re-parses the same file and,
 // pre-dedup, re-printed the identical block of deprecation lines, drowning
 // the `dashboard → http://…` readiness banner. The dedup suppresses only
-// the repeated PRINTING; the key MAPPING in migrateLegacyCodeGraph /
-// migrateLegacyOrgShareObs still runs on every Load, and the FIRST
-// occurrence of each distinct message is always shown.
+// the repeated PRINTING; the key checks (migrateRemovedCodeIntelKeys)
+// still run on every Load, and the FIRST occurrence of each distinct
+// message is always shown.
 var deprecationEmit struct {
 	mu       sync.Mutex
 	seen     map[string]struct{}
@@ -5091,72 +5309,11 @@ func mergeTOMLFile(cfg *Config, path string) (toml.MetaData, error) {
 	return meta, nil
 }
 
-// migrateLegacyCodeGraph maps the deprecated codegraph config blocks onto
-// the [codeintel] family and returns one deprecation message per legacy
-// key actually present across the loaded files (Phase 4 decommission, plan
-// §11.5). The mapping is honored only when the corresponding [codeintel]
-// key was NOT explicitly set, so a config carrying both keeps [codeintel]
-// authoritative. Keys with no in-process analog (the external binary
-// download + graph.db path) are reported as removed, not remapped — the
-// concerns disappear with the third-party binary.
-//
-// metas carries the BurntSushi decode metadata for each loaded file so we
-// can distinguish "key present" from "default value"; toml.MetaData's zero
-// value answers IsDefined==false, so an absent file contributes nothing.
-func migrateLegacyCodeGraph(cfg *Config, metas []toml.MetaData) []string {
-	defined := func(keys ...string) bool {
-		for _, m := range metas {
-			if m.IsDefined(keys...) {
-				return true
-			}
-		}
-		return false
-	}
-	codeintelEnabledSet := defined("codeintel", "enabled")
-	codeintelOnStartSet := defined("codeintel", "index", "on_start")
-	compressionEnabledSet := defined("compression", "code_graph", "enabled")
-
-	var warnings []string
-	// [compression.code_graph]
-	if compressionEnabledSet {
-		warnings = append(warnings,
-			"compression.code_graph.enabled is deprecated; use codeintel.enabled (see docs/codeintel/configuration.md)")
-		if !codeintelEnabledSet {
-			cfg.CodeIntel.Enabled = cfg.Compression.CodeGraph.Enabled
-		}
-	}
-	if defined("compression", "code_graph", "auto_index") {
-		warnings = append(warnings,
-			"compression.code_graph.auto_index is deprecated; use codeintel.index.on_start")
-		if !codeintelOnStartSet {
-			cfg.CodeIntel.Index.OnStart = cfg.Compression.CodeGraph.AutoIndex
-		}
-	}
-	if defined("compression", "code_graph", "auto_install") {
-		warnings = append(warnings,
-			"compression.code_graph.auto_install is removed; the code index is in-process (no third-party binary is downloaded)")
-	}
-	if defined("compression", "code_graph", "path") {
-		warnings = append(warnings,
-			"compression.code_graph.path is removed; the in-process code index has no external graph.db")
-	}
-	// [intelligence.code_graph]
-	if defined("intelligence", "code_graph", "enabled") {
-		warnings = append(warnings,
-			"intelligence.code_graph.enabled is deprecated; use codeintel.enabled (see docs/codeintel/configuration.md)")
-		if !codeintelEnabledSet && !compressionEnabledSet {
-			cfg.CodeIntel.Enabled = cfg.Intelligence.CodeGraph.Enabled
-		}
-	}
-	return warnings
-}
-
 // migrateRemovedCodeIntelKeys reports [codeintel] keys that have been REMOVED
 // outright — no replacement key to map onto, so there is nothing to migrate,
-// only something to say. It mirrors the "removed, not remapped" arm of
-// migrateLegacyCodeGraph (`auto_install` / `path`), including its contract that
-// a config still carrying the key LOADS FINE: BurntSushi ignores keys with no
-// struct field, so the only consequence is the warning below.
+// only something to say. Its contract: a config still carrying the key LOADS
+// FINE (BurntSushi ignores keys with no struct field), so the only
+// consequence is the warning below.
 //
 // Today that is exactly one key.
 //
@@ -5198,51 +5355,6 @@ func migrateRemovedCodeIntelKeys(_ *Config, metas []toml.MetaData) []string {
 			"codeintel.index.disk_budget_mb is removed; it was never implemented (no size-based eviction ever ran). "+
 				"Bound the code index with codeintel.retention_days, and set [archive].enabled = true to archive stale "+
 				"projects to cold storage instead of deleting them (docs/codeintel/configuration.md)")
-	}
-	return warnings
-}
-
-// migrateLegacyOrgShareObs maps the deprecated flat [org_client.share] obs_*
-// keys onto the nested [org_client.share.obs] sub-table and returns one
-// deprecation message per legacy key actually present across the loaded
-// files (plane-separation audit M1). The mapping is honored only when the
-// corresponding nested key was NOT explicitly set, so a config carrying both
-// keeps the nested [org_client.share.obs] value authoritative — mirroring
-// migrateLegacyCodeGraph. metas distinguishes "key present" from "default
-// value" (see that function's note on toml.MetaData).
-func migrateLegacyOrgShareObs(cfg *Config, metas []toml.MetaData) []string {
-	defined := func(keys ...string) bool {
-		for _, m := range metas {
-			if m.IsDefined(keys...) {
-				return true
-			}
-		}
-		return false
-	}
-	sh := &cfg.OrgClient.Share
-	var warnings []string
-	type mapping struct {
-		flatKey   string
-		flatVal   bool
-		nestedKey string
-		nestedSet bool
-		dst       *bool
-	}
-	mappings := []mapping{
-		{"obs_summary", sh.ObsSummary, "summary", defined("org_client", "share", "obs", "summary"), &sh.Obs.Summary},
-		{"obs_traces", sh.ObsTraces, "traces", defined("org_client", "share", "obs", "traces"), &sh.Obs.Traces},
-		{"obs_content", sh.ObsContent, "content", defined("org_client", "share", "obs", "content"), &sh.Obs.Content},
-		{"obs_eval_summary", sh.ObsEvalSummary, "eval_summary", defined("org_client", "share", "obs", "eval_summary"), &sh.Obs.EvalSummary},
-	}
-	for _, mp := range mappings {
-		if !defined("org_client", "share", mp.flatKey) {
-			continue
-		}
-		warnings = append(warnings,
-			"org_client.share."+mp.flatKey+" is deprecated; use org_client.share.obs."+mp.nestedKey)
-		if !mp.nestedSet {
-			*mp.dst = mp.flatVal
-		}
 	}
 	return warnings
 }
@@ -5356,6 +5468,46 @@ func Validate(cfg Config) error {
 	}
 	if err := validateCloud(cfg.Cloud); err != nil {
 		return err
+	}
+	if err := validateMCPRelay(cfg.MCPRelay); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateMCPRelay checks the [mcp_relay] block: closed mode / audit_mode
+// vocabularies, an https gateway URL, a LOOPBACK-only listen address and a
+// bounded reconcile cadence. Every check runs regardless of Enabled so a
+// typo is caught before the node opts in, never at the moment it does.
+func validateMCPRelay(m MCPRelayConfig) error {
+	switch m.Mode {
+	case "", MCPRelayModeStdioWrapper, MCPRelayModeIPC, MCPRelayModeLoopback:
+	default:
+		return fmt.Errorf("config: mcp_relay.mode %q must be one of stdio_wrapper, ipc, loopback", m.Mode)
+	}
+	switch m.AuditMode {
+	case "", MCPRelayAuditAsync, MCPRelayAuditStrict:
+	default:
+		return fmt.Errorf("config: mcp_relay.audit_mode %q must be async or strict", m.AuditMode)
+	}
+	if u := strings.TrimSpace(m.GatewayURL); u != "" && !strings.HasPrefix(u, "https://") {
+		return fmt.Errorf("config: mcp_relay.gateway_url %q must be an https:// URL", m.GatewayURL)
+	}
+	if addr := strings.TrimSpace(m.Listen); addr != "" {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return fmt.Errorf("config: mcp_relay.listen %q must be host:port: %w", addr, err)
+		}
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("config: mcp_relay.listen %q needs a port in 1–65535 (got %q)", addr, port)
+		}
+		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return fmt.Errorf("config: mcp_relay.listen %q must be a loopback address (127.0.0.1, localhost or ::1) — the relay is never exposed beyond this machine", addr)
+		}
+	}
+	if m.PollIntervalSeconds != 0 && (m.PollIntervalSeconds < 10 || m.PollIntervalSeconds > 3600) {
+		return fmt.Errorf("config: mcp_relay.poll_interval_seconds %d out of range (10–3600)", m.PollIntervalSeconds)
 	}
 	return nil
 }
@@ -5476,6 +5628,12 @@ var policyResourceSupportedFamilies = map[string]bool{
 	// admission body — gateway request-path judged admission + the default-OFF
 	// node-lane flip (design §4.6).
 	"planeb.admission": true,
+	// tools.mcp_access (Agent Access P4, doc3 §6.2/§12.4): the signed MCP
+	// grant family the node relay's local PDP compiles. Added in the same
+	// spirit as the rows above — policyfam.FamilyMCPAccess shipped in P1/P2
+	// and this copy lagged, which the sync test caught (the same drift class
+	// gateway.providers taught us to gate).
+	"tools.mcp_access": true,
 }
 
 // validateOrgClientPolicy checks [org_client.policy]: every listed family
@@ -5487,13 +5645,13 @@ func validateOrgClientPolicy(p OrgClientPolicyConfig) error {
 	accepted := make(map[string]bool, len(p.AcceptFamilies))
 	for _, f := range p.AcceptFamilies {
 		if !policyResourceSupportedFamilies[f] {
-			return fmt.Errorf("config: org_client.policy.accept_families contains unsupported family %q (want one of admission.input, egress.routing_guardrail, gateway.providers, node.governance, node.features, planeb.admission)", f)
+			return fmt.Errorf("config: org_client.policy.accept_families contains unsupported family %q (want one of admission.input, egress.routing_guardrail, gateway.providers, node.governance, node.features, planeb.admission, tools.mcp_access)", f)
 		}
 		accepted[f] = true
 	}
 	for _, f := range p.PreauthorizeEnforce {
 		if !policyResourceSupportedFamilies[f] {
-			return fmt.Errorf("config: org_client.policy.preauthorize_enforce contains unsupported family %q (want one of admission.input, egress.routing_guardrail, gateway.providers, node.governance, node.features, planeb.admission)", f)
+			return fmt.Errorf("config: org_client.policy.preauthorize_enforce contains unsupported family %q (want one of admission.input, egress.routing_guardrail, gateway.providers, node.governance, node.features, planeb.admission, tools.mcp_access)", f)
 		}
 		if !accepted[f] {
 			return fmt.Errorf("config: org_client.policy.preauthorize_enforce contains %q, which is not in accept_families (preauthorize_enforce must be a subset of accept_families)", f)
@@ -5679,6 +5837,14 @@ func validateTerminalSandbox(c TerminalSandboxConfig) error {
 	}
 	if c.PrepTimeoutSeconds < 0 {
 		return errors.New("config: terminal.sandbox.prep_timeout_seconds must be >= 0")
+	}
+	switch c.Egress {
+	case "", "host", "internet", "proxy_only", "none":
+	default:
+		return fmt.Errorf("config: terminal.sandbox.egress %q not in {host, internet, proxy_only, none}", c.Egress)
+	}
+	if _, err := sandboxnet.ParseAllowCIDRs(c.EgressAllowCIDRs); err != nil {
+		return fmt.Errorf("config: terminal.sandbox.egress_allow_cidrs: %w", err)
 	}
 	return nil
 }

@@ -32,18 +32,12 @@ func SetConfigKey(cfg *Config, dotted, value string) error {
 
 // UpdateProjectOverlay sets a dotted key in <root>/.observer/
 // config.toml, creating the file when absent. Only allow-listed keys
-// are writable: the profiles table and compression parameters —
-// minus [compression.code_graph], which the daemon pins to its own
-// install config and would silently ignore (rejecting beats
-// misleading). The write goes through the shared .bak + atomic-
-// rename path.
+// are writable: the profiles table and compression parameters. The
+// write goes through the shared .bak + atomic-rename path.
 func UpdateProjectOverlay(root, dotted, value string) error {
 	seg0 := strings.SplitN(dotted, ".", 2)[0]
 	if seg0 != "profiles" && seg0 != "compression" {
 		return fmt.Errorf("config: project files accept only profiles.* and compression.* keys (got %q) — daemon-level keys live in the global config.toml", dotted)
-	}
-	if strings.HasPrefix(dotted, "compression.code_graph") {
-		return errors.New("config: compression.code_graph is install capability and stays master-owned; the daemon would ignore it in a project file")
 	}
 	path := filepath.Join(root, ProjectOverlayFilename)
 	var doc projectOverlayDoc

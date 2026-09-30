@@ -1,5 +1,8 @@
-import { Pill } from "../../primitives";
+import { Icon, Pill } from "../../primitives";
 import { fmtCompact } from "../../lib/format";
+import { cacheEventTone } from "../../lib/cacheVocab";
+import { vocabIcon } from "../../lib/vocabIcons";
+import { VocabPill } from "../../lib/vocabPill";
 import type { CacheEventLike, CacheTimelineItemLike } from "../../lib/types";
 
 // CacheTimelineList — the pure renderer of the session-detail Cache timeline:
@@ -64,11 +67,18 @@ function AnomalyRow({
   return (
     <div className="rounded-3 border border-fg-3/30 bg-bg-2 px-3 py-1.5">
       <div className="flex flex-wrap items-center gap-2">
-        <CacheKindPill kind={event.kind} cause={event.cause} flagged={flagged} />
+        <CacheKindPill kind={event.kind} flagged={flagged} />
         <span className="font-mono text-[10.5px] text-fg-3">
           {fmtTimeShort(event.timestamp)}
         </span>
-        <span className="text-[11px] text-fg-2">{event.cause || "(no cause)"}</span>
+        {event.cause ? (
+          <span className="inline-flex items-center gap-1 text-[11px] text-fg-2">
+            <Icon icon={vocabIcon("cacheCause", event.cause)} size={11} className="shrink-0 text-fg-3" />
+            {event.cause}
+          </span>
+        ) : (
+          <span className="text-[11px] text-fg-2">(no cause)</span>
+        )}
         <span className="tabular-nums text-[10.5px] text-fg-3">
           R {fmtCompact(event.tokens_read)} / W {fmtCompact(event.tokens_written)}
         </span>
@@ -85,34 +95,17 @@ function AnomalyRow({
   );
 }
 
-function CacheKindPill({
-  kind,
-  cause,
-  flagged,
-}: {
-  kind: string;
-  cause: string;
-  flagged: boolean;
-}) {
-  if (flagged) {
-    return <Pill variant="neutral">{kind}</Pill>;
-  }
-  switch (kind) {
-    case "hit":
-      return <Pill variant="success">{kind}</Pill>;
-    case "reanchor":
-      return <Pill variant="info">{kind}</Pill>;
-    case "mispredict":
-      return <Pill variant="warn">{kind}</Pill>;
-    case "invalidation_rewrite":
-    case "expiry_rewrite":
-    case "model_switch_rewrite":
-    case "compaction_reset":
-      return <Pill variant="warn">{kind}</Pill>;
-    default:
-      void cause;
-      return <Pill variant="info">{kind}</Pill>;
-  }
+// CacheKindPill renders cache_events.kind from the ONE CACHE_EVENT_KIND
+// table (shared/lib/cacheVocab.ts); a flagged event takes CACHE_FLAG's tone
+// (warn) whatever its kind - both via cacheEventTone.
+function CacheKindPill({ kind, flagged }: { kind: string; flagged: boolean }) {
+  return (
+    <VocabPill
+      vocab="cacheEventKind"
+      value={kind}
+      tone={cacheEventTone(kind, flagged)}
+    />
+  );
 }
 
 function fmtTimeShort(iso: string): string {

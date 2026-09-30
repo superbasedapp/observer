@@ -62,9 +62,9 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "tab",
     title: "Cache tab",
     oneLiner: "Anthropic prompt-cache observation, attribution, and forecasting - how well your sessions reuse provider-cached prefixes.",
-    detail: "Four sections rolled up from /api/cache/overview: (1) Global headline tiles - Cache ratio (cache_read ÷ cache_write tokens), total read, total write, and avoidable spend / event count. (2) Per-model + per-project rollups (R% / W% mix bars + absolute Read / Write / Events + ratio + avoidable $) so you can see where the cache benefit lands. (3) Top causes histogram - bars scaled to event count. The healthy baseline is suffix_growth (info-toned) dominating, that's normal warm prefix growth. (4) Worst sessions ranked by rewrite count; click a row to open the session's Cache panel. Causes that legitimately fire on real operator toggles - currently tools_changed on MCP server connect/disconnect - render with a neutral 'flagged' pill rather than alarm-red. Real invalidations (system_changed, expiry_rewrite, model_switch_rewrite) stay in warn tone.\n\nHow data gets captured: see Capture paths (glossary.cachetrack_capture_paths). Engine self-grading + warn signals: see Engine grading (glossary.cachetrack_grading_gate) and Engine health checks (glossary.cachetrack_engine_health). Provider coverage limits (codex / OpenAI): see Codex limitation (glossary.cachetrack_codex_limitation).",
+    detail: "Four sections rolled up from /api/cache/overview: (1) Global headline tiles - Cache ratio (cache_read ÷ cache_write tokens), total read, total write, and avoidable spend / event count. (2) Per-model + per-project rollups (R% / W% mix bars + absolute Read / Write / Events + ratio + avoidable $) so you can see where the cache benefit lands. (3) Top causes histogram - bars scaled to event count. The healthy baseline is suffix_growth (info-toned) dominating, that's normal warm prefix growth. (4) Worst sessions ranked by rewrite count; click a row to open the session's Cache panel. Causes that legitimately fire on real operator toggles - currently tools_changed on MCP server connect/disconnect - carry an amber (warn) 'flagged' pill, never alarm-red: a known cause, worth a look if it dominates. Real invalidations (system_changed, expiry_rewrite, model_switch_rewrite) are warn tone too; one tone for anything worth a look.\n\nHow data gets captured: see Capture paths (glossary.cachetrack_capture_paths). Engine self-grading + warn signals: see Engine grading (glossary.cachetrack_grading_gate) and Engine health checks (glossary.cachetrack_engine_health). Provider coverage limits (codex / OpenAI): see Codex limitation (glossary.cachetrack_codex_limitation).",
     formula: "ratio = SUM(tokens_read) / SUM(tokens_written) over cache_events; avoidable_usd = Σ(cache_creation_tokens × cache_creation_rate − cache_read_tokens × cache_read_rate) per row when rewrites would not have happened",
-    source: "/api/cache/overview rolls cache_events ⨝ sessions ⨝ projects with no window filter (full corpus). Implementation: internal/cachetrack/.",
+    source: "/api/cache/overview rolls cache_events ⨝ sessions ⨝ projects over the global window (All = the full corpus). Implementation: internal/cachetrack/.",
     related: ["glossary.cachetrack_capture_paths", "glossary.cachetrack_grading_gate", "glossary.cachetrack_engine_health", "glossary.cachetrack_codex_limitation", "glossary.forecaster_math", "tile.cache_efficiency", "tile.cache_ratio", "tile.cache_events", "tile.cache_avoidable", "chart.cache_by_model", "chart.cache_top_causes", "chart.cache_worst_sessions"],
   },
   {
@@ -101,9 +101,9 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner:
       "Lines this session changed, classified code / comment / whitespace / blank and attributed to whoever authored them.",
     detail:
-      "Counted from each edit's own before/after text (the tool call's old_string/new_string, patch hunk or written content), never from a filesystem scan or a git diff. A replaced line counts once as MODIFIED, not as one delete plus one add; a pure reindent lands in WHITESPACE, not in modified. Attribution: AI = the agent's edit/write/patch calls, split into main-agent and SUBAGENT (sidechain) work because those are different actors doing different jobs and folding them hides half the story. HUMAN = editor-reported saves from the SuperBased VS Code extension, and nothing else - so it reads zero (and no AI share is shown anywhere) until that extension is installed. SYSTEM = the format-on-save reflow the editor reports between will-save and did-save. UNATTRIBUTED = an edit whose shape could not be parsed. Docs and config files are kept OUT of the code numbers. Generated, vendored and unrecognised files are skipped entirely and reported as a file count. No productivity score is derived from any of this.",
+      "Counted from each edit's own before/after text (the tool call's old_string/new_string, patch hunk or written content), never from a filesystem scan or a git diff. A replaced line counts once as MODIFIED, not as one delete plus one add; a pure reindent lands in WHITESPACE, not in modified. Attribution: AI = the agent's edit/write/patch calls, split into main-agent and SUBAGENT (sidechain) work because those are different actors doing different jobs and folding them hides half the story. HUMAN = editor-reported saves from the SuperBased VS Code extension, and nothing else - so it reads zero (and no AI share is shown anywhere) until that extension is installed. SYSTEM = the format-on-save reflow the editor reports between will-save and did-save. UNATTRIBUTED = an edit whose shape could not be parsed. Docs and config files are kept OUT of the code numbers. Generated, vendored and unrecognised files are skipped entirely and reported as a file count. CODE VS COMMENTS: under the two AI headlines the card shows how much of the agent's code-file writing was code and how much was comments (main agent and subagent separately). Comment lines are never in the code headlines; blank and whitespace-only lines are in neither number. This comment share needs no human measurement, so unlike an AI-vs-human share it is shown whether or not an editor is reporting saves. No productivity score is derived from any of this.",
     formula:
-      "code lines written = added_code + modified_code (deleted lines are NOT included); low confidence = files whose classification degraded at a fragment boundary or on a truncated input; overwrite = a whole-file write over an existing file, counted as added because the before-image came from the prior read, or from nothing",
+      "code lines written = added_code + modified_code (deleted lines are NOT included); code vs comments: code = added_code + modified_code, comments = added_comment, comment share = comments ÷ (code + comments), AI actor, code category, computed server-side by internal/loc.SplitAuthored (ai_split / ai_sidechain_split); low confidence = files whose classification degraded at a fragment boundary or on a truncated input; overwrite = a whole-file write over an existing file, counted as added because the before-image came from the prior read, or from nothing",
     source:
       "GET /api/session/<id>/loc. Node-local `file_changes` (agent migration 103); pure logic internal/loc; seam internal/store/loc.go. Plan: docs/plans/lines-of-code-tracking-plan-2026-09-07.md.",
     related: ["card.verbosity", "tile.loc_per_dollar"],
@@ -115,8 +115,8 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner:
       "Code lines the agent added or modified over the window, divided by spend over the same window.",
     detail:
-      "A ratio, not a rating. It is deliberately ungraded and uncoloured: a low number can mean careful work on hard code and a high one can mean boilerplate, so treating either end as good would be a productivity score - which this feature does not produce. Both sides are fetched at the SAME whole-day window with no tool or project filter, because the line-count endpoint is day-granular and takes a numeric project id the dashboard's project filter (a root path) cannot supply; fetching one side filtered and the other not would divide a window-wide numerator by a filtered denominator. When spend is zero or unavailable the tile shows a dash and says why rather than dividing by zero. Human lines are never in the numerator.",
-    formula: "ai_code_touched (added_code + modified_code, AI actor, code category) ÷ total_cost_usd, same window",
+      "A ratio, not a rating. It is deliberately ungraded and uncoloured: a low number can mean careful work on hard code and a high one can mean boilerplate, so treating either end as good would be a productivity score - which this feature does not produce. Both sides are fetched at the SAME whole-day window with no tool or project filter, because the line-count endpoint is day-granular and takes a numeric project id the dashboard's project filter (a root path) cannot supply; fetching one side filtered and the other not would divide a window-wide numerator by a filtered denominator. When spend is zero or unavailable the tile shows a dash and says why rather than dividing by zero. Human lines are never in the numerator, and neither are comment, blank or whitespace-only lines: the numerator is code lines only. The code-vs-comment split under the value is context, not part of the ratio.",
+    formula: "ai_split.code_lines (= ai_code_touched: added_code + modified_code, AI actor, code category) ÷ total_cost_usd, same window; split comments = added_comment, same rows",
     source:
       "GET /api/loc/summary?days=N for the numerator, GET /api/models?days=N for the denominator.",
     related: ["card.session_loc", "metric.cost_usd"],
@@ -428,7 +428,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "tile",
     title: "Cache efficiency tile",
     oneLiner: "Global cache read-to-write ratio across all proxied sessions - the headline cache-payback signal.",
-    detail: "Headline value is read_tokens ÷ write_tokens: tokens served from the Anthropic prefix cache divided by tokens written to it. Higher = more cache benefit (each write is paying off across more reads). The sub line shows event count and session count; the corner pill names the dominant non-baseline cause (suffix_growth excluded as the healthy baseline). The pill renders in neutral tone for flagged causes (currently tools_changed - legitimate MCP server toggles) and warn tone for real invalidation causes (system_changed / expiry_rewrite / model_switch_rewrite). Renders as '-' when the corpus has no writes yet (avoids the misleading '0.0×' reading as 'no cache benefit'). Empty-state copy points operators to `[cachetrack].enabled` (default-on) and `observer backfill --cache-rescan`.",
+    detail: "Headline value is read_tokens ÷ write_tokens: tokens served from the Anthropic prefix cache divided by tokens written to it. Higher = more cache benefit (each write is paying off across more reads). The sub line shows event count and session count; the corner pill names the dominant non-baseline cause (suffix_growth excluded as the healthy baseline). The pill is warn (amber) for a flagged cause (currently tools_changed - legitimate MCP server toggles, a known cause worth a look if it dominates) and takes the cause's own tone otherwise (warn for real invalidations such as system_changed / expiry_rewrite / model_switch_rewrite). Renders as '-' when the corpus has no writes yet (avoids the misleading '0.0×' reading as 'no cache benefit'). Empty-state copy points operators to `[cachetrack].enabled` (default-on) and `observer backfill --cache-rescan`.",
     formula: "SUM(tokens_read) / SUM(tokens_written) over cache_events",
     related: ["tab.cache", "tile.cache_ratio"],
   },
@@ -446,7 +446,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "tile",
     title: "Cache events tile",
     oneLiner: "Total count of cache events captured across the corpus.",
-    detail: "Every prompt-cache turn the engine observes - hit, write, rewrite, mispredict, reanchor, below_min - emits one cache_events row. This tile is the lifetime total (no window filter on /api/cache/overview yet). The sub line shows distinct session and project counts so the headline number has context. The sidebar Cache badge mirrors this number.",
+    detail: "Every prompt-cache turn the engine observes - hit, write, rewrite, mispredict, reanchor, below_min - emits one cache_events row. This tile is the total over the global window (All = the lifetime total). The sub line shows distinct session and project counts so the headline number has context. The sidebar Cache badge mirrors this number.",
     formula: "COUNT(*) FROM cache_events",
     source: "/api/cache/overview → global.event_count",
     related: ["tab.cache", "tile.cache_ratio"],
@@ -494,7 +494,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "chart",
     title: "Cache › Top causes histogram",
     oneLiner: "Proportional bar list of cache_events.cause values across the corpus.",
-    detail: "Bars scale to event count, longest bar = most-frequent cause. The healthy baseline is suffix_growth + hit dominating (info-toned) - that's normal warm prefix growth + cache hits. Real invalidations (system_changed, expiry_rewrite, model_switch_rewrite, unknown, block_diverged) surface in warn tone. Causes that legitimately fire on real operator toggles - currently tools_changed on MCP server connect/disconnect - render with a neutral 'flagged' pill rather than alarm-red, per operator UI steer #2.",
+    detail: "Bars scale to event count, longest bar = most-frequent cause. The healthy baseline is suffix_growth + hit dominating (info-toned) - that's normal warm prefix growth + cache hits. Real invalidations (system_changed, expiry_rewrite, model_switch_rewrite, unknown, block_diverged) surface in warn tone. Causes that legitimately fire on real operator toggles - currently tools_changed on MCP server connect/disconnect - carry an amber (warn) 'flagged' pill, never alarm-red (one flagged tone on every surface).",
     source: "/api/cache/overview → top_causes[]",
     related: ["tab.cache", "chart.cache_worst_sessions"],
   },
@@ -513,7 +513,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Cache › Recent events",
     oneLiner: "Paginated drill-down of cache_events rows (newest first) under the current TopBar filters.",
     detail: "The cachetrack engine emits one cache_events row per turn it observes. This table is the operator's direct read of those rows - useful for investigating \"what fired today?\" without going session-by-session through the detail panel. Columns: When (timestamp), Session (truncated; click-through to detail), Model, Tier (proxy = Tier-1 live, transcript = Tier-2 backfill), Kind (hit/write/rewrite/mispredict/…), Cause, Predicted (the engine's pre-observation prediction - warn-toned when ≠ Kind, indicating engine drift), Read tokens, Write tokens. Honors the standard days/tool/project filters.",
-    source: "/api/cache/events?limit=N&offset=N&days=N&tool=&project=",
+    source: "/api/cache/events?limit=N&offset=N&days=N|hours=N|since=&until=&tool=&project=",
     related: ["tab.cache", "chart.cache_top_causes", "chart.cache_worst_sessions"],
   },
   {
@@ -521,7 +521,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "chart",
     title: "Cache › Worst sessions table",
     oneLiner: "Sessions ranked by rewrite count - click a row to open the session's Cache panel.",
-    detail: "\"Worst\" = most cache-invalidating activity, the most actionable signal when investigating cache underperformance. Each row shows the session ID (truncated, click-through), model, rewrite count, raw Read / Write tokens, and the dominant cause as a pill. The pill uses the same flagged-vs-real tone the Top causes histogram does.",
+    detail: "\"Worst\" = most cache-invalidating activity, the most actionable signal when investigating cache underperformance. Each row shows the session ID (truncated, click-through), model, rewrite count, raw Read / Write tokens, and the dominant cause as a pill. The pill uses the same cause tones the Top causes histogram does (a flagged cause is amber).",
     source: "/api/cache/overview → worst_sessions[]",
     related: ["tab.cache", "chart.cache_top_causes"],
   },
@@ -533,7 +533,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Actions over time chart",
     oneLiner: "Daily action count split by total vs failures.",
     detail: "Line chart bucketed by day. \"Total\" is every recorded action; \"Failures\" is the subset with success=false.",
-    source: "/api/timeseries/actions?bucket=day",
+    source: "/api/timeseries/actions?gran=auto|5m|1h|1d|1w&tz=<zone>",
   },
   {
     id: "chart.analysis_cache_savings_trend",
@@ -549,8 +549,8 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "chart",
     title: "Cost by hour of day (UTC)",
     oneLiner: "Bar chart of cost summed per hour-of-day across the window.",
-    detail: "Surfaces your daily-rhythm pattern. Buckets are 0..23 in UTC (server-side), so the labels are timezone-stable across restarts. Use it to spot heavy-hour concentrations - e.g. if 80% of your spend is during a 4-hour window, that's when to budget vigilance.",
-    source: "/api/analysis/cost-by-hour?days=N",
+    detail: "Surfaces your daily-rhythm pattern. Buckets are 0..23 in YOUR browser time zone (sent as tz=; UTC when the server does not know the zone) over the selected window. Use it to spot heavy-hour concentrations - e.g. if 80% of your spend is during a 4-hour window, that's when to budget vigilance.",
+    source: "/api/analysis/cost-by-hour?days=N|hours=N|since=&until=&tz=<zone>",
     related: ["tile.analysis.burn_rate"],
   },
   {
@@ -559,7 +559,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Top movers (period over period)",
     oneLiner: "Top 5 increases and top 5 decreases in $ spend vs prior period of equal length.",
     detail: "Same dim toggle as the trend chart above (model / project / tool). Both increases and decreases are sorted by absolute Δ$. The \"new this period\" table next to it surfaces keys present in the current period but absent from the prior - useful for spotting a new model SKU your client started routing to.",
-    source: "/api/analysis/movers?dim=<model|project|tool>&days=N",
+    source: "/api/analysis/movers?dim=<model|project|tool>&days=N|hours=N|since=&until=",
     related: ["chart.analysis_trend", "chart.analysis_new_entrants"],
   },
   {
@@ -568,7 +568,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "New this period",
     oneLiner: "Keys (model / project / tool) present in the current period but not the prior - sorted by current cost DESC.",
     detail: "Companion to the movers table. New entrants are different from \"increases\" because there's no prior baseline to diff against - they show $ spend only. A high-cost new entrant is often the most impactful signal in a period over period view.",
-    source: "/api/analysis/movers?dim=<model|project|tool>&days=N",
+    source: "/api/analysis/movers?dim=<model|project|tool>&days=N|hours=N|since=&until=",
     related: ["chart.analysis_movers"],
   },
   {
@@ -577,7 +577,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Routing efficiency suggestions",
     oneLiner: "Conservative \"you could have used a cheaper sibling model\" recommendations.",
     detail: "Intentionally cautious - only flags sessions whose work profile is unambiguously trivial (small prompt, low output, no LC-tier turns, single expensive-model usage), and only one sibling switch per family. Framing is \"could have saved $X\" rather than \"you wasted $X\" because model choice may be deliberate. Per session, not per turn.",
-    source: "/api/analysis/routing-suggestions?days=N",
+    source: "/api/analysis/routing-suggestions?days=N|hours=N|since=&until=",
     related: ["chart.analysis_top_sessions"],
   },
   {
@@ -595,7 +595,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Top expensive sessions",
     oneLiner: "Per-session ranking by total $ spend in the window, with explanatory badges.",
     detail: "Aggregates the same per-turn-deduped scan by session_id, ranks by cost DESC. Badges call out why a session landed high: `opus` (any Opus turn), `lc_tier` (any LC-tier turn), `many_turns` (>30), `large_prompt` (>100K single-turn prompt). Click a session to see its full breakdown in the Sessions tab.",
-    source: "/api/analysis/top-sessions?days=N&limit=10",
+    source: "/api/analysis/top-sessions?days=N|hours=N|since=&until=&limit=10",
     related: ["tab.sessions", "tile.analysis.per_turn"],
   },
   {
@@ -603,7 +603,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "chart",
     title: "Daily spend (dimension toggle)",
     oneLiner: "Stacked bar of daily $ spend, split by model / project / tool.",
-    detail: "One bar per day across the window, segmented by the active dimension. The same dim toggle drives the movers table below so a \"Project\" view shows both daily spend and which projects moved most period-over-period. Reuses the cost engine's GroupByDayModel / GroupByDayProject / GroupByDayTool aggregations so reliability matches /api/cost.",
+    detail: "One bar per bucket across the window (Auto: 5 min up to 3h, hour up to 7 days, day up to 180 days, week beyond; pick another with the granularity control), segmented by the active dimension. The same dim toggle drives the movers table below so a \"Project\" view shows both daily spend and which projects moved most period-over-period. Reuses the cost engine's GroupByDayModel / GroupByDayProject / GroupByDayTool aggregations so reliability matches /api/cost.",
     source: "/api/analysis/trend?dim=<model|project|tool>&days=N",
     related: ["chart.analysis_movers"],
   },
@@ -613,7 +613,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Savings by mechanism chart",
     oneLiner: "Per-day stacked bar - bytes saved attributed to each retrievable compression mechanism (json, code, …). Lossy drop is tracked separately as evicted, not saved.",
     detail: "Reads the compression_events table (one row per individual compression decision, recorded post migration 009). Each segment of the stacked bar is one retrievable mechanism: per-content-type compressors (json/code/logs/text/diff/html) that replace a payload with a smaller recoverable form, plus stash (offloads a body and leaves a retrieval marker). Stacked height = total bytes saved that day. The drop mechanism is NOT a saving - it evicts low-importance history outright (compressed_bytes = 0 by construction), so its bytes are reported as evicted, never priced as savings; that content is recoverable through search_past_outputs / stash markers, not inline. Days with no compression activity are filtered out.",
-    source: "/api/compression/timeseries?bucket=day",
+    source: "/api/compression/timeseries?gran=auto|5m|1h|1d|1w&tz=<zone>",
     related: ["glossary.compression_events", "glossary.mechanism-json", "glossary.mechanism-code", "glossary.mechanism-drop"],
   },
   {
@@ -622,15 +622,15 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Compression savings per day chart",
     oneLiner: "Daily tokens-saved (left axis) and bytes-saved (right axis) from the conversation-compression pipeline.",
     detail: "Line chart bucketed by day. Two y-axes because the units differ by a factor of ~4 (tokens ≈ bytes/4). Each point is the per-day sum of saved tokens / saved bytes across all api_turns that hit the proxy that day. Days with no compression activity are filtered out.",
-    source: "/api/timeseries/cost?bucket=day (compression_tokens_saved_est + compression_bytes_saved fields)",
+    source: "/api/timeseries/cost?gran=auto|5m|1h|1d|1w&tz=<zone> (compression_tokens_saved_est + compression_bytes_saved fields)",
   },
   {
     id: "chart.cost_over_time",
     category: "chart",
     title: "Cost over time chart",
     oneLiner: "Daily token volume, split into the four billable buckets.",
-    detail: "Line chart bucketed by day. The four series (Net Input, Cache Read, Cache Write, Output) align with the cost-engine billing buckets. Sums in the meta line above the chart are over the full window.",
-    source: "/api/timeseries/cost?bucket=day",
+    detail: "Line chart bucketed by day. The four series (Net Input, Cache Read, Cache Write, Output) align with the cost-engine billing buckets and are overlaid, not stacked: each line sits at its own value, so Cache Read (usually by far the largest) never lifts the smaller buckets. Sums in the meta line above the chart are over the full window.",
+    source: "/api/timeseries/cost?gran=auto|5m|1h|1d|1w&tz=<zone>",
     related: ["metric.net_input", "metric.cache_read", "metric.cache_creation", "metric.output", "calc.token_math"],
   },
   {
@@ -648,7 +648,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Token volume per day chart (Cost tab)",
     oneLiner: "Stacked bars of daily tokens, split by billing bucket.",
     detail: "Same data as the Overview cost-over-time chart but rendered as bars stacked by bucket. Useful for spotting cache-heavy vs net-input-heavy days at a glance.",
-    source: "/api/timeseries/cost?bucket=day",
+    source: "/api/timeseries/cost?gran=auto|5m|1h|1d|1w&tz=<zone>",
   },
   {
     id: "chart.tools_activity",
@@ -656,7 +656,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Tools › Activity over time chart",
     oneLiner: "Per-tool action volume per day, stacked area. Top-6 tools shown; remainder rolled into \"other\".",
     detail: "Same data structure as the Top tools chart on Overview. Reuses /api/timeseries/actions's by_tool field, bucketed by day. Each band is one AI client; total height per day = total actions that day.",
-    source: "/api/timeseries/actions?bucket=day (by_tool field)",
+    source: "/api/timeseries/actions?gran=auto|5m|1h|1d|1w&tz=<zone> (by_tool field)",
   },
   {
     id: "chart.tools_breakdown",
@@ -680,7 +680,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     title: "Top tools chart (actions over time)",
     oneLiner: "Per-day action counts per AI client, stacked. Top-6 tools shown explicitly; the rest roll into \"other\".",
     detail: "Stacked-area time series. Each band is one AI client (claude-code, cursor, codex, …). Use it to see *when* each tool was active, not just the aggregate ranking - patterns like \"cursor only on weekdays\" or \"claude-code spike when refactoring\" pop out here.",
-    source: "/api/timeseries/actions?bucket=day (by_tool field)",
+    source: "/api/timeseries/actions?gran=auto|5m|1h|1d|1w&tz=<zone> (by_tool field)",
   },
 
   // ----- column -----
@@ -952,9 +952,9 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner:
       "Code lines the agent added or modified. Comments and blank lines are excluded; deleted lines are not included.",
     detail:
-      "Counted from each edit's own before/after text, not from a filesystem scan or a git diff. A replaced line counts once as modified; a pure reindent counts as whitespace, not as code. Docs, config, generated and vendored files contribute nothing. Codex invocation/executor pairs are collapsed to one row, so this column agrees with the session's Code lines card. A DASH means the number does not exist for that session - either it changed no code, or its counts have not been computed yet (run `observer backfill --loc`) - it never means zero lines written. There is deliberately no human column and no AI share here: with no editor reporting saves the human side is unmeasured, not zero, and a share would read 100% AI. Open the session for the full breakdown, including subagent work, the unknown bucket and the confidence caveats.",
-    formula: "added_code + modified_code, AI actor, code category, deduplicated per (session, file, input digest)",
-    source: "GET /api/sessions (ai_code_lines, omitempty). Server-sortable via sort_by=ai_code_lines.",
+      "Counted from each edit's own before/after text, not from a filesystem scan or a git diff. A replaced line counts once as modified; a pure reindent counts as whitespace, not as code. Docs, config, generated and vendored files contribute nothing. Codex invocation/executor pairs are collapsed by the same rule the session's Code lines card uses. SCOPE: the number covers every agent edit recorded under this session (main agent plus inline subagent edits together); a subagent that ran as its own child session is listed as its own row and counted there, never twice. The session card instead shows main-agent and subagent lines as two figures and folds child sessions into the subagent figure, so this number equals the card's two AI figures added together, and only when the session has no child sessions. The muted percentage beside the number is the comment share of the same rows: comment lines over code plus comment lines, computed server-side; it is not an AI-vs-human share. A DASH means the number does not exist for that session - either it changed no code, or its counts have not been computed yet (run `observer backfill --loc`) - it never means zero lines written. There is deliberately no human column and no AI share here: with no editor reporting saves the human side is unmeasured, not zero, and a share would read 100% AI. Open the session for the full breakdown, including subagent work, the unknown bucket and the confidence caveats.",
+    formula: "added_code + modified_code, AI actor, code category, deduplicated per (session, file, input digest); comment share = added_comment ÷ (code + added_comment), same rows",
+    source: "GET /api/sessions (ai_code_lines and ai_split, both omitempty). Server-sortable via sort_by=ai_code_lines.",
     related: ["card.session_loc", "tile.loc_per_dollar"],
   },
   {
@@ -1267,16 +1267,16 @@ export const HELP_REGISTRY: HelpEntry[] = [
     id: "metric.quality_score",
     category: "metric",
     title: "Quality score",
-    oneLiner: "Single 0–1 signal of how well a session went. Higher is better.",
-    detail: "Composite produced by `observer score`: blends success rate (more weight), redundancy ratio (penalises stale rereads + no-change reruns), freshness signal (penalises sessions that re-read the same files repeatedly), and a small length normaliser (very short sessions don't score well even if perfect - not enough signal). Above 0.7 is solid; below 0.4 something went wrong. Only populated for sessions where `observer score` has been run.",
+    oneLiner: "Single 0-1 signal (shown as 0-100) of how efficiently a session's agent worked. Higher is better.",
+    detail: "Rule-based, local, no model involved: 40% low redundancy (1 - stale re-reads per read or command) + 30% tool success (1 - failed calls per call) + 20% exploration efficiency (files edited / files touched) + 10% continuity (grows with session length, so a very short session cannot score top marks). 80+ is strong, 60-79 fair, below 60 weak. The running daemon scores each session once it has been idle for [intelligence.scoring] idle_minutes (default 30) and re-scores it after new activity; `observer score` or the session's Score now button scores on demand. A session that was never scored shows no value, not zero.",
     related: ["metric.error_rate", "metric.redundancy_ratio"],
   },
   {
     id: "metric.redundancy_ratio",
     category: "metric",
     title: "Redundancy ratio",
-    oneLiner: "Fraction of a session's actions that were redundant - stale rereads or no-change reruns.",
-    detail: "Computed at score time as (stale_reread_count + no_change_rerun_count) / total_actions. Both numerator components are scoped per-session for the same reason stale_count is.",
+    oneLiner: "Share of a session's reads and commands that re-read a file whose content had not changed.",
+    detail: "Computed at score time as stale re-reads / (file reads + run commands), per session. When the session has prompt-cache events the stale re-reads are split into avoidable (the prior copy was still in the cache) and needed (a compaction or cache expiry had evicted it); the Sessions table shows the avoidable share in brackets.",
   },
   {
     id: "metric.reliability",
@@ -1742,7 +1742,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Custom compression profiles (Settings → Profiles)",
     oneLiner: "Create your own named parameter sets - start from a built-in, adjust keys, assign per traffic class, tool, or project. Edits are hot for new sessions.",
-    detail: "Custom profiles extend the built-in set (claude-code, codex-safe, codex-variant, default) with your own. Each is one TOML file under ~/.observer/profiles/ carrying only the compression parameter keys it changes - everything else falls through to your master config.\n\n• Create - pick a name (lowercase, digits, dashes) and a base. Built-in bases copy the recipe verbatim, comments included; `default` starts an empty file (pure master passthrough until you set keys).\n• Edit - the panel exposes the headline conversation keys (mode, target ratio, preserve last N, compress types, logs max lines); every other compression key is settable via `observer profile set <name> <key> <value>` - the dashboard and CLI drive the same store with the same allow-list (compression.* only; code_graph stays master-owned).\n• Delete - removing a profile that is still assigned doesn't break traffic: the router falls back to master parameters and logs a warning once.\n\nEdits apply to NEW sessions automatically - profile file content is part of the proxy router's instance key, so no restart and no save-reload dance. In-flight sessions keep the parameters they started with.\n\nAssign a custom profile in the selects above, per tool (`observer profile assign tool:<name> <profile>`), or per project (the repo's .observer/config.toml). Built-ins are reserved and immutable - copy first (`--from`), then tune. Profiles never enable compression; the master switch owns on/off.",
+    detail: "Custom profiles extend the built-in set (claude-code, codex-safe, codex-variant, default) with your own. Each is one TOML file under ~/.observer/profiles/ carrying only the compression parameter keys it changes - everything else falls through to your master config.\n\n• Create - pick a name (lowercase, digits, dashes) and a base. Built-in bases copy the recipe verbatim, comments included; `default` starts an empty file (pure master passthrough until you set keys).\n• Edit - the panel exposes the headline conversation keys (mode, target ratio, preserve last N, compress types, logs max lines); every other compression key is settable via `observer profile set <name> <key> <value>` - the dashboard and CLI drive the same store with the same allow-list (compression.* only).\n• Delete - removing a profile that is still assigned doesn't break traffic: the router falls back to master parameters and logs a warning once.\n\nEdits apply to NEW sessions automatically - profile file content is part of the proxy router's instance key, so no restart and no save-reload dance. In-flight sessions keep the parameters they started with.\n\nAssign a custom profile in the selects above, per tool (`observer profile assign tool:<name> <profile>`), or per project (the repo's .observer/config.toml). Built-ins are reserved and immutable - copy first (`--from`), then tune. Profiles never enable compression; the master switch owns on/off.",
     related: ["glossary.settings_profiles", "tab.settings", "tab.compression"],
   },
   {
@@ -2269,6 +2269,48 @@ export const HELP_REGISTRY: HelpEntry[] = [
     detail:
       "A single durable secret that lets a paired device re-acquire terminal writer control across websocket refreshes without a fresh per-terminal Grant. OFF by default - the per-terminal single-use grants above are the safer path, because a standing secret is a strict superset of risk: anyone holding the secret AND a paired session can control EVERY live terminal until you revoke it. The raw secret is shown ONCE on mint and stored hashed at rest; revoke deletes it and immediately drops every writer holding through it. Requires Allow terminal on in Configuration above (standing access only grants what Allow terminal permits). Two lease-policy toggles live here too: allow remote devices to take over control (on by default), and revoke standing access when this desktop takes over (off by default). Owner-local only.",
     related: ["card.remote_config", "card.terminal_control", "glossary.connect_a_device"],
+  },
+
+  // ----- projects (ROI + commit-alignment, 2026-09-21) -----
+  {
+    id: "tab.projects",
+    category: "tab",
+    title: "Projects tab",
+    oneLiner:
+      "Per-project spend, commits, AI-vs-human lines, and prompt-to-commit alignment - is the money turning into shipped work?",
+    detail:
+      "One row per project. The list carries a 30-day spend/AI-lines/commits snapshot plus a capture chip when commit capture is unavailable ('no git' or 'not scanned yet'). Click a row to open the detail panel: Overview (KPI band + ROI proxy tiles, each with its own formula and caveat, never colour-graded), Spend (by session/tool/model/day/task/commit), Commits (the commit ledger with linked prompts), Prompts (prompt -> commit chains with a status and, opt-in, an LLM-graded delivered/missed alignment), Tasks (this project's todo/plan rollup), and Guidance (the instructions/skills/agents/commands/rules inventory, unchanged from before this arc). A row with no numeric id yet (an installation predating this feature, or a project the scanner hasn't touched) falls back to the legacy Guidance-only view.",
+    related: ["glossary.projects_attribution", "glossary.projects_roi_proxies", "glossary.projects_alignment_grading"],
+  },
+  {
+    id: "glossary.projects_attribution",
+    category: "glossary",
+    title: "Prompt -> commit attribution rule",
+    oneLiner:
+      "An AI edit belongs to the last prompt before it in its session; a commit carries a prompt when it touches those files after the prompt within the link window.",
+    detail:
+      "Only AI-authored file_changes rows (never human/system/editor edits) are inputs. An edit belongs to the LAST user prompt before it in the SAME session; an edit with no prompt before it is an 'orphan' - counted in spend but never linked. Per-file supersede runs first: if a strictly later prompt in the project edited the same file before the earliest commit that carries it, that pair leaves the earlier prompt's reach set as 'superseded'. A commit carries a (prompt, file) pair when the commit's timestamp is after the prompt and within the configured link window (default 14 days) AND the commit is reachable on the checked-out branch (HEAD only) - merges never carry anything. Status per prompt: committed (every remaining file reached a commit), partial, uncommitted (none within the window), superseded (every file was superseded), or no_edits. Stated limitations: a REVERT commit still counts as carrying its files; reach is FILE-granular, never verified LINE survival; a slow-landing change can read 'uncommitted' purely because it crossed the window.",
+    related: ["tab.projects", "glossary.projects_roi_proxies"],
+  },
+  {
+    id: "glossary.projects_roi_proxies",
+    category: "glossary",
+    title: "ROI proxies",
+    oneLiner:
+      "Proxies for delivered value, each shown with its own formula and what it can't see - never a grade or a colour-coded score.",
+    detail:
+      "Examples: $ per committed AI line, AI-touched-files-that-reached-a-commit (never called 'line survival'), sessions with no linked commit (yet) - captioned with why (research-only / WIP / outside the window / commit capture unavailable, never called 'dead'), $ per commit, $ per completed task, prompts/turns per commit, cache-read share. Every tile is deliberately ungraded and uncoloured: a low number can mean careful work on hard code and a high one can mean boilerplate, so treating either end as good would be a productivity score, which this feature does not produce. A tile with nothing to compute yet (no commit capture, no human capture) shows a dash and names why rather than a fabricated zero.",
+    related: ["tab.projects", "glossary.projects_attribution"],
+  },
+  {
+    id: "glossary.projects_alignment_grading",
+    category: "glossary",
+    title: "Alignment grading (delivered vs missed)",
+    oneLiner:
+      "Three tiers grade whether a prompt's ask was actually delivered by its linked commit(s): local heuristic (always), a configured LLM judge (opt-in), and Cloud Intelligence (signed-in, consent per grade).",
+    detail:
+      "Local: the file-reach status plus overlap numbers - always available, no LLM involved. Judge: an opt-in local/configured LLM call over the SAME judge endpoint [observability] already uses for other features - which may be a remote provider (OpenRouter by default), so the page names it 'the judge configured under [observability]' and scrubs the request when the endpoint isn't loopback. Cloud: Cloud Intelligence, signed-in, with the two-digest preview-then-consent protocol before anything uploads - like every other Cloud Intelligence action. The hosted executor for this arc is not deployed yet, so a Cloud grade attempt reports an honest 'not available' with the reason rather than a fabricated result. A prompt's Grade button only offers the tiers the row's grade_available says it can actually run.",
+    related: ["tab.projects", "glossary.projects_roi_proxies"],
   },
 ];
 const BY_ID = new Map(HELP_REGISTRY.map((e) => [e.id, e]));

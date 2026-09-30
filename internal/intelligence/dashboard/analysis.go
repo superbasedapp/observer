@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/discover"
+	"github.com/marmutapp/superbased-observer/internal/timebucket"
 )
 
 // handleAnalysisHeadline serves /api/analysis/headline?days=N — the
@@ -72,14 +73,37 @@ import (
 // cost engine's LongContext dispatch is per-turn — aggregating tokens
 // at SQL then pricing once would false-trip the LC threshold whenever
 // a session's summed prompt cleared it.
+// periodWindow resolves an analysis handler's period [start, end] from the
+// global window - windowRange's tiers (since / hours / days, plus until) -
+// and the equal-length prior period that ends where it starts. A days-only
+// request keeps the handler's own clock and day arithmetic byte-for-byte
+// (start = now - days); a sub-day or custom window uses the window itself,
+// so a 1h window never serves 30 days.
+func periodWindow(r *http.Request, now time.Time, days int) (start, end, priorStart time.Time) {
+	since, until := windowRange(r, days, 1, 36500)
+	lowerNew, upperNew := windowBoundsResolved(r)
+	end = now
+	if upperNew && until.Before(now) {
+		end = until
+	}
+	start = now.Add(-time.Duration(days) * 24 * time.Hour)
+	if lowerNew {
+		start = since
+	}
+	span := end.Sub(start)
+	if span < 0 {
+		span = 0
+	}
+	return start, end, start.Add(-span)
+}
+
 func (s *Server) handleAnalysisHeadline(w http.ResponseWriter, r *http.Request) {
 	days := intArg(r, "days", 30, 1, 36500)
 	tool := r.URL.Query().Get("tool")
 	project := r.URL.Query().Get("project")
 
 	now := s.now()
-	periodStart := now.Add(-time.Duration(days) * 24 * time.Hour)
-	priorStart := now.Add(-2 * time.Duration(days) * 24 * time.Hour)
+	periodStart, periodEnd, priorStart := periodWindow(r, now, days)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	// Prior-month-same-day comparison: [first-of-prior-month, +daysIntoMonth)
 	// e.g. on May 12 we compare against April 1..April 12. Honest month-
@@ -103,57 +127,11 @@ func (s *Server) handleAnalysisHeadline(w http.ResponseWriter, r *http.Request) 
 	if priorMonthStart.Before(queryStart) {
 		queryStart = priorMonthStart
 	}
-	tsArg := queryStart.Format(time.RFC3339Nano)
-
-	atJoins, atWhere, atArgs := analysisScopeClause("api_turns", "at", tool, project)
-	tuJoins, tuWhere, tuArgs := analysisScopeClause("token_usage", "tu", tool, project)
-
-	//nolint:gosec // G202: SQL structure and analysisScopeClause join/where fragments are code constants; all values are bound via ? args.
-	q := `WITH proxy_turn_ids AS (
-		SELECT request_id FROM api_turns
-		 WHERE request_id IS NOT NULL AND request_id != ''
-		   AND timestamp >= ?
-	),
-	combined AS (
-		SELECT at.model, at.input_tokens, at.output_tokens, at.cache_read_tokens,
-		       at.cache_creation_tokens, at.cache_creation_1h_tokens,
-		       0 AS reasoning_tokens,
-		       at.web_search_requests, at.timestamp,
-		       at.cost_usd, at.fast
-		FROM api_turns at` + atJoins + `
-		WHERE at.timestamp >= ?` + atWhere + `
-		UNION ALL
-		SELECT tu.model, tu.input_tokens, tu.output_tokens, tu.cache_read_tokens,
-		       tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-		       tu.reasoning_tokens,
-		       tu.web_search_requests, tu.timestamp,
-		       tu.estimated_cost_usd, tu.fast
-		FROM token_usage tu` + tuJoins + `
-		WHERE tu.timestamp >= ?` + tuWhere + `
-		  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-		       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-	)
-	SELECT COALESCE(model, ''),
-	       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-	       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
-	       COALESCE(cache_creation_1h_tokens, 0),
-	       COALESCE(reasoning_tokens, 0),
-	       COALESCE(web_search_requests, 0),
-	       timestamp,
-	       COALESCE(cost_usd, 0),
-	       COALESCE(fast, 0)
-	FROM combined`
-
-	args := []any{tsArg, tsArg}
-	args = append(args, atArgs...)
-	args = append(args, tsArg)
-	args = append(args, tuArgs...)
-	rows, err := s.db().QueryContext(r.Context(), q, args...)
+	turns, err := s.spendTurns(r.Context(), queryStart, time.Time{}, tool, project, nil)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer rows.Close()
 
 	var (
 		periodCost, priorCost, mtdCost, priorMonthSameDayCost float64
@@ -169,25 +147,8 @@ func (s *Server) handleAnalysisHeadline(w http.ResponseWriter, r *http.Request) 
 		activeHours                                           = map[string]struct{}{}
 	)
 
-	for rows.Next() {
-		var (
-			model    string
-			bundle   cost.TokenBundle
-			tsStr    string
-			recorded float64
-			fastInt  int
-		)
-		if err := rows.Scan(&model,
-			&bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning,
-			&bundle.WebSearchRequests,
-			&tsStr, &recorded, &fastInt); err != nil {
-			writeErr(w, err)
-			return
-		}
-		bundle.Fast = fastInt != 0
-		ts, _ := time.Parse(time.RFC3339Nano, tsStr)
+	for _, turn := range turns {
+		model, bundle, ts, recorded := turn.Model, turn.Bundle, turn.At, turn.Recorded
 
 		// rowCost   — actual cost for this turn (LC-aware if applicable).
 		//             Always `recorded` when the proxy/JSONL populated a
@@ -285,7 +246,7 @@ func (s *Server) handleAnalysisHeadline(w http.ResponseWriter, r *http.Request) 
 		promptWindow := bundle.Input + bundle.CacheRead + bundle.CacheCreation
 
 		switch {
-		case !ts.Before(periodStart) && !ts.After(now):
+		case !ts.Before(periodStart) && !ts.After(periodEnd):
 			periodCost += rowCost
 			periodOutput += bundle.Output
 			periodCacheRead += bundle.CacheRead
@@ -324,10 +285,6 @@ func (s *Server) handleAnalysisHeadline(w http.ResponseWriter, r *http.Request) 
 		if !ts.Before(priorMonthStart) && ts.Before(priorMonthSameDayEnd) {
 			priorMonthSameDayCost += rowCost
 		}
-	}
-	if err := rows.Err(); err != nil {
-		writeErr(w, err)
-		return
 	}
 
 	// Linear projection to month-end: scale MTD by (days_in_month /
@@ -451,7 +408,7 @@ func (s *Server) handleAnalysisHeadline(w http.ResponseWriter, r *http.Request) 
 		s.opts.Logger.Warn("analysis: blended input rate", "err", brErr)
 		blendedRate = cost.DefaultBlendedInputRate
 	}
-	if est, dErr := discover.New(s.db()).WastedTokens(r.Context(), discover.Options{Days: days, Limit: 500, Tool: tool, ProjectRoot: project}); dErr != nil {
+	if est, dErr := discover.New(s.db()).WastedTokens(r.Context(), discover.Options{Since: periodStart, Limit: 500, Tool: tool, ProjectRoot: project}); dErr != nil {
 		s.opts.Logger.Warn("analysis: discover wasted tokens", "err", dErr)
 	} else {
 		wasteTokens = est
@@ -557,16 +514,27 @@ func (s *Server) handleAnalysisTrend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dim must be one of: model, project, tool", http.StatusBadRequest)
 		return
 	}
+	// The global window (days / hours / since+until), not days alone: a
+	// 1h / 12h / custom window used to silently serve 30 days here.
+	since, until := windowRange(r, 30, 1, 36500)
+	spec, err := bucketSpec(r, since, until)
+	if err != nil {
+		writeBucketErr(w, err)
+		return
+	}
 
 	summary, err := s.opts.CostEngine.Summary(r.Context(), s.db(), cost.Options{
 		Days:        days,
+		Since:       since,
+		Until:       until,
 		GroupBy:     groupBy,
+		BucketKey:   tsBucketKeyer(spec),
 		Source:      cost.SourceAuto,
 		ProjectRoot: projectFilter,
 		Tool:        toolFilter,
-		// Generous limit: 365d × ~10 keys/day = 3650; round up to be
-		// safe on accounts with many models/projects/tools.
-		Limit: 5000,
+		// One row per (bucket, key); the bucket count is capped
+		// (sub-day) or data-bounded (day/week), so this never truncates.
+		Limit: 1 << 20,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -575,24 +543,32 @@ func (s *Server) handleAnalysisTrend(w http.ResponseWriter, r *http.Request) {
 
 	type point struct {
 		Bucket      string  `json:"bucket"`
+		T           int64   `json:"t"`
 		Key         string  `json:"key"`
 		TotalTokens int64   `json:"total_tokens"`
 		CostUSD     float64 `json:"cost_usd"`
 		TurnCount   int     `json:"turn_count"`
 	}
 	series := make([]point, 0, len(summary.Rows))
+	starts := map[string]time.Time{}
 	for _, row := range summary.Rows {
-		var day, key string
+		var bucket, key string
 		switch groupBy {
 		case cost.GroupByDayModel:
-			day, key = cost.SplitDayModelKey(row.Key)
+			bucket, key = cost.SplitDayModelKey(row.Key)
 		case cost.GroupByDayProject:
-			day, key = cost.SplitDayProjectKey(row.Key)
+			bucket, key = cost.SplitDayProjectKey(row.Key)
 		case cost.GroupByDayTool:
-			day, key = cost.SplitDayToolKey(row.Key)
+			bucket, key = cost.SplitDayToolKey(row.Key)
+		}
+		st, ok := starts[bucket]
+		if !ok {
+			st = keyStart(spec, bucket)
+			starts[bucket] = st
 		}
 		series = append(series, point{
-			Bucket:      day,
+			Bucket:      bucket,
+			T:           millis(st),
 			Key:         key,
 			TotalTokens: row.Tokens.Input + row.Tokens.Output + row.Tokens.CacheRead + row.Tokens.CacheCreation,
 			CostUSD:     row.CostUSD,
@@ -601,20 +577,23 @@ func (s *Server) handleAnalysisTrend(w http.ResponseWriter, r *http.Request) {
 	}
 	// Cost engine returns rows sorted by cost DESC. Re-sort
 	// chronologically (then by key for a stable stacking order within
-	// a day) so the chart axis reads left-to-right.
+	// a bucket) so the chart axis reads left-to-right.
 	sort.SliceStable(series, func(i, j int) bool {
+		if series[i].T != series[j].T {
+			return series[i].T < series[j].T
+		}
 		if series[i].Bucket != series[j].Bucket {
 			return series[i].Bucket < series[j].Bucket
 		}
 		return series[i].Key < series[j].Key
 	})
-	writeJSON(w, map[string]any{
+	writeJSON(w, withBucketMeta(spec, map[string]any{
 		"metric": "trend",
 		"dim":    dim,
-		"bucket": "day",
 		"days":   days,
 		"series": series,
-	})
+		"grid":   gridJSON(bucketSlots(spec, starts)),
+	}))
 }
 
 // handleAnalysisMovers serves /api/analysis/movers?dim=model|project|tool
@@ -647,12 +626,10 @@ func (s *Server) handleAnalysisMovers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now().UTC()
-	periodStart := now.Add(-time.Duration(days) * 24 * time.Hour)
-	priorStart := now.Add(-2 * time.Duration(days) * 24 * time.Hour)
+	periodStart, periodEnd, priorStart := periodWindow(r, time.Now().UTC(), days)
 
 	current, err := s.opts.CostEngine.Summary(r.Context(), s.db(), cost.Options{
-		Since: periodStart, Until: now,
+		Since: periodStart, Until: periodEnd,
 		GroupBy: groupBy, Source: cost.SourceAuto,
 		ProjectRoot: projectFilter, Tool: toolFilter, Limit: 5000,
 	})
@@ -785,56 +762,17 @@ func (s *Server) handleAnalysisTopSessions(w http.ResponseWriter, r *http.Reques
 	project := r.URL.Query().Get("project")
 
 	now := time.Now().UTC()
-	since := now.Add(-time.Duration(days) * 24 * time.Hour)
-	tsArg := since.Format(time.RFC3339Nano)
+	since, end, _ := periodWindow(r, now, days)
+	var until time.Time // open-ended unless the window has a past until
+	if end.Before(now) {
+		until = end
+	}
 
-	atJoins, atWhere, atArgs := analysisScopeClause("api_turns", "at", tool, project)
-	tuJoins, tuWhere, tuArgs := analysisScopeClause("token_usage", "tu", tool, project)
-
-	//nolint:gosec // G202: SQL structure and analysisScopeClause join/where fragments are code constants; all values are bound via ? args.
-	q := `WITH proxy_turn_ids AS (
-		SELECT request_id FROM api_turns
-		 WHERE request_id IS NOT NULL AND request_id != ''
-		   AND timestamp >= ?
-	),
-	combined AS (
-		SELECT at.session_id, at.model, at.input_tokens, at.output_tokens, at.cache_read_tokens,
-		       at.cache_creation_tokens, at.cache_creation_1h_tokens,
-		       0 AS reasoning_tokens,
-		       at.web_search_requests, at.cost_usd, at.timestamp
-		FROM api_turns at` + atJoins + `
-		WHERE at.timestamp >= ?` + atWhere + `
-		UNION ALL
-		SELECT tu.session_id, tu.model, tu.input_tokens, tu.output_tokens, tu.cache_read_tokens,
-		       tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-		       tu.reasoning_tokens,
-		       tu.web_search_requests, tu.estimated_cost_usd, tu.timestamp
-		FROM token_usage tu` + tuJoins + `
-		WHERE tu.timestamp >= ?` + tuWhere + `
-		  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-		       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-	)
-	SELECT COALESCE(session_id, ''),
-	       COALESCE(model, ''),
-	       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-	       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
-	       COALESCE(cache_creation_1h_tokens, 0),
-	       COALESCE(reasoning_tokens, 0),
-	       COALESCE(web_search_requests, 0),
-	       COALESCE(cost_usd, 0),
-	       COALESCE(timestamp, '')
-	FROM combined`
-
-	args := []any{tsArg, tsArg}
-	args = append(args, atArgs...)
-	args = append(args, tsArg)
-	args = append(args, tuArgs...)
-	rows, err := s.db().QueryContext(r.Context(), q, args...)
+	turns, err := s.spendTurns(r.Context(), since, until, tool, project, nil)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer rows.Close()
 
 	type sessionAgg struct {
 		ID          string
@@ -847,38 +785,12 @@ func (s *Server) handleAnalysisTopSessions(w http.ResponseWriter, r *http.Reques
 	}
 	agg := map[string]*sessionAgg{}
 
-	for rows.Next() {
-		var (
-			sid, model, tsStr string
-			bundle            cost.TokenBundle
-			rec               float64
-		)
-		if err := rows.Scan(&sid, &model,
-			&bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning,
-			&bundle.WebSearchRequests,
-			&rec, &tsStr); err != nil {
-			writeErr(w, err)
-			return
-		}
+	for _, turn := range turns {
+		sid, model, bundle := turn.SessionID, turn.Model, turn.Bundle
 		if sid == "" {
 			continue // unattributed row, can't bucket by session
 		}
-
-		// Date-effective pricing ladder: recorded cost wins; otherwise
-		// price at the rate in force on the row's own timestamp.
-		var rowCost, rowStdCost float64
-		if rec > 0 {
-			rowCost = rec
-			rowStdCost = rec
-		} else {
-			ts, _ := time.Parse(time.RFC3339Nano, tsStr)
-			if p, ok := s.opts.CostEngine.LookupAt(model, ts); ok {
-				rowCost = cost.Compute(p, bundle)
-				rowStdCost = cost.Compute(stripLongContext(p), bundle)
-			}
-		}
+		rowCost, rowStdCost := s.turnCostAndStandard(turn)
 
 		a, ok := agg[sid]
 		if !ok {
@@ -900,10 +812,6 @@ func (s *Server) handleAnalysisTopSessions(w http.ResponseWriter, r *http.Reques
 		if rowCost > rowStdCost {
 			a.LCTurnCount++
 		}
-	}
-	if err := rows.Err(); err != nil {
-		writeErr(w, err)
-		return
 	}
 
 	// Sort by cost DESC and trim to limit.
@@ -1038,55 +946,6 @@ func containsCI(s, substr string) bool {
 	return false
 }
 
-// analysisScopeClause returns the JOIN+WHERE additions and args that
-// implement the global Tool/Project filters for an analysis handler
-// scanning api_turns or token_usage. alias is the row alias used in
-// the SELECT ("at" for api_turns, "tu" for token_usage); table is the
-// SQL table name. The returned `joins` string is appended after FROM
-// <table> <alias>; `whereExtra` is AND-joined onto the WHERE clause;
-// `args` are appended in placeholder order matching whereExtra.
-//
-// For api_turns the project column lives on api_turns.project_id; for
-// token_usage we have to walk through sessions.project_id. Tool always
-// comes from sessions.tool.
-func analysisScopeClause(table, alias, tool, project string) (joins string, whereExtra string, args []any) {
-	if tool == "" && project == "" {
-		return "", "", nil
-	}
-	var jb, wb []string
-	if table == "api_turns" {
-		if project != "" {
-			jb = append(jb, "LEFT JOIN projects p ON p.id = "+alias+".project_id")
-			wb = append(wb, "p.root_path = ?")
-			args = append(args, project)
-		}
-		if tool != "" {
-			jb = append(jb, "LEFT JOIN sessions s ON s.id = "+alias+".session_id")
-			wb = append(wb, "s.tool = ?")
-			args = append(args, tool)
-		}
-	} else { // token_usage
-		needsSessions := tool != "" || project != ""
-		if needsSessions {
-			jb = append(jb, "LEFT JOIN sessions s ON s.id = "+alias+".session_id")
-		}
-		if project != "" {
-			jb = append(jb, "LEFT JOIN projects p ON p.id = s.project_id")
-			wb = append(wb, "p.root_path = ?")
-			args = append(args, project)
-		}
-		if tool != "" {
-			wb = append(wb, "s.tool = ?")
-			args = append(args, tool)
-		}
-	}
-	joins = " " + joinStrings(jb, " ")
-	if len(wb) > 0 {
-		whereExtra = " AND " + joinStrings(wb, " AND ")
-	}
-	return
-}
-
 // joinStrings is a 0-allocation strings.Join for the placeholder list.
 // Avoids importing strings just for this single use.
 func joinStrings(parts []string, sep string) string {
@@ -1134,8 +993,11 @@ func (s *Server) handleAnalysisRoutingSuggestions(w http.ResponseWriter, r *http
 	project := r.URL.Query().Get("project")
 
 	now := time.Now().UTC()
-	since := now.Add(-time.Duration(days) * 24 * time.Hour)
-	tsArg := since.Format(time.RFC3339Nano)
+	since, end, _ := periodWindow(r, now, days)
+	var until time.Time // open-ended unless the window has a past until
+	if end.Before(now) {
+		until = end
+	}
 
 	// Conservative thresholds — only flag unambiguously trivial profiles.
 	const (
@@ -1144,53 +1006,11 @@ func (s *Server) handleAnalysisRoutingSuggestions(w http.ResponseWriter, r *http
 		minSavingsUSD          = 0.05
 	)
 
-	atJoins, atWhere, atArgs := analysisScopeClause("api_turns", "at", tool, project)
-	tuJoins, tuWhere, tuArgs := analysisScopeClause("token_usage", "tu", tool, project)
-
-	//nolint:gosec // G202: SQL structure and analysisScopeClause join/where fragments are code constants; all values are bound via ? args.
-	q := `WITH proxy_turn_ids AS (
-		SELECT request_id FROM api_turns
-		 WHERE request_id IS NOT NULL AND request_id != ''
-		   AND timestamp >= ?
-	),
-	combined AS (
-		SELECT at.session_id, at.model, at.input_tokens, at.output_tokens, at.cache_read_tokens,
-		       at.cache_creation_tokens, at.cache_creation_1h_tokens,
-		       0 AS reasoning_tokens,
-		       at.web_search_requests, at.cost_usd, at.timestamp
-		FROM api_turns at` + atJoins + `
-		WHERE at.timestamp >= ?` + atWhere + `
-		UNION ALL
-		SELECT tu.session_id, tu.model, tu.input_tokens, tu.output_tokens, tu.cache_read_tokens,
-		       tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-		       tu.reasoning_tokens,
-		       tu.web_search_requests, tu.estimated_cost_usd, tu.timestamp
-		FROM token_usage tu` + tuJoins + `
-		WHERE tu.timestamp >= ?` + tuWhere + `
-		  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-		       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-	)
-	SELECT COALESCE(session_id, ''),
-	       COALESCE(model, ''),
-	       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-	       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
-	       COALESCE(cache_creation_1h_tokens, 0),
-	       COALESCE(reasoning_tokens, 0),
-	       COALESCE(web_search_requests, 0),
-	       COALESCE(cost_usd, 0),
-	       COALESCE(timestamp, '')
-	FROM combined`
-
-	args := []any{tsArg, tsArg}
-	args = append(args, atArgs...)
-	args = append(args, tsArg)
-	args = append(args, tuArgs...)
-	rows, err := s.db().QueryContext(r.Context(), q, args...)
+	turns, err := s.spendTurns(r.Context(), since, until, tool, project, nil)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer rows.Close()
 
 	type sessionAgg struct {
 		ID       string
@@ -1203,40 +1023,17 @@ func (s *Server) handleAnalysisRoutingSuggestions(w http.ResponseWriter, r *http
 	}
 	agg := map[string]*sessionAgg{}
 
-	for rows.Next() {
-		var (
-			sid, model, tsStr string
-			bundle            cost.TokenBundle
-			rec               float64
-		)
-		if err := rows.Scan(&sid, &model,
-			&bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning,
-			&bundle.WebSearchRequests,
-			&rec, &tsStr); err != nil {
-			writeErr(w, err)
-			return
-		}
+	for _, turn := range turns {
+		sid, model, bundle := turn.SessionID, turn.Model, turn.Bundle
 		if sid == "" {
 			continue
 		}
 
-		// Date-effective pricing ladder: recorded cost wins; otherwise
-		// price at the rate in force on the row's own timestamp. The
-		// forward-looking "cheaper sibling" projection below stays on
-		// the undated Lookup — it's a what-if for switching TODAY.
-		var rowCost, rowStdCost float64
-		if rec > 0 {
-			rowCost = rec
-			rowStdCost = rec
-		} else {
-			ts, _ := time.Parse(time.RFC3339Nano, tsStr)
-			if p, ok := s.opts.CostEngine.LookupAt(model, ts); ok {
-				rowCost = cost.Compute(p, bundle)
-				rowStdCost = cost.Compute(stripLongContext(p), bundle)
-			}
-		}
+		// Date-effective pricing ladder (recorded cost wins; otherwise the
+		// rate in force on the row's own timestamp). The forward-looking
+		// "cheaper sibling" projection below stays on the undated Lookup —
+		// it's a what-if for switching TODAY.
+		rowCost, rowStdCost := s.turnCostAndStandard(turn)
 
 		a, ok := agg[sid]
 		if !ok {
@@ -1255,10 +1052,6 @@ func (s *Server) handleAnalysisRoutingSuggestions(w http.ResponseWriter, r *http
 		if rowCost > rowStdCost {
 			a.LCTurns++
 		}
-	}
-	if err := rows.Err(); err != nil {
-		writeErr(w, err)
-		return
 	}
 
 	type suggestion struct {
@@ -1354,76 +1147,32 @@ func (s *Server) handleAnalysisRoutingSuggestions(w http.ResponseWriter, r *http
 	})
 }
 
-// handleAnalysisCostByHour serves /api/analysis/cost-by-hour?days=N — one
-// bucket per hour-of-day (0..23) summed across the window. Used by the
-// Analysis tab's "When you spend" bar chart to surface daily-rhythm
-// patterns (e.g. heaviest hours are 14:00–17:00 local).
+// handleAnalysisCostByHour serves /api/analysis/cost-by-hour — one bucket
+// per hour-of-day (0..23) summed across the global window (days / hours /
+// since+until). Used by the Analysis tab's "When you spend" chart to
+// surface daily-rhythm patterns (e.g. heaviest hours are 14:00–17:00
+// local).
 //
 // Mirrors the headline scan's dedup pattern (proxy preferred, JSONL
 // fallback) and the per-turn LC dispatch so per-row cost matches
 // /api/cost exactly. Returns buckets sorted by hour ascending so the
 // chart axis reads left-to-right.
 //
-// Hour is in UTC. The dashboard JS can optionally convert to local for
-// display but the underlying data stays timezone-stable so server
-// restarts in different TZs don't shift the labels.
+// The hour is the VIEWER's wall-clock hour: `tz=<IANA>` (UTC when absent
+// or unknown, echoed as `timezone`). Each turn is placed by its own
+// instant in that zone, so a DST change inside the window is exact.
 func (s *Server) handleAnalysisCostByHour(w http.ResponseWriter, r *http.Request) {
 	days := intArg(r, "days", 30, 1, 36500)
 	tool := r.URL.Query().Get("tool")
 	project := r.URL.Query().Get("project")
+	since, until := windowRange(r, 30, 1, 36500)
+	loc, tzName, tzFallback := timebucket.LoadZone(r.URL.Query().Get("tz"))
 
-	now := time.Now().UTC()
-	since := now.Add(-time.Duration(days) * 24 * time.Hour)
-	tsArg := since.Format(time.RFC3339Nano)
-
-	atJoins, atWhere, atArgs := analysisScopeClause("api_turns", "at", tool, project)
-	tuJoins, tuWhere, tuArgs := analysisScopeClause("token_usage", "tu", tool, project)
-
-	//nolint:gosec // G202: SQL structure and analysisScopeClause join/where fragments are code constants; all values are bound via ? args.
-	q := `WITH proxy_turn_ids AS (
-		SELECT request_id FROM api_turns
-		 WHERE request_id IS NOT NULL AND request_id != ''
-		   AND timestamp >= ?
-	),
-	combined AS (
-		SELECT at.model, at.input_tokens, at.output_tokens, at.cache_read_tokens,
-		       at.cache_creation_tokens, at.cache_creation_1h_tokens,
-		       0 AS reasoning_tokens,
-		       at.web_search_requests, at.timestamp,
-		       at.cost_usd
-		FROM api_turns at` + atJoins + `
-		WHERE at.timestamp >= ?` + atWhere + `
-		UNION ALL
-		SELECT tu.model, tu.input_tokens, tu.output_tokens, tu.cache_read_tokens,
-		       tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-		       tu.reasoning_tokens,
-		       tu.web_search_requests, tu.timestamp,
-		       tu.estimated_cost_usd
-		FROM token_usage tu` + tuJoins + `
-		WHERE tu.timestamp >= ?` + tuWhere + `
-		  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-		       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-	)
-	SELECT COALESCE(model, ''),
-	       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-	       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
-	       COALESCE(cache_creation_1h_tokens, 0),
-	       COALESCE(reasoning_tokens, 0),
-	       COALESCE(web_search_requests, 0),
-	       timestamp,
-	       COALESCE(cost_usd, 0)
-	FROM combined`
-
-	args := []any{tsArg, tsArg}
-	args = append(args, atArgs...)
-	args = append(args, tsArg)
-	args = append(args, tuArgs...)
-	rows, err := s.db().QueryContext(r.Context(), q, args...)
+	turns, err := s.spendTurns(r.Context(), since, until, tool, project, nil)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer rows.Close()
 
 	type bucket struct {
 		Hour      int     `json:"hour"`
@@ -1435,32 +1184,10 @@ func (s *Server) handleAnalysisCostByHour(w http.ResponseWriter, r *http.Request
 		buckets[i].Hour = i
 	}
 
-	for rows.Next() {
-		var (
-			model    string
-			bundle   cost.TokenBundle
-			tsStr    string
-			recorded float64
-		)
-		if err := rows.Scan(&model,
-			&bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning,
-			&bundle.WebSearchRequests,
-			&tsStr, &recorded); err != nil {
-			writeErr(w, err)
-			return
-		}
-		ts, _ := time.Parse(time.RFC3339Nano, tsStr)
-		var rowCost float64
-		if recorded > 0 {
-			rowCost = recorded
-		} else if p, ok := s.opts.CostEngine.LookupAt(model, ts); ok {
-			// Date-effective: historical window, so price at the rate in
-			// force at the row's own timestamp. Identical to Lookup when
-			// the model has no dated timeline.
-			rowCost = cost.Compute(p, bundle)
-		}
+	for _, turn := range turns {
+		// The engine's price: recorded cost when captured, else the rate in
+		// force at the row's own timestamp (date-effective).
+		ts, rowCost := turn.At.In(loc), turn.CostUSD
 		h := ts.Hour()
 		if h < 0 || h > 23 {
 			continue
@@ -1468,87 +1195,46 @@ func (s *Server) handleAnalysisCostByHour(w http.ResponseWriter, r *http.Request
 		buckets[h].CostUSD += rowCost
 		buckets[h].TurnCount++
 	}
-	if err := rows.Err(); err != nil {
-		writeErr(w, err)
-		return
-	}
 
-	writeJSON(w, map[string]any{
+	sinceStr, untilStr := windowMeta(since, until)
+	resp := map[string]any{
 		"days":     days,
-		"timezone": "UTC",
+		"timezone": tzName,
+		"tz":       tzName,
+		"since":    sinceStr,
+		"until":    untilStr,
 		"buckets":  buckets,
-	})
+	}
+	if tzFallback {
+		resp["tz_fallback"] = true
+	}
+	writeJSON(w, resp)
 }
 
-// handleAnalysisCostByDowHour serves /api/analysis/cost-by-dow-hour?
-// days=N — 168 cells (7 days × 24 hours) summed across the window. Used
-// by the Analysis tab's "When you spend" 2D heatmap (day-of-week rows ×
-// hour-of-day columns) which replaces the older 1D 24-bucket bar chart
-// for surfacing weekly rhythm (e.g. light on Mondays, heavy 14:00–17:00
-// mid-week).
+// handleAnalysisCostByDowHour serves /api/analysis/cost-by-dow-hour — 168
+// cells (7 days × 24 hours) summed across the global window (days / hours
+// / since+until). Used by the Analysis tab's "When you spend" 2D heatmap
+// (day-of-week rows × hour-of-day columns) for surfacing weekly rhythm
+// (e.g. light on Mondays, heavy 14:00–17:00 mid-week). The grid stays
+// cyclic by design (a DOW × hour matrix, not a time series).
 //
 // Mirrors handleAnalysisCostByHour's dedup pattern (proxy preferred,
 // JSONL fallback) and per-turn cost computation so the totals tie out
-// to /api/cost. Day-of-week is encoded as Go's time.Weekday() integer
-// (Sun=0, Mon=1, …, Sat=6) in UTC, matching the existing hour-of-day
-// UTC convention so server TZ doesn't shift labels.
+// to /api/cost. Day-of-week is Go's time.Weekday() integer (Sun=0 …
+// Sat=6) and the hour is the wall-clock hour, both in the viewer's
+// `tz=<IANA>` (UTC when absent or unknown, echoed as `timezone`).
 func (s *Server) handleAnalysisCostByDowHour(w http.ResponseWriter, r *http.Request) {
 	days := intArg(r, "days", 30, 1, 36500)
 	tool := r.URL.Query().Get("tool")
 	project := r.URL.Query().Get("project")
+	since, until := windowRange(r, 30, 1, 36500)
+	loc, tzName, tzFallback := timebucket.LoadZone(r.URL.Query().Get("tz"))
 
-	now := time.Now().UTC()
-	since := now.Add(-time.Duration(days) * 24 * time.Hour)
-	tsArg := since.Format(time.RFC3339Nano)
-
-	atJoins, atWhere, atArgs := analysisScopeClause("api_turns", "at", tool, project)
-	tuJoins, tuWhere, tuArgs := analysisScopeClause("token_usage", "tu", tool, project)
-
-	//nolint:gosec // G202: SQL structure and analysisScopeClause join/where fragments are code constants; all values are bound via ? args.
-	q := `WITH proxy_turn_ids AS (
-		SELECT request_id FROM api_turns
-		 WHERE request_id IS NOT NULL AND request_id != ''
-		   AND timestamp >= ?
-	),
-	combined AS (
-		SELECT at.model, at.input_tokens, at.output_tokens, at.cache_read_tokens,
-		       at.cache_creation_tokens, at.cache_creation_1h_tokens,
-		       0 AS reasoning_tokens,
-		       at.web_search_requests, at.timestamp,
-		       at.cost_usd
-		FROM api_turns at` + atJoins + `
-		WHERE at.timestamp >= ?` + atWhere + `
-		UNION ALL
-		SELECT tu.model, tu.input_tokens, tu.output_tokens, tu.cache_read_tokens,
-		       tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-		       tu.reasoning_tokens,
-		       tu.web_search_requests, tu.timestamp,
-		       tu.estimated_cost_usd
-		FROM token_usage tu` + tuJoins + `
-		WHERE tu.timestamp >= ?` + tuWhere + `
-		  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-		       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-	)
-	SELECT COALESCE(model, ''),
-	       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-	       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
-	       COALESCE(cache_creation_1h_tokens, 0),
-	       COALESCE(reasoning_tokens, 0),
-	       COALESCE(web_search_requests, 0),
-	       timestamp,
-	       COALESCE(cost_usd, 0)
-	FROM combined`
-
-	args := []any{tsArg, tsArg}
-	args = append(args, atArgs...)
-	args = append(args, tsArg)
-	args = append(args, tuArgs...)
-	rows, err := s.db().QueryContext(r.Context(), q, args...)
+	turns, err := s.spendTurns(r.Context(), since, until, tool, project, nil)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer rows.Close()
 
 	type cell struct {
 		Dow       int     `json:"dow"`
@@ -1565,32 +1251,10 @@ func (s *Server) handleAnalysisCostByDowHour(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	for rows.Next() {
-		var (
-			model    string
-			bundle   cost.TokenBundle
-			tsStr    string
-			recorded float64
-		)
-		if err := rows.Scan(&model,
-			&bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning,
-			&bundle.WebSearchRequests,
-			&tsStr, &recorded); err != nil {
-			writeErr(w, err)
-			return
-		}
-		ts, _ := time.Parse(time.RFC3339Nano, tsStr)
-		var rowCost float64
-		if recorded > 0 {
-			rowCost = recorded
-		} else if p, ok := s.opts.CostEngine.LookupAt(model, ts); ok {
-			// Date-effective: historical window, so price at the rate in
-			// force at the row's own timestamp. Identical to Lookup when
-			// the model has no dated timeline.
-			rowCost = cost.Compute(p, bundle)
-		}
+	for _, turn := range turns {
+		// The engine's price: recorded cost when captured, else the rate in
+		// force at the row's own timestamp (date-effective).
+		ts, rowCost := turn.At.In(loc), turn.CostUSD
 		dow := int(ts.Weekday())
 		h := ts.Hour()
 		if dow < 0 || dow > 6 || h < 0 || h > 23 {
@@ -1599,21 +1263,25 @@ func (s *Server) handleAnalysisCostByDowHour(w http.ResponseWriter, r *http.Requ
 		cells[dow*24+h].CostUSD += rowCost
 		cells[dow*24+h].TurnCount++
 	}
-	if err := rows.Err(); err != nil {
-		writeErr(w, err)
-		return
-	}
 
-	writeJSON(w, map[string]any{
+	sinceStr, untilStr := windowMeta(since, until)
+	resp := map[string]any{
 		"days":     days,
-		"timezone": "UTC",
+		"timezone": tzName,
+		"tz":       tzName,
+		"since":    sinceStr,
+		"until":    untilStr,
 		"cells":    cells,
-	})
+	}
+	if tzFallback {
+		resp["tz_fallback"] = true
+	}
+	writeJSON(w, resp)
 }
 
 // handleAnalysisCacheSavingsTrend serves
-// /api/analysis/cache-savings-trend?days=N — one bucket per calendar
-// day in the window with the dollar value of cache_read traffic priced
+// /api/analysis/cache-savings-trend?days=N|hours=|since=&until=&gran=&tz=
+// — one bucket per granularity step (zero-filled) in the global window with the dollar value of cache_read traffic priced
 // at (input_rate − cache_read_rate). High savings days are days where
 // the user benefited most from cache reuse; flat days are days with
 // little cache traffic or all-miss patterns.
@@ -1626,90 +1294,36 @@ func (s *Server) handleAnalysisCacheSavingsTrend(w http.ResponseWriter, r *http.
 	days := intArg(r, "days", 30, 1, 36500)
 	tool := r.URL.Query().Get("tool")
 	project := r.URL.Query().Get("project")
+	since, until := windowRange(r, 30, 1, 36500)
+	spec, err := bucketSpec(r, since, until)
+	if err != nil {
+		writeBucketErr(w, err)
+		return
+	}
 
-	now := time.Now().UTC()
-	since := now.Add(-time.Duration(days) * 24 * time.Hour)
-	tsArg := since.Format(time.RFC3339Nano)
-
-	atJoins, atWhere, atArgs := analysisScopeClause("api_turns", "at", tool, project)
-	tuJoins, tuWhere, tuArgs := analysisScopeClause("token_usage", "tu", tool, project)
-
-	//nolint:gosec // G202: SQL structure and analysisScopeClause join/where fragments are code constants; all values are bound via ? args.
-	q := `WITH proxy_turn_ids AS (
-		SELECT request_id FROM api_turns
-		 WHERE request_id IS NOT NULL AND request_id != ''
-		   AND timestamp >= ?
-	),
-	combined AS (
-		SELECT at.model, at.input_tokens, at.output_tokens, at.cache_read_tokens,
-		       at.cache_creation_tokens, at.cache_creation_1h_tokens,
-		       0 AS reasoning_tokens,
-		       at.web_search_requests, at.timestamp,
-		       at.cost_usd, at.fast
-		FROM api_turns at` + atJoins + `
-		WHERE at.timestamp >= ?` + atWhere + `
-		UNION ALL
-		SELECT tu.model, tu.input_tokens, tu.output_tokens, tu.cache_read_tokens,
-		       tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-		       tu.reasoning_tokens,
-		       tu.web_search_requests, tu.timestamp,
-		       tu.estimated_cost_usd, tu.fast
-		FROM token_usage tu` + tuJoins + `
-		WHERE tu.timestamp >= ?` + tuWhere + `
-		  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-		       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-	)
-	SELECT COALESCE(model, ''),
-	       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-	       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
-	       COALESCE(cache_creation_1h_tokens, 0),
-	       COALESCE(reasoning_tokens, 0),
-	       COALESCE(web_search_requests, 0),
-	       timestamp,
-	       COALESCE(cost_usd, 0),
-	       COALESCE(fast, 0)
-	FROM combined`
-
-	args := []any{tsArg, tsArg}
-	args = append(args, atArgs...)
-	args = append(args, tsArg)
-	args = append(args, tuArgs...)
-	rows, err := s.db().QueryContext(r.Context(), q, args...)
+	turns, err := s.spendTurns(r.Context(), since, until, tool, project, nil)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer rows.Close()
 
+	// Day keeps its historical name for the chart's dataKey; it now holds
+	// the bucket key of the requested granularity (a UTC day key is
+	// byte-identical to before). T is the bucket start, epoch ms.
 	type point struct {
 		Day             string  `json:"day"`
+		T               int64   `json:"t"`
 		SavingsUSD      float64 `json:"savings_usd"`
 		CacheReadTokens int64   `json:"cache_read_tokens"`
 	}
 	byDay := map[string]*point{}
+	starts := map[string]time.Time{}
 
-	for rows.Next() {
-		var (
-			model    string
-			bundle   cost.TokenBundle
-			tsStr    string
-			recorded float64
-			fastInt  int
-		)
-		if err := rows.Scan(&model,
-			&bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning,
-			&bundle.WebSearchRequests,
-			&tsStr, &recorded, &fastInt); err != nil {
-			writeErr(w, err)
-			return
-		}
-		bundle.Fast = fastInt != 0
+	for _, turn := range turns {
+		model, bundle, ts := turn.Model, turn.Bundle, turn.At
 		if bundle.CacheRead <= 0 {
 			continue
 		}
-		ts, _ := time.Parse(time.RFC3339Nano, tsStr)
 
 		// Same defect class as handleAnalysisHeadline's cache_savings tile
 		// (see the comment above that handler): skipping every recorded
@@ -1743,30 +1357,34 @@ func (s *Server) handleAnalysisCacheSavingsTrend(w http.ResponseWriter, r *http.
 			savings = altCost - actual
 		}
 
-		day := ts.Format("2006-01-02")
+		// Bucketed in Go from the turn's own instant: exact in the
+		// viewer's zone, DST included.
+		bstart := spec.Floor(ts)
+		day := spec.Key(bstart)
 		pt, exists := byDay[day]
 		if !exists {
 			pt = &point{Day: day}
 			byDay[day] = pt
+			starts[day] = bstart
 		}
 		pt.SavingsUSD += savings
 		pt.CacheReadTokens += bundle.CacheRead
 	}
-	if err := rows.Err(); err != nil {
-		writeErr(w, err)
-		return
-	}
 
-	out := make([]point, 0, len(byDay))
-	for _, pt := range byDay {
+	slots := bucketSlots(spec, starts)
+	out := make([]point, 0, len(slots))
+	for _, sl := range slots {
+		pt := byDay[sl.Key]
+		if pt == nil {
+			pt = &point{Day: sl.Key}
+		}
+		pt.T = millis(sl.T)
 		out = append(out, *pt)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Day < out[j].Day })
-
-	writeJSON(w, map[string]any{
+	writeJSON(w, withBucketMeta(spec, map[string]any{
 		"days":   days,
 		"points": out,
-	})
+	}))
 }
 
 // stripLongContext zeros every long-context field on a Pricing entry so

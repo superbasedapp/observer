@@ -59,6 +59,7 @@ func (s *Server) handleDemoStart(w http.ResponseWriter, r *http.Request) {
 	// served as if nothing had happened. Invalidating at the swap makes the
 	// guarantee explicit rather than incidental.
 	s.statusSnap.invalidate()
+	s.analytics.invalidate()
 	s.opts.Logger.Info("demo mode started — data surfaces now serve the seeded sample database")
 	writeJSON(w, map[string]any{"available": true, "active": true})
 }
@@ -85,6 +86,7 @@ func (s *Server) handleDemoStop(w http.ResponseWriter, r *http.Request) {
 	// the REAL numbers back immediately, not whatever this cache last read
 	// from the real database before demo mode began.
 	s.statusSnap.invalidate()
+	s.analytics.invalidate()
 	if s.demoCleanup != nil {
 		if err := s.demoCleanup(); err != nil {
 			s.opts.Logger.Warn("demo cleanup", "err", err)

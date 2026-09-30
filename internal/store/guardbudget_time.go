@@ -15,18 +15,26 @@ const guardBudgetTimestampOrderSQL = `substr(timestamp,1,19) || '.' ||
 // Managed reads additionally inspect malformed history, which cannot be
 // assigned to any window. Keeping that OR out of advisory SQL is necessary:
 // SQLite does not remove a parameter-gated malformed-history scan branch.
-const guardBudgetBoundedWhereSQL = `
-	WHERE ((? <> '' AND session_id = ?)
+const guardBudgetBoundedCondSQL = `((? <> '' AND session_id = ?)
 	OR (timestamp >= ? AND (` + guardBudgetTimestampOrderSQL + `) >= ?))`
 
-const guardBudgetManagedWhereSQL = guardBudgetBoundedWhereSQL + `
+const guardBudgetManagedCondSQL = guardBudgetBoundedCondSQL + `
 	OR (` + guardBudgetInvalidTimestampSQL + `)`
 
-func guardBudgetUsageWhere(managed bool) string {
+// guardBudgetUsageWhere is the WHERE clause of one arm of the guard's budget
+// reads: the bounded window (plus, for a managed read, malformed history),
+// AND the arm's stored-dedup-verdict predicate (verdict, from
+// internal/spendverdict: the rows sessionmsg.Derive counts). The window
+// condition is parenthesized as a whole because its managed variant is an OR
+// chain.
+func guardBudgetUsageWhere(managed bool, verdict string) string {
+	cond := guardBudgetBoundedCondSQL
 	if managed {
-		return guardBudgetManagedWhereSQL
+		cond = guardBudgetManagedCondSQL
 	}
-	return guardBudgetBoundedWhereSQL
+	return `
+	WHERE (` + cond + `)
+	  AND ` + verdict
 }
 
 func guardBudgetWindowStamp(at time.Time) string {

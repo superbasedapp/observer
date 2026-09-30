@@ -48,9 +48,15 @@ files(...)  read_files(...)  goose_db_version(...)
 1. **Timestamps are Unix SECONDS**, not milliseconds — the column comments
    say milliseconds, but the `update_*_updated_at` triggers write
    `strftime('%s','now')` (seconds), and every captured value is ~`1.78e9`.
-2. **Tokens + cost are session-CUMULATIVE**, stored on the `sessions` row,
-   not per message. Crush is the only wave tool that persists its own
-   pre-computed dollar `cost`.
+2. **Cost is session-CUMULATIVE; the token counters are NOT.** Both live
+   on the `sessions` row, not per message. Crush is the only wave tool
+   that persists its own pre-computed dollar `cost` (`Cost += cost` every
+   step), but `prompt_tokens` / `completion_tokens` are OVERWRITTEN each
+   step with that step's (input + cache-read) and output - the TUI's
+   context-window figure. The adapter reports them only for a one-step
+   session (corrected 2026-09-27 against crush v0.83.0 + v0.96.1 source;
+   the `windows_failover` capture is a two-step session whose counters are the second
+   step alone).
 3. **`tool_call` and `tool_result` live in separate messages** — the
    `tool_call` in an `assistant` message, the `tool_result` in a following
    `role="tool"` message, paired by the tool-call `id`.

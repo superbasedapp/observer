@@ -14,9 +14,8 @@ import (
 // infrastructure dependencies (CLAUDE.md "Module Boundaries & Anti-
 // Spaghetti Discipline" rule 1; plan §3.1). They take bytes / plain
 // graph data in and return plain data out; all I/O is injected. The
-// I/O-bearing packages (index, surface) and the facade root (which
-// wraps codegraph during the strangler-fig phase) are deliberately
-// EXCLUDED — they are the seams, not the core.
+// I/O-bearing packages (index, surface) and the facade root are
+// deliberately EXCLUDED — they are the seams, not the core.
 var purePackages = []string{
 	"parse",
 	"resolve",
@@ -40,7 +39,6 @@ var forbiddenImports = []string{
 	"github.com/marmutapp/superbased-observer/internal/hook",
 	"github.com/marmutapp/superbased-observer/internal/mcp",
 	"github.com/marmutapp/superbased-observer/internal/config",
-	"github.com/marmutapp/superbased-observer/internal/codegraph",
 	"github.com/marmutapp/superbased-observer/internal/compression",
 }
 

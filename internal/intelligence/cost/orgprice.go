@@ -64,15 +64,40 @@ type OrgPrice struct {
 	// of a row built by a caller that has not been taught the distinction:
 	// such a row is REFUSED rather than silently pricing a model at zero.
 	Set OrgPriceSet
+
+	// History is the model's dated price timeline as the source stated it
+	// (the org document's or the public feed's row `history`, lane
+	// R2-PRICING-2): every period ascending, each with its own EffectiveFrom,
+	// rates and Set flags, none with a History of its own. When it holds two
+	// or more usable periods the engine builds the key's DATED timeline from
+	// it (see orgTimeline) instead of applying this row flat across all of
+	// history, so an old session prices at the rate that was in force when it
+	// ran. nil (every pre-history document) makes the row its own one-period
+	// history: flat across all of history when it is undated, and priced
+	// from its EffectiveFrom on (the seed, else nothing, before it) when it
+	// is dated - see composeOrgRows.
+	History []OrgPrice
 }
 
-// OrgPriceSet marks which fields of an [OrgPrice] the org actually quoted.
+// OrgPriceSet marks which fields of an [OrgPrice] the source actually quoted.
 //
-// One bool per NULLABLE rate column, named for the [Pricing] field it governs
-// so the correspondence is readable at the assignment site. There is
-// deliberately no flag for LongContextThreshold: that column is not nullable
-// (0 already means "this row declares no long-context tier"), so an org row
-// always states it and it always applies.
+// One bool per field whose ABSENCE must be told apart from its zero value,
+// named for the [Pricing] field it governs so the correspondence is readable at
+// the assignment site. It is the migration-135 contract ("NULL = not quoted, a
+// SET value wins, including 0") applied uniformly - to the eleven nullable rate
+// columns AND to the three structural dimensions:
+//
+//   - LongContextThreshold: set to 0 means "quoted: no long-context tier" (a
+//     negotiated flat rate); unset keeps the seed's tier.
+//   - Peak: set with a nil or window-less schedule means "quoted: flat, no
+//     time-of-day premium" and clears the seed's peak; set with a schedule
+//     replaces it; unset keeps it.
+//   - FastMultiplier: set wins (0 = no fast tier); unset keeps the seed's.
+//
+// Its zero value is "quoted nothing", which is the honest reading of a row
+// built by a caller that has not been taught the distinction: such a row is
+// REFUSED (no input and no output) rather than silently pricing a model at
+// zero, and it can never clear a seed dimension by omission.
 type OrgPriceSet struct {
 	Input           bool
 	Output          bool
@@ -87,21 +112,52 @@ type OrgPriceSet struct {
 	LongContextCacheCreation1h bool
 
 	WebSearchPerRequest bool
+	FastMultiplier      bool
+
+	LongContextThreshold bool
+	Peak                 bool
 }
 
-// overlay folds this row's QUOTED rates onto whatever the node would otherwise
-// have priced the model at, and returns the result.
+// overlay folds this row's QUOTED dimensions onto whatever the node would
+// otherwise have priced the model at, and returns the result. It is the ONE
+// overlay rule for every non-local rate source - the generated seed snapshot,
+// the standalone Tokenomics feed and the org's signed price document all fold
+// through it, so the three can never disagree about what a row means.
 //
-// A field the org did not quote keeps base's value, which is the fall-through
-// the nullable-rate change exists to make expressible: an org that negotiated
-// an input rate and said nothing about cache reads has not thereby negotiated
-// a free cache read. A field the org DID quote wins even at zero, which is the
-// other half of it.
+// THE RULE (migration-135 contract, applied uniformly; orchestrator ruling
+// 2026-09-23): a dimension the row did not quote keeps base's value; a quoted
+// dimension wins, INCLUDING a quoted zero / empty value, which is how a source
+// states "negotiated flat" (threshold 0 = no long-context tier, an empty peak =
+// no off-peak split). So omission never erases a seed tier (the rework's
+// finding-1 bug on the snapshot, feed and org rails alike), while an org that
+// explicitly negotiates a model flat still gets exactly that (peak-off-peak
+// plan §R2 R1/N2 is preserved for the explicit case).
 //
-// LongContextThreshold always comes from the org row, because the row always
-// states it. A row carrying no tier (threshold 0) therefore turns the tier OFF
-// for that model rather than half-inheriting the vendor's.
+// What counts as "quoted" for which dimension is decided where the row is
+// projected into this type, per rail, not here
+// (cmd/observer/costengine_wire.go): on the FEED an absent threshold or peak is
+// not quoted; on the ORG rail an absent one keeps the legacy meaning every
+// pre-175 node gave it - quoted flat - and only an explicit
+// `*_unquoted` marker, written for a NULL org column, means "not quoted"
+// (review finding F1, 2026-09-26; docs/pricing.md).
 func (p OrgPrice) overlay(base Pricing) Pricing {
+	out := p.overlayQuotedRates(base)
+	if p.Set.LongContextThreshold {
+		out.LongContextThreshold = p.LongContextThreshold
+	}
+	if p.Set.Peak {
+		if p.Peak == nil || len(p.Peak.Schedule.Windows) == 0 {
+			out.Peak = nil // quoted flat: no time-of-day premium
+		} else {
+			out.Peak = p.Peak
+		}
+	}
+	return out
+}
+
+// overlayQuotedRates folds ONLY the Set-gated scalar fields onto base: "a
+// quoted value wins, even at zero; an unquoted one falls through".
+func (p OrgPrice) overlayQuotedRates(base Pricing) Pricing {
 	out := base
 	for _, f := range []struct {
 		set bool
@@ -119,23 +175,12 @@ func (p OrgPrice) overlay(base Pricing) Pricing {
 		{p.Set.LongContextCacheCreation, &out.LongContextCacheCreation, p.LongContextCacheCreation},
 		{p.Set.LongContextCacheCreation1h, &out.LongContextCacheCreation1h, p.LongContextCacheCreation1h},
 		{p.Set.WebSearchPerRequest, &out.WebSearchPerRequest, p.WebSearchPerRequest},
+		{p.Set.FastMultiplier, &out.FastMultiplier, p.FastMultiplier},
 	} {
 		if f.set {
 			*f.dst = f.src
 		}
 	}
-	out.LongContextThreshold = p.LongContextThreshold
-	// Peak is a WHOLESALE REPLACE, unconditional, mirroring the
-	// LongContextThreshold precedent above — never an org.Set-gated field
-	// like the scalar rates. There is deliberately no OrgPriceSet.Peak bool:
-	// "nil inherits the seed's peak" sounds like the safe default but is
-	// backwards here. An org that negotiates a model's base rate almost
-	// always negotiates it FLAT (no time-of-day premium); if a nil org.Peak
-	// inherited the seed's peak variant, that negotiated flat rate would
-	// silently double during the seed's peak window — a rebill the org never
-	// agreed to. So a quoted org row REPLACES the seed's peak with whatever
-	// the org row carries, including nil (no peak at all). Plan §R2 R1/N2.
-	out.Peak = p.Peak
 	return out
 }
 
@@ -158,6 +203,7 @@ func (p OrgPrice) negativeQuotedRate() bool {
 		{p.Set.LongContextCacheCreation, p.LongContextCacheCreation},
 		{p.Set.LongContextCacheCreation1h, p.LongContextCacheCreation1h},
 		{p.Set.WebSearchPerRequest, p.WebSearchPerRequest},
+		{p.Set.FastMultiplier, p.FastMultiplier},
 	} {
 		if f.set && f.value < 0 {
 			return true
@@ -312,29 +358,56 @@ func (e *Engine) HasOrgPricing() bool {
 
 // composeOrgRows folds an applied document onto a table built from seed +
 // local, honouring the tenancy ladder, and returns the keys the ORG owns in
-// the result plus one warning per refused row.
+// the result, the dated timelines built from rows that carried a history, and
+// one warning per refused row or period.
 //
 // It takes the LOCAL override key set rather than re-deriving it because
 // ownership is not "did the org have a row" but "did the org's row WIN", and
 // on an individual node it does not win where the developer authored one.
-func composeOrgRows(t *Table, doc *OrgRows, localKeys map[string]bool, at time.Time) (orgOwned map[string]bool, warnings []string) {
+func composeOrgRows(t *Table, doc *OrgRows, localKeys map[string]bool, at time.Time) (orgOwned map[string]bool, timelines map[string][]DatedPricing, warnings []string) {
 	orgOwned = map[string]bool{}
+	timelines = map[string][]DatedPricing{}
 	if doc == nil || len(doc.Rows) == 0 {
-		return orgOwned, nil
+		return orgOwned, timelines, nil
 	}
-	effective, warnings := flattenOrgRows(doc.Rows, at)
+	effective, dated, warnings := flattenOrgRows(doc.Rows, at)
 	if len(effective) == 0 {
-		return orgOwned, warnings
+		return orgOwned, timelines, warnings
 	}
 
 	apply := map[string]Pricing{}
-	for key, p := range effective {
+	keys := make([]string, 0, len(effective))
+	for key := range effective {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		p := effective[key]
 		// On an individual node the developer's explicit override wins, so
 		// the org's row is not applied at all for that key — and, crucially,
 		// the key is not marked org-owned either. Reporting it as "org" while
 		// serving the developer's number would be the surface lying about
 		// whose rate is in force.
 		if !doc.Authoritative && localKeys[key] {
+			continue
+		}
+		// A row that carries a price HISTORY prices every instant from the
+		// period in force then; its flat rate is the period in force now. A
+		// row WITHOUT one is still a timeline when it is DATED: its own
+		// effective_from is where its rate begins, and before that instant
+		// the key prices at whatever would apply without the row - the seed's
+		// dated history or flat rate, else nothing (a miss, never $0). Only an
+		// UNDATED row ("since forever") is applied flat across all of history
+		// (review finding 1 on PRICE-REPRICE-1: a single dated org row used to
+		// reach back before its own date, at capture and on a re-price).
+		tl, hw := orgTimeline(t, key, historyOf(p, dated[key]))
+		warnings = append(warnings, hw...)
+		if tl != nil {
+			apply[key] = currentOf(tl, at)
+			if len(tl) > 1 {
+				timelines[key] = tl
+			}
+			orgOwned[key] = true
 			continue
 		}
 		// The base is what this node would have priced the model at WITHOUT
@@ -347,7 +420,151 @@ func composeOrgRows(t *Table, doc *OrgRows, localKeys map[string]bool, at time.T
 		orgOwned[key] = true
 	}
 	t.Merge(apply)
-	return orgOwned, warnings
+	sort.Strings(warnings)
+	return orgOwned, timelines, warnings
+}
+
+// historyOf is the dated statement a document makes about one model: the
+// in-force row's own History when it carries two or more periods, else every
+// usable row the document holds for the key (normally just the in-force row -
+// the server flattens - but a document that lists several dated rows for one
+// model states that model's history as surely as a History field does).
+// orgTimeline decides whether that is a timeline at all (a single undated
+// period is not).
+func historyOf(p OrgPrice, docRows []OrgPrice) []OrgPrice {
+	if len(p.History) >= 2 {
+		return p.History
+	}
+	if len(docRows) == 0 {
+		docRows = []OrgPrice{p}
+	}
+	out := make([]OrgPrice, 0, len(docRows))
+	for _, r := range docRows {
+		r.History = nil
+		out = append(out, r)
+	}
+	return out
+}
+
+// orgTimeline builds the dated timeline a row's HISTORY implies for `key`, or
+// nil when the history holds no usable period, or only one that starts "since
+// forever" (the caller then applies the row flat, exactly as before histories
+// existed). A single DATED period is a timeline: the seed before its start,
+// the period from it on.
+//
+// THE RULE, per instant: the period in force then, overlaid (presence
+// semantics, [OrgPrice.overlay]) on what the SEED priced the key at then. The
+// seed is consulted at its own boundaries too, so the timeline's boundaries are
+// the union of the history's and the seed's: a dimension no period quotes (the
+// org rail cannot state a fast multiplier, say) keeps the seed's value for that
+// instant rather than today's. Before the history's first period the seed
+// alone prices - the source said nothing about that time. Consecutive equal
+// periods collapse into one.
+//
+// A period that cannot be a price (no model-level rate, a negative rate, an
+// unreadable start) is REPORTED and skipped, the flattenOrgRows rule; two
+// periods at one instant keep the later one in the document and are reported.
+func orgTimeline(t *Table, key string, history []OrgPrice) ([]DatedPricing, []string) {
+	if len(history) == 0 {
+		return nil, nil
+	}
+	type period struct {
+		start time.Time
+		price OrgPrice
+	}
+	var (
+		periods  []period
+		warnings []string
+	)
+	for i, h := range history {
+		why := ""
+		switch {
+		case h.negativeQuotedRate():
+			why = "a rate is negative"
+		case !h.Set.Input && !h.Set.Output:
+			why = "it quotes neither an input nor an output rate"
+		}
+		start, ok := parseOrgEffectiveFrom(h.EffectiveFrom)
+		if !ok {
+			why = "effective_from " + h.EffectiveFrom + " is not a date this node understands"
+		}
+		if why != "" {
+			warnings = append(warnings, fmt.Sprintf("price history for %q: period %d ignored: %s", key, i, why))
+			continue
+		}
+		periods = append(periods, period{start: start, price: h})
+	}
+	sort.SliceStable(periods, func(i, j int) bool { return periods[i].start.Before(periods[j].start) })
+	deduped := periods[:0]
+	for _, p := range periods {
+		if n := len(deduped); n > 0 && deduped[n-1].start.Equal(p.start) {
+			warnings = append(warnings, fmt.Sprintf("price history for %q: two periods start at %s; the later one in the document is used", key, p.start.Format(time.RFC3339)))
+			deduped[n-1] = p
+			continue
+		}
+		deduped = append(deduped, p)
+	}
+	periods = deduped
+	if len(periods) == 0 || (len(periods) == 1 && periods[0].start.IsZero()) {
+		return nil, warnings
+	}
+
+	// The seed the history is laid over: the key the ladder resolves to (an
+	// exact row, a family row, ...), its flat rate and its own timeline.
+	var (
+		seedFlat  Pricing
+		seedTL    []DatedPricing
+		seedFound bool
+	)
+	if rk, ok := t.ResolveModelKey(key); ok {
+		seedFlat = t.exact[rk]
+		seedTL = t.dated[rk]
+		seedFound = true
+	}
+	// seedAt is the seed's period at b. An Unpriced seed period (no rate in
+	// force) stays unpriced unless a history period overlays it, and a key the
+	// seed never priced is Unpriced at every instant no period covers: a miss,
+	// never an all-zero rate set a capture path would stamp as $0.
+	seedAt := func(b time.Time) DatedPricing {
+		if i := inForceIndex(seedTL, b); i >= 0 {
+			return seedTL[i]
+		}
+		return DatedPricing{Pricing: seedFlat, Unpriced: !seedFound}
+	}
+
+	bounds := []time.Time{{}}
+	for _, p := range periods {
+		bounds = append(bounds, p.start)
+	}
+	for _, e := range seedTL {
+		bounds = append(bounds, e.EffectiveFrom)
+	}
+	sort.Slice(bounds, func(i, j int) bool { return bounds[i].Before(bounds[j]) })
+
+	var out []DatedPricing
+	for i, b := range bounds {
+		if i > 0 && b.Equal(bounds[i-1]) {
+			continue
+		}
+		seed := seedAt(b)
+		entry := DatedPricing{EffectiveFrom: b.UTC(), Pricing: seed.Pricing, Unpriced: seed.Unpriced}
+		pi := -1
+		for j, p := range periods {
+			if p.start.After(b) {
+				break
+			}
+			pi = j
+		}
+		if pi >= 0 {
+			entry.Pricing = periods[pi].price.overlay(seed.Pricing)
+			entry.Unpriced = false
+		}
+		if n := len(out); n > 0 && out[n-1].Pricing == entry.Pricing && out[n-1].Unpriced == entry.Unpriced {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, warnings
 }
 
 // flattenOrgRows resolves the dated timeline to ONE rate per model at `at`,
@@ -370,12 +587,17 @@ func composeOrgRows(t *Table, doc *OrgRows, localKeys map[string]bool, at time.T
 // The server validates all three at the write path; this is the node refusing
 // to trust that a document it received is well-formed, which is the correct
 // posture for anything that crossed a wire.
-func flattenOrgRows(rows []OrgPrice, at time.Time) (map[string]OrgPrice, []string) {
+//
+// It also returns every usable row per key, in document order, whatever its
+// start (a row not yet in force included): the key's history as the document
+// states it, which composeOrgRows turns into a dated timeline.
+func flattenOrgRows(rows []OrgPrice, at time.Time) (map[string]OrgPrice, map[string][]OrgPrice, []string) {
 	type candidate struct {
 		start time.Time
 		price OrgPrice
 	}
 	best := map[string]candidate{}
+	usable := map[string][]OrgPrice{}
 	var warnings []string
 	refuse := func(model, why string) {
 		if model == "" {
@@ -402,6 +624,7 @@ func flattenOrgRows(rows []OrgPrice, at time.Time) (map[string]OrgPrice, []strin
 			refuse(r.Model, "effective_from "+r.EffectiveFrom+" is not a date this node understands")
 			continue
 		}
+		usable[key] = append(usable[key], r)
 		if start.After(at) {
 			// Not yet in force. Not a refusal — an admin landing next
 			// quarter's rates today is the feature, not a mistake — so no
@@ -419,7 +642,7 @@ func flattenOrgRows(rows []OrgPrice, at time.Time) (map[string]OrgPrice, []strin
 		out[key] = c.price
 	}
 	sort.Strings(warnings)
-	return out, warnings
+	return out, usable, warnings
 }
 
 // parseOrgEffectiveFrom mirrors the server's ParseEffectiveFrom: "" is the

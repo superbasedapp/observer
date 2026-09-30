@@ -43,7 +43,7 @@ import {
   wrapSummary,
 } from "@/lib/guiLaunch";
 import { pushToast } from "@/components/Toast";
-import { ComboChip, Tooltip, TooltipSpan, type ComboOption } from "@/components/primitives";
+import { ComboChip, type ComboOption, Modal, Tooltip, TooltipSpan } from "@/components/primitives";
 
 // Sentinel <select> value for the "type a path by hand" escape hatch. A NUL
 // byte can never be a real project root, so it can't collide with one. The NUL
@@ -912,661 +912,21 @@ export function NewTerminalDialog({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-[85] flex items-center justify-center bg-black/50 p-6"
-      role="dialog"
-      aria-modal="true"
-      aria-label="New terminal"
-      onClick={onClose}
-    >
-      <div
-        className="w-[440px] max-w-[95vw] rounded-2 border bg-bg-1 p-4 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-fg-1">New terminal</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-2 px-2 py-0.5 text-[11px] text-fg-3 hover:bg-white/10 hover:text-fg-1"
-          >
-            ✕
-          </button>
-        </div>
-        <p className="mb-3 text-[11px] leading-relaxed text-fg-3">
-          Start a fresh agent in the embedded terminal. The operator must enable
-          this in <code className="font-mono">[terminal.launch]</code> and
-          allow-list the tool and project root - otherwise the launch is
-          refused.
-        </p>
-
-        {remoteBlocked && (
-          <div className="mb-3 rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] text-warn">
-            {REMOTE_TERMINAL_OFF_MSG}
-          </div>
-        )}
-
-        {resumedAfterInstall && (
-          <div className="mb-3 rounded-2 border border-ok/40 bg-ok/10 px-2 py-1.5 text-[11px] text-ok">
-            Installer terminal finished. Your adapter, project, model, and sandbox choices were preserved;
-            the availability check below has been refreshed.
-          </div>
-        )}
-
-        {/* Read-only: GUI apps this daemon has launched (gui_runs, T2.3).
-            There is no PTY behind a GUI run — nothing here is resumable or
-            attachable, it's purely "what's already running" context so a
-            second launch of the same app isn't a surprise. */}
-        {guiRuns.length > 0 && (
-          <div className="mb-3 rounded-2 border border-line-2 bg-bg-2 px-2 py-1.5 text-[10.5px] leading-relaxed text-fg-3">
-            <div className="mb-1 font-medium text-fg-2">GUI apps launched this session</div>
-            <ul className="space-y-0.5">
-              {guiRuns.map((r) => (
-                <li key={r.run_id} className="flex items-center justify-between gap-2">
-                  <span className="truncate">
-                    {r.label}
-                    {r.notes && r.notes.length > 0 ? ` — ${r.notes.join("; ")}` : ""}
-                  </span>
-                  <span className="shrink-0 font-mono">
-                    {r.exited ? `exited (${r.exit_code})` : `pid ${r.pid}`}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {showSystemPicker && (
-          <>
-            <label
-              htmlFor="new-terminal-system"
-              className="mb-1 block text-[11px] font-medium text-fg-2"
-            >
-              System
-            </label>
-            <select
-              id="new-terminal-system"
-              value={sshProfile}
-              disabled={sshSystemDisabled}
-              title={sshSystemReason ?? undefined}
-              onChange={(e) => setSshProfile(e.target.value)}
-              className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
-            >
-              <option value={LOCAL_SYSTEM} title="Run on the machine SuperBased is running on">
-                This machine (local)
-              </option>
-              {/* Systems come from [[terminal.ssh.profiles]] in the operator's
-                  own config. This picker SELECTS among them; it can never add
-                  one — that is the feature's core safety property. */}
-              {sshProfiles.map((p) => (
-                <option key={p.name} value={p.name} title={p.target}>
-                  {p.label} - {p.target}
-                </option>
-              ))}
-            </select>
-            {sshSystemReason && (
-              <p className="mb-3 mt-1 text-[10.5px] leading-relaxed text-fg-3">
-                {sshSystemReason}
-              </p>
-            )}
-            {!sshSystemReason && <div className="mb-3" />}
-          </>
-        )}
-
-        {sshMode && selectedSSH && (
-          <div className="mb-3 rounded-2 border border-accent/40 bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-fg-2">
-            Opens an SSH shell on{" "}
-            <code className="font-mono">{selectedSSH.target}</code>
-            {selectedSSH.jump ? (
-              <>
-                {" "}via <code className="font-mono">{selectedSSH.jump}</code>
-              </>
-            ) : null}
-            {selectedSSH.has_key && selectedSSH.key_hint ? (
-              <>
-                {" "}using key <code className="font-mono">{selectedSSH.key_hint}</code>
-              </>
-            ) : null}
-            . If the host key is unknown, or a passphrase is needed, SuperBased
-            does not answer for you - <strong>ssh asks in the terminal</strong> and
-            you answer there. Sessions on this system are not captured here; the
-            remote host's own SuperBased install owns that.
-          </div>
-        )}
-
-        <label className="mb-1 block text-[11px] font-medium text-fg-2">
-          Tool
-        </label>
-        <select
-          disabled={sshMode}
-          title={sshMode ? SSH_NA_MSG : undefined}
-          value={tool}
-          onChange={(e) => {
-            setTool(e.target.value);
-          }}
-          className="mb-3 w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
-        >
-          {tools.length === 0 && (
-            <option value="">
-              {toolsError
-                ? "couldn't load the launchable tools"
-                : "no launchable tools"}
-            </option>
-          )}
-          {/* Native <option> — title= stays (a React tooltip can't render inside
-              the browser-owned select popup), the same convention as the Shell
-              option below and the project-root list above. The annotation comes
-              from the SERVER's two allow-lists (DI-06), so this branches on the
-              reported capability, never on the tool's name.
-              Every AI-tool option stays SELECTABLE — unlike Shell below, whose
-              disabled state is correct because there is nothing to preflight or
-              install behind it. Disabling a non-allow-listed tool here would
-              make the guided install unreachable on precisely the fresh install
-              that needs it: allowed_tools defaults to EMPTY (deny-all) while
-              POST /api/terminal/install is ungated by it on purpose (DI-21). The
-              allow-list blocks START instead (launchBlockedFor). */}
-          {toolAnnotations.map((a) => (
-            <option key={a.tool} value={a.tool} title={a.title ?? undefined}>
-              {a.tool}
-              {a.labelSuffix}
-            </option>
-          ))}
-          {/* IDE / desktop-app rows (T2.3, plan §2.4). A visually separated
-              group, not a merge into the AI-tool list above: these carry
-              install + launch only (no resume/continue/attach/model/sandbox
-              — see the `gui` predicate below). `adapter === ""` is a HOST row
-              (an editor with no adapter of its own, e.g. vscode) — it shows
-              which AI-tool adapters run inside it (`hosts`) instead of a
-              watched pill, since a host has no capture of its own to watch. */}
-          {guiLaunchables.length > 0 && (
-            <optgroup label="IDE / desktop app">
-              {guiLaunchables.map((r) => {
-                const badge = r.surface === "ide" ? "IDE" : "Desktop";
-                const isHost = r.adapter === "";
-                const notAllowedSuffix = !r.allowed ? " · not allow-listed" : "";
-                const notWatchedSuffix =
-                  !isHost && r.allowed && !r.watched ? " · not watched" : "";
-                const hostsSuffix =
-                  isHost && r.hosts.length > 0 ? ` · hosts: ${r.hosts.join(", ")}` : "";
-                const title = !r.allowed
-                  ? toolNotAllowedReason(r.id)
-                  : !isHost && !r.watched
-                    ? TOOL_NOT_WATCHED_MSG
-                    : r.note || undefined;
-                return (
-                  <option key={r.id} value={r.id} title={title}>
-                    {r.label} [{badge}]
-                    {notAllowedSuffix}
-                    {notWatchedSuffix}
-                    {hostsSuffix}
-                  </option>
-                );
-              })}
-            </optgroup>
-          )}
-          {/* Native <option> - title= stays (React tooltip can't render inside
-              the browser-owned select popup). Shell is a reserved pseudo-tool,
-              never a member of `tools` (the capability registry) - gated by
-              its own SEPARATE [terminal.launch].allow_shell opt-in instead of
-              the AI-tool allow-list. */}
-          <option
-            value={SHELL_TOOL}
-            disabled={!shellEnabled}
-            title={
-              shellEnabled
-                ? "Start a plain shell ($SHELL, or bash/sh as a fallback) - no AI tool involved."
-                : "Not enabled - turn on [terminal.launch].allow_shell in Terminals → launch policy"
-            }
-          >
-            Shell {shellEnabled ? "" : "(disabled)"}
-          </option>
-        </select>
-
-        {/* DI-05: the picker's source route failed. Say so instead of letting
-            the empty dropdown imply the daemon has no launchable tools. */}
-        {toolsError && (
-          <p className="-mt-2 mb-3 rounded-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[10.5px] leading-relaxed text-danger">
-            Couldn't load the launchable tools: {toolsError} — the tool list,
-            project-root allow-list and Shell option are all unknown until this
-            request succeeds. Reopen this dialog to retry.
-          </p>
-        )}
-
-        {/* DI-06: the two independent allow-lists behind the picker, made
-            visible up front instead of learned from a post-Start 403. The
-            per-option title carries the specific reason; this line carries the
-            counts and the fix. */}
-        {!sshMode && pickerLegendText && (
-          <p className="-mt-2 mb-3 text-[10.5px] leading-relaxed text-fg-3">
-            {pickerLegendText}{" "}
-            {/* SPA navigation (Link, not a bare <a>) so the Terminals page's
-                hash effect can select the Settings tab and scroll to the card.
-                The dialog closes on the way out — leaving a modal floating over
-                the page the operator was just sent to read would defeat it. */}
-            <Link
-              to="/terminals#launch-policy"
-              onClick={onClose}
-              className="underline decoration-dotted underline-offset-2 hover:text-fg-1"
-            >
-              Open the launch policy
-            </Link>
-            .
-          </p>
-        )}
-
-        {/* The selected tool's own caveat, spelled out rather than left to a
-            hover on a native <option> the browser may never show. The disallowed
-            case is what disables Start (see launchBlockedFor) — the availability
-            strip and its Install button below stay fully live. */}
-        {!sshMode && selectedAnnotation && !selectedAnnotation.allowed && (
-          <p className="-mt-2 mb-3 rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[10.5px] leading-relaxed text-warn">
-            {toolNotAllowedReason(tool)}{" "}
-            <Link
-              to="/terminals#launch-policy"
-              onClick={onClose}
-              className="underline decoration-dotted underline-offset-2 hover:text-fg-1"
-            >
-              Open the launch policy
-            </Link>
-            .
-          </p>
-        )}
-        {!sshMode && selectedAnnotation && selectedAnnotation.allowed && !selectedAnnotation.watched && (
-          <p className="-mt-2 mb-3 text-[10.5px] leading-relaxed text-fg-3">
-            {tool} is {TOOL_NOT_WATCHED_MSG}. It will launch normally.
-          </p>
-        )}
-
-        {/* The selected GUI row's own gating caveat — mirrors the AI-tool
-            blocks above (selectedAnnotation is always null for a GUI id, so
-            those never fire here) using the SAME allow-list/preflight copy
-            via guiLaunchDisabledReason, so a "not allowed" or "not
-            installed" GUI row reads exactly like its terminal counterpart. */}
-        {!sshMode && gui && selectedGUIRow && guiLaunchDisabledReason(selectedGUIRow, preflight, selectedGUIRow.allowed) && (
-          <p className="-mt-2 mb-3 rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[10.5px] leading-relaxed text-warn">
-            {guiLaunchDisabledReason(selectedGUIRow, preflight, selectedGUIRow.allowed)}{" "}
-            {!selectedGUIRow.allowed && (
-              <Link
-                to="/terminals#launch-policy"
-                onClick={onClose}
-                className="underline decoration-dotted underline-offset-2 hover:text-fg-1"
-              >
-                Open the launch policy
-              </Link>
-            )}
-          </p>
-        )}
-        {!sshMode && gui && selectedGUIRow && selectedGUIRow.allowed && selectedGUIRow.adapter !== "" && !selectedGUIRow.watched && (
-          <p className="-mt-2 mb-3 text-[10.5px] leading-relaxed text-fg-3">
-            {selectedGUIRow.label} is {TOOL_NOT_WATCHED_MSG}. It will launch normally.
-          </p>
-        )}
-
-        {!sshMode && !gui && toolModels && toolModels.supported && toolModels.models.length > 0 && (
-          <>
-            <label
-              htmlFor="new-terminal-model"
-              className="mb-1 block text-[11px] font-medium text-fg-2"
-            >
-              Model <span className="text-fg-3">(optional)</span>
-            </label>
-            <select
-              id="new-terminal-model"
-              value={modelSel}
-              onChange={(e) => setModelSel(e.target.value)}
-              className="mb-3 w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
-            >
-              <option value="" title={`Let ${tool} choose its own default model`}>
-                Tool default
-              </option>
-              {toolModels.models.map((m) => (
-                <option key={m.model} value={m.model} title={m.model}>
-                  {m.model}
-                  {m.source === "history" && m.count
-                    ? ` (${m.count.toLocaleString()} uses)`
-                    : ""}
-                </option>
-              ))}
-            </select>
-          </>
-        )}
-
-        {sshMode ? (
-          <p className="mb-3 rounded-2 border border-border/60 bg-bg-0 px-2 py-1.5 text-[11px] leading-relaxed text-fg-3">
-            <span className="font-medium text-fg-2">Project root, model, sandbox</span>
-            {" - "}
-            {SSH_NA_MSG}
-          </p>
-        ) : gui ? (
-          <>
-            {/* GUI scope is install + launch only (plan §0.1): no resume, no
-                continue, no attach, no model picker, no sandbox. The
-                project-root control is the ONE exception, and only when the
-                app actually takes a positional directory argument
-                (project_dir_argv) — reused verbatim from the terminal path
-                below so a permitted-folder pick behaves identically. */}
-            {selectedGUIRow?.project_dir_argv ? (
-              <>
-                <label className="mb-1 block text-[11px] font-medium text-fg-2">
-                  Project root <span className="text-fg-3">(optional)</span>
-                </label>
-                <ComboChip
-                  value={rootSel}
-                  onChange={setRootSel}
-                  options={rootOptions}
-                  label="Folder"
-                  fullWidth
-                  popoverWidth={396}
-                  placeholder="Search permitted folders…"
-                  emptyHint="No folders match. Try “Custom path…” or add a root in Terminals → Settings → Folder Selection."
-                  buttonValueRender={(sel) => (
-                    <span className="min-w-0 flex-1 truncate text-left font-semibold text-fg-0">
-                      {sel?.label ?? "Agent's default directory (where SuperBased runs)"}
-                    </span>
-                  )}
-                />
-                {noAllowList && projects.length > 0 && (
-                  <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">
-                    No project roots are allow-listed, so only the agent's
-                    default directory can launch — that's the SuperBased
-                    daemon's own working directory (where{" "}
-                    <code className="font-mono">observer start</code> ran).
-                    Add roots under{" "}
-                    <code className="font-mono">
-                      [terminal.launch].allowed_project_roots
-                    </code>{" "}
-                    on the Terminals page (launch policy) to enable them.
-                  </p>
-                )}
-                {rootSel === CUSTOM_ROOT ? (
-                  <input
-                    type="text"
-                    value={customRoot}
-                    onChange={(e) => setCustomRoot(e.target.value)}
-                    autoFocus
-                    placeholder="/abs/path/to/project (must be allow-listed)"
-                    className="mt-2 w-full rounded-2 border bg-bg-0 px-2 py-1.5 font-mono text-[12px] text-fg-1"
-                  />
-                ) : rootSel ? (
-                  <Tooltip content={rootSel}>
-                    <div className="mt-1 break-all font-mono text-[10.5px] text-fg-3">
-                      {rootSel}
-                    </div>
-                  </Tooltip>
-                ) : null}
-                <div className="mb-3" />
-              </>
-            ) : (
-              <p className="mb-3 rounded-2 border border-border/60 bg-bg-0 px-2 py-1.5 text-[11px] leading-relaxed text-fg-3">
-                Launched without a project directory — this app takes none.
-              </p>
-            )}
-            {selectedGUIRow && (
-              <div className="mb-3 rounded-2 border border-line-2 bg-bg-2 px-2 py-1.5 text-[11px] leading-relaxed text-fg-3">
-                <div>{wrapSummary(selectedGUIRow)}</div>
-                {selectedGUIRow.note && <div className="mt-1">{selectedGUIRow.note}</div>}
-              </div>
-            )}
-          </>
-        ) : (
+    <Modal
+      open
+      onClose={onClose}
+      title="New terminal"
+      width={440}
+      // Above the launch dock (z-80): the dialog opens from it.
+      zIndex={85}
+      dismissible={!busy}
+      bodyClassName="p-4"
+      footer={
         <>
-        <label className="mb-1 block text-[11px] font-medium text-fg-2">
-          Project root <span className="text-fg-3">(optional)</span>
-        </label>
-        <ComboChip
-          value={rootSel}
-          onChange={setRootSel}
-          options={rootOptions}
-          label="Folder"
-          fullWidth
-          popoverWidth={396}
-          placeholder="Search permitted folders…"
-          emptyHint="No folders match. Try “Custom path…” or add a root in Terminals → Settings → Folder Selection."
-          buttonValueRender={(sel) => (
-            <span className="min-w-0 flex-1 truncate text-left font-semibold text-fg-0">
-              {sel?.label ?? "Agent's default directory (where SuperBased runs)"}
-            </span>
-          )}
-        />
-        {noAllowList && projects.length > 0 && (
-          <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">
-            No project roots are allow-listed, so only the agent's default
-            directory can launch - that's the SuperBased daemon's own working
-            directory (where <code className="font-mono">observer start</code> ran).
-            Add roots under{" "}
-            <code className="font-mono">[terminal.launch].allowed_project_roots</code>{" "}
-            on the Terminals page (launch policy) to enable them.
-          </p>
-        )}
-        {rootSel === CUSTOM_ROOT ? (
-          <input
-            type="text"
-            value={customRoot}
-            onChange={(e) => setCustomRoot(e.target.value)}
-            autoFocus
-            placeholder="/abs/path/to/project (must be allow-listed)"
-            className="mt-2 w-full rounded-2 border bg-bg-0 px-2 py-1.5 font-mono text-[12px] text-fg-1"
-          />
-        ) : rootSel ? (
-          <Tooltip content={rootSel}>
-            <div className="mt-1 break-all font-mono text-[10.5px] text-fg-3">
-              {rootSel}
-            </div>
-          </Tooltip>
-        ) : null}
-        {rootSel === CUSTOM_ROOT && (
-          <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">
-            Windows paths (<code className="font-mono">C:\Users\…</code>) are
-            accepted and translated to their WSL{" "}
-            <code className="font-mono">/mnt/c/…</code> form.
-          </p>
-        )}
-        <div className="mb-3" />
-
-        <label className="mb-1 flex items-start gap-2">
-          <input
-            type="checkbox"
-            checked={sandboxOn}
-            disabled={sandboxCheckboxDisabled}
-            title={sandboxReason ?? undefined}
-            onChange={(e) => setSandboxOn(e.target.checked)}
-            className="mt-0.5"
-          />
-          <span>
-            <span className="font-medium text-fg-1">Run in sandbox</span>
-            <span className="block text-[11px] text-fg-3">
-              {sandboxReason ??
-                "Launch inside a bubblewrap sandbox with an isolated $HOME - the agent can't read or write your real home directory or other projects."}
-            </span>
-          </span>
-        </label>
-
-        {sandboxOn && !sandboxCheckboxDisabled && (
-          <div className="mb-3 mt-2 rounded-2 border border-line-2 bg-bg-2 p-2">
-            <label
-              htmlFor="new-terminal-sandbox-source"
-              className="mb-1 block text-[11px] font-medium text-fg-2"
-            >
-              Workspace
-            </label>
-            <select
-              id="new-terminal-sandbox-source"
-              value={workspaceSource}
-              onChange={(e) => setWorkspaceSource(e.target.value)}
-              className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
-            >
-              {(sandboxProbe?.sources ?? []).map((s) => (
-                // Native <option> - title= stays (React tooltip can't render
-                // inside the browser-owned select popup), same convention as
-                // the project-root optgroups above.
-                <option
-                  key={s.id}
-                  value={s.id}
-                  disabled={!s.available}
-                  title={
-                    s.available
-                      ? SANDBOX_SOURCE_LABELS[s.id] ?? s.id
-                      : s.reason || "not available"
-                  }
-                >
-                  {SANDBOX_SOURCE_LABELS[s.id] ?? s.id}
-                  {s.available ? "" : " (unavailable)"}
-                </option>
-              ))}
-            </select>
-            {sandboxSourceUnavailable && (
-              <p className="mt-1 text-[10.5px] leading-relaxed text-warn">
-                {selectedSourceAvail?.reason || "This workspace source isn't available."}
-              </p>
-            )}
-            {workspaceSource === "clone-remote" && (
-              <>
-                <label
-                  htmlFor="new-terminal-sandbox-remote"
-                  className="mb-1 mt-2 block text-[11px] font-medium text-fg-2"
-                >
-                  Remote URL
-                </label>
-                <input
-                  id="new-terminal-sandbox-remote"
-                  type="text"
-                  value={workspaceRemote}
-                  onChange={(e) => setWorkspaceRemote(e.target.value)}
-                  placeholder="https://github.com/org/repo.git"
-                  className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 font-mono text-[12px] text-fg-1"
-                />
-                <label
-                  htmlFor="new-terminal-sandbox-branch"
-                  className="mb-1 mt-2 block text-[11px] font-medium text-fg-2"
-                >
-                  Branch <span className="text-fg-3">(optional)</span>
-                </label>
-                <input
-                  id="new-terminal-sandbox-branch"
-                  type="text"
-                  value={workspaceBranch}
-                  onChange={(e) => setWorkspaceBranch(e.target.value)}
-                  placeholder="main"
-                  className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 font-mono text-[12px] text-fg-1"
-                />
-                {sandboxRemoteURLMissing && (
-                  <p className="mt-1 text-[10.5px] leading-relaxed text-warn">
-                    Enter a remote URL - the daemon will run `git clone` with your
-                    ambient auth into a managed workspace.
-                  </p>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        </>
-        )}
-
-        {/* Tool-availability strip (DI-03 + DI-17). ONE block, one owner for the
-            copy (preflightStripCopy), covering all five verdicts, an
-            unrecognised verdict, and a preflight that could not run at all.
-            Notes render for EVERY verdict — the PATH-shim note arrives on a
-            plain "ok" — and the not-installed branch always offers a next step:
-            the runnable command, or the grounded reason there isn't one. */}
-        {!sshMode &&
-          tool &&
-          tool !== SHELL_TOOL &&
-          (preflightState === "error" || (strip !== null && strip.render)) && (
-            <div className="mb-3 space-y-2">
-              {preflightState === "error" && (
-                <div className="rounded-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] leading-relaxed text-danger">
-                  {preflightErrorCopy(tool, preflightErr)}
-                </div>
-              )}
-
-              {strip !== null && strip.render && (
-                <div
-                  className={
-                    strip.tone === "warn"
-                      ? "rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] leading-relaxed text-warn"
-                      : "rounded-2 border border-fg-3/30 bg-white/5 px-2 py-1.5 text-[11px] leading-relaxed text-fg-3"
-                  }
-                >
-                  <div>{strip.headline}</div>
-
-                  {/* All notes, each on its own line. Capped for height, with an
-                      honest "+N more" expander — never a silent truncation. */}
-                  {(notesExpanded
-                    ? strip.notes
-                    : strip.notes.slice(0, PREFLIGHT_NOTE_CAP)
-                  ).map((n, i) => (
-                    <div key={i} className="mt-1">
-                      {n}
-                    </div>
-                  ))}
-                  {!notesExpanded && strip.notes.length > PREFLIGHT_NOTE_CAP && (
-                    <button
-                      type="button"
-                      onClick={() => setNotesExpanded(true)}
-                      aria-label={`Show ${strip.notes.length - PREFLIGHT_NOTE_CAP} more availability notes`}
-                      className="mt-1 underline decoration-dotted underline-offset-2 hover:text-fg-1"
-                    >
-                      +{strip.notes.length - PREFLIGHT_NOTE_CAP} more
-                    </button>
-                  )}
-
-                  {strip.blocking && preflight && (
-                    <>
-                      {preflight.install_command && (
-                        <>
-                          <div className="mt-1.5 text-fg-3">Install it with:</div>
-                          <code className="mt-1 block break-all rounded-2 bg-bg-0 px-2 py-1 font-mono text-[10.5px] text-fg-1">
-                            {preflight.install_command}
-                          </code>
-                        </>
-                      )}
-                      {/* DI-03: no runnable command — say WHY, so this branch
-                          never dead-ends on "X is not installed." alone. */}
-                      {installGuidanceFor(preflight) && (
-                        <div className="mt-1.5 text-fg-3">
-                          {installGuidanceFor(preflight)}
-                        </div>
-                      )}
-                      {preflight.can_install && (
-                        <button
-                          type="button"
-                          disabled={installBusy}
-                          onClick={installTool}
-                          className="mt-2 rounded-2 bg-accent px-3 py-1 text-[11px] font-medium text-white disabled:opacity-50"
-                        >
-                          {installBusy ? "Starting install…" : "Install in terminal"}
-                        </button>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-
-              {/* DI-17: re-run the check without changing tool or reopening the
-                  dialog — the fix for "I installed it in another window". */}
-              <button
-                type="button"
-                onClick={() => setRecheckNonce((n) => n + 1)}
-                aria-label={`Re-check whether ${tool} is installed`}
-                className="rounded-2 border px-2 py-0.5 text-[11px] text-fg-2 hover:bg-white/10 hover:text-fg-1"
-              >
-                Re-check
-              </button>
-            </div>
-          )}
-
-        {err && (
-          <div className="mb-3 rounded-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
-            {err}
-          </div>
-        )}
-
-        <div className="flex justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-2 px-3 py-1.5 text-[12px] text-fg-2 hover:bg-white/10"
+            className="rounded-2 px-3 py-1.5 text-[12px] text-fg-2 hover:bg-overlay-1"
           >
             Cancel
           </button>
@@ -1607,7 +967,7 @@ export function NewTerminalDialog({
                     : !tool || remoteBlocked || launchBlockedByVerdict || sandboxBlocksStart)
                 }
                 onClick={submit}
-                className="rounded-2 bg-accent px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-50"
+                className="rounded-2 bg-accent px-3 py-1.5 text-small font-medium text-accent-on disabled:opacity-50"
               >
                 {busy
                   ? "Starting…"
@@ -1625,8 +985,638 @@ export function NewTerminalDialog({
               startBtn
             );
           })()}
+        </>
+      }
+    >
+      <p className="mb-3 text-[11px] leading-relaxed text-fg-3">
+        Start a fresh agent in the embedded terminal. The operator must enable
+        this in <code className="font-mono">[terminal.launch]</code> and
+        allow-list the tool and project root - otherwise the launch is
+        refused.
+      </p>
+
+      {remoteBlocked && (
+        <div className="mb-3 rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] text-warn">
+          {REMOTE_TERMINAL_OFF_MSG}
         </div>
-      </div>
-    </div>
+      )}
+
+      {resumedAfterInstall && (
+        <div className="mb-3 rounded-2 border border-ok/40 bg-ok/10 px-2 py-1.5 text-[11px] text-ok">
+          Installer terminal finished. Your adapter, project, model, and sandbox choices were preserved;
+          the availability check below has been refreshed.
+        </div>
+      )}
+
+      {/* Read-only: GUI apps this daemon has launched (gui_runs, T2.3).
+          There is no PTY behind a GUI run — nothing here is resumable or
+          attachable, it's purely "what's already running" context so a
+          second launch of the same app isn't a surprise. */}
+      {guiRuns.length > 0 && (
+        <div className="mb-3 rounded-2 border border-line-2 bg-bg-2 px-2 py-1.5 text-[10.5px] leading-relaxed text-fg-3">
+          <div className="mb-1 font-medium text-fg-2">GUI apps launched this session</div>
+          <ul className="space-y-0.5">
+            {guiRuns.map((r) => (
+              <li key={r.run_id} className="flex items-center justify-between gap-2">
+                <span className="truncate">
+                  {r.label}
+                  {r.notes && r.notes.length > 0 ? ` — ${r.notes.join("; ")}` : ""}
+                </span>
+                <span className="shrink-0 font-mono">
+                  {r.exited ? `exited (${r.exit_code})` : `pid ${r.pid}`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {showSystemPicker && (
+        <>
+          <label
+            htmlFor="new-terminal-system"
+            className="mb-1 block text-[11px] font-medium text-fg-2"
+          >
+            System
+          </label>
+          <select
+            id="new-terminal-system"
+            value={sshProfile}
+            disabled={sshSystemDisabled}
+            title={sshSystemReason ?? undefined}
+            onChange={(e) => setSshProfile(e.target.value)}
+            className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
+          >
+            <option value={LOCAL_SYSTEM} title="Run on the machine SuperBased is running on">
+              This machine (local)
+            </option>
+            {/* Systems come from [[terminal.ssh.profiles]] in the operator's
+                own config. This picker SELECTS among them; it can never add
+                one — that is the feature's core safety property. */}
+            {sshProfiles.map((p) => (
+              <option key={p.name} value={p.name} title={p.target}>
+                {p.label} - {p.target}
+              </option>
+            ))}
+          </select>
+          {sshSystemReason && (
+            <p className="mb-3 mt-1 text-[10.5px] leading-relaxed text-fg-3">
+              {sshSystemReason}
+            </p>
+          )}
+          {!sshSystemReason && <div className="mb-3" />}
+        </>
+      )}
+
+      {sshMode && selectedSSH && (
+        <div className="mb-3 rounded-2 border border-accent/40 bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-fg-2">
+          Opens an SSH shell on{" "}
+          <code className="font-mono">{selectedSSH.target}</code>
+          {selectedSSH.jump ? (
+            <>
+              {" "}via <code className="font-mono">{selectedSSH.jump}</code>
+            </>
+          ) : null}
+          {selectedSSH.has_key && selectedSSH.key_hint ? (
+            <>
+              {" "}using key <code className="font-mono">{selectedSSH.key_hint}</code>
+            </>
+          ) : null}
+          . If the host key is unknown, or a passphrase is needed, SuperBased
+          does not answer for you - <strong>ssh asks in the terminal</strong> and
+          you answer there. Sessions on this system are not captured here; the
+          remote host's own SuperBased install owns that.
+        </div>
+      )}
+
+      <label className="mb-1 block text-[11px] font-medium text-fg-2">
+        Tool
+      </label>
+      <select
+        disabled={sshMode}
+        title={sshMode ? SSH_NA_MSG : undefined}
+        value={tool}
+        onChange={(e) => {
+          setTool(e.target.value);
+        }}
+        className="mb-3 w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
+      >
+        {tools.length === 0 && (
+          <option value="">
+            {toolsError
+              ? "couldn't load the launchable tools"
+              : "no launchable tools"}
+          </option>
+        )}
+        {/* Native <option> — title= stays (a React tooltip can't render inside
+            the browser-owned select popup), the same convention as the Shell
+            option below and the project-root list above. The annotation comes
+            from the SERVER's two allow-lists (DI-06), so this branches on the
+            reported capability, never on the tool's name.
+            Every AI-tool option stays SELECTABLE — unlike Shell below, whose
+            disabled state is correct because there is nothing to preflight or
+            install behind it. Disabling a non-allow-listed tool here would
+            make the guided install unreachable on precisely the fresh install
+            that needs it: allowed_tools defaults to EMPTY (deny-all) while
+            POST /api/terminal/install is ungated by it on purpose (DI-21). The
+            allow-list blocks START instead (launchBlockedFor). */}
+        {toolAnnotations.map((a) => (
+          <option key={a.tool} value={a.tool} title={a.title ?? undefined}>
+            {a.tool}
+            {a.labelSuffix}
+          </option>
+        ))}
+        {/* IDE / desktop-app rows (T2.3, plan §2.4). A visually separated
+            group, not a merge into the AI-tool list above: these carry
+            install + launch only (no resume/continue/attach/model/sandbox
+            — see the `gui` predicate below). `adapter === ""` is a HOST row
+            (an editor with no adapter of its own, e.g. vscode) — it shows
+            which AI-tool adapters run inside it (`hosts`) instead of a
+            watched pill, since a host has no capture of its own to watch. */}
+        {guiLaunchables.length > 0 && (
+          <optgroup label="IDE / desktop app">
+            {guiLaunchables.map((r) => {
+              const badge = r.surface === "ide" ? "IDE" : "Desktop";
+              const isHost = r.adapter === "";
+              const notAllowedSuffix = !r.allowed ? " · not allow-listed" : "";
+              const notWatchedSuffix =
+                !isHost && r.allowed && !r.watched ? " · not watched" : "";
+              const hostsSuffix =
+                isHost && r.hosts.length > 0 ? ` · hosts: ${r.hosts.join(", ")}` : "";
+              const title = !r.allowed
+                ? toolNotAllowedReason(r.id)
+                : !isHost && !r.watched
+                  ? TOOL_NOT_WATCHED_MSG
+                  : r.note || undefined;
+              return (
+                <option key={r.id} value={r.id} title={title}>
+                  {r.label} [{badge}]
+                  {notAllowedSuffix}
+                  {notWatchedSuffix}
+                  {hostsSuffix}
+                </option>
+              );
+            })}
+          </optgroup>
+        )}
+        {/* Native <option> - title= stays (React tooltip can't render inside
+            the browser-owned select popup). Shell is a reserved pseudo-tool,
+            never a member of `tools` (the capability registry) - gated by
+            its own SEPARATE [terminal.launch].allow_shell opt-in instead of
+            the AI-tool allow-list. */}
+        <option
+          value={SHELL_TOOL}
+          disabled={!shellEnabled}
+          title={
+            shellEnabled
+              ? "Start a plain shell ($SHELL, or bash/sh as a fallback) - no AI tool involved."
+              : "Not enabled - turn on [terminal.launch].allow_shell in Terminals → launch policy"
+          }
+        >
+          Shell {shellEnabled ? "" : "(disabled)"}
+        </option>
+      </select>
+
+      {/* DI-05: the picker's source route failed. Say so instead of letting
+          the empty dropdown imply the daemon has no launchable tools. */}
+      {toolsError && (
+        <p className="-mt-2 mb-3 rounded-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[10.5px] leading-relaxed text-danger">
+          Couldn't load the launchable tools: {toolsError} — the tool list,
+          project-root allow-list and Shell option are all unknown until this
+          request succeeds. Reopen this dialog to retry.
+        </p>
+      )}
+
+      {/* DI-06: the two independent allow-lists behind the picker, made
+          visible up front instead of learned from a post-Start 403. The
+          per-option title carries the specific reason; this line carries the
+          counts and the fix. */}
+      {!sshMode && pickerLegendText && (
+        <p className="-mt-2 mb-3 text-[10.5px] leading-relaxed text-fg-3">
+          {pickerLegendText}{" "}
+          {/* SPA navigation (Link, not a bare <a>) so the Terminals page's
+              hash effect can select the Settings tab and scroll to the card.
+              The dialog closes on the way out — leaving a modal floating over
+              the page the operator was just sent to read would defeat it. */}
+          <Link
+            to="/terminals#launch-policy"
+            onClick={onClose}
+            className="underline decoration-dotted underline-offset-2 hover:text-fg-1"
+          >
+            Open the launch policy
+          </Link>
+          .
+        </p>
+      )}
+
+      {/* The selected tool's own caveat, spelled out rather than left to a
+          hover on a native <option> the browser may never show. The disallowed
+          case is what disables Start (see launchBlockedFor) — the availability
+          strip and its Install button below stay fully live. */}
+      {!sshMode && selectedAnnotation && !selectedAnnotation.allowed && (
+        <p className="-mt-2 mb-3 rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[10.5px] leading-relaxed text-warn">
+          {toolNotAllowedReason(tool)}{" "}
+          <Link
+            to="/terminals#launch-policy"
+            onClick={onClose}
+            className="underline decoration-dotted underline-offset-2 hover:text-fg-1"
+          >
+            Open the launch policy
+          </Link>
+          .
+        </p>
+      )}
+      {!sshMode && selectedAnnotation && selectedAnnotation.allowed && !selectedAnnotation.watched && (
+        <p className="-mt-2 mb-3 text-[10.5px] leading-relaxed text-fg-3">
+          {tool} is {TOOL_NOT_WATCHED_MSG}. It will launch normally.
+        </p>
+      )}
+
+      {/* The selected GUI row's own gating caveat — mirrors the AI-tool
+          blocks above (selectedAnnotation is always null for a GUI id, so
+          those never fire here) using the SAME allow-list/preflight copy
+          via guiLaunchDisabledReason, so a "not allowed" or "not
+          installed" GUI row reads exactly like its terminal counterpart. */}
+      {!sshMode && gui && selectedGUIRow && guiLaunchDisabledReason(selectedGUIRow, preflight, selectedGUIRow.allowed) && (
+        <p className="-mt-2 mb-3 rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[10.5px] leading-relaxed text-warn">
+          {guiLaunchDisabledReason(selectedGUIRow, preflight, selectedGUIRow.allowed)}{" "}
+          {!selectedGUIRow.allowed && (
+            <Link
+              to="/terminals#launch-policy"
+              onClick={onClose}
+              className="underline decoration-dotted underline-offset-2 hover:text-fg-1"
+            >
+              Open the launch policy
+            </Link>
+          )}
+        </p>
+      )}
+      {!sshMode && gui && selectedGUIRow && selectedGUIRow.allowed && selectedGUIRow.adapter !== "" && !selectedGUIRow.watched && (
+        <p className="-mt-2 mb-3 text-[10.5px] leading-relaxed text-fg-3">
+          {selectedGUIRow.label} is {TOOL_NOT_WATCHED_MSG}. It will launch normally.
+        </p>
+      )}
+
+      {!sshMode && !gui && toolModels && toolModels.supported && toolModels.models.length > 0 && (
+        <>
+          <label
+            htmlFor="new-terminal-model"
+            className="mb-1 block text-[11px] font-medium text-fg-2"
+          >
+            Model <span className="text-fg-3">(optional)</span>
+          </label>
+          <select
+            id="new-terminal-model"
+            value={modelSel}
+            onChange={(e) => setModelSel(e.target.value)}
+            className="mb-3 w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
+          >
+            <option value="" title={`Let ${tool} choose its own default model`}>
+              Tool default
+            </option>
+            {toolModels.models.map((m) => (
+              <option key={m.model} value={m.model} title={m.model}>
+                {m.model}
+                {m.source === "history" && m.count
+                  ? ` (${m.count.toLocaleString()} uses)`
+                  : ""}
+              </option>
+            ))}
+          </select>
+        </>
+      )}
+
+      {sshMode ? (
+        <p className="mb-3 rounded-2 border border-border/60 bg-bg-0 px-2 py-1.5 text-[11px] leading-relaxed text-fg-3">
+          <span className="font-medium text-fg-2">Project root, model, sandbox</span>
+          {" - "}
+          {SSH_NA_MSG}
+        </p>
+      ) : gui ? (
+        <>
+          {/* GUI scope is install + launch only (plan §0.1): no resume, no
+              continue, no attach, no model picker, no sandbox. The
+              project-root control is the ONE exception, and only when the
+              app actually takes a positional directory argument
+              (project_dir_argv) — reused verbatim from the terminal path
+              below so a permitted-folder pick behaves identically. */}
+          {selectedGUIRow?.project_dir_argv ? (
+            <>
+              <label className="mb-1 block text-[11px] font-medium text-fg-2">
+                Project root <span className="text-fg-3">(optional)</span>
+              </label>
+              <ComboChip
+                value={rootSel}
+                onChange={setRootSel}
+                options={rootOptions}
+                label="Folder"
+                fullWidth
+                popoverWidth={396}
+                placeholder="Search permitted folders…"
+                emptyHint="No folders match. Try “Custom path…” or add a root in Terminals → Settings → Folder Selection."
+                buttonValueRender={(sel) => (
+                  <span className="min-w-0 flex-1 truncate text-left font-semibold text-fg-0">
+                    {sel?.label ?? "Agent's default directory (where SuperBased runs)"}
+                  </span>
+                )}
+              />
+              {noAllowList && projects.length > 0 && (
+                <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">
+                  No project roots are allow-listed, so only the agent's
+                  default directory can launch — that's the SuperBased
+                  daemon's own working directory (where{" "}
+                  <code className="font-mono">observer start</code> ran).
+                  Add roots under{" "}
+                  <code className="font-mono">
+                    [terminal.launch].allowed_project_roots
+                  </code>{" "}
+                  on the Terminals page (launch policy) to enable them.
+                </p>
+              )}
+              {rootSel === CUSTOM_ROOT ? (
+                <input
+                  type="text"
+                  value={customRoot}
+                  onChange={(e) => setCustomRoot(e.target.value)}
+                  autoFocus
+                  placeholder="/abs/path/to/project (must be allow-listed)"
+                  className="mt-2 w-full rounded-2 border bg-bg-0 px-2 py-1.5 font-mono text-[12px] text-fg-1"
+                />
+              ) : rootSel ? (
+                <Tooltip content={rootSel}>
+                  <div className="mt-1 break-all font-mono text-[10.5px] text-fg-3">
+                    {rootSel}
+                  </div>
+                </Tooltip>
+              ) : null}
+              <div className="mb-3" />
+            </>
+          ) : (
+            <p className="mb-3 rounded-2 border border-border/60 bg-bg-0 px-2 py-1.5 text-[11px] leading-relaxed text-fg-3">
+              Launched without a project directory — this app takes none.
+            </p>
+          )}
+          {selectedGUIRow && (
+            <div className="mb-3 rounded-2 border border-line-2 bg-bg-2 px-2 py-1.5 text-[11px] leading-relaxed text-fg-3">
+              <div>{wrapSummary(selectedGUIRow)}</div>
+              {selectedGUIRow.note && <div className="mt-1">{selectedGUIRow.note}</div>}
+            </div>
+          )}
+        </>
+      ) : (
+      <>
+      <label className="mb-1 block text-[11px] font-medium text-fg-2">
+        Project root <span className="text-fg-3">(optional)</span>
+      </label>
+      <ComboChip
+        value={rootSel}
+        onChange={setRootSel}
+        options={rootOptions}
+        label="Folder"
+        fullWidth
+        popoverWidth={396}
+        placeholder="Search permitted folders…"
+        emptyHint="No folders match. Try “Custom path…” or add a root in Terminals → Settings → Folder Selection."
+        buttonValueRender={(sel) => (
+          <span className="min-w-0 flex-1 truncate text-left font-semibold text-fg-0">
+            {sel?.label ?? "Agent's default directory (where SuperBased runs)"}
+          </span>
+        )}
+      />
+      {noAllowList && projects.length > 0 && (
+        <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">
+          No project roots are allow-listed, so only the agent's default
+          directory can launch - that's the SuperBased daemon's own working
+          directory (where <code className="font-mono">observer start</code> ran).
+          Add roots under{" "}
+          <code className="font-mono">[terminal.launch].allowed_project_roots</code>{" "}
+          on the Terminals page (launch policy) to enable them.
+        </p>
+      )}
+      {rootSel === CUSTOM_ROOT ? (
+        <input
+          type="text"
+          value={customRoot}
+          onChange={(e) => setCustomRoot(e.target.value)}
+          autoFocus
+          placeholder="/abs/path/to/project (must be allow-listed)"
+          className="mt-2 w-full rounded-2 border bg-bg-0 px-2 py-1.5 font-mono text-[12px] text-fg-1"
+        />
+      ) : rootSel ? (
+        <Tooltip content={rootSel}>
+          <div className="mt-1 break-all font-mono text-[10.5px] text-fg-3">
+            {rootSel}
+          </div>
+        </Tooltip>
+      ) : null}
+      {rootSel === CUSTOM_ROOT && (
+        <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">
+          Windows paths (<code className="font-mono">C:\Users\…</code>) are
+          accepted and translated to their WSL{" "}
+          <code className="font-mono">/mnt/c/…</code> form.
+        </p>
+      )}
+      <div className="mb-3" />
+
+      <label className="mb-1 flex items-start gap-2">
+        <input
+          type="checkbox"
+          checked={sandboxOn}
+          disabled={sandboxCheckboxDisabled}
+          title={sandboxReason ?? undefined}
+          onChange={(e) => setSandboxOn(e.target.checked)}
+          className="mt-0.5"
+        />
+        <span>
+          <span className="font-medium text-fg-1">Run in sandbox</span>
+          <span className="block text-[11px] text-fg-3">
+            {sandboxReason ??
+              "Launch inside a bubblewrap sandbox with an isolated $HOME - the agent can't read or write your real home directory or other projects."}
+          </span>
+        </span>
+      </label>
+
+      {sandboxOn && !sandboxCheckboxDisabled && (
+        <div className="mb-3 mt-2 rounded-2 border border-line-2 bg-bg-2 p-2">
+          <label
+            htmlFor="new-terminal-sandbox-source"
+            className="mb-1 block text-[11px] font-medium text-fg-2"
+          >
+            Workspace
+          </label>
+          <select
+            id="new-terminal-sandbox-source"
+            value={workspaceSource}
+            onChange={(e) => setWorkspaceSource(e.target.value)}
+            className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
+          >
+            {(sandboxProbe?.sources ?? []).map((s) => (
+              // Native <option> - title= stays (React tooltip can't render
+              // inside the browser-owned select popup), same convention as
+              // the project-root optgroups above.
+              <option
+                key={s.id}
+                value={s.id}
+                disabled={!s.available}
+                title={
+                  s.available
+                    ? SANDBOX_SOURCE_LABELS[s.id] ?? s.id
+                    : s.reason || "not available"
+                }
+              >
+                {SANDBOX_SOURCE_LABELS[s.id] ?? s.id}
+                {s.available ? "" : " (unavailable)"}
+              </option>
+            ))}
+          </select>
+          {sandboxSourceUnavailable && (
+            <p className="mt-1 text-[10.5px] leading-relaxed text-warn">
+              {selectedSourceAvail?.reason || "This workspace source isn't available."}
+            </p>
+          )}
+          {workspaceSource === "clone-remote" && (
+            <>
+              <label
+                htmlFor="new-terminal-sandbox-remote"
+                className="mb-1 mt-2 block text-[11px] font-medium text-fg-2"
+              >
+                Remote URL
+              </label>
+              <input
+                id="new-terminal-sandbox-remote"
+                type="text"
+                value={workspaceRemote}
+                onChange={(e) => setWorkspaceRemote(e.target.value)}
+                placeholder="https://github.com/org/repo.git"
+                className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 font-mono text-[12px] text-fg-1"
+              />
+              <label
+                htmlFor="new-terminal-sandbox-branch"
+                className="mb-1 mt-2 block text-[11px] font-medium text-fg-2"
+              >
+                Branch <span className="text-fg-3">(optional)</span>
+              </label>
+              <input
+                id="new-terminal-sandbox-branch"
+                type="text"
+                value={workspaceBranch}
+                onChange={(e) => setWorkspaceBranch(e.target.value)}
+                placeholder="main"
+                className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 font-mono text-[12px] text-fg-1"
+              />
+              {sandboxRemoteURLMissing && (
+                <p className="mt-1 text-[10.5px] leading-relaxed text-warn">
+                  Enter a remote URL - the daemon will run `git clone` with your
+                  ambient auth into a managed workspace.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      </>
+      )}
+
+      {/* Tool-availability strip (DI-03 + DI-17). ONE block, one owner for the
+          copy (preflightStripCopy), covering all five verdicts, an
+          unrecognised verdict, and a preflight that could not run at all.
+          Notes render for EVERY verdict — the PATH-shim note arrives on a
+          plain "ok" — and the not-installed branch always offers a next step:
+          the runnable command, or the grounded reason there isn't one. */}
+      {!sshMode &&
+        tool &&
+        tool !== SHELL_TOOL &&
+        (preflightState === "error" || (strip !== null && strip.render)) && (
+          <div className="mb-3 space-y-2">
+            {preflightState === "error" && (
+              <div className="rounded-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] leading-relaxed text-danger">
+                {preflightErrorCopy(tool, preflightErr)}
+              </div>
+            )}
+
+            {strip !== null && strip.render && (
+              <div
+                className={
+                  strip.tone === "warn"
+                    ? "rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] leading-relaxed text-warn"
+                    : "rounded-2 border border-fg-3/30 bg-overlay-1 px-2 py-1.5 text-[11px] leading-relaxed text-fg-3"
+                }
+              >
+                <div>{strip.headline}</div>
+
+                {/* All notes, each on its own line. Capped for height, with an
+                    honest "+N more" expander — never a silent truncation. */}
+                {(notesExpanded
+                  ? strip.notes
+                  : strip.notes.slice(0, PREFLIGHT_NOTE_CAP)
+                ).map((n, i) => (
+                  <div key={i} className="mt-1">
+                    {n}
+                  </div>
+                ))}
+                {!notesExpanded && strip.notes.length > PREFLIGHT_NOTE_CAP && (
+                  <button
+                    type="button"
+                    onClick={() => setNotesExpanded(true)}
+                    aria-label={`Show ${strip.notes.length - PREFLIGHT_NOTE_CAP} more availability notes`}
+                    className="mt-1 underline decoration-dotted underline-offset-2 hover:text-fg-1"
+                  >
+                    +{strip.notes.length - PREFLIGHT_NOTE_CAP} more
+                  </button>
+                )}
+
+                {strip.blocking && preflight && (
+                  <>
+                    {preflight.install_command && (
+                      <>
+                        <div className="mt-1.5 text-fg-3">Install it with:</div>
+                        <code className="mt-1 block break-all rounded-2 bg-bg-0 px-2 py-1 font-mono text-[10.5px] text-fg-1">
+                          {preflight.install_command}
+                        </code>
+                      </>
+                    )}
+                    {/* DI-03: no runnable command — say WHY, so this branch
+                        never dead-ends on "X is not installed." alone. */}
+                    {installGuidanceFor(preflight) && (
+                      <div className="mt-1.5 text-fg-3">
+                        {installGuidanceFor(preflight)}
+                      </div>
+                    )}
+                    {preflight.can_install && (
+                      <button
+                        type="button"
+                        disabled={installBusy}
+                        onClick={installTool}
+                        className="mt-2 rounded-2 bg-accent px-3 py-1 text-caption font-medium text-accent-on disabled:opacity-50"
+                      >
+                        {installBusy ? "Starting install…" : "Install in terminal"}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* DI-17: re-run the check without changing tool or reopening the
+                dialog — the fix for "I installed it in another window". */}
+            <button
+              type="button"
+              onClick={() => setRecheckNonce((n) => n + 1)}
+              aria-label={`Re-check whether ${tool} is installed`}
+              className="rounded-2 border px-2 py-0.5 text-[11px] text-fg-2 hover:bg-overlay-1 hover:text-fg-1"
+            >
+              Re-check
+            </button>
+          </div>
+        )}
+
+      {err && (
+        <div className="mb-3 rounded-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
+          {err}
+        </div>
+      )}
+
+    </Modal>
   );
 }

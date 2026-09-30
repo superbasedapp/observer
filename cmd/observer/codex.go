@@ -383,7 +383,7 @@ func runCodexLauncher(ctx context.Context, opts codexLauncherOptions) error {
 			ProxyURL:       proxyURL,
 			ProxyReachable: proxyUp,
 			PreflightProcs: preflight,
-			Misconfigs:     findCodexConfigMisconfigs(codexHomeRoots(), proxyURL),
+			Misconfigs:     findCodexConfigMisconfigs(codexHomeRoots(), proxyURL, codexActiveProfile(opts.codexArgs)),
 		})
 	}
 
@@ -439,8 +439,23 @@ func runCodexLauncher(ctx context.Context, opts codexLauncherOptions) error {
 		opts.routeSkipReason = fb.reason
 	}
 	// proxyRouteProceed → the routed launch below injects `-c openai_base_url`.
+	warnCodexProviderBypass(opts, activeProfile)
 
 	return runCodexChild(ctx, opts, proxyURL, preflight, cfg.Observer.DBPath)
+}
+
+// warnCodexProviderBypass prints one notice when a routed launch's selected
+// codex provider (e.g. amazon-bedrock) will bypass the proxy anyway: the
+// launcher's `-c openai_base_url` injection only reaches the built-in openai
+// provider, so staying silent would imply proxy-exact capture. Skipped for a
+// bypass launch or when the caller passed their own routing override.
+func warnCodexProviderBypass(opts codexLauncherOptions, activeProfile string) {
+	if opts.noProxyRoute || hasUserCodexConfigOverride(opts.codexArgs) {
+		return
+	}
+	if note := codexProviderBypassNotice(effectiveCodexHomeRoots(), activeProfile); note != "" {
+		fmt.Fprintln(opts.stderr, note)
+	}
 }
 
 // runCodexChild resolves the codex binary, applies any --continue-from handover,
@@ -677,18 +692,19 @@ func runCodexConfigPreflight(opts codexLauncherOptions, proxyURL string) {
 	if opts.noAppServerCheck {
 		return
 	}
-	misconfigs := findCodexConfigMisconfigs(codexHomeRoots(), proxyURL)
+	profile := codexActiveProfile(opts.codexArgs)
+	misconfigs := findCodexConfigMisconfigs(codexHomeRoots(), proxyURL, profile)
 	switch {
 	case len(misconfigs) == 0:
 		// silent happy path
 	case opts.writeConfig:
 		runWriteCodexConfig(opts.stderr, misconfigs)
 		// Re-check so a partial failure still warns the operator.
-		if warn := checkCodexConfigTOMLBaseURL(codexHomeRoots(), proxyURL); warn != "" {
+		if warn := checkCodexConfigTOMLBaseURL(codexHomeRoots(), proxyURL, profile); warn != "" {
 			fmt.Fprintln(opts.stderr, warn)
 		}
 	default:
-		if warn := checkCodexConfigTOMLBaseURL(codexHomeRoots(), proxyURL); warn != "" {
+		if warn := checkCodexConfigTOMLBaseURL(codexHomeRoots(), proxyURL, profile); warn != "" {
 			fmt.Fprintln(opts.stderr, warn)
 			fmt.Fprintln(opts.stderr,
 				"observer codex: re-run with --write-config to auto-fix (creates a .bak before mutating).")
@@ -1012,7 +1028,7 @@ func runCodexVerify(stderr interface{ Write([]byte) (int, error) }, r codexVerif
 	}
 
 	if len(r.Misconfigs) == 0 {
-		fmt.Fprintln(stderr, "  PASS  every $CODEX_HOME/config.toml correctly sets openai_base_url (V6-2: clean)")
+		fmt.Fprintln(stderr, "  PASS  every $CODEX_HOME/config.toml routes codex's selected provider to the proxy (V6-2: clean)")
 	} else {
 		for _, m := range r.Misconfigs {
 			var detail string
@@ -1023,6 +1039,9 @@ func runCodexVerify(stderr interface{ Write([]byte) (int, error) }, r codexVerif
 				detail = "key missing"
 			case configTOMLMissingFile:
 				detail = "file missing"
+			case configTOMLProviderMismatch:
+				fmt.Fprintf(stderr, "  FAIL  %s — model_provider=%q base_url=%q (want %s). Point that provider at the proxy or run `observer init --codex --force`.\n", m.ConfigPath, m.Provider, m.CurrentValue, m.WantURL)
+				continue
 			}
 			fmt.Fprintf(stderr, "  FAIL  V6-2: %s — %s. Pass --write-config to auto-fix (creates a .bak before mutating).\n", m.ConfigPath, detail)
 		}

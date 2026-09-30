@@ -1,0 +1,26 @@
+-- 144_api_turns_request_class.sql - the client-supplied request class of a
+-- proxy-captured turn (post-Agent-Access backlog item 14 follow-up (6), lane
+-- F-GO, 2026-09-28).
+--
+-- WHY. Claude Code 2.1.273+ sends `x-claude-code-request-class` on every
+-- request when its gateway hint headers are on
+-- (CLAUDE_CODE_GATEWAY_HINT_HEADERS=1; off by default for a custom base URL,
+-- which `observer claude` sets). The documented vocabulary is closed:
+--   main        a turn of the main conversation
+--   subagent    a turn of a subagent
+--   workflow    an agent running inside a workflow
+--   compaction  the summarization request that compacts a conversation
+--   auxiliary   side requests such as session titles, classifiers, summaries
+-- https://code.claude.com/docs/en/llm-gateway-protocol#gateway-hint-headers
+-- It lets spend be split by what the request was for (main vs subagent vs
+-- side requests) without inferring it from the body.
+--
+-- The proxy reads the value through a closed table
+-- (internal/proxy/prompthint.go, requestClassValues): only those five
+-- spellings are stored; an absent, unknown or malformed value stays NULL,
+-- never guessed.
+--
+-- NODE-LOCAL: an enum with no content. internal/store/orgpush.go does not
+-- select it and there is no paired server migration; shipping it later is an
+-- additive wire field (orgcontract.APITurnRow) plus a server migration.
+ALTER TABLE api_turns ADD COLUMN request_class TEXT;

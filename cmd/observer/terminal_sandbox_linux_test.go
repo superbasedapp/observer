@@ -45,6 +45,22 @@ func bwrapUsableForTest(t *testing.T) string {
 // the temp home / workspace / observer dirs the assertions bind-check.
 func prepLiveWrapArgv(t *testing.T) (wrap []string, home, workspace, observerDir string) {
 	t.Helper()
+	return prepLiveWrapArgvTier(t, "host", 0, nil)
+}
+
+// prepLiveWrapArgvTier is prepLiveWrapArgv for an explicit network tier: the
+// runtime forwards proxyPort (0 keeps the default) and seed runs over the
+// temp home/workspace/observer dirs before Prepare, so a test can plant the
+// protected files the overlays must cover.
+func prepLiveWrapArgvTier(t *testing.T, egress string, proxyPort int, seed func(home, workspace, observerDir string)) (wrap []string, home, workspace, observerDir string) {
+	t.Helper()
+	return prepLiveWrapArgvCfg(t, config.TerminalSandboxConfig{Enabled: true, HomeMode: "tmpfs", Egress: egress}, proxyPort, seed)
+}
+
+// prepLiveWrapArgvCfg is prepLiveWrapArgvTier for a full [terminal.sandbox]
+// block (extra binds, allow-lists).
+func prepLiveWrapArgvCfg(t *testing.T, cfg config.TerminalSandboxConfig, proxyPort int, seed func(home, workspace, observerDir string)) (wrap []string, home, workspace, observerDir string) {
+	t.Helper()
 
 	home = t.TempDir()
 	// Plant a credential that must be BLINDED by the home tmpfs.
@@ -58,17 +74,20 @@ func prepLiveWrapArgv(t *testing.T) (wrap []string, home, workspace, observerDir
 
 	observerDir = t.TempDir()
 	workspace = t.TempDir()
+	if seed != nil {
+		seed(home, workspace, observerDir)
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt, err := newSandboxRuntime(
-		config.TerminalSandboxConfig{Enabled: true, HomeMode: "tmpfs"},
-		nil, observerDir, exe, nil,
-	)
+	rt, err := newSandboxRuntime(cfg, nil, observerDir, exe, nil)
 	if err != nil {
 		t.Fatalf("newSandboxRuntime: %v", err)
+	}
+	if proxyPort > 0 {
+		rt.proxyPort = proxyPort
 	}
 
 	res, err := rt.Prepare(context.Background(), termsvc.PrepareRequest{
@@ -99,7 +118,8 @@ func prepLiveWrapArgv(t *testing.T) (wrap []string, home, workspace, observerDir
 // produced WrapArgv and checks the whole isolation contract at once — /usr
 // read-only, the workspace + observer dir writable, the planted ~/.ssh/secret
 // blinded by the home tmpfs, an inherited fd 3 surviving the exec, and a
-// parent-opened 127.0.0.1 listener reachable inside (the shared-netns proof).
+// parent-opened 127.0.0.1 listener reachable inside (the shared-netns proof,
+// which is exactly why egress = "host" is not the default: SR27-SBX-1).
 func TestBwrapIntegrationBoundary(t *testing.T) {
 	bwrapUsableForTest(t)
 	if _, err := exec.LookPath("bash"); err != nil {

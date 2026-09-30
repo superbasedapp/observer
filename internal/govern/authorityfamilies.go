@@ -15,6 +15,10 @@ const (
 	familyEgressGuardrail  = "egress.routing_guardrail"
 	familyGatewayProviders = "gateway.providers"
 	familyNodeGovernance   = "node.governance"
+	// familyToolsMCPAccess mirrors policyfam.FamilyMCPAccess (`tools.mcp_access`,
+	// Agent Access P1/P2): a full resource family with its own compiler and
+	// its own row in config's accept_families allow-list.
+	familyToolsMCPAccess = "tools.mcp_access"
 )
 
 // authorityFamilyRow is one row of the authority-to-family table (CLAUDE.md
@@ -82,6 +86,19 @@ type authorityFamilyRow struct {
 //     DIRECTIVE CLASS on its own authority (settings.pin for `pinned`,
 //     capture.pin/extract.* for `share`, feature.lock for `features`), so
 //     enforce.budget alone still unlocks no directive class.
+//
+//   - enforce.mcp_access lifts the structural-ignore for the tools.mcp_access
+//     family (Agent Access doc3 §12.8, parking decision B9). Unlike
+//     enforce.budget's forcing condition, this family IS a real resource
+//     family: policyfam.SupportedFamilies carries FamilyMCPAccess with its
+//     own compiler (the signed MCP-access table the node relay publishes),
+//     and config's accept_families / preauthorize_enforce allow-lists already
+//     name `tools.mcp_access`, so mapping the token to its own family is the
+//     enforce.admission precedent, not the node.governance fallback. A managed
+//     enrolment therefore auto-consents to that family at enrol
+//     (cmd/observer's managedPolicyFamiliesToWrite writes exactly
+//     GovernedFamilies(grant.Authority)) — which is what makes the org mode
+//     authoritative on the relay rather than accepted_inert.
 var authorityFamilyTable = []authorityFamilyRow{
 	{AuthorityDashboardVisibility, []string{familyNodeGovernance}},
 	{AuthoritySettingsPin, []string{familyNodeGovernance}},
@@ -107,6 +124,7 @@ var authorityFamilyTable = []authorityFamilyRow{
 	{AuthorityEnforceEgress, []string{familyEgressGuardrail}},
 	{AuthorityEnforceRouting, []string{familyGatewayProviders}},
 	{AuthorityEnforceBudget, []string{familyNodeGovernance}},
+	{AuthorityEnforceMCPAccess, []string{familyToolsMCPAccess}},
 }
 
 // exemptFromFamilyMapping is the CONSCIOUS exemption list this package's own

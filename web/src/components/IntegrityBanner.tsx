@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useApi } from "@/lib/useApi";
 import { integrityDismissKey, integrityNotice } from "@/lib/integrity";
-import type { StatusSnapshot } from "@/lib/types";
+import type { IntegrityStatus, StatusSnapshot } from "@/lib/types";
 
 // IntegrityBanner — the slim strip under the TopBar reporting the daemon's
 // persisted startup `PRAGMA quick_check` verdict (RES-3, codebase audit
@@ -48,13 +48,22 @@ const toneClass: Record<"danger" | "warn", { strip: string; label: string }> = {
   },
 };
 
-export function IntegrityBanner() {
-  const status = useApi<StatusSnapshot>("/api/status");
-  const [, bump] = useState(0);
-  const notice = integrityNotice(status.data?.integrity);
-  if (!notice || !status.data?.integrity) return null;
+function selectIntegrity(s: StatusSnapshot): IntegrityStatus | null {
+  return s.integrity ?? null;
+}
 
-  const key = integrityDismissKey(status.data.integrity);
+export function IntegrityBanner() {
+  // Only the integrity verdict is read; select it so the 5 s status poll
+  // (whose payload changes every time) does not re-render the banner.
+  const status = useApi<StatusSnapshot, IntegrityStatus | null>("/api/status", undefined, [], {
+    select: selectIntegrity,
+  });
+  const [, bump] = useState(0);
+  const integrity = status.data ?? undefined;
+  const notice = integrityNotice(integrity);
+  if (!notice || !integrity) return null;
+
+  const key = integrityDismissKey(integrity);
   if (dismissedKey() === key) return null;
 
   const style = toneClass[notice.tone];

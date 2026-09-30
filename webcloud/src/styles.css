@@ -23,59 +23,13 @@
    webcloud's own (previously drifting) copy. See docs/app-design-system.md.
    ============================================================ */
 @import "../../shared/styles/tokens.css";
+@import "../../shared/styles/motion.css";
+@import "../../shared/styles/components.css";
+@import "../../shared/styles/illustrations.css";
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-/* The shared Skeleton primitive emits `animate-shimmer`; per
-   docs/app-design-system.md that utility is defined in each app's entry CSS
-   (verbatim from web/src/index.css) so the sweep timing/easing matches. */
-@keyframes shimmer {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(100%);
-  }
-}
-
-@layer utilities {
-  .animate-shimmer::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    transform: translateX(-100%);
-    background-image: linear-gradient(
-      90deg,
-      rgba(255, 255, 255, 0) 0%,
-      rgba(255, 255, 255, 0.04) 50%,
-      rgba(255, 255, 255, 0) 100%
-    );
-    animation: shimmer 1.6s var(--ease) infinite;
-  }
-}
-
-/* webcloud-only chart palette for the transitional hand-rolled mix bars
-   (being replaced by shared donut/area charts). NOT part of the shared
-   design tokens; theme-aware to match the shared palette's dark/light. */
-:root,
-:root[data-theme="dark"] {
-  --mix-1: #7c9eff;
-  --mix-2: #34d399;
-  --mix-3: #fbbf24;
-  --mix-4: #f472b6;
-  --mix-5: #a78bfa;
-  --mix-6: #22d3ee;
-}
-:root[data-theme="light"] {
-  --mix-1: #4763ed;
-  --mix-2: #10b981;
-  --mix-3: #d97706;
-  --mix-4: #db2777;
-  --mix-5: #7c3aed;
-  --mix-6: #0891b2;
-}
 
 * {
   box-sizing: border-box;
@@ -170,16 +124,6 @@ a {
   color: inherit;
 }
 
-.brand-mark {
-  display: inline-block;
-  flex-shrink: 0;
-  line-height: 1;
-  font-weight: 600;
-  /* --brand-blue is not part of the shared token set; fall back to the
-     accent token so the glyph is tinted (and theme-aware) either way. */
-  color: var(--brand-blue, var(--accent));
-}
-
 .brand-word {
   font-size: 15px;
   font-weight: 500;
@@ -195,15 +139,22 @@ a {
    setup (see App.tsx::RequireAuth); the sign-in / consent screens
    render full-screen with none of this.
    ============================================================ */
+/* Bounded to the viewport: the sidebar stays put and only .main scrolls
+   (the old min-height:100vh let the whole document scroll, taking the
+   sidebar with it). */
 .app-shell {
   display: flex;
   align-items: stretch;
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .app-shell-main {
+  position: relative;
   display: flex;
   min-width: 0;
+  min-height: 0;
   flex: 1 1 auto;
   flex-direction: column;
 }
@@ -216,6 +167,7 @@ a {
   flex-direction: column;
   border-right: 1px solid var(--line-1);
   background: var(--bg-1);
+  overflow-y: auto;
 }
 
 .sidebar-brand {
@@ -235,6 +187,7 @@ a {
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.55rem;
@@ -259,6 +212,19 @@ a {
   background: var(--bg-3);
 }
 
+/* Active indicator, matching both dashboards: the icon takes the accent
+   colour and a 2px accent bar marks the item's left edge. */
+.nav-item-active::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
 .nav-item-icon {
   display: inline-flex;
   flex-shrink: 0;
@@ -266,6 +232,17 @@ a {
   justify-content: center;
   width: 16px;
   height: 16px;
+  color: var(--fg-3);
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.nav-item:hover .nav-item-icon {
+  color: var(--fg-2);
+}
+
+.nav-item-active .nav-item-icon,
+.nav-item-active:hover .nav-item-icon {
+  color: var(--accent);
 }
 
 .nav-item-label {
@@ -287,17 +264,19 @@ a {
   background: var(--bg-1);
 }
 
-.topbar-title {
-  font-size: 0.86rem;
-  font-weight: 600;
-  color: var(--fg-1);
-  letter-spacing: -0.005em;
+/* Brand in the bar only on phones (the sidebar's brand row is hidden
+   there); on desktop the sidebar carries it. */
+.topbar-brand {
+  display: none;
+  align-items: center;
+  min-width: 0;
 }
 
 .topbar-actions {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+  margin-left: auto;
 }
 
 .topbar-account {
@@ -313,25 +292,6 @@ a {
   text-overflow: ellipsis;
 }
 
-.icon-btn {
-  display: inline-grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-2);
-  border: 1px solid var(--line-2);
-  background: var(--bg-2);
-  color: var(--fg-2);
-  cursor: pointer;
-  transition: color var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease);
-}
-
-.icon-btn:hover {
-  color: var(--fg-0);
-  border-color: var(--line-3);
-}
-
 /* ============================================================
    Layout
    ============================================================ */
@@ -345,10 +305,10 @@ a {
   padding: 1.5rem 2rem;
 }
 
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 1rem;
+/* Readable measure on ultra-wide screens. */
+.main-inner {
+  max-width: 1360px;
+  margin: 0 auto;
 }
 
 /* ---- Portal footer ------------------------------------------------------ */
@@ -383,26 +343,9 @@ a {
   margin-right: 0.35rem;
 }
 
-/* ============================================================
-   Card
-   ============================================================ */
-.card {
-  background: var(--bg-2);
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-3);
-  padding: 16px;
-  margin-bottom: 1rem;
-}
-
-.card-grid .card {
-  margin-bottom: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.card-danger {
-  border-color: var(--danger-soft);
-}
+/* Cards and buttons are the shared primitives (shared/primitives/Card.tsx,
+   Button.tsx; the danger zone is <Card tone="danger">). webcloud keeps only
+   its page-specific card modifiers (session-card, ...). */
 
 /* W6d export list: one live artifact per row (Download + size/expiry). */
 .export-list {
@@ -415,62 +358,6 @@ a {
   align-items: center;
   gap: 0.5rem;
   padding: 0.35rem 0;
-}
-
-/* ============================================================
-   Stat tile
-   ============================================================ */
-.tile-label {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--fg-3);
-  margin: 0 0 0.65rem;
-}
-
-.stat {
-  font-size: 34px;
-  font-weight: 700;
-  line-height: 1.05;
-  color: var(--fg-0);
-  letter-spacing: -0.025em;
-  font-variant-numeric: tabular-nums;
-}
-
-.stat-sub {
-  margin: 0.5rem 0 0;
-  font-size: 0.8rem;
-  color: var(--fg-2);
-}
-
-.tile-body {
-  flex: 1;
-}
-
-/* Elegant empty state — a dashed placeholder rather than bare gray. */
-.tile-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.5rem;
-  padding: 0.85rem 0;
-}
-
-.tile-empty-mark {
-  display: inline-grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: var(--r-3);
-  border: 1px dashed var(--line-3);
-  color: var(--fg-4);
-}
-
-.tile-empty-text {
-  font-size: 0.8rem;
-  color: var(--fg-3);
 }
 
 .disclosure {
@@ -514,104 +401,6 @@ a {
 }
 
 /* ============================================================
-   Mix bar (categorical breakdown)
-   ============================================================ */
-.mixbar {
-  display: flex;
-  height: 10px;
-  border-radius: var(--r-pill);
-  overflow: hidden;
-  background: var(--bg-4);
-  margin: 0.25rem 0 0.85rem;
-}
-
-.mixbar-seg {
-  height: 100%;
-  min-width: 3px;
-}
-
-.mix-legend {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.mix-legend li {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.82rem;
-  padding: 0.15rem 0;
-}
-
-.mix-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 3px;
-  flex-shrink: 0;
-}
-
-.mix-legend .mix-key {
-  color: var(--fg-1);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mix-legend .mix-count {
-  margin-left: auto;
-  color: var(--fg-2);
-  font-variant-numeric: tabular-nums;
-}
-
-/* ============================================================
-   Progress bars (Usage allowance)
-   ============================================================ */
-.bar-row {
-  margin: 0.9rem 0;
-}
-
-.bar-label {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
-  font-size: 0.85rem;
-  margin-bottom: 0.4rem;
-  color: var(--fg-1);
-}
-
-.bar-label .bar-val {
-  color: var(--fg-2);
-  font-variant-numeric: tabular-nums;
-}
-
-.bar-track {
-  height: 8px;
-  background: var(--bg-4);
-  border-radius: var(--r-pill);
-  overflow: hidden;
-}
-
-.bar-fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: var(--r-pill);
-  transition: width var(--dur) var(--ease);
-}
-
-.bar-fill.warn {
-  background: var(--warn);
-}
-
-.bar-fill.danger {
-  background: var(--danger);
-}
-
-/* ============================================================
    Banners
    ============================================================ */
 .banner {
@@ -637,183 +426,17 @@ a {
 }
 
 /* ============================================================
-   Forms & buttons
+   Forms
    ============================================================ */
-label {
+/* Text fields are the shared Input / Textarea. No global element rule styles
+   a bare label / input / textarea here (one would restyle every shared
+   control dropped into the portal); a visible field label opts in with
+   .field-label (the acknowledge control is the shared Toggle). */
+.field-label {
   display: block;
   font-size: 0.82rem;
   margin: 0.9rem 0 0.4rem;
   color: var(--fg-2);
-}
-
-input[type="text"] {
-  width: 100%;
-  padding: 0.55rem 0.75rem;
-  background: var(--bg-1);
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-2);
-  color: var(--fg-0);
-  font-size: 0.9rem;
-  font-family: inherit;
-  transition: border-color var(--dur-fast) var(--ease),
-    box-shadow var(--dur-fast) var(--ease);
-}
-
-input[type="text"]::placeholder {
-  color: var(--fg-4);
-}
-
-input[type="text"]:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
-
-.check-row {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  color: var(--fg-1);
-  margin: 0.9rem 0 0.4rem;
-  font-size: 0.86rem;
-}
-
-input[type="checkbox"] {
-  accent-color: var(--accent);
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-}
-
-input[type="checkbox"]:disabled {
-  cursor: default;
-}
-
-/* Switch — a checkbox restyled as a toggle. Behavior-preserving:
-   still a real <input type="checkbox">, only the appearance changes. */
-input[type="checkbox"].switch {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 40px;
-  height: 22px;
-  border-radius: var(--r-pill);
-  background: var(--bg-4);
-  border: none;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
-  position: relative;
-  flex-shrink: 0;
-  transition: background var(--dur-fast) var(--ease);
-}
-
-input[type="checkbox"].switch::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
-  transition: transform var(--dur-fast) var(--ease);
-}
-
-input[type="checkbox"].switch:checked {
-  background: var(--accent);
-}
-
-input[type="checkbox"].switch:checked::after {
-  transform: translateX(20px);
-}
-
-input[type="checkbox"].switch:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
-
-input[type="checkbox"].switch:disabled {
-  opacity: 0.65;
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  padding: 4px 10px;
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-2);
-  background: var(--bg-2);
-  color: var(--fg-1);
-  font-size: 11px;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.btn:hover:not(:disabled) {
-  background: var(--bg-4);
-  border-color: var(--line-3);
-  color: var(--fg-0);
-}
-
-.btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
-
-.btn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.btn-primary {
-  background: var(--accent);
-  border-color: transparent;
-  color: var(--on-accent);
-  font-weight: 600;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--accent-strong);
-  color: var(--on-accent);
-}
-
-.btn-block {
-  width: 100%;
-  margin-top: 1rem;
-}
-
-.btn-ghost {
-  background: transparent;
-  border-color: transparent;
-  color: var(--fg-2);
-}
-
-.btn-ghost:hover:not(:disabled) {
-  background: var(--bg-2);
-  border-color: var(--line-2);
-  color: var(--fg-0);
-}
-
-.btn-danger {
-  background: transparent;
-  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
-  color: var(--danger);
-}
-
-.btn-danger:hover:not(:disabled) {
-  background: var(--danger-soft);
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.btn-sm {
-  padding: 0.32rem 0.7rem;
-  font-size: 10.5px;
 }
 
 /* ============================================================
@@ -854,51 +477,6 @@ input[type="checkbox"].switch:disabled {
 }
 
 /* ============================================================
-   Badges / pills
-   ============================================================ */
-.badge,
-.badge-off,
-.badge-revoked,
-.badge-mandatory,
-.badge-edited,
-.badge-head,
-.tag-pill {
-  display: inline-flex;
-  align-items: center;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 7px;
-  border-radius: var(--r-pill);
-  border: 1px solid transparent;
-  text-transform: lowercase;
-  letter-spacing: 0.02em;
-  vertical-align: middle;
-}
-
-.badge {
-  background: var(--success-soft);
-  color: var(--success);
-  border-color: color-mix(in srgb, var(--success) 30%, transparent);
-}
-
-.badge-off,
-.tag-pill {
-  background: var(--bg-2);
-  color: var(--fg-2);
-  border-color: var(--line-2);
-}
-
-.badge-revoked {
-  background: var(--danger-soft);
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
-}
-
-.badge-mandatory {
-  margin-left: 0.5rem;
-}
-
-/* ============================================================
    Grants / sharing rows
    ============================================================ */
 .grant-block {
@@ -935,46 +513,113 @@ input[type="checkbox"].switch:disabled {
 }
 
 /* ============================================================
-   Sign-in / consent (centered card)
+   Sign-in / consent: the AuthShell recipe (components/AuthShell.tsx).
+   One backdrop for both screens: the shared Aurora, a Blueprint wash and
+   the illustrations' 10px dot grid (shared/styles/illustrations.css draws
+   the same grid inside each EmptyIllustration), here as a CSS background
+   at twice the pitch, faded out towards the edges. Tokens only.
    ============================================================ */
-.signin {
-  min-height: 100vh;
+.auth-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.auth-wash {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    46rem 28rem at 50% 38%,
+    var(--brand-blueprint-soft),
+    transparent 70%
+  );
+}
+
+.auth-grid {
+  --auth-dot: color-mix(in srgb, var(--brand-blueprint) 30%, transparent);
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, var(--auth-dot) 1px, transparent 1.4px);
+  background-size: 20px 20px;
+  background-position: center;
+  -webkit-mask-image: radial-gradient(ellipse 75% 65% at 50% 42%, #000 20%, transparent 78%);
+  mask-image: radial-gradient(ellipse 75% 65% at 50% 42%, #000 20%, transparent 78%);
+}
+
+:root[data-theme="light"] .auth-grid {
+  --auth-dot: color-mix(in srgb, var(--brand-blueprint) 20%, transparent);
+}
+
+/* The badge's soft Blueprint halo (the kit's brand-badge shadow). */
+.auth-badge {
+  display: inline-flex;
+  border-radius: 22%;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--brand-blueprint) 45%, transparent),
+    0 6px 24px -8px color-mix(in srgb, var(--brand-blueprint) 70%, transparent);
+}
+
+/* device -> preview -> portal: a three-column strip; each step is an icon
+   tile plus a label and one line. The current step takes the accent. */
+.auth-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.auth-step {
+  position: relative;
   display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.6rem 0.65rem;
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-2);
+  background: color-mix(in srgb, var(--bg-1) 70%, transparent);
+}
+
+.auth-step-icon {
+  display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  padding: 1.5rem;
-  background:
-    radial-gradient(
-      1100px 520px at 50% -10%,
-      var(--brand-soft),
-      transparent 70%
-    ),
-    var(--bg-0);
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-2);
+  background: var(--bg-3);
+  color: var(--fg-2);
 }
 
-.signin-card {
-  width: 100%;
-  max-width: 380px;
-  margin: 0;
-  box-shadow: var(--shadow-2);
+.auth-step-current {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 60%, var(--bg-1));
 }
 
-.signin-brand {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1.1rem;
-  text-align: center;
+.auth-step-current .auth-step-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
-.signin-brand h1 {
-  margin: 0;
-  font-size: 1.25rem;
+/* The chevron between steps sits on the gap, centred on the tile. */
+.auth-step-sep {
+  position: absolute;
+  top: 50%;
+  right: calc(-0.375rem - 6px);
+  transform: translateY(-50%);
+  color: var(--fg-4);
 }
 
-.consent-card {
-  max-width: 520px;
+@media (max-width: 480px) {
+  .auth-steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .auth-step-sep {
+    display: none;
+  }
 }
 
 .consent-list {
@@ -983,38 +628,110 @@ input[type="checkbox"].switch:disabled {
   margin: 1.1rem 0;
 }
 
+/* The escalating-disclosure ladder (design-kit WS5/WS10): the purposes
+   arrive least to most sensitive (lib/vocab.ts orderPurposes), so a rail
+   runs down the list, deepening from the line colour to the accent, with
+   one node per row filled by that row's disclosure level. A purpose this
+   build has no level for gets a hollow node: its sensitivity is unknown,
+   not low. */
+.consent-ladder {
+  position: relative;
+  padding-left: 18px;
+}
+
+.consent-ladder::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1.2rem;
+  bottom: 1.2rem;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, var(--line-2), var(--accent));
+}
+
 .consent-row {
+  position: relative;
   padding: 0.9rem 0;
   border-bottom: 1px solid var(--line-1);
+}
+
+.consent-ladder .consent-row::before {
+  --node: transparent;
+  content: "";
+  position: absolute;
+  left: -17px;
+  top: calc(0.9rem + 7px);
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  border: 1.5px solid var(--line-3);
+  background: var(--bg-1);
+  box-shadow: inset 0 0 0 4px var(--node);
+}
+
+/* LADDER_NODE: disclosure level -> node fill (one row per level). */
+.consent-ladder .consent-row[data-level="1"]::before {
+  --node: var(--line-3);
+}
+.consent-ladder .consent-row[data-level="2"]::before {
+  --node: color-mix(in srgb, var(--accent) 45%, var(--line-3));
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line-3));
+}
+.consent-ladder .consent-row[data-level="3"]::before {
+  --node: color-mix(in srgb, var(--accent) 75%, var(--line-3));
+  border-color: color-mix(in srgb, var(--accent) 75%, var(--line-3));
+}
+.consent-ladder .consent-row[data-level="4"]::before {
+  --node: var(--accent);
+  border-color: var(--accent);
+}
+
+.consent-scale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 1.1rem;
+  font-size: 11px;
+  color: var(--fg-3);
 }
 
 .consent-row:last-child {
   border-bottom: none;
 }
 
-.consent-row .check-row {
-  margin: 0;
-  align-items: center;
+/* The consent choice is the shared <Toggle size="md"> (40px track + 10px
+   gap); these rules only restore the portal's larger row label. */
+/* Block-level so the row is exactly the toggle's height (an inline-flex
+   button sits in a line box and gains the strut's descender space). */
+.consent-row .consent-toggle {
+  display: flex;
+  text-align: left;
+}
+
+.consent-toggle-label {
   font-size: 0.9rem;
   font-weight: 500;
+  line-height: 1.35;
   color: var(--fg-0);
 }
 
-.consent-desc {
-  margin: 0.45rem 0 0 calc(38px + 0.55rem);
-  color: var(--fg-2);
+/* A Required purpose is disabled (always on); keep its label legible and
+   dim only the track, as the old checkbox switch did. Scoped under
+   .consent-row so it outranks Tailwind's disabled: variant, which Tailwind
+   emits at the END of the stylesheet. */
+.consent-row .consent-toggle:disabled {
+  opacity: 1;
 }
 
-/* ============================================================
-   Boot loading gate
-   ============================================================ */
-.boot-loading {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg-3);
-  font-size: 0.9rem;
+.consent-row .consent-toggle:disabled > span:first-child {
+  opacity: 0.65;
+}
+
+.consent-desc {
+  margin: 0.45rem 0 0 calc(40px + 0.625rem);
+  color: var(--fg-2);
 }
 
 /* ============================================================
@@ -1047,7 +764,11 @@ input[type="checkbox"].switch:disabled {
   text-decoration: none;
   color: inherit;
   border-radius: var(--r-2);
-  transition: background var(--dur-fast) var(--ease);
+  /* Restates .sb-lift's transform transition, which this later rule would
+     otherwise override (the row carries sb-lift in Sessions.tsx). */
+  transition:
+    background var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease-out);
 }
 
 .session-link:hover {
@@ -1120,22 +841,13 @@ input[type="checkbox"].switch:disabled {
   justify-content: center;
 }
 
-.badge-edited {
-  background: var(--info-soft);
-  color: var(--info);
-  border-color: color-mix(in srgb, var(--info) 30%, transparent);
-}
-
-.badge-head {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-}
-
 /* ============================================================
    Session detail + result card (W6c)
    ============================================================ */
 .back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
   text-decoration: none;
   color: var(--fg-2);
   font-size: 0.85rem;
@@ -1148,10 +860,6 @@ input[type="checkbox"].switch:disabled {
 
 .detail-meta {
   margin-bottom: 1.5rem;
-}
-
-.result-card {
-  margin-bottom: 1rem;
 }
 
 .result-head {
@@ -1190,8 +898,10 @@ input[type="checkbox"].switch:disabled {
   margin-bottom: 0.6rem;
 }
 
+/* bg-3, not bg-1: bg-1 equals the card's bg-2 in the light theme, so the
+   panel vanished there. */
 .result-original {
-  background: var(--bg-1);
+  background: var(--bg-3);
   border: 1px solid var(--line-1);
   border-radius: var(--r-3);
   padding: 0.85rem 1rem;
@@ -1230,24 +940,10 @@ input[type="checkbox"].switch:disabled {
   overflow-wrap: anywhere;
 }
 
-.kv-val.strong {
-  color: var(--fg-0);
-  font-weight: 600;
-}
-
 .tag-row {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
-}
-
-.mini-list {
-  margin: 0;
-  padding-left: 1.1rem;
-}
-
-.mini-list li {
-  margin: 0.1rem 0;
 }
 
 /* ============================================================
@@ -1303,36 +999,8 @@ input[type="checkbox"].switch:disabled {
   border-radius: var(--r-3);
 }
 
-.edit-form label:first-of-type {
+.edit-form .field-label:first-of-type {
   margin-top: 0;
-}
-
-textarea,
-.edit-textarea {
-  width: 100%;
-  padding: 0.55rem 0.75rem;
-  background: var(--bg-1);
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-2);
-  color: var(--fg-0);
-  font-size: 0.9rem;
-  font-family: inherit;
-  line-height: 1.5;
-  resize: vertical;
-  transition: border-color var(--dur-fast) var(--ease),
-    box-shadow var(--dur-fast) var(--ease);
-}
-
-textarea::placeholder,
-.edit-textarea::placeholder {
-  color: var(--fg-4);
-}
-
-textarea:focus,
-.edit-textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 .edit-actions {
@@ -1343,165 +1011,8 @@ textarea:focus,
 }
 
 /* ============================================================
-   Community percentiles (W5)
-   ============================================================ */
-.community-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1.25rem 2rem;
-}
-
-.control-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.control-label {
-  font-size: 0.78rem;
-  color: var(--fg-2);
-}
-
-/* Segmented selector — a row of buttons where the active one is filled. */
-.seg {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  background: var(--bg-2);
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-2);
-  padding: 2px;
-}
-
-.seg-btn {
-  appearance: none;
-  border: none;
-  background: transparent;
-  color: var(--fg-2);
-  font-family: inherit;
-  font-size: 0.82rem;
-  padding: 0.4rem 0.7rem;
-  border-radius: var(--r-2);
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.seg-btn:hover {
-  color: var(--fg-0);
-}
-
-.seg-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
-
-.seg-btn-on {
-  background: var(--bg-4);
-  color: var(--fg-0);
-}
-
-.community-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.5rem 1rem;
-  margin-bottom: 0.35rem;
-}
-
-.community-head h2 {
-  margin: 0;
-}
-
-.band-list {
-  margin-top: 0.75rem;
-}
-
-.band-row {
-  margin: 0.75rem 0;
-}
-
-.band-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  font-size: 0.85rem;
-  margin-bottom: 0.35rem;
-  color: var(--fg-1);
-}
-
-.band-label > span:first-child {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.band-count {
-  color: var(--fg-2);
-  font-variant-numeric: tabular-nums;
-}
-
-.band-fill-own {
-  background: var(--accent-strong);
-}
-
-.band-row-own .band-label {
-  color: var(--fg-0);
-  font-weight: 600;
-}
-
-/* Metric-definition list. */
-.def-list {
-  margin: 0.5rem 0 0;
-  padding: 0;
-}
-
-.def-item {
-  padding: 0.7rem 0;
-  border-top: 1px solid var(--line-1);
-}
-
-.def-item:first-child {
-  border-top: none;
-}
-
-.def-item dt {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  color: var(--fg-0);
-  font-size: 0.9rem;
-  font-weight: 600;
-}
-
-.def-unit {
-  color: var(--fg-3);
-  font-size: 0.78rem;
-  font-weight: 400;
-  font-variant-numeric: tabular-nums;
-}
-
-.def-item dd {
-  margin: 0.25rem 0 0;
-  color: var(--fg-2);
-  font-size: 0.84rem;
-  line-height: 1.5;
-}
-
-/* ============================================================
    Billing (checkout — Wave B)
    ============================================================ */
-.billing-price {
-  margin: 0.6rem 0 0.9rem;
-}
-
-.billing-price-amount {
-  font-size: 1.15rem;
-  font-weight: 600;
-  color: var(--fg-0);
-}
 
 .action-row {
   display: flex;
@@ -1533,10 +1044,13 @@ textarea:focus,
 @media (max-width: 767px) {
   .app-shell { flex-direction: column; height: 100dvh; }
   .sidebar { width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--line-2); }
-  .sidebar-brand { height: 44px; }
+  .sidebar-brand { display: none; }
+  .topbar-brand { display: flex; }
+  .boot-sidebar { display: none; }
   .sidebar-nav { display: flex; flex-direction: row; overflow-x: auto; padding: 6px 10px; gap: 4px; }
   .sidebar-nav .nav-item { flex: 0 0 auto; white-space: nowrap; }
-  .app-shell-main { min-height: 0; width: 100%; }
+  .app-shell-main { min-height: 0; width: 100%; flex: 1 1 auto; }
+  .sidebar { overflow: visible; }
   .topbar { padding-inline: 14px; gap: 8px; }
   .topbar-account { max-width: 110px; }
   .main { padding: 16px; }

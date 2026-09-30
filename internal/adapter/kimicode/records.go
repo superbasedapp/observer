@@ -153,6 +153,65 @@ func mapKimiTool(name string) string {
 		return models.ActionSpawnSubagent
 	case "todolist", "todowrite", "todo":
 		return models.ActionTodoUpdate
+	// kimi-code 2.1.1 built-ins, grounded 2026-09-28 in the shipped
+	// bundle (@moonshot-ai/kimi-code 2.1.1 dist/main.mjs, each tool
+	// class's `name = "..."`) and the public source
+	// (github.com/MoonshotAI/kimi-code packages/agent-core-v2/src/
+	// {agent/tools,features/*/tools}).
+	case "askuserquestion":
+		return models.ActionAskUser
+	case "enterplanmode", "exitplanmode":
+		// Plan-mode toggles (ExitPlanModeTool drives the permission-mode
+		// service) — Claude Code's EnterPlanMode/ExitPlanMode bucket.
+		return models.ActionPermissionMode
+	case "skill":
+		return models.ActionSkillInvoke
+	case "croncreate", "cronlist", "crondelete":
+		// Schedule / list / cancel a future prompt — claude-code Cron*.
+		return models.ActionSchedule
+	case "tasklist", "taskoutput", "taskstop":
+		// BACKGROUND-task control (a background Bash, Agent or
+		// AskUserQuestion), NOT a todo list: enumerate / snapshot /
+		// stop the running pool — deepseek job_list/job_output/job_kill
+		// precedent. Deliberately not todo_update (the claude-code
+		// TaskList/TaskOutput/TaskStop mis-bucket that
+		// internal/taskflow/decode.go documents).
+		return models.ActionAgentControl
+	case "waitfor":
+		// Blocks the turn on running background tasks — codex `wait`.
+		return models.ActionSubagentWait
+	case "notifyuser":
+		return models.ActionNotification
+	case "creategoal", "getgoal", "setgoalbudget", "updategoal":
+		// The runtime's own goal state (objective / budget / status) —
+		// deepseek create_goal/get_goal/update_goal precedent.
+		return models.ActionHarnessCall
+	// Tower: the multi-agent "control tower" feature
+	// (features/tower/tools, TOWER_TOOL_NAMES).
+	case "towerspawn":
+		// Spawns a worker/reviewer as a background subagent.
+		return models.ActionSpawnSubagent
+	case "towersend", "towerfinding", "towerreview":
+		// Hand a message / finding / review verdict to the tower or
+		// another roster agent — an inter-agent message.
+		return models.ActionAgentMessage
+	case "towerinbox", "towerstatus":
+		// Read the inbox / the roster+missions dashboard — inspecting
+		// the agent pool (codex read_thread / list_agents precedent).
+		return models.ActionAgentControl
+	case "towerplan", "towermission":
+		// Split the goal into missions with verifiable task checklists
+		// / read or tick a mission's checklist — structured plan
+		// tracking.
+		return models.ActionTodoUpdate
+	case "towerteardown":
+		// Removes the mission git worktrees — claude-code ExitWorktree.
+		return models.ActionWorktreeRemove
+	case "towerinit", "towermerge":
+		// Create the .tower/ workspace / merge a reviewed mission branch:
+		// harness-owned operations, neither a shell command nor file
+		// work the model authored.
+		return models.ActionHarnessCall
 	default:
 		return models.ActionUnknown
 	}

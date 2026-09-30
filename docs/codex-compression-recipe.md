@@ -251,12 +251,12 @@ the full operator surface — config knobs, path-safety defenses, audit
 log queries.
 
 **v1.7.9 adds `get_symbols`** — batched symbol-level retrieval (one
-MCP turn returns N symbol bodies across M files via the codegraph
+MCP turn returns N symbol bodies across M files via the codeintel
 index). Pairs with `get_file` for the "tell me what's in
 `handleClick` AND give me its callers/callees" verification pattern.
 See [`docs/mcp-get-symbols-reference.md`](mcp-get-symbols-reference.md).
 
-**v1.7.10 adds `get_relations`** — codegraph BFS traversal. Ask
+**v1.7.10 adds `get_relations`** — code-index BFS traversal. Ask
 "what calls X within 2 hops?" and get back the reachability set in
 one MCP turn (no recursive grep, no multi-round-trip discovery).
 Returns metadata only; use `get_symbols` for bodies. Supports three
@@ -280,7 +280,7 @@ are ON by default after upgrading. One more V7-12 tool
   operator reference (batched symbol lookup, V7-15 ranking,
   include_relations payload, body-cap behavior).
 * `docs/mcp-get-relations-reference.md` — v1.7.10 `get_relations`
-  operator reference (codegraph BFS, three kinds, ambiguity
+  operator reference (code-index BFS, three kinds, ambiguity
   handling, CONTAINS-population caveat).
 * `docs/compression-modes.md` — the existing per-mode reference for
   the conversation pipeline.

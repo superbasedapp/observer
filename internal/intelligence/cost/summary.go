@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/spendverdict"
 )
 
 // GroupBy selects how summary rows are keyed.
@@ -103,6 +105,18 @@ type Options struct {
 	Source Source
 	// ProjectRoot filters rows to a single project by matching projects.root_path.
 	ProjectRoot string
+	// ProjectID filters rows to a single project by id. Takes precedence
+	// over ProjectRoot when both are set (avoids an extra projects-table
+	// round trip for a caller that already resolved the id — e.g. the
+	// Projects page). Proxy rows are scoped by COALESCE(at.project_id,
+	// s.project_id): api_turns.project_id is NULL on every row of every
+	// grounded install (the proxy learns the session id, not the cwd),
+	// so keying on it alone would silently drop every proxy turn from a
+	// project-scoped query (2026-09-22 arc review F6/F9 — the same bug
+	// internal/store/projectroi.go's turn loader already worked around;
+	// this closes it at the engine's own loadProxyRows instead of a
+	// parallel loader).
+	ProjectID int64
 	// Tool filters rows to a single tool by matching sessions.tool. Empty
 	// means no tool filter. Mirrors the dashboard's global Tool dropdown
 	// so cost rollups can scope to "what did codex cost me this month".
@@ -117,6 +131,16 @@ type Options struct {
 	Limit int
 	// Now overrides time.Now for deterministic tests.
 	Now func() time.Time
+	// BucketKey, when set, replaces the calendar-day half of every
+	// GroupByDay / GroupByDayModel / GroupByDayProject / GroupByDayTool key
+	// (the UTC date prefix of the row's timestamp) with BucketKey(ts) - the
+	// bucket grouping the dashboard's time-series use for 5-minute, hour,
+	// viewer-local day and week buckets (internal/timebucket supplies the
+	// floor; the engine stays free of the vocabulary). Hour and day views of
+	// one window therefore come from the SAME rows and the SAME per-row
+	// pricing, so their totals agree. ts is the row's stored timestamp
+	// string; the func must be pure. Nil keeps the UTC-day prefix.
+	BucketKey func(ts string) string
 }
 
 // Row is one grouped summary entry.
@@ -169,6 +193,25 @@ type Row struct {
 	// payload lean.
 	FastTurnCount int     `json:"fast_turn_count,omitempty"`
 	FastCostUSD   float64 `json:"fast_cost_usd,omitempty"`
+	// UnpricedTurnCount is this bucket's share of Summary.
+	// UnpricedTurnCount — the number of this group's rows that are not
+	// FULLY priced: a pricing MISS (no recorded cost AND no pricing-table
+	// entry), or a table price whose cache-read rate the vendor never
+	// quoted (TurnRow.FullyPriced's same verdict). Added
+	// 2026-09-22 so a GroupByProject caller (the Projects list) can
+	// report "N turns we couldn't price" per project without a second
+	// query — the same count the Projects detail panel's
+	// spend.unpriced_turns already surfaces for one project.
+	UnpricedTurnCount int `json:"unpriced_turn_count,omitempty"`
+	// PricedTurnCount is TurnCount - UnpricedTurnCount: this bucket's
+	// rows that DID resolve to a dollar figure (a recorded cost, or a
+	// pricing-table hit — including a known-free model's real $0.00).
+	// Added 2026-09-22 rework finding #13 so a caller can tell "every
+	// turn in this bucket priced to exactly $0.00" (PricedTurnCount ==
+	// TurnCount, CostUSD == 0 — a real, known-free-model zero) apart
+	// from "we have no pricing coverage for this bucket at all"
+	// (PricedTurnCount == 0) without a second query.
+	PricedTurnCount int `json:"priced_turn_count,omitempty"`
 }
 
 // CompressionStats aggregates savings metadata across every proxy turn
@@ -321,13 +364,10 @@ type rawRow struct {
 	// adapter path doesn't see request → response wall time.
 	// V3-5 surfaces the bucket average as Row.AvgLatencyMS.
 	latencyMS int64
-	// turnID identifies one upstream API turn. Proxy rows populate it
-	// from api_turns.request_id (Anthropic message_id, OpenAI completion
-	// id). JSONL rows populate it from token_usage.source_event_id, which
-	// the Claude Code adapter sets to the same Anthropic message_id. Used
-	// by the dedup pass: when both sources have a row with the same
-	// turnID, proxy wins. When either side lacks a turnID, dedup falls
-	// back to the older session_id + fingerprint matcher.
+	// turnID identifies one upstream API turn: api_turns.request_id for a
+	// proxy row, token_usage.source_event_id for a transcript row. It is
+	// reported back as TurnRow.TurnID; the proxy/transcript dedup itself is
+	// the stored verdicts (loadRows).
 	turnID string
 }
 
@@ -361,52 +401,6 @@ func isNoiseRow(r rawRow) bool {
 		return true
 	}
 	return false
-}
-
-// fingerprint identifies "this is the same logical API turn" when the
-// session_id key isn't available. Used by the proxy ↔ JSONL dedup in
-// loadRows when a proxy row landed without a session_id (typical for
-// pre-v1.2.1 api_turns rows). Timestamp is bucketed to the same calendar
-// minute so a 30-second skew between when the proxy logged the turn and
-// when the JSONL was flushed doesn't break the match. Token columns are
-// expected to match byte-for-byte: cache_read in particular is the same
-// number on both sides because it's reported by Anthropic's API.
-//
-// False-positive risk: two distinct API calls in the same minute with
-// byte-identical token shapes collapse into one. Acceptable trade — the
-// alternative is summing both halves of the same call against each other.
-// shapeKey identifies one turn by shape only — model, minute,
-// token-bundle. Session is intentionally excluded so the dedup pass can
-// match an empty-session legacy proxy row against a session-tagged
-// JSONL row of the same turn (audit item A2). The dedup pass adds
-// session into the lookup separately when both sides have it set.
-func shapeKey(r rawRow) string {
-	bucket := r.ts
-	if len(bucket) >= 16 {
-		bucket = bucket[:16] // YYYY-MM-DDTHH:MM
-	}
-	return fmt.Sprintf("%s|%s|%d|%d|%d|%d",
-		r.model, bucket,
-		r.tokens.Input, r.tokens.Output,
-		r.tokens.CacheRead, r.tokens.CacheCreation)
-}
-
-// sessionShapeKey identifies a turn by token-bundle shape WITHOUT the
-// minute bucket that shapeKey carries. Used only for the session-anchored
-// dedup level, where the session_id already disambiguates: the minute then
-// adds no safety but DOES cause false-negatives when a turn's two captures
-// straddle a minute boundary. Codex's rollout flush lands ~10s after the
-// proxy logs the request, so ~15% of turns near a minute boundary would
-// escape a minute-bucketed match and double-count. Two DISTINCT turns in
-// one session with byte-identical (model, input, output, cache_read,
-// cache_creation) are effectively impossible (cache_read grows
-// monotonically across a session), so dropping the minute can't false-drop
-// a legitimate turn. See audit F1 (docs/audits/audit-2026-06-08.md).
-func sessionShapeKey(r rawRow) string {
-	return fmt.Sprintf("%s|%d|%d|%d|%d",
-		r.model,
-		r.tokens.Input, r.tokens.Output,
-		r.tokens.CacheRead, r.tokens.CacheCreation)
 }
 
 // MaxSessionIDsPerScope bounds how many session ids ride in ONE Options.
@@ -500,12 +494,218 @@ func (e *Engine) Summary(ctx context.Context, db *sql.DB, opts Options) (Summary
 	return s, nil
 }
 
-//nolint:gocyclo // one sequential scan branch per token-source tier (proxy/JSONL union + dedup); splitting would scatter the two-level dedup invariant.
+// TurnRow is one normalized, de-duplicated, PRICED API turn — the
+// per-turn (not bucket-grain) substrate the Projects page needs
+// (docs/plans/projects-page-roi-and-commit-alignment-plan-2026-09-21.md,
+// 2026-09-22 rework). It is computed by the SAME loadRows pipeline
+// Summary uses (proxy/JSONL/summary_calls union, noise filtering, the
+// stored sessionmsg dedup verdicts - twins, shadow rows, the
+// session-cumulative reconciliation - and the fast-tier lift) and the SAME
+// priceRow pricing rule Summary's
+// rollup uses, so a caller scoped to one project sees EXACTLY the turns
+// and dollars a GroupByProject Summary would sum for that project. One
+// owner, two grains.
+type TurnRow struct {
+	SessionID string
+	At        time.Time
+	Model     string
+	Tool      string
+	// Source is "proxy" | "jsonl" | "summary_calls" — the capture path
+	// that supplied the row surviving dedup.
+	Source string
+	// TurnID is the upstream turn/message id when the capture path
+	// recorded one (empty for a legacy orphan proxy row or a
+	// session-aggregate JSONL row).
+	TurnID string
+	// CostUSD is 0 when Priced is false — never a fabricated $0.00.
+	CostUSD float64
+	// Priced is false only when the row had NO recorded cost AND NO
+	// pricing-table entry at all for its model. A model with an
+	// explicit $0 rate (a known-free model) IS priced — Priced=true,
+	// CostUSD=0 — Priced=false means "no rate found", not "free".
+	Priced bool
+	// CacheReadUnpriced is true when the row was priced from the table but
+	// its model's CACHE-READ rate was never quoted by the vendor
+	// ([Engine.CacheReadUnpricedAt]), so its cached tokens billed an
+	// intentional unpriced $0 - a PARTIAL price. It is priceRow's own
+	// signal, the same one Summary's rollup reports as a miss; read the
+	// combined verdict through [TurnRow.FullyPriced].
+	CacheReadUnpriced bool
+	Tokens            TokenBundle
+	// RecordedUSD is the capture path's own recorded cost for this row
+	// (api_turns.cost_usd / token_usage.estimated_cost_usd), 0 when none
+	// was recorded or when the dedup cleared it to re-price a fast-lifted
+	// proxy twin. CostUSD already folds it in (priceRow); it is exposed so
+	// a caller that decomposes a turn's cost against the pricing table
+	// (the Analysis tab's LC / cache-savings attribution) can tell a
+	// recorded figure from a table-priced one.
+	RecordedUSD float64
+	// ProjectPath is the resolved projects.root_path for this row
+	// (COALESCE(at.project_id, s.project_id) for a proxy row; s.
+	// project_id for a JSONL row). Empty when the row could not be
+	// attributed to any project.
+	ProjectPath string
+}
+
+// FullyPriced reports whether every token of this turn was priced: a rate was
+// found (Priced) AND no dimension billed against an unquoted rate
+// (CacheReadUnpriced). It is the one predicate a per-turn surface (the
+// Projects page's unpriced / coverage counts) counts against, so a partially
+// priced turn is never presented as an exact figure - the same verdict
+// Summary's rollup reaches for the same row.
+func (r TurnRow) FullyPriced() bool { return r.Priced && !r.CacheReadUnpriced }
+
+// TurnRows runs the same load-and-dedup pipeline Summary does and
+// returns the per-turn PRICED rows instead of bucket-grouped ones.
+// opts.GroupBy is ignored (there is no grouping at this grain);
+// opts.Limit is ignored (a turn-grain caller — the Projects page —
+// needs every turn in its window, not a top-N slice). Scope with
+// opts.ProjectID (preferred) or opts.ProjectRoot the same way Summary
+// is scoped.
+func (e *Engine) TurnRows(ctx context.Context, db *sql.DB, opts Options) ([]TurnRow, error) {
+	if opts.Source == "" {
+		opts.Source = SourceAuto
+	}
+	if opts.Now == nil {
+		opts.Now = func() time.Time { return time.Now().UTC() }
+	}
+	since := opts.Since
+	if since.IsZero() && opts.Days > 0 {
+		since = opts.Now().Add(-time.Duration(opts.Days) * 24 * time.Hour)
+	}
+	raws, err := e.loadRows(ctx, db, opts, since)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TurnRow, 0, len(raws))
+	for _, r := range raws {
+		// TurnRows always needs a real timestamp on the output row (a
+		// caller derives session windows / day buckets from it), so —
+		// unlike rollup's dateAware-gated parse — this always parses.
+		at, _ := time.Parse(time.RFC3339Nano, r.ts)
+		pr := e.priceRow(r, at)
+		out = append(out, TurnRow{
+			SessionID: r.sessionID, At: at, Model: r.model, Tool: r.tool,
+			Source: r.source, TurnID: r.turnID,
+			CostUSD: pr.CostUSD, Priced: pr.Priced, CacheReadUnpriced: pr.CacheReadUnpriced,
+			Tokens:      r.tokens,
+			RecordedUSD: r.recordedUSD,
+			ProjectPath: r.projectPath,
+		})
+	}
+	return out, nil
+}
+
+// pricedRow is priceRow's result — the per-row pricing computation
+// shared by rollup (bucket aggregation) and TurnRows (per-turn export)
+// so the two surfaces can never disagree about what one turn costs.
+type pricedRow struct {
+	CostUSD       float64
+	AICostUSD     float64
+	ToolCostUSD   float64
+	PricingSource PricingSource
+	// Priced is false when the row had no recorded cost AND no pricing
+	// entry for its model at all (see TurnRow.Priced's doc comment — a
+	// known-free model IS priced, at $0).
+	Priced bool
+	// CacheReadUnpriced is true when a TABLE-priced row carried cached
+	// tokens and its model's cache-read rate was never quoted
+	// ([Engine.CacheReadUnpricedAt]): those tokens billed an intentional
+	// unpriced $0, so the row is only partially priced. Never set for a
+	// recorded-cost row (the table was not consulted) or a whole-row miss.
+	CacheReadUnpriced bool
+}
+
+// priceRow resolves one rawRow's dollar cost: the recorded value when
+// the capture path stamped one (non-zero), else the pricing table's
+// rate for the row's model at rowAt, applied over the row's full token
+// bundle. rowAt is the zero time.Time when the caller doesn't need
+// date-effective pricing (LookupWithSourceAt's zero-time contract falls
+// back to current rates).
+func (e *Engine) priceRow(r rawRow, rowAt time.Time) pricedRow {
+	// 2026-09-22 rework finding #14: recorded cost wins only when it is
+	// POSITIVE. A malformed/negative estimated_cost_usd (a client-side
+	// computation bug, or a corrupted row) must never be treated as an
+	// authoritative "this turn cost -$4" — that silently REDUCES the
+	// project/bucket total below what the token bundle alone would
+	// price. r.recordedUSD == 0 already falls through to the pricing
+	// table; a negative value now falls through too instead of being
+	// trusted at face value (docs/projects-page.md's "recorded cost
+	// wins" rule always assumed a real, non-negative client figure).
+	if r.recordedUSD > 0 {
+		// Recorded cost — pricing table wasn't consulted, but the row
+		// still came with a known model. Mark the pricing path as
+		// "exact" since the upstream client (which had to know the
+		// model's rates to compute it) effectively certified the rate.
+		return pricedRow{CostUSD: r.recordedUSD, AICostUSD: r.recordedUSD, PricingSource: PricingSourceExact, Priced: true}
+	}
+	pricing, src, ok := e.LookupWithSourceAt(r.model, rowAt)
+	if !ok {
+		return pricedRow{PricingSource: PricingSourceMiss, Priced: false}
+	}
+	cb := ComputeBreakdown(pricing, r.tokens)
+	return pricedRow{
+		CostUSD: cb.Total, AICostUSD: cb.AICost, ToolCostUSD: cb.ToolCost, PricingSource: src, Priced: true,
+		CacheReadUnpriced: r.tokens.CacheRead > 0 && e.CacheReadUnpricedAt(r.model, rowAt),
+	}
+}
+
+// loadRows reads the window's spend rows: api_turns (proxy), summary_calls
+// and token_usage (transcript), per opts.Source.
+//
+// Under SourceAuto the two capture paths overlap - a proxied turn is also in
+// its transcript - and the rows are deduplicated by the ONE session rule,
+// internal/sessionmsg.Derive, whose per-row decisions are STORED
+// (internal/spendverdict, agent migration 143) and applied in each loader's
+// SQL: a transcript row Derive does not count is not read, a proxy row reads
+// its verdict's output / reasoning / fast tier, and a proxy row the
+// session-cumulative reconciliation dropped is not read. Because the
+// verdicts were derived over each session's WHOLE row set, a session cut by
+// the window's edge is judged exactly as its header judges it, and a
+// session's rows here sum to its detail header.
+//
+// This replaced a per-window Go pass (applySessionDedup +
+// reconcileSessionAggregates) that re-ran Derive over only the window's rows
+// and needed every column Derive reads in the load - ~1.8x slower per
+// Analysis panel (lane R2-ONERULE). A single-source read reports that capture
+// path as stored, except that a transcript-only read (SourceJSONL) still
+// drops a paired output-only shadow row - a duplicate the transcript made of
+// itself, not a proxy overlap.
 func (e *Engine) loadRows(ctx context.Context, db *sql.DB, opts Options, since time.Time) ([]rawRow, error) {
 	var out []rawRow
+	applyVerdicts := opts.Source == SourceAuto
+	if (applyVerdicts || opts.Source == SourceJSONL) && db != nil {
+		// Bring every changed session's verdicts up to date first. A failed
+		// refresh (a write lock held past busy_timeout, a cancelled request)
+		// leaves the previous verdicts in place and the read proceeds: only
+		// a session changed since its last derivation can be off, and the
+		// next read retries.
+		_, _ = spendverdict.Refresh(ctx, db, spendverdict.Options{})
+	}
+
+	// Opt-in raw-row cache (rowcache.go): the two big per-window reads —
+	// api_turns and token_usage — may be served from a fresh cached read of
+	// the same query shape. The fingerprint is probed once per call; any
+	// failure simply reads uncached.
+	var fp rowFingerprint
+	useCache := db != nil && rowCacheAllowed(ctx)
+	if useCache {
+		fp, useCache = loadRowFingerprint(ctx, db)
+	}
+	cachedLoad := func(kind string, load func() ([]rawRow, error)) ([]rawRow, error) {
+		if applyVerdicts {
+			kind += ":auto" // verdict-applied rows differ from single-source ones
+		}
+		if useCache {
+			if k, ok := rowCacheKeyFor(db, kind, opts, since); ok {
+				return e.rows.load(k, since, fp, load)
+			}
+		}
+		return load()
+	}
 
 	if opts.Source == SourceProxy || opts.Source == SourceAuto {
-		proxy, err := e.loadProxyRows(ctx, db, opts, since)
+		proxy, err := cachedLoad("proxy", func() ([]rawRow, error) { return e.loadProxyRows(ctx, db, opts, since, applyVerdicts) })
 		if err != nil {
 			return nil, err
 		}
@@ -521,190 +721,38 @@ func (e *Engine) loadRows(ctx context.Context, db *sql.DB, opts Options, since t
 	}
 
 	if opts.Source == SourceJSONL || opts.Source == SourceAuto {
-		jsonl, err := e.loadJSONLRows(ctx, db, opts, since)
+		jsonl, err := cachedLoad("jsonl", func() ([]rawRow, error) { return e.loadJSONLRows(ctx, db, opts, since, applyVerdicts) })
+		// (A transcript-only read still drops paired output-only shadow
+		// rows - loadJSONLRows applies that one verdict either way.)
 		if err != nil {
 			return nil, err
 		}
-		if opts.Source == SourceAuto {
-			// Prefer proxy on a PER-TURN basis. Pre-2026-04-29 we deduped
-			// at session granularity (drop ALL JSONL rows for a session
-			// once any proxy row exists), which silently dropped 80%+ of
-			// tokens whenever the proxy was off for most of a session and
-			// JSONL was the only ground truth for those turns. See
-			// docs/cost-accuracy-audit-2026-04-29.md, Finding 1.
-			//
-			// Three-level dedup, tried in order from most to least precise:
-			//
-			//   1. turnID — api_turns.request_id and the JSONL adapter's
-			//      source_event_id store the upstream message id (msg_xxx
-			//      for Anthropic, where both sides agree). A per-turn match
-			//      is exact when both sides use the SAME scheme.
-			//
-			//   2. (session_id, sessionShapeKey) — when the turnID match
-			//      fails, match by session + token-bundle shape. This is the
-			//      ONLY level that catches codex: its proxy request_id
-			//      (resp_…) and JSONL source_event_id (tk:rollout-…:L<n>)
-			//      are disjoint schemes (zero overlap DB-wide), so level 1
-			//      never fires and the two captures of every codex turn
-			//      would double-count without this. See audit F1
-			//      (docs/audits/audit-2026-06-08.md).
-			//
-			//   3. shape-only (with minute) against proxy rows with EMPTY
-			//      session_id — legacy A2 case: pre-v1.2.1 the proxy didn't
-			//      always record a session_id, but the JSONL adapter did.
-			//
-			// The shape maps are now populated from EVERY proxy row, not
-			// just turnID-less ones (the pre-fix bug: codex proxy rows
-			// always carry a request_id, so they `continue`d past the shape
-			// maps, leaving levels 2/3 dead and every codex turn double-
-			// counted — audit F1). Independently re-discovered + fixed on
-			// the sibling clone 2026-06-10 as an operator-reported
-			// regression: codex CLI session 019eadd3-… (gpt-5.4, single
-			// turn) surfaced as input_tokens=15,020 on /api/sessions — an
-			// exact 2× of the real 7,510. This (minute-less sessionShapeKey
-			// + fast-lift) variant superseded that fix at the 2026-06-10
-			// reunion merge.
-			proxyTurns := map[string]bool{}
-			proxySessionShapes := map[string]bool{} // sessionID + "\x00" + sessionShapeKey
-			proxyOrphanShapes := map[string]bool{}  // shapeKey, empty-session proxy rows only
-			for _, r := range out {
-				// summary_calls are observer-initiated (D20 Haiku) and must
-				// never dedup a real user turn — keep them out of every map.
-				if r.source == "summary_calls" {
-					continue
-				}
-				if r.turnID != "" {
-					proxyTurns[r.turnID] = true
-				}
-				if r.sessionID == "" {
-					proxyOrphanShapes[shapeKey(r)] = true
-				} else {
-					proxySessionShapes[r.sessionID+"\x00"+sessionShapeKey(r)] = true
-				}
-			}
-			// Codex's priority/fast premium lives ONLY in the JSONL row
-			// (sourced from config.toml); the proxy wire reports the default
-			// tier (fast=0). When a fast JSONL row is dropped as a proxy
-			// duplicate we remember to lift its fast flag onto the surviving
-			// proxy twin, so the FastMultiplier premium isn't lost (audit F1,
-			// operator decision "keep proxy, OR-in fast").
-			fastTurnIDs := map[string]bool{}
-			fastSessionShapes := map[string]bool{}
-			fastOrphanShapes := map[string]bool{}
-			for _, r := range jsonl {
-				if r.turnID != "" && proxyTurns[r.turnID] {
-					if r.tokens.Fast {
-						fastTurnIDs[r.turnID] = true
-					}
-					continue
-				}
-				sk := r.sessionID + "\x00" + sessionShapeKey(r)
-				if r.sessionID != "" && proxySessionShapes[sk] {
-					if r.tokens.Fast {
-						fastSessionShapes[sk] = true
-					}
-					continue
-				}
-				ok := shapeKey(r)
-				if len(proxyOrphanShapes) > 0 && proxyOrphanShapes[ok] {
-					if r.tokens.Fast {
-						fastOrphanShapes[ok] = true
-					}
-					continue
-				}
-				out = append(out, r)
-			}
-			// Lift inherited fast onto the surviving proxy rows. Zeroing
-			// recordedUSD forces rollup to re-price from the table WITH the
-			// FastMultiplier premium (the proxy's insert-time cost_usd was
-			// computed at the standard wire tier). Only a 0→1 flip recomputes;
-			// a proxy row already fast (Anthropic Opus 4.8, premium already in
-			// its recorded cost) is left untouched.
-			for i := range out {
-				if out[i].source != "proxy" || out[i].tokens.Fast {
-					continue
-				}
-				inherit := false
-				switch {
-				case out[i].turnID != "" && fastTurnIDs[out[i].turnID]:
-					inherit = true
-				case out[i].sessionID != "" && fastSessionShapes[out[i].sessionID+"\x00"+sessionShapeKey(out[i])]:
-					inherit = true
-				case out[i].sessionID == "" && fastOrphanShapes[shapeKey(out[i])]:
-					inherit = true
-				}
-				if inherit {
-					out[i].tokens.Fast = true
-					out[i].recordedUSD = 0
-				}
-			}
-		} else {
-			out = append(out, jsonl...)
-		}
+		// One exact-size allocation: appending ~170k rawRows (~330 B each)
+		// one by one regrew and recopied the slice many times over.
+		res := make([]rawRow, len(out), len(out)+len(jsonl))
+		copy(res, out)
+		res = append(res, jsonl...)
+		out = res
 	}
-	// Collapse the copilot family's redundant output-only "shadow" rows so a
-	// turn's output isn't double-counted (the two copilot adapters each emit a
-	// full-usage row AND an output-only row per turn — see
-	// dropCopilotOutputShadows). No-op for every other adapter.
-	out = dropCopilotOutputShadows(out)
 	return out, nil
 }
 
-// dropCopilotOutputShadows removes the redundant output-only "shadow" token
-// rows the copilot family (copilot, copilot-cli) emits. Both adapters write a
-// full-usage token_usage row AND a separate output-only row (input=0, no cache)
-// for the same turn — the adapter set MessageID on both intending a
-// (session_id, message_id) merge, but the store keys on (source_file,
-// source_event_id), so they never merge and the output double-counts. Drop an
-// output-only copilot row when a full-usage sibling in the same session carries
-// the same output_tokens. Every other adapter emits one token row per turn, so
-// this is a no-op for them and the existing dedup behaviour is unchanged.
-func dropCopilotOutputShadows(rows []rawRow) []rawRow {
-	// Per-session set of output values "owned" by a full-usage row (input or
-	// cache present). An output-only copilot row with the same value in the
-	// same session is the redundant shadow.
-	fullOutputs := map[string]map[int64]bool{}
-	for i := range rows {
-		r := rows[i]
-		if r.tokens.Output <= 0 {
-			continue
-		}
-		if r.tokens.Input > 0 || r.tokens.CacheRead > 0 || r.tokens.CacheCreation > 0 {
-			m := fullOutputs[r.sessionID]
-			if m == nil {
-				m = map[int64]bool{}
-				fullOutputs[r.sessionID] = m
-			}
-			m[r.tokens.Output] = true
-		}
+// loadProxyRows reads the window's api_turns rows. With applyVerdicts (the
+// SourceAuto read) each row reads its stored dedup verdict: a row the
+// session-cumulative reconciliation dropped is not read, a twinned row
+// carries its transcript twin's visible output + reasoning (billed at the
+// same rate, so the sum prices identically) and, when that twin was fast,
+// the fast tier - its recorded cost was priced at the standard wire tier, so
+// it is cleared and the row re-priced from the table (the session detail's
+// proxyAwareCost applies the same rule).
+func (e *Engine) loadProxyRows(ctx context.Context, db *sql.DB, opts Options, since time.Time, applyVerdicts bool) ([]rawRow, error) {
+	outputExpr, reasoningExpr, liftExpr, verdictJoin := `COALESCE(at.output_tokens, 0)`, `0`, `0`, ``
+	if applyVerdicts {
+		outputExpr, reasoningExpr, liftExpr, verdictJoin = spendverdict.ProxyOutput("at"), spendverdict.ProxyReasoning(), spendverdict.ProxyInheritedFast(), spendverdict.ProxyVerdictJoin("at")
 	}
-	out := rows[:0]
-	for i := range rows {
-		r := rows[i]
-		if isCopilotOutputShadow(r) && fullOutputs[r.sessionID][r.tokens.Output] {
-			continue
-		}
-		out = append(out, r)
-	}
-	return out
-}
-
-// isCopilotOutputShadow reports whether r is a copilot-family output-only token
-// row (input=0, no cache, output>0) — the Tier-3 events.jsonl capture that
-// duplicates a full-usage row's output. The tool strings mirror
-// models.ToolCopilot / models.ToolCopilotCLI (literals here to keep the cost
-// package free of a models import, matching the dashboard CTE's literals).
-func isCopilotOutputShadow(r rawRow) bool {
-	if r.tool != "copilot" && r.tool != "copilot-cli" {
-		return false
-	}
-	return r.tokens.Input == 0 && r.tokens.CacheRead == 0 &&
-		r.tokens.CacheCreation == 0 && r.tokens.Output > 0
-}
-
-func (e *Engine) loadProxyRows(ctx context.Context, db *sql.DB, opts Options, since time.Time) ([]rawRow, error) {
+	//nolint:gosec // G202: the verdict fragments are compile-time constant SQL; values bind via args.
 	q := `SELECT COALESCE(at.model, ''), COALESCE(at.input_tokens, 0),
-	             COALESCE(at.output_tokens, 0), COALESCE(at.cache_read_tokens, 0),
+	             ` + outputExpr + `, COALESCE(at.cache_read_tokens, 0),
 	             COALESCE(at.cache_creation_tokens, 0),
 	             COALESCE(at.cache_creation_1h_tokens, 0),
 	             COALESCE(at.web_search_requests, 0),
@@ -719,12 +767,17 @@ func (e *Engine) loadProxyRows(ctx context.Context, db *sql.DB, opts Options, si
 	             COALESCE(at.compression_marker_count, 0),
 	             COALESCE(at.request_id, ''),
 	             COALESCE(at.total_response_ms, 0),
-	             COALESCE(at.fast, 0)
-	      FROM api_turns at
-	      LEFT JOIN projects p ON p.id = at.project_id
-	      LEFT JOIN sessions s ON s.id = at.session_id`
+	             COALESCE(at.fast, 0),
+	             ` + reasoningExpr + `,
+	             ` + liftExpr + `
+	      FROM api_turns at` + verdictJoin + `
+	      LEFT JOIN sessions s ON s.id = at.session_id
+	      LEFT JOIN projects p ON p.id = COALESCE(at.project_id, s.project_id)`
 	var where []string
 	var args []any
+	if applyVerdicts {
+		where = append(where, spendverdict.CountedProxyRow())
+	}
 	if !since.IsZero() {
 		where = append(where, "at.timestamp >= ?")
 		args = append(args, since.UTC().Format(time.RFC3339Nano))
@@ -733,7 +786,19 @@ func (e *Engine) loadProxyRows(ctx context.Context, db *sql.DB, opts Options, si
 		where = append(where, "at.timestamp < ?")
 		args = append(args, opts.Until.UTC().Format(time.RFC3339Nano))
 	}
-	if opts.ProjectRoot != "" {
+	// COALESCE(at.project_id, s.project_id): api_turns.project_id is NULL
+	// on every row of every grounded install (the proxy learns the
+	// session id, not the cwd) — matching p.id = at.project_id alone
+	// (pre-2026-09-22 arc review F6/F9) silently dropped every proxy
+	// turn from a project-scoped query, landing all proxy spend under
+	// "<no-project>" on the Cost page. ProjectID (an id the caller
+	// already resolved) takes precedence over ProjectRoot so a
+	// project-scoped caller (the Projects page) doesn't pay an extra
+	// projects-table round trip.
+	if opts.ProjectID != 0 {
+		where = append(where, "COALESCE(at.project_id, s.project_id) = ?")
+		args = append(args, opts.ProjectID)
+	} else if opts.ProjectRoot != "" {
 		where = append(where, "p.root_path = ?")
 		args = append(args, opts.ProjectRoot)
 	}
@@ -756,10 +821,10 @@ func (e *Engine) loadProxyRows(ctx context.Context, db *sql.DB, opts Options, si
 		return nil, fmt.Errorf("cost.Summary: proxy query: %w", err)
 	}
 	defer rows.Close()
-	var out []rawRow
+	var out rawRowBlocks
 	for rows.Next() {
 		var r rawRow
-		var fastInt int
+		var fastInt, liftInt int
 		if err := rows.Scan(
 			&r.model,
 			&r.tokens.Input, &r.tokens.Output,
@@ -773,10 +838,16 @@ func (e *Engine) loadProxyRows(ctx context.Context, db *sql.DB, opts Options, si
 			&r.turnID,
 			&r.latencyMS,
 			&fastInt,
+			&r.tokens.Reasoning,
+			&liftInt,
 		); err != nil {
 			return nil, fmt.Errorf("cost.Summary: proxy scan: %w", err)
 		}
 		r.tokens.Fast = fastInt != 0
+		if liftInt != 0 && !r.tokens.Fast {
+			r.tokens.Fast = true
+			r.recordedUSD = 0
+		}
 		r.source = "proxy"
 		r.reliability = "accurate"
 		if r.compression.OriginalBytes > 0 || r.compression.CompressedBytes > 0 {
@@ -785,15 +856,20 @@ func (e *Engine) loadProxyRows(ctx context.Context, db *sql.DB, opts Options, si
 		if isNoiseRow(r) {
 			continue
 		}
-		out = append(out, r)
+		out.add(r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("cost.Summary: proxy rows: %w", err)
 	}
-	return out, nil
+	return out.rows(), nil
 }
 
-func (e *Engine) loadJSONLRows(ctx context.Context, db *sql.DB, opts Options, since time.Time) ([]rawRow, error) {
+// loadJSONLRows reads the window's token_usage rows. With applyVerdicts (the
+// SourceAuto read) a row Derive does not count - a proxy row's twin, a
+// request-id duplicate, a paired output-only shadow row, a row the
+// session-cumulative reconciliation dropped - is not read; without it (a
+// transcript-only read) only the paired output-only shadow rows are dropped.
+func (e *Engine) loadJSONLRows(ctx context.Context, db *sql.DB, opts Options, since time.Time, applyVerdicts bool) ([]rawRow, error) {
 	q := `SELECT COALESCE(tu.model, ''), COALESCE(tu.input_tokens, 0),
 	             COALESCE(tu.output_tokens, 0), COALESCE(tu.cache_read_tokens, 0),
 	             COALESCE(tu.cache_creation_tokens, 0),
@@ -811,6 +887,11 @@ func (e *Engine) loadJSONLRows(ctx context.Context, db *sql.DB, opts Options, si
 	      LEFT JOIN projects p ON p.id = s.project_id`
 	var where []string
 	var args []any
+	if applyVerdicts {
+		where = append(where, spendverdict.CountedTokenRow("tu"))
+	} else {
+		where = append(where, spendverdict.UnpairedShadowRow("tu"))
+	}
 	if !since.IsZero() {
 		where = append(where, "tu.timestamp >= ?")
 		args = append(args, since.UTC().Format(time.RFC3339Nano))
@@ -819,7 +900,10 @@ func (e *Engine) loadJSONLRows(ctx context.Context, db *sql.DB, opts Options, si
 		where = append(where, "tu.timestamp < ?")
 		args = append(args, opts.Until.UTC().Format(time.RFC3339Nano))
 	}
-	if opts.ProjectRoot != "" {
+	if opts.ProjectID != 0 {
+		where = append(where, "s.project_id = ?")
+		args = append(args, opts.ProjectID)
+	} else if opts.ProjectRoot != "" {
 		where = append(where, "p.root_path = ?")
 		args = append(args, opts.ProjectRoot)
 	}
@@ -842,7 +926,7 @@ func (e *Engine) loadJSONLRows(ctx context.Context, db *sql.DB, opts Options, si
 		return nil, fmt.Errorf("cost.Summary: jsonl query: %w", err)
 	}
 	defer rows.Close()
-	var out []rawRow
+	var out rawRowBlocks
 	for rows.Next() {
 		var r rawRow
 		var fastInt int
@@ -865,12 +949,12 @@ func (e *Engine) loadJSONLRows(ctx context.Context, db *sql.DB, opts Options, si
 		if isNoiseRow(r) {
 			continue
 		}
-		out = append(out, r)
+		out.add(r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("cost.Summary: jsonl rows: %w", err)
 	}
-	return out, nil
+	return out.rows(), nil
 }
 
 // loadSummaryCallRows reads the D20 summary_calls ledger — Anthropic
@@ -885,28 +969,62 @@ func (e *Engine) loadJSONLRows(ctx context.Context, db *sql.DB, opts Options, si
 // migration 016). Other failures still surface so genuine bugs aren't
 // hidden.
 func (e *Engine) loadSummaryCallRows(ctx context.Context, db *sql.DB, opts Options, since time.Time) ([]rawRow, error) {
-	q := `SELECT COALESCE(model, ''),
-	             COALESCE(input_tokens, 0),
-	             COALESCE(output_tokens, 0),
-	             COALESCE(cache_read_tokens, 0),
-	             COALESCE(cache_creation_tokens, 0),
-	             COALESCE(cost_usd, 0),
-	             timestamp,
-	             COALESCE(session_id, '')
-	      FROM summary_calls`
+	// The project scope (added 2026-09-22, F1/F6/F9 arc review) needs a
+	// join to sessions — summary_calls carries no project column of its
+	// own. Only join when a project scope was actually requested, OR
+	// (2026-09-22 rework finding #3) when the caller GROUPS by project —
+	// an unscoped GroupByProject/GroupByDayProject caller (the Projects
+	// list, `/api/cost?group_by=project`) still needs each row's project
+	// path resolved and SELECTed, or every summary_calls row lands under
+	// "<no-project>" instead of its real project, disagreeing with the
+	// project-scoped detail panel that already includes it. The common
+	// unscoped, non-project-grouped call (observer cost, MCP
+	// get_cost_summary) keeps its original plan unchanged.
+	needsProjectPath := opts.GroupBy == GroupByProject || opts.GroupBy == GroupByDayProject
+	from := "FROM summary_calls"
+	selectProject := "''"
 	var where []string
 	var args []any
+	switch {
+	case opts.ProjectID != 0:
+		from = "FROM summary_calls LEFT JOIN sessions s ON s.id = summary_calls.session_id"
+		where = append(where, "s.project_id = ?")
+		args = append(args, opts.ProjectID)
+		if needsProjectPath {
+			from += " LEFT JOIN projects p ON p.id = s.project_id"
+			selectProject = "COALESCE(p.root_path, '')"
+		}
+	case opts.ProjectRoot != "":
+		from = "FROM summary_calls LEFT JOIN sessions s ON s.id = summary_calls.session_id LEFT JOIN projects p ON p.id = s.project_id"
+		where = append(where, "p.root_path = ?")
+		args = append(args, opts.ProjectRoot)
+		selectProject = "COALESCE(p.root_path, '')"
+	case needsProjectPath:
+		from = "FROM summary_calls LEFT JOIN sessions s ON s.id = summary_calls.session_id LEFT JOIN projects p ON p.id = s.project_id"
+		selectProject = "COALESCE(p.root_path, '')"
+	}
+	//nolint:gosec // G202: selectProject/from are compile-time constant SQL fragments chosen by capability; values bind via args.
+	q := `SELECT COALESCE(summary_calls.model, ''),
+	             COALESCE(summary_calls.input_tokens, 0),
+	             COALESCE(summary_calls.output_tokens, 0),
+	             COALESCE(summary_calls.cache_read_tokens, 0),
+	             COALESCE(summary_calls.cache_creation_tokens, 0),
+	             COALESCE(summary_calls.cost_usd, 0),
+	             summary_calls.timestamp,
+	             COALESCE(summary_calls.session_id, ''),
+	             ` + selectProject + `
+	      ` + from
 	if !since.IsZero() {
-		where = append(where, "timestamp >= ?")
+		where = append(where, "summary_calls.timestamp >= ?")
 		args = append(args, since.UTC().Format(time.RFC3339Nano))
 	}
 	if !opts.Until.IsZero() {
-		where = append(where, "timestamp < ?")
+		where = append(where, "summary_calls.timestamp < ?")
 		args = append(args, opts.Until.UTC().Format(time.RFC3339Nano))
 	}
 	if len(opts.SessionIDs) > 0 {
 		ph := strings.TrimRight(strings.Repeat("?,", len(opts.SessionIDs)), ",")
-		where = append(where, "session_id IN ("+ph+")")
+		where = append(where, "summary_calls.session_id IN ("+ph+")")
 		for _, id := range opts.SessionIDs {
 			args = append(args, id)
 		}
@@ -932,7 +1050,7 @@ func (e *Engine) loadSummaryCallRows(ctx context.Context, db *sql.DB, opts Optio
 			&r.model,
 			&r.tokens.Input, &r.tokens.Output,
 			&r.tokens.CacheRead, &r.tokens.CacheCreation,
-			&r.recordedUSD, &r.ts, &r.sessionID,
+			&r.recordedUSD, &r.ts, &r.sessionID, &r.projectPath,
 		); err != nil {
 			return nil, fmt.Errorf("cost.Summary: summary_calls scan: %w", err)
 		}
@@ -983,6 +1101,9 @@ type bucket struct {
 	// premium. Surfaced on Row so the dashboard can badge fast-tier spend.
 	fastTurnCount int
 	fastCost      float64
+	// unpricedTurnCount counts this bucket's rows that hit a pricing
+	// MISS. Surfaced on Row.UnpricedTurnCount.
+	unpricedTurnCount int
 }
 
 func (e *Engine) rollup(raws []rawRow, opts Options) Summary {
@@ -1015,7 +1136,7 @@ func (e *Engine) rollup(raws []rawRow, opts Options) Summary {
 	dateAware := e.HasDatedPricing()
 
 	for _, r := range raws {
-		key := groupKey(r, opts.GroupBy)
+		key := groupKey(r, opts.GroupBy, opts.BucketKey)
 		// Zero when !dateAware or when the row's stamp is unparseable —
 		// both fall back to current rates (LookupAt's zero-time contract).
 		var rowAt time.Time
@@ -1051,38 +1172,41 @@ func (e *Engine) rollup(raws []rawRow, opts Options) Summary {
 		// Cost: when the row has a recorded estimated_cost_usd (only
 		// OpenCode + Pi adapters set this today — they compute cost
 		// client-side), use it as-is. Otherwise compute from pricing
-		// and track which pricing-table match path was hit.
-		//
-		// Recorded costs land in AICost (the upstream client doesn't
-		// separate tool fees) — those adapters don't model web_search
-		// today, so the merge stays correct. Computed costs use
-		// ComputeBreakdown to split AI vs tool portions cleanly.
-		cost := r.recordedUSD
-		var aiCost, toolCost float64
-		if cost == 0 {
-			pricing, src, ok := e.LookupWithSourceAt(r.model, rowAt)
-			if !ok {
-				b.unknownModels[r.model] = true
-				totalUnknowns[r.model] = true
-				b.pricingSources[PricingSourceMiss] = true
-				unpricedTokens += r.tokens.Input + r.tokens.Output
-				unpricedTurnCount++
-			} else {
-				cb := ComputeBreakdown(pricing, r.tokens)
-				cost = cb.Total
-				aiCost = cb.AICost
-				toolCost = cb.ToolCost
-				b.pricingSources[src] = true
-			}
+		// and track which pricing-table match path was hit. priceRow is
+		// the ONE pricing rule — shared with TurnRows (the Projects-page
+		// per-turn export) so a turn's dollar figure can never disagree
+		// between the two surfaces (2026-09-22 arc review F6).
+		pr := e.priceRow(r, rowAt)
+		if !pr.Priced {
+			b.unknownModels[r.model] = true
+			totalUnknowns[r.model] = true
+			b.pricingSources[PricingSourceMiss] = true
+			unpricedTokens += r.tokens.Input + r.tokens.Output
+			unpricedTurnCount++
+			b.unpricedTurnCount++
 		} else {
-			// Recorded cost — pricing table wasn't consulted, but the
-			// row still came with a known model. Mark the pricing path
-			// as "exact" since the upstream client (which had to know
-			// the model's rates to compute it) effectively certified
-			// the rate.
-			b.pricingSources[PricingSourceExact] = true
-			aiCost = cost
+			b.pricingSources[pr.PricingSource] = true
+			// A table-priced model whose CACHE-READ rate the vendor never
+			// quoted: the cached tokens billed $0 as an UNPRICED
+			// dimension, not a known-free one. Record it as a miss
+			// signal (bucket source no longer "exact", unpriced volume
+			// and turn counted) rather than a silent exact $0. priceRow
+			// owns the signal (TurnRows carries the same field), and a
+			// recorded-cost row never consulted the table, so it never
+			// sets it.
+			if pr.CacheReadUnpriced {
+				b.pricingSources[PricingSourceMiss] = true
+				unpricedTokens += r.tokens.CacheRead
+				unpricedTurnCount++
+				// The BUCKET counts it too, so a grouped row (the /api/projects
+				// list's per-project coverage) agrees with the Projects detail
+				// path, which counts the same turn through
+				// TurnRow.FullyPriced (review round 2, finding 2).
+				b.unpricedTurnCount++
+			}
 		}
+		cost := pr.CostUSD
+		aiCost, toolCost := pr.AICostUSD, pr.ToolCostUSD
 		b.cost += cost
 		b.aiCost += aiCost
 		b.toolCost += toolCost
@@ -1132,7 +1256,10 @@ func (e *Engine) rollup(raws []rawRow, opts Options) Summary {
 				tokens := float64(r.compression.TokensSavedEst)
 				r.compression.CostSavedUSDEstInputTier = tokens * pricing.Input / 1_000_000
 				cacheReadRate := pricing.CacheRead
-				if cacheReadRate == 0 {
+				// An explicitly UNQUOTED cache-read rate stays 0: the 10%
+				// fallback below would reinvent the very rate the table
+				// declined to fabricate.
+				if cacheReadRate == 0 && !e.CacheReadUnpricedAt(r.model, rowAt) {
 					// Pricing tables without an explicit cache_read
 					// rate fall back to Pricing.normalize's 10%-of-
 					// input default (pricing.go:187). If even that
@@ -1173,20 +1300,22 @@ func (e *Engine) rollup(raws []rawRow, opts Options) Summary {
 			avgLatency = b.latencyMSSum / int64(b.latencyTurnCount)
 		}
 		rowsOut = append(rowsOut, Row{
-			Key:           key,
-			Tokens:        b.tokens,
-			CostUSD:       b.cost,
-			AICostUSD:     b.aiCost,
-			ToolCostUSD:   b.toolCost,
-			TurnCount:     b.turnCount,
-			AvgLatencyMS:  avgLatency,
-			Source:        collapseSources(b.sources),
-			Reliability:   weakestReliability(b.reliabilities),
-			UnknownModels: sortedKeys(b.unknownModels),
-			PricingSource: collapsePricingSources(b.pricingSources),
-			Compression:   b.compression,
-			FastTurnCount: b.fastTurnCount,
-			FastCostUSD:   b.fastCost,
+			Key:               key,
+			Tokens:            b.tokens,
+			CostUSD:           b.cost,
+			AICostUSD:         b.aiCost,
+			ToolCostUSD:       b.toolCost,
+			TurnCount:         b.turnCount,
+			AvgLatencyMS:      avgLatency,
+			Source:            collapseSources(b.sources),
+			Reliability:       weakestReliability(b.reliabilities),
+			UnknownModels:     sortedKeys(b.unknownModels),
+			PricingSource:     collapsePricingSources(b.pricingSources),
+			Compression:       b.compression,
+			FastTurnCount:     b.fastTurnCount,
+			FastCostUSD:       b.fastCost,
+			UnpricedTurnCount: b.unpricedTurnCount,
+			PricedTurnCount:   b.turnCount - b.unpricedTurnCount,
 		})
 	}
 	sort.SliceStable(rowsOut, func(i, j int) bool {
@@ -1217,7 +1346,16 @@ func (e *Engine) rollup(raws []rawRow, opts Options) Summary {
 	}
 }
 
-func groupKey(r rawRow, g GroupBy) string {
+func groupKey(r rawRow, g GroupBy, bucketKey func(string) string) string {
+	day := func() string {
+		if bucketKey != nil {
+			return bucketKey(r.ts)
+		}
+		if len(r.ts) >= 10 {
+			return r.ts[:10]
+		}
+		return r.ts
+	}
 	switch g {
 	case GroupBySession:
 		if r.sessionID == "" {
@@ -1225,40 +1363,25 @@ func groupKey(r rawRow, g GroupBy) string {
 		}
 		return r.sessionID
 	case GroupByDay:
-		if len(r.ts) >= 10 {
-			return r.ts[:10]
-		}
-		return r.ts
+		return day()
 	case GroupByDayModel:
-		day := r.ts
-		if len(r.ts) >= 10 {
-			day = r.ts[:10]
-		}
 		model := r.model
 		if model == "" {
 			model = "<unknown>"
 		}
-		return day + dayModelKeySep + model
+		return day() + dayModelKeySep + model
 	case GroupByDayProject:
-		day := r.ts
-		if len(r.ts) >= 10 {
-			day = r.ts[:10]
-		}
 		proj := r.projectPath
 		if proj == "" {
 			proj = "<no-project>"
 		}
-		return day + dayModelKeySep + proj
+		return day() + dayModelKeySep + proj
 	case GroupByDayTool:
-		day := r.ts
-		if len(r.ts) >= 10 {
-			day = r.ts[:10]
-		}
 		tool := r.tool
 		if tool == "" {
 			tool = "<no-tool>"
 		}
-		return day + dayModelKeySep + tool
+		return day() + dayModelKeySep + tool
 	case GroupByProject:
 		if r.projectPath == "" {
 			return "<no-project>"

@@ -145,7 +145,6 @@ func (ps ProfileStore) ResolveCompression(master CompressionConfig, name string)
 	}
 	out := overlay.Compression
 	out.Conversation.Enabled = master.Conversation.Enabled
-	out.CodeGraph = master.CodeGraph
 	stamp := strconv.FormatInt(fi.ModTime().UnixNano(), 10) + "." + strconv.FormatInt(fi.Size(), 10)
 	return out, stamp, nil
 }
@@ -258,8 +257,7 @@ func (ps ProfileStore) Delete(name string) error {
 // (e.g. "compression.conversation.target_ratio") — the editing
 // front door behind `observer profile set`. Built-ins are immutable;
 // the same allow-list shape as project files applies (compression.*
-// only — profile files carry parameters, not assignments), and
-// code_graph stays refused.
+// only — profile files carry parameters, not assignments).
 //
 // PRESENCE-PRESERVING (the D16 fix): the write touches ONLY the
 // dotted key. Re-marshaling the parsed CompressionConfig struct — the
@@ -280,9 +278,6 @@ func (ps ProfileStore) SetKey(name, dotted, value string) error {
 	}
 	if strings.SplitN(dotted, ".", 2)[0] != "compression" {
 		return fmt.Errorf("config: profile files accept only compression.* keys (got %q)", dotted)
-	}
-	if strings.HasPrefix(dotted, "compression.code_graph") {
-		return errors.New("config: compression.code_graph is install capability and stays master-owned")
 	}
 	path := ps.userPath(name)
 	body, err := os.ReadFile(path)

@@ -22,201 +22,87 @@ type DatedPricing struct {
 	// is the idiomatic way to spell the oldest period of a timeline.
 	EffectiveFrom time.Time `json:"effective_from"`
 	Pricing
+	// Unpriced marks a period in which NO rate is in force: a lookup at an
+	// instant inside it is a MISS (cost unknown), never $0 and never another
+	// period's rate. Its Pricing is the zero value. It is how a timeline says
+	// "the price source states nothing before its first dated period": the
+	// price database's history for an id that billed at a DIFFERENT,
+	// unstated card before (deepseek-chat before 2025-09-05), and the
+	// generated snapshot's reading of a history whose first period has a
+	// start (setSnapshotHistory).
+	Unpriced bool `json:"unpriced,omitempty"`
 }
 
-// datedPricing is the baked-in DATED rate table — the historical rate
+// datedPricing is the hand-authored DATED rate table — the historical rate
 // timeline for models whose published price CHANGED, keyed exactly like
 // defaultPricing (see "Where the date dimension lives" below).
 //
-// It starts EMPTY and stays that way for any model until a rate change is
-// verified against the provider's own published card, because a wrong
-// entry silently reprices real history — the exact failure class this
-// mechanism exists to prevent. defaultPricing stays the single source of
-// CURRENT rates; this table only records what a model used to cost. As of
-// 2026-08-06 it carries one verified entry: the OpenAI GPT-5.6 Terra/Luna
-// price cut effective 2026-07-30 (developers.openai.com/api/docs/changelog).
+// IT IS EMPTY, AND THAT IS THE POINT. The price database is the one authority
+// for price data, and price data is date-dependent (operator directive
+// 2026-09-27). Every timeline this table used to carry now lives, cited, in
+// Tokenomics' observer_price_history (model-pricing migration 0028), reaches
+// the node as the signed feed's per-row `history`, and is compiled in through
+// the generated snapshot (snapshot.go, setSnapshotHistory), which REPLACES a
+// hand timeline for any key it covers. Once the embedded snapshot carried
+// them, TestHandTimelinesRetiredOnceSnapshotCovers asked for the hand copies
+// to go, and they were retired (lane R2-RECONCILE, 2026-09-28):
 //
-// THE SHAPE TO USE (worked example — a mid-life price CUT, the
-// gpt-5.6-terra / gpt-5.6-luna case). A cut needs TWO entries, not one:
-// the OLD period must be stated explicitly, because "T before every
-// entry" falls back to the flat (current) table and the flat table
-// already holds the NEW, cheaper rates.
+//   - gpt-5.6-terra / gpt-5.6-luna: the 2026-07-30 cut;
+//   - gpt-5.6-sol: the 2026-08-21 promotional card;
+//   - grok-code-fast-1 / grok-code: the 2026-05-15T19:00Z retirement onto
+//     grok-build-0.1's card;
+//   - deepseek-v4-flash / deepseek-chat / deepseek-reasoner / deepseek-v4 /
+//     deepseek / deepseek-v4-pro: the V3.1 and V3.2-Exp cards, the V4 launch,
+//     the 2026-08-16T16:00Z peak/off-peak overhaul and the 2026-09-10T04:00Z
+//     V4.1-Flash cut.
+//
+// Each period's citation (vendor URL and quoted words) is on its
+// observer_price_history row. Before retiring them,
+// TestHandTimelinesMatchSnapshot proved the database history prices every
+// boundary, a nanosecond either side and inside every peak window exactly as
+// the hand table did.
+//
+// Add a timeline here ONLY for a verified rate change the price database
+// cannot state yet, and move it to observer_price_history as soon as it can:
+// the moment a generated snapshot carries the key's history this entry is dead
+// data, and the retirement test fails until it is deleted.
+//
+// THE SHAPE TO USE (worked example — a mid-life price CUT). A cut needs TWO
+// entries, not one: the OLD period must be stated explicitly, because "T
+// before every entry" falls back to the flat (current) table and the flat
+// table already holds the NEW, cheaper rates.
 //
 //	"gpt-5.6-terra": {
-//	    // Launch → the cut. OLD (higher) rates, exactly what the row
-//	    // in defaultPricing said before the cut landed.
+//	    // Launch → the cut. OLD (higher) rates.
 //	    {EffectiveFrom: time.Time{}, Pricing: Pricing{
 //	        Input: 2.50, Output: 15, CacheRead: 0.25,
-//	        CacheCreation: 3.125, CacheCreation1h: 3.125,
-//	        WebSearchPerRequest: 0.01,
 //	    }},
 //	    // The cut → forever. MUST equal the defaultPricing row for
 //	    // this model (ValidateDated enforces it), because the flat
 //	    // table is by contract the CURRENT rate card.
-//	    {EffectiveFrom: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), Pricing: Pricing{
-//	        Input: 1.75, Output: 10, CacheRead: 0.175,
-//	        CacheCreation: 2.1875, CacheCreation1h: 2.1875,
-//	        WebSearchPerRequest: 0.01,
+//	    {EffectiveFrom: time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC), Pricing: Pricing{
+//	        Input: 2.00, Output: 12, CacheRead: 0.20,
 //	    }},
 //	},
 //
-// Landing a rate change is therefore always a PAIR of edits:
+// Landing a rate change here is therefore always a PAIR of edits:
 //  1. update the model's defaultPricing row to the NEW rates, and
 //  2. add its timeline here, whose LAST entry mirrors that new row and
 //     whose earlier entries carry the rates being retired.
 //
 // Run TestDatedSeedIsSelfConsistent (dated_test.go) after any edit — it
 // walks this table through ValidateDated so a half-landed pair is loud.
-var datedPricing = map[string][]DatedPricing{
-	// OpenAI GPT-5.6 Terra + Luna price cut, effective 2026-07-30
-	// (developers.openai.com/api/docs/changelog: "Starting July 30,
-	// GPT-5.6 Luna costs 80% less, while GPT-5.6 Terra costs 20% less").
-	// Sol is unaffected — no timeline for gpt-5.6-sol.
-	"gpt-5.6-terra": {
-		// Launch (2026-06-25) → the cut. OLD rates — exactly what the
-		// row in defaultPricing said before 2026-07-30. No LC/Fast
-		// fields: those were never modeled pre-cut (added alongside it).
-		{EffectiveFrom: time.Time{}, Pricing: Pricing{
-			Input: 2.50, Output: 15, CacheRead: 0.25,
-			CacheCreation: 3.125, CacheCreation1h: 3.125,
-			WebSearchPerRequest: 0.01,
-		}},
-		// The cut → forever. Mirrors the current defaultPricing row.
-		{EffectiveFrom: time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 2.00, Output: 12.00, CacheRead: 0.20,
-			CacheCreation: 2.50, CacheCreation1h: 2.50,
-			WebSearchPerRequest:  0.01,
-			LongContextThreshold: 272_000,
-			LongContextInput:     4.00, LongContextOutput: 18.00, LongContextCacheRead: 0.40,
-			LongContextCacheCreation: 5.00, LongContextCacheCreation1h: 5.00,
-			FastMultiplier: 2,
-		}},
-	},
-	"gpt-5.6-luna": {
-		// Launch (2026-06-25) → the cut. OLD rates — exactly what the
-		// row in defaultPricing said before 2026-07-30.
-		{EffectiveFrom: time.Time{}, Pricing: Pricing{
-			Input: 1, Output: 6, CacheRead: 0.10,
-			CacheCreation: 1.25, CacheCreation1h: 1.25,
-			WebSearchPerRequest: 0.01,
-		}},
-		// The cut → forever. Mirrors the current defaultPricing row.
-		{EffectiveFrom: time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.20, Output: 1.20, CacheRead: 0.02,
-			CacheCreation: 0.25, CacheCreation1h: 0.25,
-			WebSearchPerRequest:  0.01,
-			LongContextThreshold: 272_000,
-			LongContextInput:     0.40, LongContextOutput: 1.80, LongContextCacheRead: 0.04,
-			LongContextCacheCreation: 0.50, LongContextCacheCreation1h: 0.50,
-			FastMultiplier: 2,
-		}},
-	},
+var datedPricing = map[string][]DatedPricing{}
 
-	// DeepSeek V4 peak/off-peak overhaul, effective 2026-08-16T16:00Z UTC
-	// (api-docs.deepseek.com/quick_start/pricing, confirmed live
-	// 2026-09-07 — see the "PEAK/OFF-PEAK OVERHAUL" comment above the
-	// deepseek-v4-flash row in pricing.go for the full rationale, including
-	// why each key's base rate is the OFF-PEAK rate). The base rate here is
-	// off-peak; the peak variant (2× every dimension inside the weekday UTC
-	// windows) is modeled for deepseek-v4-pro via the Peak field (see the
-	// newest v4-pro entry below and peak.go). The old flat rate applied
-	// identically to deepseek-v4-flash, deepseek-chat, deepseek-reasoner,
-	// deepseek-v4 and the bare "deepseek" family row — all five keys get
-	// their own timeline since dated entries are per exact table key, not
-	// inherited across aliases.
-	//
-	// SECOND flash cutover, effective 2026-09-10T16:00Z UTC: on 2026-09-10
-	// DeepSeek released V4.1-Flash, renamed the canonical model to
-	// `deepseek-flash`, and REDUCED flash prices to $0.15 in / $0.60 out /
-	// $0.003 cache-read (per 1M) AND introduced a flash peak variant
-	// (Peak: deepseekFlashPeak, EXACTLY 2×). Each of the five flash-family
-	// timelines gets a newest entry at that instant; the pre-2026-09-10
-	// entries stay peak-free (the flash peak scheme did not exist before
-	// then). The vendor stated only the DATE (no time); 16:00 UTC follows
-	// DeepSeek's own established boundary convention (the 2026-08-16T16:00Z
-	// entry above) — confirm before any prod publish. `deepseek-flash` and
-	// `deepseek-v4.1-flash` are NEW keys with no history, so they carry a
-	// flat row only (no timeline in this table).
-	// Each flash timeline: pre-overhaul flat → 2026-08-16 off-peak base →
-	// 2026-09-10 reduced base + flash peak variant. The NEWEST entry
-	// carries Peak: deepseekFlashPeak (the SAME pointer as the flat row) so
-	// ValidateDated's flat==newest struct comparison holds.
-	"deepseek-v4-flash": {
-		{EffectiveFrom: time.Time{}, Pricing: Pricing{
-			Input: 0.14, Output: 0.28, CacheRead: 0.0028,
-		}},
-		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.22, Output: 0.66, CacheRead: 0.007,
-		}},
-		{EffectiveFrom: time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak,
-		}},
-	},
-	"deepseek-chat": {
-		{EffectiveFrom: time.Time{}, Pricing: Pricing{
-			Input: 0.14, Output: 0.28, CacheRead: 0.0028,
-		}},
-		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.22, Output: 0.66, CacheRead: 0.007,
-		}},
-		{EffectiveFrom: time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak,
-		}},
-	},
-	"deepseek-reasoner": {
-		{EffectiveFrom: time.Time{}, Pricing: Pricing{
-			Input: 0.14, Output: 0.28, CacheRead: 0.0028,
-		}},
-		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.22, Output: 0.66, CacheRead: 0.007,
-		}},
-		{EffectiveFrom: time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak,
-		}},
-	},
-	"deepseek-v4": {
-		{EffectiveFrom: time.Time{}, Pricing: Pricing{
-			Input: 0.14, Output: 0.28, CacheRead: 0.0028,
-		}},
-		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.22, Output: 0.66, CacheRead: 0.007,
-		}},
-		{EffectiveFrom: time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak,
-		}},
-	},
-	"deepseek": {
-		{EffectiveFrom: time.Time{}, Pricing: Pricing{
-			Input: 0.14, Output: 0.28, CacheRead: 0.0028,
-		}},
-		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.22, Output: 0.66, CacheRead: 0.007,
-		}},
-		{EffectiveFrom: time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.15, Output: 0.60, CacheRead: 0.003, Peak: deepseekFlashPeak,
-		}},
-	},
-	"deepseek-v4-pro": {
-		{EffectiveFrom: time.Time{}, Pricing: Pricing{
-			Input: 0.435, Output: 0.87, CacheRead: 0.003625,
-		}},
-		// Newest entry mirrors the current defaultPricing row, including
-		// the SAME deepseekV4ProPeak pointer so ValidateDated's
-		// flat==newest struct comparison holds. The pre-overhaul entry
-		// above stays peak-free: the peak scheme did not exist before
-		// 2026-08-16.
-		{EffectiveFrom: time.Date(2026, 8, 16, 16, 0, 0, 0, time.UTC), Pricing: Pricing{
-			Input: 0.66, Output: 1.98, CacheRead: 0.022, Peak: deepseekV4ProPeak,
-		}},
-	},
-}
-
-// BakedInDatedDefaults returns a copy of the baked-in dated rate table.
-// Mirrors BakedInDefaults for the flat table; surfaces that render "the"
-// rate can use it to tell whether a model's history is date-split.
+// BakedInDatedDefaults returns a copy of the EFFECTIVE compiled dated rate
+// table: the hand-authored timelines plus any the embedded generated snapshot
+// added (snapshot.go). Mirrors BakedInDefaults for the flat table; surfaces
+// that render "the" rate can use it to tell whether a model's history is
+// date-split.
 func BakedInDatedDefaults() map[string][]DatedPricing {
-	out := make(map[string][]DatedPricing, len(datedPricing))
-	for k, v := range datedPricing {
+	t := NewTable()
+	out := make(map[string][]DatedPricing, len(t.dated))
+	for k, v := range t.dated {
 		out[k] = append([]DatedPricing(nil), v...)
 	}
 	return out
@@ -297,10 +183,11 @@ func (t *Table) MergeDated(overrides map[string][]DatedPricing) {
 		})
 		t.dated[k] = cp
 		if _, ok := t.exact[k]; !ok {
-			// Flat table == CURRENT rates, and the newest dated entry
-			// IS the current rate. Seeding it makes the key resolvable
+			// Flat table == CURRENT rates: the entry in force at the
+			// table's clock (the newest one, unless later entries have
+			// not started yet). Seeding it makes the key resolvable
 			// through the ordinary ladder.
-			t.exact[k] = cp[len(cp)-1].Pricing
+			t.exact[k] = currentOf(cp, t.clockNow())
 		}
 	}
 }
@@ -346,27 +233,42 @@ func (t *Table) DatedFor(model string) []DatedPricing {
 // the caller must fall back to current rates rather than silently
 // reprice to the oldest tier), or when `at` precedes every entry.
 func (t *Table) datedRate(key string, at time.Time) (Pricing, bool) {
-	if t == nil || len(t.dated) == 0 || at.IsZero() {
+	e, ok := t.datedPeriod(key, at)
+	if !ok {
 		return Pricing{}, false
+	}
+	return e.Pricing, true
+}
+
+// datedPeriod is datedRate returning the whole period, so a caller can see
+// whether it is Unpriced. Same ok=false cases as datedRate.
+func (t *Table) datedPeriod(key string, at time.Time) (DatedPricing, bool) {
+	if t == nil || len(t.dated) == 0 || at.IsZero() {
+		return DatedPricing{}, false
 	}
 	entries := t.dated[key]
 	if len(entries) == 0 {
-		return Pricing{}, false
+		return DatedPricing{}, false
 	}
-	at = at.UTC()
-	idx := -1
-	for i := range entries {
-		// Inclusive boundary: usage AT exactly EffectiveFrom bills at
-		// the NEW rate.
-		if entries[i].EffectiveFrom.After(at) {
-			break
-		}
-		idx = i
-	}
+	// Inclusive boundary: usage AT exactly EffectiveFrom bills at the NEW
+	// rate.
+	idx := inForceIndex(entries, at.UTC())
 	if idx < 0 {
-		return Pricing{}, false
+		return DatedPricing{}, false
 	}
-	return entries[idx].Pricing, true
+	return entries[idx], true
+}
+
+// priced is the one exit every LookupWithSourceAt rung takes once it has a
+// resolved key: the rate in force for the key at `at`, or a MISS when the key's
+// timeline says no rate is in force at that instant (an Unpriced period). A
+// zero `at` never lands in a period (datedPeriod), so an untimed Lookup is
+// unaffected.
+func (t *Table) priced(key string, at time.Time, src PricingSource) (Pricing, PricingSource, bool) {
+	if e, ok := t.datedPeriod(key, at); ok && e.Unpriced {
+		return Pricing{}, PricingSourceMiss, false
+	}
+	return t.rate(key, at), t.sourceFor(key, src), true
 }
 
 // rate turns a resolved table key into the Pricing to bill with. This is
@@ -387,10 +289,10 @@ func (t *Table) datedRate(key string, at time.Time) (Pricing, bool) {
 func (t *Table) rate(key string, at time.Time) Pricing {
 	if len(t.dated) > 0 {
 		if p, ok := t.datedRate(key, at); ok {
-			return applyCacheWriteRule(key, fillDefaults(peakAdjusted(p, at)))
+			return applyCacheWriteRule(key, fillDefaultsFor(key, peakAdjusted(p, at)))
 		}
 	}
-	return applyCacheWriteRule(key, fillDefaults(peakAdjusted(t.exact[key], at)))
+	return applyCacheWriteRule(key, fillDefaultsFor(key, peakAdjusted(t.exact[key], at)))
 }
 
 // LookupAt is the date-aware Lookup: it returns the rate in force for
@@ -401,20 +303,31 @@ func (t *Table) LookupAt(model string, at time.Time) (Pricing, bool) {
 	return p, ok
 }
 
-// ValidateDated checks every dated timeline for the two mistakes that
-// silently misprice history, and returns one human-readable warning per
-// problem (empty slice when clean):
+// ValidateDated checks every dated timeline as of the table's clock; see
+// ValidateDatedAt.
+func (t *Table) ValidateDated() []string {
+	return t.ValidateDatedAt(t.clockNow())
+}
+
+// ValidateDatedAt checks every dated timeline, as of `now`, for the two
+// mistakes that silently misprice history, and returns one human-readable
+// warning per problem (empty slice when clean):
 //
 //   - DUPLICATE EffectiveFrom within one timeline — ambiguous which
 //     entry wins.
-//   - NEWEST entry disagrees with the flat table — the flat table is by
-//     contract the CURRENT rate card, so LookupAt(now) would not equal
-//     Lookup(). This is what a half-landed rate change looks like:
-//     the timeline was added but defaultPricing / the config override
-//     was never updated (or vice-versa).
+//   - the entry IN FORCE at `now` disagrees with the flat table — the flat
+//     table is by contract the CURRENT rate card, so LookupAt(now) would not
+//     equal Lookup(). This is what a half-landed rate change looks like: the
+//     timeline was added but defaultPricing / the config override was never
+//     updated (or vice-versa).
+//
+// Entries that start AFTER `now` are allowed: a price database can state a
+// future change in advance (Gemini's 2027-01-01 card), and every timestamped
+// lookup already prices by the usage's own instant. A timeline with no entry
+// in force yet is not compared with the flat row.
 //
 // Callers treat warnings as advisory: pricing never fails closed.
-func (t *Table) ValidateDated() []string {
+func (t *Table) ValidateDatedAt(now time.Time) []string {
 	if t == nil || len(t.dated) == 0 {
 		return nil
 	}
@@ -429,19 +342,63 @@ func (t *Table) ValidateDated() []string {
 				))
 			}
 		}
-		newest := entries[len(entries)-1].Pricing
 		flat, ok := t.exact[k]
 		if !ok {
 			continue // MergeDated seeds it; only a hand-built Table can miss.
 		}
-		if flat != newest {
+		cur := inForceIndex(entries, now)
+		if cur < 0 || entries[cur].Unpriced {
+			continue
+		}
+		if flat != entries[cur].Pricing {
 			out = append(out, fmt.Sprintf(
-				"pricing: model %q newest dated entry (effective_from %s) does not match the current flat rate — the flat table must always hold CURRENT rates, so historical costs will be right but today's will not",
-				k, entries[len(entries)-1].EffectiveFrom.Format(time.RFC3339),
+				"pricing: model %q dated entry in force (effective_from %s) does not match the current flat rate — the flat table must always hold CURRENT rates, so historical costs will be right but today's will not",
+				k, entries[cur].EffectiveFrom.Format(time.RFC3339),
 			))
 		}
 	}
 	return out
+}
+
+// clockNow is the table's notion of now: the instant it was composed at, or
+// time.Now for a hand-built zero-value table.
+func (t *Table) clockNow() time.Time {
+	if t != nil && !t.builtAt.IsZero() {
+		return t.builtAt
+	}
+	return time.Now().UTC()
+}
+
+// inForceIndex returns the index of the LAST entry whose EffectiveFrom is
+// <= at (inclusive, like datedRate), or -1 when `at` precedes every entry.
+// The zero `at` is treated as an instant like any other here (it precedes
+// every real start), unlike datedRate, where a zero `at` means "no
+// timestamp". entries must be ascending, which MergeDated guarantees.
+func inForceIndex(entries []DatedPricing, at time.Time) int {
+	idx := -1
+	for i := range entries {
+		if entries[i].EffectiveFrom.After(at) {
+			break
+		}
+		idx = i
+	}
+	return idx
+}
+
+// currentOf is the flat (current) rate a timeline implies at `now`: the entry
+// in force, or - when none is in force yet, or the one in force is Unpriced -
+// the OLDEST priced entry (the closest thing to "the rate before the timeline
+// starts" a timeline alone can say). entries must be non-empty and ascending.
+func currentOf(entries []DatedPricing, now time.Time) Pricing {
+	if i := inForceIndex(entries, now); i >= 0 && !entries[i].Unpriced {
+		return entries[i].Pricing
+	}
+	for _, e := range entries {
+		if !e.Unpriced {
+			return e.Pricing
+		}
+	}
+	return Pricing{}
 }
 
 // ─────────────────────────────────────────────────────────────────────

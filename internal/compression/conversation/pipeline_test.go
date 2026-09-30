@@ -1224,7 +1224,7 @@ func (f *fakeSymbolLookup) SymbolsInFile(_ context.Context, absPath string) ([]C
 
 // TestPipeline_HintsForFile_EmptyFilenameReturnsZeroHints pins the
 // fast-path: callers with no filename get an empty CompressHints
-// without any codegraph round-trips.
+// without any symbol-lookup round-trips.
 func TestPipeline_HintsForFile_EmptyFilenameReturnsZeroHints(t *testing.T) {
 	t.Parallel()
 	fc := &fakeSymbolLookup{available: true, symbols: []CompressorSymbol{{Name: "X"}}}
@@ -1234,34 +1234,34 @@ func TestPipeline_HintsForFile_EmptyFilenameReturnsZeroHints(t *testing.T) {
 		t.Errorf("empty filename should return zero hints; got %+v", hints)
 	}
 	if len(fc.staleCalls) != 0 || len(fc.symbolsCalls) != 0 {
-		t.Errorf("codegraph queried for empty filename: stale=%v symbols=%v", fc.staleCalls, fc.symbolsCalls)
+		t.Errorf("symbol lookup queried for empty filename: stale=%v symbols=%v", fc.staleCalls, fc.symbolsCalls)
 	}
 }
 
-// TestPipeline_HintsForFile_NilCodegraphFilenameOnly pins the
-// no-codegraph-installed path: hints carry filename, no symbols, no
+// TestPipeline_HintsForFile_NilSymbolLookupFilenameOnly pins the
+// no-symbol-lookup-wired path: hints carry filename, no symbols, no
 // crash.
-func TestPipeline_HintsForFile_NilCodegraphFilenameOnly(t *testing.T) {
+func TestPipeline_HintsForFile_NilSymbolLookupFilenameOnly(t *testing.T) {
 	t.Parallel()
-	p := &Pipeline{} // codegraph == nil
+	p := &Pipeline{} // symbolLookup == nil
 	hints := p.hintsForFile(context.Background(), "x.go")
 	if hints.Filename != "x.go" {
 		t.Errorf("Filename: got %q want %q", hints.Filename, "x.go")
 	}
 	if hints.Symbols != nil {
-		t.Errorf("Symbols should be nil without codegraph; got %v", hints.Symbols)
+		t.Errorf("Symbols should be nil without a symbol lookup; got %v", hints.Symbols)
 	}
 }
 
-// TestPipeline_HintsForFile_UnavailableCodegraphFilenameOnly pins
-// the codegraph-configured-but-not-open path: same shape as nil.
-func TestPipeline_HintsForFile_UnavailableCodegraphFilenameOnly(t *testing.T) {
+// TestPipeline_HintsForFile_UnavailableSymbolLookupFilenameOnly pins
+// the lookup-wired-but-index-not-ready path: same shape as nil.
+func TestPipeline_HintsForFile_UnavailableSymbolLookupFilenameOnly(t *testing.T) {
 	t.Parallel()
 	fc := &fakeSymbolLookup{available: false}
 	p := &Pipeline{symbolLookup: fc}
 	hints := p.hintsForFile(context.Background(), "x.go")
 	if hints.Filename != "x.go" || hints.Symbols != nil {
-		t.Errorf("unavailable codegraph: got %+v", hints)
+		t.Errorf("unavailable symbol lookup: got %+v", hints)
 	}
 	if len(fc.symbolsCalls) != 0 {
 		t.Errorf("unavailable client queried for symbols: %v", fc.symbolsCalls)
@@ -1269,7 +1269,7 @@ func TestPipeline_HintsForFile_UnavailableCodegraphFilenameOnly(t *testing.T) {
 }
 
 // TestPipeline_HintsForFile_StaleSkipsSymbolFetch pins V7-13 Gap 3
-// behaviour: when codegraph reports the file as newer than the
+// behaviour: when the index reports the file as newer than the
 // index, the pipeline does NOT call SymbolsInFile.
 func TestPipeline_HintsForFile_StaleSkipsSymbolFetch(t *testing.T) {
 	t.Parallel()
@@ -1277,7 +1277,7 @@ func TestPipeline_HintsForFile_StaleSkipsSymbolFetch(t *testing.T) {
 	p := &Pipeline{symbolLookup: fc}
 	hints := p.hintsForFile(context.Background(), "x.go")
 	if hints.Filename != "x.go" || hints.Symbols != nil {
-		t.Errorf("stale codegraph: got %+v (must NOT pre-fetch)", hints)
+		t.Errorf("stale index: got %+v (must NOT pre-fetch)", hints)
 	}
 	if len(fc.symbolsCalls) != 0 {
 		t.Errorf("Stale should suppress SymbolsInFile; got calls=%v", fc.symbolsCalls)
@@ -1285,7 +1285,7 @@ func TestPipeline_HintsForFile_StaleSkipsSymbolFetch(t *testing.T) {
 }
 
 // TestPipeline_HintsForFile_PreFetchPopulatesSymbols pins the happy
-// path: codegraph Available()+!Stale yields filename + symbols in
+// path: lookup Available()+!Stale yields filename + symbols in
 // the hint struct.
 func TestPipeline_HintsForFile_PreFetchPopulatesSymbols(t *testing.T) {
 	t.Parallel()
@@ -1317,10 +1317,10 @@ func TestPipeline_HintsForFile_SymbolFetchErrorDegrades(t *testing.T) {
 	}
 }
 
-// TestPipeline_WithCodegraph_Chainable pins the builder pattern: the
+// TestPipeline_WithSymbolLookup_Chainable pins the builder pattern: the
 // method returns the same *Pipeline so callers can chain WithStash /
-// WithSummarizerFactory / WithCodegraph in any order.
-func TestPipeline_WithCodegraph_Chainable(t *testing.T) {
+// WithSummarizerFactory / WithSymbolLookup in any order.
+func TestPipeline_WithSymbolLookup_Chainable(t *testing.T) {
 	t.Parallel()
 	p := &Pipeline{}
 	got := p.WithSymbolLookup(&fakeSymbolLookup{})

@@ -1,0 +1,1 @@
+function r(a,n){return n!=null&&a[n]||"neutral"}const c={neutral:"var(--fg-4)",success:"var(--success)",warn:"var(--warn)",danger:"var(--danger)",info:"var(--info)",accent:"var(--accent)"};export{c as T,r as t};

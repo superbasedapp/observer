@@ -280,7 +280,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | \
 - [`docs/mcp-get-symbols-reference.md`](mcp-get-symbols-reference.md) —
   the v1.7.9 symbol-level retrieval tool. `get_symbols` is usually
   cheaper than `get_file` when the agent knows the symbol name; fall
-  back to `get_file` when codegraph is unavailable / stale or when
+  back to `get_file` when the code index is unavailable / stale or when
   byte-level granularity is needed.
 - [`docs/mcp-get-relations-reference.md`](mcp-get-relations-reference.md) —
   the v1.7.10 graph-traversal tool. Use for impact analysis and

@@ -128,7 +128,7 @@ func newProfileShowCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"# profile %q resolved against master config (%s)\n"+
 					"# profile keys overlay master parameters; conversation `enabled`\n"+
-					"# and [compression.code_graph] are always master-owned\n",
+					"# is always master-owned\n",
 				name, resolvedPath)
 			enc := toml.NewEncoder(cmd.OutOrStdout())
 			return enc.Encode(struct {

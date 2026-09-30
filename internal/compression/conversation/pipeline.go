@@ -167,13 +167,13 @@ func (p *Pipeline) WithSymbolLookup(c SymbolLookup) *Pipeline {
 }
 
 // hintsForFile builds a [CompressHints] for the given filename,
-// pre-fetching codegraph symbols when available and the index isn't
+// pre-fetching code-index symbols when available and the index isn't
 // stale. Best-effort — any error path degrades to filename-only
 // hints. Returns the zero CompressHints when filename is empty.
 //
 // Called from the per-block compression call sites (anthropic.go,
 // openai.go) just before invoking the per-type compressor. The
-// codegraph query happens here so the pipeline owns the
+// symbol-lookup query happens here so the pipeline owns the
 // "available + !stale + pre-fetch" composition; the compressor
 // stays a pure transform.
 func (p *Pipeline) hintsForFile(ctx context.Context, filename string) CompressHints {

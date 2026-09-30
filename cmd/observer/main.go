@@ -46,6 +46,12 @@ import (
 var version = "dev"
 
 func main() {
+	// Sandbox network helpers (SR27-SBX-1) run before cobra and before the
+	// OOB channel below: they must hand the inherited OOB fd to the real
+	// launcher inside the sandbox untouched (sandbox_helpers.go).
+	if code, ok := sandboxHelperDispatch(os.Args); ok {
+		os.Exit(code)
+	}
 	// Trusted OOB launcher emission (F3): when this process was spawned by the
 	// daemon as an `observer <tool>` launcher (OBSERVER_OOB_* env present), emit
 	// the authenticated Hello + launcher_started up front and tool_exec_end on
@@ -179,6 +185,8 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 	root.AddCommand(newZcodeCmd())
 	root.AddCommand(newVibeCmd())
 	root.AddCommand(newFreebuffCmd())
+	root.AddCommand(newIDECmd())
+	root.AddCommand(newShellWrapCmd())
 	root.AddCommand(newLOCCmd())
 	root.AddCommand(newGuardCmd())
 	root.AddCommand(newBenchmarkCmd())
@@ -204,6 +212,7 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 	root.AddCommand(newWorkspacesCmd())
 	root.AddCommand(newCloudCmd())
 	root.AddCommand(newPricingCmd())
+	root.AddCommand(newRepriceCmd())
 	return root
 }
 
@@ -248,12 +257,15 @@ func observerSubcommandsWith(deps usageDeps) []*cobra.Command {
 		newAggregateCmd(),
 		newBackfillCmd(),
 		newMCPAuditCmd(),
+		newMCPRelayCmd(),
+		newMCPCmd(),
 		newCacheHealthCmd(),
 		newCacheStatusCmd(),
 		newGuidanceCmd(),
 		newRoutingCmd(),
 		newModelValueCmd(),
 		newPredictCmd(),
+		newProjectCmd(),
 		newTasksCmd(),
 		newArchiveCmd(),
 		newStatuslineCmd(),
@@ -598,6 +610,7 @@ func buildWatcherWithOverride(ctx context.Context, configPath, adapterFilter str
 			ca.WithSessionHookChecker(func(ctx context.Context, sessionID string) (bool, error) {
 				return st.SessionHasSourceFileRows(ctx, sessionID, "cursor:hook")
 			})
+			wireCursorReplaySeams(ca, st)
 		}
 		// Cline CLI: same cross-path dedup gate. The adapter shipped
 		// the SessionHookChecker seam (mirroring cursor's) but the
@@ -778,14 +791,14 @@ func warnMissingDefaultsFromAllowList(logger *slog.Logger, defaults []adapter.Ad
 		fmt.Sprintf("# OBSERVER: %d default adapter(s) are NOT enabled in your config.toml.\n", len(missing)) +
 		"# Missing: " + missingList + "\n" +
 		"# Sessions from these tools will not be captured at all until you fix this.\n" +
-		"# Fix it now:   observer config adopt-defaults --write\n" +
+		"# Fix it now:   " + config.AdoptDefaultsRemediationCmd + "\n" +
 		"# Preview only: observer config adopt-defaults\n" +
 		"# Or edit by hand: " + remediationConfigHint() + "\n" +
 		"##################################################################"
 	logger.Warn(
 		banner,
 		"missing", strings.Join(missing, ","),
-		"remediation_cmd", "observer config adopt-defaults --write",
+		"remediation_cmd", config.AdoptDefaultsRemediationCmd,
 		"remediation", "edit "+remediationConfigHint()+" and add: "+missingList,
 	)
 }

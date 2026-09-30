@@ -46,6 +46,12 @@ type Inputs struct {
 	// without WSLENV, so a child-env wrap cannot take effect and is recorded
 	// as not-applied with that reason.
 	ViaInterop bool
+	// ExtraArgs are operator arguments forwarded to the app after the project
+	// directory (`observer ide vscode . -- --new-window`). Only the CLI path
+	// sets them (the dashboard launch never does), and they are the operator's
+	// own, like every `observer <tool> -- args` launcher. A packaged-app
+	// launch cannot carry them and says so in Notes.
+	ExtraArgs []string
 }
 
 // Plan is the composed launch: the argv to exec, the environment ADDITIONS
@@ -117,6 +123,12 @@ var launchRules = []launchRule{
 				// open(1) forwards everything after --args to the application.
 				argv = append(argv, "--args", in.ProjectRoot)
 			}
+			if len(in.ExtraArgs) > 0 {
+				if !takesProjectDir(spec, in) {
+					argv = append(argv, "--args")
+				}
+				argv = append(argv, in.ExtraArgs...)
+			}
 			return argv
 		},
 	},
@@ -143,7 +155,7 @@ var launchRules = []launchRule{
 			if takesProjectDir(spec, in) {
 				argv = append(argv, in.ProjectRoot)
 			}
-			return argv
+			return append(argv, in.ExtraArgs...)
 		},
 	},
 }
@@ -180,6 +192,8 @@ var wrapRules = []wrapRule{
 				return wrapResult{note: "interop launch: environment is not propagated across the WSL boundary (WSLENV not set)"}
 			case mech == mechPackagedApp:
 				return wrapResult{note: "explorer-launched packaged app inherits no environment"}
+			case isHandoffLauncher(spec, in.Bin):
+				return wrapResult{note: "the resolved launcher is a hand-off client that asks an already-running instance to open the folder - no new process receives the routing environment"}
 			case in.ProxyURL == "":
 				return wrapResult{note: "no observer proxy URL resolved — nothing to inject"}
 			case len(spec.Wrap.Env) == 0:
@@ -280,6 +294,13 @@ func Compose(spec integration.GUILaunchSpec, in Inputs) (Plan, error) {
 			"this app takes no project-directory argument — the requested directory was ignored")
 	}
 
+	// explorer shell:AppsFolder takes no further arguments, so operator args
+	// cannot reach a packaged app; drop them with a note rather than fail.
+	if len(in.ExtraArgs) > 0 && rule.mech == mechPackagedApp {
+		plan.Notes = append(plan.Notes,
+			"a packaged app launched through explorer takes no arguments - the extra arguments were ignored")
+	}
+
 	res := applyWrap(spec, in, rule.mech)
 	plan.Env = res.env
 	plan.WrapApplied = res.applied
@@ -327,6 +348,24 @@ func joinNotes(parts ...string) string {
 		}
 	}
 	return strings.Join(kept, " — ")
+}
+
+// isHandoffLauncher reports whether bin has one of the row's
+// HandoffPathSegments as a whole path segment. Both separators are split so a
+// Windows-spelled path classifies the same on every daemon OS.
+func isHandoffLauncher(spec integration.GUILaunchSpec, bin string) bool {
+	if bin == "" || len(spec.Wrap.HandoffPathSegments) == 0 {
+		return false
+	}
+	segments := strings.FieldsFunc(bin, func(r rune) bool { return r == '/' || r == '\\' })
+	for _, seg := range segments {
+		for _, want := range spec.Wrap.HandoffPathSegments {
+			if want != "" && seg == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isHTTPURL reports whether s has an http:// or https:// scheme. It is a

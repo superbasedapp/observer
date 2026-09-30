@@ -1,16 +1,30 @@
+import { Check, Copy, type LucideIcon } from "lucide-react";
 import { useState } from "react";
-import { Button, ChartShell, Input, JsonPreview, SlideOver, StatCard, Tooltip } from "@/components/primitives";
+import {
+  Button,
+  ChartShell,
+  EmptyState,
+  InlineLoading,
+  Input,
+  JsonPreview,
+  SlideOver,
+  StatCard,
+  Tooltip,
+  Stagger,
+} from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { useApi } from "@/lib/useApi";
 import { fmtBytes, fmtDateTime, fmtInt } from "@/lib/format";
 import type { EnrolmentInvite, EnrolmentStatus } from "@/lib/types";
+import { MetricIcon } from "@/components/MetricIcon";
 
 // EnrolmentSection is the Settings → Enrolment page: it shows whether this
 // agent is enrolled in a Teams org, what the last push shared, lets the
 // developer inspect the exact bytes sent, and lets them unenrol. It is purely
 // a view over /api/enrolment/* — on a solo-local install (org mode off) the
 // status reports not-enrolled and the page shows how to join.
-export function EnrolmentSection() {
+// `icon` is the section glyph from the Settings SECTIONS table.
+export function EnrolmentSection({ icon }: { icon?: LucideIcon }) {
   const status = useApi<EnrolmentStatus>("/api/enrolment/status", undefined, [], {
     refreshMs: 15000,
   });
@@ -38,6 +52,7 @@ export function EnrolmentSection() {
   return (
     <ChartShell
       title="Organisation enrolment"
+      icon={icon}
       sub="Teams visibility: when enrolled, this agent shares content-free activity rollups (counts, costs, timings, paths - never prompt text or tool output) with your organisation's SuperBased server. Enrol with `observer enroll <org-url> <token>`; unenrol any time below."
       right={
         enrolled ? (
@@ -72,6 +87,8 @@ export function EnrolmentSection() {
       <ChartState
         loading={status.loading && !data}
         error={status.error}
+        denied={status.denied}
+        deniedPermission={status.deniedPermission}
         empty={false}
         height={160}
       >
@@ -104,16 +121,17 @@ export function EnrolmentSection() {
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
-              <StatCard label="Organisation" value={data?.org_name || "-"} sub={data?.org_id} />
-              <StatCard label="You" value={data?.user_email || "-"} />
-              <StatCard label="Server" value={<Mono>{data?.org_server_url || "-"}</Mono>} />
+            <Stagger className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+              <StatCard label="Organisation" icon={<MetricIcon metric="organisation" />} value={data?.org_name || "-"} sub={data?.org_id} />
+              <StatCard label="You" icon={<MetricIcon metric="member" />} value={data?.user_email || "-"} />
+              <StatCard label="Server" icon={<MetricIcon metric="server" />} value={<Mono>{data?.org_server_url || "-"}</Mono>} />
               <StatCard
                 label="Credential store"
+                icon={<MetricIcon metric="credentialStore" />}
                 value={data?.credential_store || "-"}
                 sub={data?.enrolled_at ? `enrolled ${fmtDateTime(data.enrolled_at)}` : undefined}
               />
-            </div>
+            </Stagger>
             <PushPaused paused={data?.push_paused} />
             <LastPush push={data?.last_push} />
             <InviteTeammate />
@@ -278,6 +296,7 @@ function InviteTeammate() {
             <Button
               size="sm"
               variant="secondary"
+              iconLeft={copied ? Check : Copy}
               onClick={() => {
                 void navigator.clipboard?.writeText(invite.command);
                 setCopied(true);
@@ -371,11 +390,9 @@ function RawPayloadDrawer({ open, onClose }: { open: boolean; onClose: () => voi
     >
       <div className="p-4">
         {loading ? (
-          <div className="text-[12px] text-fg-3">loading…</div>
+          <InlineLoading label="Loading payload" />
         ) : text === "null" || text === "" ? (
-          <div className="rounded-2 border border-dashed border-line-2 px-4 py-6 text-center text-[12px] text-fg-3">
-            Nothing pushed yet.
-          </div>
+          <EmptyState variant="inline" illustration="inbox" illustrationSize={96} title="Nothing pushed yet" />
         ) : (
           <JsonPreview value={text} maxHeight={560} />
         )}

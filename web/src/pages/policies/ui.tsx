@@ -2,31 +2,21 @@ import { type ReactNode } from "react";
 import { Pill } from "@/components/primitives";
 import { type LintIssue } from "./types";
 
-// Shared form + layout primitives for the Policies module tabs (Guardrails,
+// Shared form primitives for the Policies module tabs (Guardrails,
 // Routing, Templates). Kept in one place so every tab renders identical
-// inputs/cards/buttons (CLAUDE.md rule 1 — one implementation, extended, not
+// inputs/buttons (section cards are the shared ChartShell / Card) (CLAUDE.md rule 1 — one implementation, extended, not
 // re-forked per tab).
 
 export const inputClass =
-  "rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-[12px] text-fg-1 outline-none focus:border-accent";
+  "rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-small text-fg-1 outline-none focus:border-accent";
 export const btnPrimary =
-  "rounded-2 bg-accent px-3 py-1.5 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50";
+  "rounded-2 bg-accent px-3 py-1.5 text-small font-medium text-accent-on transition-opacity hover:opacity-90 disabled:opacity-50";
 export const btnSecondary =
-  "rounded-2 border border-line-2 bg-bg-2 px-3 py-1.5 text-[12px] font-medium text-fg-1 transition-colors hover:border-line-3 disabled:opacity-50";
+  "rounded-2 border border-line-2 bg-bg-3 px-3 py-1.5 text-small font-medium text-fg-1 transition-colors hover:border-line-3 disabled:opacity-50";
 export const btnGhost =
   "rounded-2 border border-line-2 px-2 py-1 text-[11px] font-medium text-fg-2 transition-colors hover:text-fg-1 disabled:opacity-40";
 export const btnGhostDanger =
   "rounded-2 border border-line-2 px-2 py-1 text-[11px] font-medium text-fg-3 transition-colors hover:border-danger/40 hover:text-danger";
-
-export function Card({ title, sub, children }: { title: ReactNode; sub?: string; children: ReactNode }) {
-  return (
-    <section className="rounded-3 border border-line-1 bg-bg-1 p-4">
-      <h3 className="text-[13px] font-semibold text-fg-0">{title}</h3>
-      {sub ? <p className="mb-3 mt-0.5 max-w-3xl text-[11.5px] leading-snug text-fg-3">{sub}</p> : <div className="mb-2" />}
-      {children}
-    </section>
-  );
-}
 
 export function Labeled({
   label,

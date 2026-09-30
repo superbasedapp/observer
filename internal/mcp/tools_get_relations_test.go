@@ -19,9 +19,8 @@ import (
 
 // getRelationsFixture wires the get_relations MCP tool against a real
 // NATIVE codeintel index seeded inline. Mirrors getSymbolsFixture's
-// shape. (Phase 4: the synthetic node/edge graph is persisted through
-// the store seam — see seedCodeIntel — instead of a hand-built
-// codegraph graph.db.)
+// shape. The synthetic node/edge graph is persisted through the store
+// seam — see seedCodeIntel.
 type getRelationsFixture struct {
 	s       *Server
 	root    string

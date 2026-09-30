@@ -235,6 +235,78 @@ func TestParseSessionFile_ModelUsageEmitsTokenEventPerModel(t *testing.T) {
 	// — the haiku invocations Cowork does internally never land in
 	// audit.jsonl as assistant rows. Token capture from modelUsage is
 	// what bridges that visibility gap.
+
+	// duration_api_ms is an UNDIVIDED total across every model in this
+	// 2-model result — observer has no way to split it, so neither
+	// model's TokenEvent gets a GenMs stamp.
+	if opus.GenMs != 0 || opus.GenBasis != "" || opus.GenTimingV != 0 {
+		t.Errorf("opus GenMs/GenBasis/GenTimingV = %d/%q/%d, want zero value (2-model result, undivided duration)", opus.GenMs, opus.GenBasis, opus.GenTimingV)
+	}
+	if haiku.GenMs != 0 || haiku.GenBasis != "" || haiku.GenTimingV != 0 {
+		t.Errorf("haiku GenMs/GenBasis/GenTimingV = %d/%q/%d, want zero value (2-model result, undivided duration)", haiku.GenMs, haiku.GenBasis, haiku.GenTimingV)
+	}
+}
+
+// writeSingleModelAuditFixture lays out a minimal local_<id>/audit.jsonl
+// with ONE `result` record carrying exactly one modelUsage entry, so
+// duration_api_ms unambiguously covers that one model's own generation.
+func writeSingleModelAuditFixture(t *testing.T, durationAPIMs string) (root, auditPath string) {
+	t.Helper()
+	root = t.TempDir()
+	instDir := filepath.Join(root, "cowork-single", "dev-x", "local_single-model-0001")
+	if err := os.MkdirAll(instDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	line := `{"type":"result","uuid":"ures-single","session_id":"22222222-3333-4444-5555-666666666666",` +
+		`"is_error":false,"duration_ms":9000,` + durationAPIMs +
+		`"result":"Done.","total_cost_usd":0.01,"stop_reason":"end_turn",` +
+		`"modelUsage":{"claude-opus-4-6":{"inputTokens":50,"outputTokens":20,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"webSearchRequests":0,"costUSD":0.01,"contextWindow":200000,"maxOutputTokens":32000}},` +
+		`"_audit_timestamp":"2026-05-15T10:00:10.000Z"}`
+	auditPath = filepath.Join(instDir, "audit.jsonl")
+	if err := os.WriteFile(auditPath, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return root, auditPath
+}
+
+// TestParseSessionFile_SingleModelResultGenMs is table-driven over
+// rec.DurationAPIMs ("duration_api_ms", adapter.go ~L243) -> TokenEvent.
+// GenMs, for a result with exactly ONE model in modelUsage — the only
+// shape where the whole-batch duration unambiguously belongs to that one
+// model's own tokens.
+func TestParseSessionFile_SingleModelResultGenMs(t *testing.T) {
+	tests := []struct {
+		name          string
+		durationField string // e.g. `"duration_api_ms":7000,` or "" to omit
+		wantStamp     bool
+		wantGenMs     int64
+	}{
+		{"positive stamps verbatim (already ms)", `"duration_api_ms":7000,`, true, 7000},
+		{"field omitted leaves unset", "", false, 0},
+		{"zero leaves unset", `"duration_api_ms":0,`, false, 0},
+		{"negative leaves unset", `"duration_api_ms":-5,`, false, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, auditPath := writeSingleModelAuditFixture(t, tt.durationField)
+			a := NewWithOptions(nil, root)
+			res, err := a.ParseSessionFile(context.Background(), auditPath, 0)
+			if err != nil {
+				t.Fatalf("ParseSessionFile: %v", err)
+			}
+			if len(res.TokenEvents) != 1 {
+				t.Fatalf("TokenEvents: got %d want 1", len(res.TokenEvents))
+			}
+			ev := res.TokenEvents[0]
+			if tt.wantStamp {
+				if ev.GenMs != tt.wantGenMs || ev.GenBasis != models.GenBasisNative || ev.GenTimingV != 1 {
+					t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want %d/native/1", ev.GenMs, ev.GenBasis, ev.GenTimingV, tt.wantGenMs)
+				}
+			} else if ev.GenMs != 0 || ev.GenBasis != "" || ev.GenTimingV != 0 {
+				t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want zero value (no stamp)", ev.GenMs, ev.GenBasis, ev.GenTimingV)
+			}
+		})
+	}
 }
 
 // TestParseSessionFile_ModelUsageEmitsWebSearchRequests pins the Phase 2

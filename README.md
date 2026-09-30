@@ -329,6 +329,15 @@ docs. Evaluating without data? Start **demo mode** from the empty
 Overview — synthetic dataset in a temp DB, real `observer.db`
 untouched, one click to clear.
 
+Every page follows one time window (1h / 12h / 1d / 7d / 14d / 30d /
+90d / 1y / all, or Custom: a picker with one-click presets such as
+Today or Last week, a month calendar and hour / minute selects).
+Time-series charts bucket by that window in your browser's time zone -
+5 minutes up to 3 hours, hourly up to 7 days, daily up to 180 days,
+weekly beyond - and each chart has an Auto / 5 min / Hour / Day / Week
+control; empty buckets are drawn as zero. A density toggle switches
+tables between comfortable and compact.
+
 ### Overview — what's been happening?
 
 <p align="center">
@@ -349,8 +358,9 @@ tools by action count.
 
 One row per session with cost, token totals (input / cache R /
 cache W / output), elapsed time, action count, and a model badge.
-Quality / Errors / Redundancy scoring columns light up once
-`observer score` has run. Click a row to open the per-session
+Quality / Errors / Redundancy scoring columns are filled in by the
+daemon's session scorer (`[intelligence.scoring]`, on by default) once
+a session has been idle for 30 minutes. Click a row to open the per-session
 slide-over (shown below in [Session detail](#session-detail--drill-into-one-session)).
 
 ### Actions — the firehose, filtered
@@ -376,6 +386,12 @@ USD and turn count). Per-model table shows the full breakdown
 including reasoning tokens (billed at output rate) and long-context
 surcharges (Sonnet 1M, gpt-5 >272K, Gemini 2.5 Pro >200K). Hover
 any column header for its definition + formula.
+
+Costs are stamped when a turn is captured. When a price changes or is
+corrected later, `observer reprice` (a dry run unless `--apply`,
+revertible with `--revert`) or Settings -> Pricing re-prices stored
+turns at the rate in force when each one ran; a cost the tool itself
+reported is never overwritten.
 
 ### Analysis — spending insights & efficiency signals
 
@@ -545,7 +561,13 @@ donut, a token-bucket bar (net input / cache R / cache W / output),
 and the models used. It also carries the **next-message cost
 predictor** (a low / typical / high band over the session's likely
 turn fan-out) and, for proxied subscription sessions, the **5-hour /
-weekly limit gauge** read from the provider's own rate-limit headers.
+weekly limit gauge** read from the provider's own rate-limit headers,
+beside a **context-window gauge**. A session quality card breaks the
+score into its parts, lines of code split AI code from comments, and
+a Commits card lists the git commits the session's edits reached and
+whether it owns each one (the session with the most AI code lines in
+it; merges, teammates' commits and commits no AI edit reached have no
+owner).
 
 <p align="center">
   <img src="docs/assets/screenshots/11-session-detail-2.png" alt="Session detail — per-message timeline of every upstream API turn" width="900">
@@ -1081,6 +1103,10 @@ lint-gated policy editor, budget guardrails, evidence downloads) — see the
 | `observer metrics [--port N]` | Prometheus `/metrics` endpoint. |
 | `observer export {json\|csv\|xlsx}` | Dump tables for external analysis. |
 | `observer backfill --<mode>` | Re-populate columns added by later migrations. `--all` runs every mode. |
+| `observer reprice [--apply] [--revert <run>] [--list]` | Re-price stored costs at the rate in force when each turn ran (dry run by default; `--since` / `--until` / `--model` narrow it). Never overwrites a tool-reported cost. |
+| `observer project <id\|root>` | Per-project spend, AI lines (code vs comments), commits and prompt-to-commit status - the dashboard's Projects detail in the terminal. |
+| `observer shell-wrap status\|preview\|enable\|disable` | Opt-in command wrapping: PATH shims so typing `claude` runs `observer claude` (per tool, exact preview, byte-for-byte undo). |
+| `observer ide <id> [project-dir]` | Launch an IDE or desktop app the way the dashboard does and report whether its AI traffic can be routed through the proxy. |
 | `observer run <command>` | Run a command with its stdout streamed through the shell filter. |
 | `observer hook <tool> <event>` | Hook entrypoint (called by the AI tools after `init`). |
 | `observer serve` | MCP stdio server (spawned by AI tools). |
@@ -1213,11 +1239,12 @@ cd web && npm install && npm run dev
 
 # When done, rebuild the embedded bundle and commit
 make web-build
-git add internal/intelligence/dashboard/webapp/dist web/dist
+git add -A internal/intelligence/dashboard/webapp/dist
 ```
 
-`make web-build` regenerates both `web/dist` and the embedded copy.
-Requires **Node 22 LTS**.
+`make web-build` builds `web/dist` (an ignored build output, source
+maps included for local debugging) and copies it, minus the source
+maps, into the committed embedded copy. Requires **Node 22 LTS**.
 
 ### CI gates
 

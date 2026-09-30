@@ -1,78 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import clsx from "clsx";
-import { NAV_GROUPS, type NavIcon } from "@/lib/nav";
+import { ChevronLeft, X } from "lucide-react";
+import { NAV_GROUPS } from "@/lib/nav";
 import { useApi } from "@/lib/useApi";
 import { filterNavGroups, useGovernance } from "@/lib/governance";
 import { fmtBytes, fmtCompact } from "@/lib/format";
-import {
-  BarChartIcon,
-  BoltIcon,
-  CoinsIcon,
-  CompassIcon,
-  DatabaseIcon,
-  DollarIcon,
-  DropletIcon,
-  EyeIcon,
-  GearIcon,
-  LayersIcon,
-  LightningIcon,
-  ListIcon,
-  PercentIcon,
-  SearchIcon,
-  ShieldIcon,
-  SparklesIcon,
-  WrenchIcon,
-} from "@/components/icons";
-import { Tooltip } from "@/components/primitives";
+import { BrandMark, Icon, LiveDot, Tooltip } from "@/components/primitives";
+import { CAPTURE_DOT, liveDotProps, withDotClass } from "@/lib/liveSignals";
+import { slideFromX } from "@shared/lib/motion";
 import type { StatusSnapshot, SetupClaude, WatcherHealth } from "@/lib/types";
-
-function NavIconSvg({ icon }: { icon: NavIcon }) {
-  switch (icon) {
-    case "overview":
-      return <EyeIcon size={13} />;
-    case "live":
-      return <BoltIcon size={13} />;
-    case "search":
-      return <SearchIcon size={13} />;
-    case "sessions":
-      return <ListIcon size={13} />;
-    case "actions":
-      return <LightningIcon size={13} />;
-    case "projects":
-      return <LayersIcon size={13} />;
-    case "security":
-      return <ShieldIcon size={13} />;
-    case "egress":
-      return <CompassIcon size={13} />;
-    case "policies":
-      return <LayersIcon size={13} />;
-    case "cost":
-      return <DollarIcon size={13} />;
-    case "analysis":
-      return <BarChartIcon size={13} />;
-    case "tools":
-      return <WrenchIcon size={13} />;
-    case "compression":
-      return <DropletIcon size={13} />;
-    case "cache":
-      return <DatabaseIcon size={13} />;
-    case "suggestions":
-      return <CoinsIcon size={13} />;
-    case "benchmarks":
-      return <PercentIcon size={13} />;
-    case "discovery":
-      return <SearchIcon size={13} />;
-    case "patterns":
-      return <SparklesIcon size={13} />;
-    case "privacy":
-      return <ShieldIcon size={13} />;
-    case "remote":
-      return <CompassIcon size={13} />;
-    case "settings":
-      return <GearIcon size={13} />;
-  }
-}
 
 export function Sidebar({
   open = false,
@@ -89,7 +26,16 @@ export function Sidebar({
   // for ~15s because it is an unfiltered scan of every table, so on a large
   // database a count can lag reality by up to ~20s. Fine for badges; do not
   // build anything that needs to-the-second accuracy on these numbers.
-  const status = useApi<StatusSnapshot>("/api/status", undefined, [], { refreshMs: 5000 });
+  //
+  // The nav reads only the badge counts, selected by value, so a poll that
+  // moves only the per-request fields (uptime) re-renders nothing here; the
+  // footer (which shows uptime) subscribes to the full payload itself.
+  const counts = useApi<StatusSnapshot, Record<string, number | null>>(
+    "/api/status",
+    undefined,
+    [],
+    { refreshMs: 5000, select: navCounts },
+  ).data ?? NO_COUNTS;
   const setupClaude = useApi<SetupClaude>("/api/setup/claude");
   // Watcher health (P1.7): behind/orphan/misroute counts only — a
   // slow 60s cadence is plenty for a lag signal.
@@ -103,7 +49,6 @@ export function Sidebar({
   // unchanged).
   const gov = useGovernance();
   const navGroups = filterNavGroups(NAV_GROUPS, gov.data);
-  const counts = navCounts(status.data);
   // Desktop (lg+) icon-only rail collapse. The pref is persisted in
   // localStorage ("1"/"0", ProcessesSection pattern) and only bites at
   // lg+ — the mobile drawer keeps full width + labels regardless (the
@@ -116,7 +61,29 @@ export function Sidebar({
       return false;
     }
   });
+  // Collapse motion, transform/opacity only: the rail's WIDTH switches in
+  // one frame (one layout and one chart resize instead of a width tween that
+  // re-laid-out the whole page, and every ResponsiveContainer chart, on each
+  // frame). The visible motion is (1) the content column sliding from where
+  // it was to where it now sits (FLIP, compositor-only; the column is the
+  // aside's next sibling, <main> in App.tsx), (2) the labels fading in with a
+  // short slide on expand (sb-nav-reveal, only after a toggle so a page load
+  // never replays it) and (3) the chevron rotating. All three honour
+  // prefers-reduced-motion.
+  const asideRef = useRef<HTMLElement>(null);
+  const flipFrom = useRef<number | null>(null);
+  const [toggled, setToggled] = useState(false);
+  const reveal = toggled && !collapsed ? "sb-nav-reveal" : undefined;
+  useLayoutEffect(() => {
+    const from = flipFrom.current;
+    flipFrom.current = null;
+    const col = asideRef.current?.nextElementSibling;
+    if (from != null && col instanceof HTMLElement) slideFromX(col, from);
+  }, [collapsed]);
   function toggleCollapsed() {
+    const col = asideRef.current?.nextElementSibling;
+    flipFrom.current = col instanceof HTMLElement ? col.getBoundingClientRect().left : null;
+    setToggled(true);
     setCollapsed((v) => {
       const next = !v;
       try {
@@ -127,14 +94,6 @@ export function Sidebar({
       return next;
     });
   }
-  // Footer "refreshed Xs ago" — recomputes every second so the clock
-  // walks even between /api/status fetches.
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    const id = window.setInterval(() => setTick((t) => t + 1), 5000);
-    return () => window.clearInterval(id);
-  }, []);
-  void tick;
   return (
     <>
       {/* Backdrop — only on mobile while the drawer is open. Tapping it
@@ -147,20 +106,22 @@ export function Sidebar({
         />
       )}
       <aside
+        ref={asideRef}
+        id="app-sidebar"
         className={clsx(
           "flex w-[var(--sidebar-w)] shrink-0 flex-col border-r border-line-1 bg-bg-1",
           // Mobile: fixed overlay drawer that slides in from the left.
           // Desktop (lg+): a normal static flex sibling, always visible.
-          // Width AND transform animate so the desktop collapse and the
-          // mobile slide both tween smoothly.
-          "fixed inset-y-0 left-0 z-40 transition-[transform,width] duration-200 ease-out lg:static lg:z-auto lg:translate-x-0",
+          // Only transform animates (the mobile slide); the desktop collapse
+          // snaps the width and slides the content column instead (above).
+          "fixed inset-y-0 left-0 z-40 transition-transform duration-200 ease-out lg:static lg:z-auto lg:translate-x-0",
           open ? "translate-x-0" : "-translate-x-full",
           // Collapse is desktop-only: shrink to the icon rail at lg+ while
           // the mobile drawer keeps the full 220px.
           collapsed && "lg:w-[var(--sidebar-w-collapsed)]",
         )}
       >
-        <Brand onClose={onClose} collapsed={collapsed} />
+        <Brand onClose={onClose} collapsed={collapsed} reveal={reveal} />
         <nav className="flex-1 overflow-y-auto px-3 py-4">
           {navGroups.map((g) => (
             <div key={g.id} className="mb-5">
@@ -170,6 +131,7 @@ export function Sidebar({
                   // Group labels are noise on the icon rail — hide at lg+
                   // when collapsed; the mobile drawer still shows them.
                   collapsed && "lg:hidden",
+                  reveal,
                 )}
               >
                 {g.label}
@@ -191,7 +153,7 @@ export function Sidebar({
                     data-tour={`nav-${it.id}`}
                     className={({ isActive }) =>
                       clsx(
-                        "flex items-center gap-2 rounded-2 px-2 py-1.5 text-[12.5px] transition-colors",
+                        "group relative flex items-center gap-2 rounded-2 px-2 py-1.5 text-[12.5px] transition-colors",
                         collapsed && "lg:justify-center",
                         isActive
                           ? "bg-bg-3 text-fg-0"
@@ -199,23 +161,44 @@ export function Sidebar({
                       )
                     }
                   >
-                    <span className="shrink-0 text-fg-3">
-                      <NavIconSvg icon={it.icon} />
-                    </span>
-                    <span
-                      className={clsx("flex-1 truncate", collapsed && "lg:hidden")}
-                    >
-                      {it.label}
-                    </span>
-                    {counts[it.id] != null && (
-                      <span
-                        className={clsx(
-                          "shrink-0 font-mono text-[10px] tabular-nums text-fg-4",
-                          collapsed && "lg:hidden",
+                    {({ isActive }) => (
+                      <>
+                        {/* Active indicator: a 2px accent bar pinned to the
+                            row's left edge. It sits inside the row box, so it
+                            follows the row on the collapsed rail too. */}
+                        {isActive && (
+                          <span
+                            aria-hidden
+                            className="absolute inset-y-1 left-0 w-[2px] rounded-pill bg-accent"
+                          />
                         )}
-                      >
-                        {fmtCompact(counts[it.id] as number)}
-                      </span>
+                        <Icon
+                          icon={it.icon}
+                          size={14}
+                          className={clsx(
+                            "shrink-0 transition-colors",
+                            isActive
+                              ? "text-accent"
+                              : "text-fg-3 group-hover:text-fg-2",
+                          )}
+                        />
+                        <span
+                          className={clsx("flex-1 truncate", collapsed && "lg:hidden", reveal)}
+                        >
+                          {it.label}
+                        </span>
+                        {counts[it.id] != null && (
+                          <span
+                            className={clsx(
+                              "shrink-0 font-mono text-[10px] tabular-nums text-fg-4",
+                              collapsed && "lg:hidden",
+                              reveal,
+                            )}
+                          >
+                            {fmtCompact(counts[it.id] as number)}
+                          </span>
+                        )}
+                      </>
                     )}
                   </NavLink>
                 </Tooltip>
@@ -234,15 +217,24 @@ export function Sidebar({
             type="button"
             onClick={toggleCollapsed}
             aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
+            aria-expanded={!collapsed}
+            aria-controls="app-sidebar"
             className={clsx(
               "hidden items-center gap-2 border-t border-line-1 px-3 py-2 text-[11px] text-fg-3 transition-colors hover:bg-bg-2 hover:text-fg-1 lg:flex",
               collapsed && "lg:justify-center",
             )}
           >
             <span className="grid h-6 w-6 shrink-0 place-items-center">
-              <ChevronCollapseIcon collapsed={collapsed} />
+              <Icon
+                icon={ChevronLeft}
+                size={14}
+                className={clsx(
+                  "transition-transform duration-base ease-out",
+                  collapsed && "rotate-180",
+                )}
+              />
             </span>
-            {!collapsed && <span>Collapse</span>}
+            {!collapsed && <span className={reveal}>Collapse</span>}
           </button>
         </Tooltip>
         {/* Governed-node notice — persistent, never a silent absence.
@@ -264,10 +256,9 @@ export function Sidebar({
         )}
         {/* Footer detail overflows the 56px rail — hide it at lg+ when
             collapsed. The mobile drawer (always full width) keeps it. */}
-        <div className={clsx(collapsed && "lg:hidden")}>
+        <div className={clsx(collapsed && "lg:hidden", reveal)}>
           <Foot
             setup={setupClaude.data}
-            status={status.data}
             watcher={watcherHealth.data}
           />
         </div>
@@ -276,35 +267,14 @@ export function Sidebar({
   );
 }
 
-// ChevronCollapseIcon — points left (« collapse) when expanded, right
-// (» expand) when collapsed, mirroring the rail's motion direction.
-function ChevronCollapseIcon({ collapsed }: { collapsed: boolean }) {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden
-      style={{ transform: collapsed ? "rotate(180deg)" : undefined }}
-    >
-      <path
-        d="M10 3.5 5.5 8 10 12.5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 function Brand({
   onClose,
   collapsed = false,
+  reveal,
 }: {
   onClose?: () => void;
   collapsed?: boolean;
+  reveal?: string;
 }) {
   return (
     <div
@@ -315,21 +285,16 @@ function Brand({
         collapsed && "lg:justify-center lg:gap-0 lg:px-2",
       )}
     >
-      {/* The ▞ superbased wordmark, matching the marketing site's .sb-brand
-          exactly: the U+259E glyph (QUADRANT UPPER RIGHT AND LOWER LEFT) tinted
-          Blueprint blue, then lowercase "superbased" in the mono face. This is
-          the standalone glyph mark - NOT a badge box, NOT title case. */}
-      <span
-        aria-hidden
-        className="shrink-0 font-mono text-[21px] font-semibold leading-none"
-        style={{ color: "#2647E8" }}
-      >
-        {"▞"}
-      </span>
+      {/* The superbased wordmark, matching the marketing site's .sb-brand:
+          the two-square U+259E mark in Blueprint (the shared SVG BrandMark,
+          so it never falls back to an OS font), then lowercase "superbased"
+          in the mono face. The standalone glyph - NOT a badge box. */}
+      <BrandMark size={17} className="shrink-0" />
       <div
         className={clsx(
           "flex flex-col leading-tight",
           collapsed && "lg:hidden",
+          reveal,
         )}
       >
         <b className="font-mono text-[15px] font-medium tracking-tight text-fg-0">
@@ -343,14 +308,7 @@ function Brand({
         aria-label="Close navigation"
         className="ml-auto grid h-7 w-7 place-items-center rounded-2 border border-line-2 bg-bg-2 text-fg-3 hover:bg-bg-3 hover:text-fg-0 lg:hidden"
       >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
-          <path
-            d="M4 4l8 8M12 4l-8 8"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-          />
-        </svg>
+        <Icon icon={X} size={14} />
       </button>
     </div>
   );
@@ -363,8 +321,10 @@ function Brand({
 // guard_events / router_decisions) are optional in the type because
 // an older daemon may serve a /api/status without them — `?? null`
 // keeps those badges hidden instead of rendering a bogus 0.
+const NO_COUNTS: Record<string, number | null> = {};
+
 function navCounts(s?: StatusSnapshot | null): Record<string, number | null> {
-  if (!s) return {};
+  if (!s) return NO_COUNTS;
   const c = s.counts;
   return {
     live: c.live_sessions ?? null,
@@ -393,13 +353,21 @@ function distinctTools(s: StatusSnapshot): number {
 
 function Foot({
   setup,
-  status,
   watcher,
 }: {
   setup: SetupClaude | null;
-  status: StatusSnapshot | null;
   watcher: WatcherHealth | null;
 }) {
+  // The footer shows uptime / db size / last activity, so it reads the full
+  // status payload (the Sidebar above keeps the 5 s poll alive). Its
+  // "last activity Xs ago" walks on its own 5 s tick between fetches.
+  const status = useApi<StatusSnapshot>("/api/status").data;
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((t) => t + 1), 5000);
+    return () => window.clearInterval(id);
+  }, []);
+  void tick;
   const proxyOn =
     setup != null &&
     (setup.status === "oauth_ready" || setup.status === "api_key_ready");
@@ -419,16 +387,9 @@ function Foot({
   return (
     <div className="border-t border-line-1 px-4 py-3 text-[11px] text-fg-3">
       <div className="mb-0.5 flex items-center gap-1.5 text-fg-2">
-        <span
-          className={clsx(
-            "relative h-1.5 w-1.5 rounded-full",
-            proxyOn ? "bg-success" : "bg-warn",
-          )}
-        >
-          {proxyOn && (
-            <span className="absolute inset-0 -m-0.5 animate-ping rounded-full bg-success/40" />
-          )}
-        </span>
+        <LiveDot
+          {...withDotClass(liveDotProps(CAPTURE_DOT, proxyOn ? "active" : "paused"), "h-1.5 w-1.5 shrink-0")}
+        />
         watcher {proxyOn ? "active" : "-"}
         {setup?.proxy_port ? (
           <>
@@ -455,7 +416,7 @@ function Foot({
           {/* tabIndex={0} makes the warning keyboard-focusable so the Tooltip
               (which opens on focus) is reachable without a pointer. */}
           <div tabIndex={0} className="mb-0.5 flex items-center gap-1.5 text-[10px] text-warn">
-            <span className="h-1.5 w-1.5 rounded-full bg-warn" />
+            <LiveDot tone="warn" still className="h-1.5 w-1.5 shrink-0" />
             {lagging && <>behind {watcher!.behind_count} file{watcher!.behind_count === 1 ? "" : "s"}</>}
             {lagging && misrouted && " · "}
             {misrouted && <>{watcher!.suspected_misrouted_count} misrouted</>}

@@ -7,11 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	_ "modernc.org/sqlite"
 
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 )
 
@@ -52,15 +54,85 @@ type cursorStoreData struct {
 	Model string
 }
 
+// ResolvePlaceholderModel returns model unchanged unless it is Cursor's
+// auto-mode placeholder ("", "default", "auto"), in which case it tries
+// the conversation's CLI store.db (ResolveModelFromStore) under the
+// NATIVE home and returns the concrete model when found. This is the
+// live hook's rung: a hook process is short-lived, and enumerating the
+// cross-mount homes there (DrvFs readdir, possibly a cmd.exe interop
+// probe) would put that cost on every auto-mode turn. The hooks-log
+// replay, which runs in the daemon, uses resolvePlaceholderModelAllHomes.
+//
+// Kept for callers without a generation id; ResolvePlaceholderModelFor is
+// the per-request resolver.
+func ResolvePlaceholderModel(model, conversationID string) string {
+	return ResolvePlaceholderModelFor(model, conversationID, "")
+}
+
+// ResolvePlaceholderModelFor is ResolvePlaceholderModel for one request:
+// Cursor bills every Auto request at the list price of the model THAT
+// request was routed to (cursor.com/docs/models), so the model of the
+// generation's own answer wins over any session-level guess (see
+// storeModelLadder).
+func ResolvePlaceholderModelFor(model, conversationID, generationID string) string {
+	if !isPlaceholderModel(model) {
+		return model
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return model
+	}
+	return resolvePlaceholderModelIn(model, conversationID, generationID, []string{home})
+}
+
+// resolvePlaceholderModelAllHomes is ResolvePlaceholderModelFor over the
+// native home and then every cross-mount home, so a WSL daemon replaying
+// a Windows-side session finds its store.db under /mnt/c/Users/<u>.
+func resolvePlaceholderModelAllHomes(model, conversationID, generationID string) string {
+	if !isPlaceholderModel(model) {
+		return model
+	}
+	seen := map[string]bool{}
+	var homes []string
+	for _, h := range crossmount.AllHomes() {
+		if h.Path != "" && !seen[h.Path] {
+			homes = append(homes, h.Path)
+			seen[h.Path] = true
+		}
+	}
+	return resolvePlaceholderModelIn(model, conversationID, generationID, homes)
+}
+
+// isPlaceholderModel reports Cursor's auto-mode model sentinels.
+func isPlaceholderModel(model string) bool {
+	return model == "" || strings.EqualFold(model, "default") || strings.EqualFold(model, "auto")
+}
+
+// resolvePlaceholderModelIn is ResolvePlaceholderModelFor over an explicit,
+// ordered home list (the first home holding a concrete model wins).
+func resolvePlaceholderModelIn(model, conversationID, generationID string, homes []string) string {
+	for _, home := range homes {
+		if m := resolveModelFromStoreFor(home, conversationID, generationID); m != "" {
+			return m
+		}
+	}
+	return model
+}
+
 // ResolveModelFromStore looks up the real model id for a conversation by
 // scanning its store.db turn blobs, given the user's home dir and the
 // conversation (= session) id. It globs the workspace-hash layer
 // (~/.cursor/chats/<ws-hash>/<conversationID>/store.db) since the hook does
 // not carry the hash. Returns "" when no store.db or concrete model is
 // found — callers keep their existing value (e.g. the "default" sentinel)
-// in that case. This is the resolver the cursor stop-hook uses to replace
-// the auto-mode "default" model the hook body reports.
+// in that case.
 func ResolveModelFromStore(home, conversationID string) string {
+	return resolveModelFromStoreFor(home, conversationID, "")
+}
+
+// resolveModelFromStoreFor walks the conversation's store.db(s) through
+// storeModelLadder for one generation ("" = no generation known).
+func resolveModelFromStoreFor(home, conversationID, generationID string) string {
 	if home == "" || conversationID == "" {
 		return ""
 	}
@@ -70,11 +142,120 @@ func ResolveModelFromStore(home, conversationID string) string {
 		return ""
 	}
 	for _, dbPath := range matches {
-		if data, ok := scanStoreDB(dbPath); ok && data.Model != "" {
-			return data.Model
+		turns, ok := readStoreTurnModels(dbPath)
+		if !ok {
+			continue
+		}
+		for _, rung := range storeModelLadder {
+			if m := rung.pick(turns, generationID); m != "" {
+				return m
+			}
 		}
 	}
 	return ""
+}
+
+// storeTurnModels is a store.db's conversation in blob INSERTION order
+// (rowid): every user blob carries providerOptions.cursor.requestId (the
+// hook generation id) and the assistant blobs that answered it follow it
+// until the next user blob. Grounded 2026-09-27 on node-1's Auto session
+// and 24 local stores (every user turn carried a requestId).
+type storeTurnModels struct {
+	byRequest map[string]string // requestId -> concrete model of its answer
+	latest    string            // model of the most recently inserted answer
+	anyFirst  string            // first concrete model in scan order (legacy rung)
+}
+
+// storeModelLadder is the ordered resolution table (first non-empty wins).
+var storeModelLadder = []struct {
+	name string
+	pick func(t storeTurnModels, gen string) string
+}{
+	// 1. The generation's own answer: exact per-request routing.
+	{"generation", generationModel},
+	// 2. The most recent answer: the live hook fires right after its own
+	//    turn, so the newest answer is almost always this request's.
+	{"latest", func(t storeTurnModels, _ string) string { return t.latest }},
+	// 3. Any concrete model (stores without requestId-tagged user blobs).
+	{"any", func(t storeTurnModels, _ string) string { return t.anyFirst }},
+}
+
+// generationModel is the model that answered request gen ("" when the
+// store holds no answer for it yet).
+func generationModel(t storeTurnModels, gen string) string {
+	if gen == "" {
+		return ""
+	}
+	if m := t.byRequest[gen]; m != "" {
+		return m
+	}
+	// IDE generation ids can be "<requestId>-<step>-<suffix>".
+	for rid, m := range t.byRequest {
+		if strings.HasPrefix(gen, rid+"-") {
+			return m
+		}
+	}
+	return ""
+}
+
+// readStoreTurnModels reads the role blobs in rowid order.
+func readStoreTurnModels(dbPath string) (storeTurnModels, bool) {
+	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(2000)",
+		sqlitedsn.Escape(dbPath))
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return storeTurnModels{}, false
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT data FROM blobs ORDER BY rowid`)
+	if err != nil {
+		return storeTurnModels{}, false
+	}
+	defer rows.Close()
+	out := storeTurnModels{byRequest: map[string]string{}}
+	current := ""
+	for rows.Next() {
+		var data []byte
+		if rows.Scan(&data) != nil {
+			continue
+		}
+		if t := bytes.TrimSpace(data); len(t) == 0 || t[0] != '{' {
+			continue // protobuf checkpoint / tree blobs
+		}
+		var msg struct {
+			Role            string          `json:"role"`
+			Content         json.RawMessage `json:"content"`
+			ProviderOptions struct {
+				Cursor struct {
+					RequestID string `json:"requestId"`
+				} `json:"cursor"`
+			} `json:"providerOptions"`
+		}
+		if json.Unmarshal(data, &msg) != nil {
+			continue
+		}
+		switch msg.Role {
+		case "user":
+			if rid := msg.ProviderOptions.Cursor.RequestID; rid != "" {
+				current = rid
+			}
+		case "system":
+			continue
+		default: // "assistant" (and role-less answer blobs on older stores)
+			m := modelFromBlob(data)
+			if m == "" {
+				continue
+			}
+			if out.anyFirst == "" {
+				out.anyFirst = m
+			}
+			out.latest = m
+			if current != "" && out.byRequest[current] == "" {
+				out.byRequest[current] = m
+			}
+		}
+	}
+	return out, rows.Err() == nil
 }
 
 // scanStoreDB opens the blob store read-only (cursor-agent may hold the

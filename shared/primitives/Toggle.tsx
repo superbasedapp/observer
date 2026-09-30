@@ -16,6 +16,7 @@ export function Toggle({
   label,
   className,
   labelClassName,
+  ariaLabel,
 }: {
   on: boolean;
   onChange?: (next: boolean) => void;
@@ -24,6 +25,9 @@ export function Toggle({
   label?: React.ReactNode;
   className?: string;
   labelClassName?: string;
+  /** Accessible name for the switch when there is no visible `label` (a
+   *  toggle in a table cell), instead of an sr-only label. */
+  ariaLabel?: string;
 }) {
   const trackW = size === "md" ? 40 : 32;
   const trackH = size === "md" ? 22 : 18;
@@ -35,6 +39,7 @@ export function Toggle({
       type="button"
       role="switch"
       aria-checked={on}
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={() => onChange?.(!on)}
       className={clsx(
@@ -52,7 +57,7 @@ export function Toggle({
         style={{ width: trackW, height: trackH }}
       >
         <span
-          className="absolute top-0 inline-block rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.4)] transition-transform"
+          className="absolute top-0 inline-block rounded-full bg-[var(--knob)] shadow-[0_1px_2px_rgba(0,0,0,0.4)] transition-transform"
           style={{
             width: knob,
             height: knob,

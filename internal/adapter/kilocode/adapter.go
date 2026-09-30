@@ -646,7 +646,10 @@ func (a *CLIAdapter) toolEvent(sourceFile string, row partRow, sessDirs map[stri
 	if a.scrubber != nil {
 		rawInput = a.scrubber.RawJSON(part.State.Input)
 	}
-	output := firstNonEmpty(part.State.Output, part.State.Metadata.Output)
+	// Cap BEFORE scrubbing (the claudecode/qwencode order): the 1 MiB
+	// ToolOutput contract in models.ToolEvent is the adapter's to keep,
+	// and this path was the one OpenCode-family emitter that skipped it.
+	output := contentcap.Cap(firstNonEmpty(part.State.Output, part.State.Metadata.Output), contentcap.DefaultMaxBytes)
 	if a.scrubber != nil {
 		output = a.scrubber.String(output)
 	}

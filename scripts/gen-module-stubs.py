@@ -96,6 +96,13 @@ V = [
   ('contains(["off", "on"], var.harness)', "harness must be off or on")),
  var("identity", "string", '"oidc"', ["data", "app"], None, "Catalog axis identity: oidc | saml | local (the data layer mints the SAML SP keypair when saml).",
   ('contains(["oidc", "saml", "local"], var.identity)', "identity must be oidc, saml or local")),
+# Agent Access (2026-09-26 deployment ruling; lanes L-TF-AWS + L-TF-AZ): BOTH clouds. Default OFF;
+# the data layer mints agentgateway-session-key, the app layer threads ctx.agent_access and opens
+# the companion's listeners behind an L7. The bundle's [agent_access].enabled must agree (an
+# app-layer precondition). The AWS wording is the per-cloud override so the AWS roots' generated
+# text is unchanged by the Azure half landing.
+ var("agent_access", "bool", "false", ["data", "app"], None, "Agent Access (observer-mcpgw + the digest-pinned agentgateway sidecar in the org's network namespace, single-origin path routing): false (default) = nothing minted, nothing opened, and every rendered cloud-init / Caddyfile / haproxy.cfg / NSG / Application Gateway is byte-identical to a deployment without the variable. true = the data layer mints the Key Vault secret agentgateway-session-key (AGENTGATEWAY_SESSION_KEY); the app layer threads ctx.agent_access into every box (first boot cosign-verifies observer-mcpgw + the agentgateway mirror and loads docker-compose.agent-access.yaml as the third -f), routes the STS / MCP paths to :8850/:8851 at the existing TLS terminator (Caddy, the HAProxy pair or the Application Gateway; no new DNS name, certificate or public port - behind an L7 the app NSG admits the two ports from the lb / appgw subnets only) and refuses a bundle whose config.production.toml [agent_access].enabled disagrees. Apply data then app with the same value.", None,
+  aws={"description": "Agent Access (observer-mcpgw + the digest-pinned agentgateway sidecar in the org's network namespace, single-origin path routing): false (default) = nothing minted, nothing opened. true = the data layer mints agentgateway-session-key (AGENTGATEWAY_SESSION_KEY) and the app layer threads ctx.agent_access into every box, opens :8850/:8851 to the L7 (ALB listener rules / the HAProxy pair) and refuses a bundle whose config.production.toml [agent_access].enabled disagrees. Apply data then app with the same value."}),
  var("tls_certificate_secret_id", "string", '""', ["app"], None, "Key Vault secret id of a customer-provided PFX for the public hostname - versionless https://<vault>.vault.azure.net/secrets/<name> (recommended, tracks rotation) or versioned .../secrets/<name>/<version>; a bare secret name in the deployment's own vault is accepted for compatibility. Empty = ACME per var.acme.", None,
   clouds=["azure"], twin="tls_certificate_secret_arn"),
  var("tls_certificate_secret_arn", "string", '""', ["app"], None, "Secrets Manager secret ARN of a customer-provided PFX for the public hostname, terminated by the HAProxy pair (haproxy-pair; DEP-2 twin) or by Caddy on a single node. Empty = ACME per var.acme.", None,
@@ -579,7 +586,7 @@ Per-cloud overrides of core rows on AWS (everything not listed renders the base 
 | `resource_group_name` | string | the deployment's resource group (created by bootstrap, echoed) |
 | `vnet_id`, `subnet_ids` | string, map(string) | `app`, `data`, `lb` subnet ids |
 | `key_vault_id`, `key_vault_uri` | string | the vault the VMs read |
-| `secret_names` | map(string) | logical -> Key Vault secret name: `session-key`, `bearer-signing-key`, `policy-signing-key`, `scim-token`, `nats-password`, `pg-app-password`, `pg-control-dsn`, `pg-data-dsn`, `sealing-key`, `object-sas`, `acr-pull-user`, `acr-pull-token`, `nats-ca`, `nats-cert-<i>`, `nats-key-<i>`, `pg-server-cert`, `pg-server-key`, `pg-ca`, `harness-gateway-token`, `saml-sp-cert`, `saml-sp-key` (absent keys = not minted for this answer set) |
+| `secret_names` | map(string) | logical -> Key Vault secret name: `session-key`, `bearer-signing-key`, `policy-signing-key`, `scim-token`, `nats-password`, `pg-app-password`, `pg-control-dsn`, `pg-data-dsn`, `sealing-key`, `object-sas`, `acr-pull-user`, `acr-pull-token`, `nats-ca`, `nats-cert-<i>`, `nats-key-<i>`, `pg-server-cert`, `pg-server-key`, `pg-ca`, `harness-gateway-token`, `saml-sp-cert`, `saml-sp-key`, `agentgateway-session-key` (`agent_access = true` only, 64 hex) (absent keys = not minted for this answer set) |
 | `sealing_key_secret_id` | string | the plan's output, echoed by app |
 | `vm_ssh_public_key` | string | the admin user's public key (customer-provided or generated) |
 | `storage_account_name`, `archive_container_name`, `bundle_container_name`, `bundle_container_url` | string | the SoR account and the two containers |
@@ -627,9 +634,28 @@ ctx = {
   backend_ips          = list(string)    # haproxy role: the app nodes' private IPs (= C1b app_private_ips); [] on other roles
   object_account_name  = string          # C8: OBSERVER_OBJECT_ACCOUNT_NAME ("" when object_store = local-disk)
   object_container     = string          # C8: OBSERVER_OBJECT_CONTAINER ("observer-archive" or "")
-  trusted_proxy_cidr   = string          # C9: the CIDR written into [server].trusted_proxies ("" = leave commented)
+  trusted_proxy_cidr   = string          # C9: the CIDR written into [server].trusted_proxies ("" = leave commented); with agent_access also [agent_access].trusted_proxy_cidrs
+  agent_access         = bool            # C1 agent_access - PRESENT (true) ONLY when var.agent_access is on, on every role (the shared Caddyfile / haproxy.cfg templates and the on-box scripts read it as try(ctx.agent_access, false) / `.agent_access == true`); ABSENT when off, so an off render's ctx.json is byte-identical to a pre-Agent-Access one
+  agent_access_bind    = string          # app role, agent_access only: the host side of the companion's :8850/:8851 publish (OBSERVER_AGENT_ACCESS_BIND): "" on caddy-on-box (Caddy on the compose network; the override's 127.0.0.1 default), else this node's private IP (behind the HAProxy pair / Application Gateway)
 }
 ```
+
+**Agent Access on Azure (C1 `agent_access`, the 2026-09-26 deployment ruling):** observer-mcpgw +
+the digest-pinned agentgateway sidecar join the org container's network namespace through the
+bundle's `docker-compose.agent-access.yaml`, which first boot loads as the THIRD `-f` after
+cosign-verifying `<registry>/observer-mcpgw:<image_tag>` (our release identity for `image_tag`)
+and the `AGENTGATEWAY_IMAGE` mirror (the upstream release identity for its version tag AND our
+counter-signature for `image_tag`) - the exact identities `scripts/agent-access-supply-chain-
+check.sh` pins. The existing TLS terminator splits ONE origin by path (issuer = gateway_base_uri
+= `https://<hostname>`): `:8850` <- `/oauth2/token`, `/oauth2/revoke`, `/register`, `/register/*`,
+`/.well-known/jwks.json`, `/.well-known/oauth-authorization-server`; `:8851` <- `/mcp/*`,
+`/.well-known/oauth-protected-resource/mcp[/*]`; everything else (incl. `/oauth2/authorize`,
+`/oauth2/consent`, `/connect/*`) stays on `:8443`. caddy-on-box: the shared Caddyfile.tftpl routes
+to `org:8850` / `org:8851` on the compose network (no NSG row). haproxy-pair: haproxy.cfg.tftpl
+adds `be_mcpgw_sts` / `be_mcpgw_mcp` on the app nodes' private IPs. managed-l7: the Application
+Gateway's https rule becomes a URL path map with two more backend settings + probes. Behind
+either L7 the app NSG admits `:8850` / `:8851` from the lb and appgw subnets ONLY (the `:8443`
+row's sources) - never a new public port. Off = none of this renders.
 
 **Template escaping rule:** a `.tftpl` is rendered by `templatefile`, so every literal `${...}`
 that belongs to bash (or compose) inside an inlined script MUST be written `$${...}` (and a
@@ -637,8 +663,24 @@ literal `%{` as `%%{`). `check-sync.sh` compares the UNESCAPED `files/*` copy ag
 template after reversing that escape. A1/B1's `tofu test` on the app root renders the real
 template, so an unescaped `${VAR}` fails THEIR gate, not only A2's.
 
-The template installs docker (pinned apt), cosign (sha256-pinned script), the units under
-`cloudinit/files/`, mounts LUN disks by `/dev/disk/azure/scsi1/lun<N>`, and enables
+**On-box scripts are fetched, not inlined (AA-53, 2026-09-26):** the `app`, `pg` and
+`nats-quorum` templates inline ONE script, `observer-onbox-fetch.sh`, and take a SECOND
+`templatefile` variable beside `ctx`: `onbox_sha256` = `{ <name> = filesha256(<repo file>) }`
+over every `*.sh` under `_shared/cloudinit/files/` and `_shared/azure/cloudinit/files/` minus
+the two dev harnesses (an Azure-bound file shadows a generic one of the same name). It is never
+a ctx key, so `/etc/observer-org-ctx.json` is unchanged. The app root uploads the same set to
+the bundle container as `onbox/<name>` (`azurerm_storage_blob.onbox`; every VM that fetches
+`depends_on` it), each template lists the scripts its role runs in
+`/etc/observer-org/onbox.sha256` (`sha256sum` format), and runcmd is
+`[ observer-onbox-fetch.sh, bootstrap-<role>.sh ]`: the fetcher downloads the listed blobs with
+the VM identity (the bundle-reader grant, retrying RBAC propagation for up to 30 min), refuses
+the WHOLE set on any sha256 mismatch, installs them at `/usr/local/bin` 0755 and execs the
+bootstrap. `observer-bundle-fetch.sh` skips `onbox/`. The `haproxy` template has no
+bundle-reader grant and keeps inlining its scripts. `check-sync.sh` pins each fetched list, the
+runcmd hand-off and the absence of any inlined copy of a fetched script.
+
+The template (through the role's bootstrap) installs docker (pinned apt), cosign (sha256-pinned
+script), the units under `cloudinit/files/`, mounts LUN disks by `/dev/disk/azure/scsi1/lun<N>`, and enables
 `observer-first-boot.service`, which: (1) fetches the bundle files with the VM identity
 (IMDS -> Blob REST), (2) runs `observer-env-sync.sh` once (IMDS -> Key Vault REST -> `.env` +
 `secrets/*`, 0600, uid 65532), (3) `docker login` with the pull token, `cosign verify` the
@@ -650,9 +692,12 @@ changed. No template line contains a secret; the ONLY reader of Key Vault on a b
 The rendered document itself reaches the VM as `custom_data = base64gzip(...)` (every VM child:
 `app-vm`, `haproxy-pair`, and `postgres-vm` / `nats-quorum` through `app-vm`), never plain
 `base64encode`, because Azure caps `osProfile.customData` at 64 KB raw / 87380 base64 characters
-(D7) - the same cap DR-53 records for the bundle - and the app document alone is ~95 KB raw
-(~126K plain-base64 characters) since it inlines every `files/*` script through `write_files`;
-cloud-init decompresses gzip user-data transparently on the Azure datasource (Ubuntu 24.04).
+(D7) - the same cap DR-53 records for the bundle; cloud-init decompresses gzip user-data
+transparently on the Azure datasource (Ubuntu 24.04). Measured on the maximal context
+(nats-cluster, harness, metrics, haproxy-pair, Agent Access on) after AA-53: app 13,684, pg
+11,392, nats-quorum 11,524 (from 86,436 / 76,156 / 62,456 when every script was inlined);
+haproxy, still inlined, 65,648. The root tests assert the cap on every VM and a floor of half
+the cap on the three fetching roles.
 
 ### C7 `observer-postgres` image contract (A2 builds it; A3's compose override runs it)
 
@@ -703,8 +748,12 @@ left as rendered), from Key Vault (secret) or from the cloud-init `ctx` (non-sec
 | `OBSERVER_OBJECT_ACCOUNT_NAME`, `OBSERVER_OBJECT_CONTAINER` | ctx (non-secret) | `object_store = cloud-bucket` only |
 | `OBSERVER_ORG_SECRET_KEY` | Key Vault `sealing-key` | the env rail (`secretref.KeyEnv`); the override adds it to `org`'s environment; `sealing_key_path` stays in config but the env wins |
 | `OBSERVER_PG_APP_PASSWORD` | Key Vault `pg-app-password` | compact (colocated) only |
-| `OBSERVER_ORG_IMAGE`, `OBSERVER_POSTGRES_IMAGE`, `HARNESS_GATEWAY_IMAGE` | rendered by the planner (registry + tag) | never CHANGEME on the module path |
+| `OBSERVER_ORG_IMAGE`, `OBSERVER_POSTGRES_IMAGE`, `HARNESS_GATEWAY_IMAGE` | rendered by the planner (registry + tag) | never CHANGEME on the module path; first boot pins each image it cosign-verifies to the verified digest (`repo:tag@sha256:...`, Sol AA-s3 F1), and the bundle re-fetch restores the bare tag so every boot re-verifies and re-pins. `OBSERVER_ORG_IMAGE` (and the pg role's `OBSERVER_POSTGRES_IMAGE`) MUST resolve to its pin in `docker compose config`; the harness-gateway and colocated observer-postgres pins are checked one-way only |
 | `GATEWAY_TOKEN` | Key Vault `harness-gateway-token` | `harness = on` only |
+| `AGENTGATEWAY_SESSION_KEY` | Key Vault `agentgateway-session-key` | `agent_access = true` only; 64 hex (checked before the write; agentgateway refuses any other length); the same pending / committed / operator_override tracking as every Key Vault key; a change RE-CREATES the sidecar (it reads the key from env) |
+| `OBSERVER_MCPGW_IMAGE` | ctx (non-secret): `<registry>/observer-mcpgw:<image_tag>` | `agent_access = true` only; the ctx tag, or first boot's verified `@sha256` pin of that tag, kept (`mcpgw_image_pinned`, Sol AA-s3 F1); any other value is forced back to the bare ctx tag (`force_env`, D15), which first boot then re-verifies and pins, so the companion can never drift off the org's tag (DR-38 lockstep) |
+| `AGENTGATEWAY_IMAGE` | rendered by the planner | `agent_access = true` only; never written by env-sync, REFUSED unless `<registry>/agentgateway:<vX.Y.Z>@sha256:<64 hex>` (the app root refuses it at plan time too) |
+| `OBSERVER_AGENT_ACCESS_BIND` | ctx `agent_access_bind` | `agent_access = true` only; ctx-authoritative both ways (the D19 `OBSERVER_METRICS_BIND` precedent); a change re-creates org, and with it observer-mcpgw + agentgateway (they live in org's network namespace) |
 | `secrets/session.key`, `secrets/bearer/signing.key`, `secrets/policy/signing.key`, `secrets/scim/token` | Key Vault `session-key`, `bearer-signing-key`, `policy-signing-key`, `scim-token` | 0600, uid 65532; `policy/signing.key` is the org's POLICY signing key (`[policy].signing_key_path` in the rendered config) - a different key from the bearer one; without it `GET /api/agent/budget` answers 409 `policy_channel_off` and every managed node's launch is refused |
 | `secrets/saml/sp.crt`, `secrets/saml/sp.key` | Key Vault `saml-sp-cert`, `saml-sp-key` | `identity = saml` only |
 | `secrets/pg-tls/{server.crt,server.key,ca.crt}` | Key Vault `pg-server-cert`, `pg-server-key`, `pg-ca` | self-hosted only; key owner uid 999 |
@@ -716,8 +765,8 @@ left as rendered), from Key Vault (secret) or from the cloud-init `ctx` (non-sec
 nats-quorum roles get a skeleton from cloud-init). The app layer's upload precondition REFUSES a
 `bundle_dir/.env` in which any C8 secret key (`OBSERVER_CONTROL_STORE_DSN`,
 `OBSERVER_DATA_STORE_DSN`, `OBSERVER_LOG_PASSWORD`, `NATS_PASSWORD`, `OBSERVER_OBJECT_ACCOUNT_SAS`,
-`OBSERVER_OBJECT_ACCOUNT_KEY`, `OBSERVER_ORG_SECRET_KEY`, `OBSERVER_PG_APP_PASSWORD`, `GATEWAY_TOKEN`)
-is set to anything but `CHANGEME` or empty - a hand-filled secret never leaves the operator's
+`OBSERVER_OBJECT_ACCOUNT_KEY`, `OBSERVER_ORG_SECRET_KEY`, `OBSERVER_PG_APP_PASSWORD`, `GATEWAY_TOKEN`,
+`AGENTGATEWAY_SESSION_KEY`) is set to anything but `CHANGEME` or empty - a hand-filled secret never leaves the operator's
 machine through this path.
 
 Every write is atomic (temp + rename), mode-checked, and the unit restarts `org` (and
@@ -737,6 +786,8 @@ hard failure, never a silent skip):
 | `[log].url` | `nats://<ip>:4222[,nats://<ip>:4222,...]` (this node's own NATS first, then `ctx.nats_peers`) | `nats-*` |
 | `[log].ca_file` / `cert_file` / `key_file` | `/etc/observer-org/nats-tls/{ca.crt,node.crt,node.key}` (uncommented) | `nats-*` |
 | `[metrics].listen` | `":<port of ctx.metrics_listen>"` (D19; compose publishes ctx.metrics_listen via OBSERVER_METRICS_BIND) | `ctx.metrics_listen` non-empty; the patcher tolerates an absent `[metrics]` section (a pre-D17 bundle) with a log line, never an assert |
+| `[agent_access].issuer`, `[agent_access].gateway_base_uri` | `https://<ctx.hostname>` (the single origin, = external_url) | `ctx.agent_access`; first boot refuses a bundle whose live `[agent_access].enabled` is not `true` (the on-box belt of the app root's plan-time gate) |
+| `[agent_access].trusted_proxy_cidrs` | `["<ctx.trusted_proxy_cidr>"]` | `ctx.agent_access` behind an L7 (`haproxy-pair` / `managed-l7`); absent line = a log line, never an assert (only DPoP needs it); caddy-on-box leaves the rendered value |
 
 ### Azure provision names (the catalog's `provision` field; A3 adds them to `size_map.skus[]`)
 
@@ -781,7 +832,7 @@ listener behind the NLB-fronted HAProxy pair or the ALB, and the same `observer-
 | `bucket_name` | string | the ONE SoR bucket `<name_prefix>-sor` (P3-D4: versioning on, SSE-S3, public access blocked, TLS-only bucket policy; the org server writes its SoR keys at the bucket ROOT - it has no object-key-prefix capability - so `bundle/` and `pg-backup/` are only the bundle's and pgBackRest's own prefixes; `observer-archive/` is RESERVED, unused until the server gains a key-prefix knob; amended 2026-09-20, A+B review R-04) |
 | `bundle_prefix` | string | `s3://<bucket>/bundle/` - the bundle files AND every `_shared/cloudinit/files/*` + AWS-variant script the first boot fetches (P3-D5) |
 | `secrets_prefix_arn` | string | the Secrets Manager ARN pattern `observer-org/<name_prefix>/*` each instance profile may `secretsmanager:GetSecretValue` on (P3-D3) |
-| `secret_names` | map(string) | logical -> Secrets Manager secret name (the SAME logical keys as Azure's C1b `secret_names`: `session-key`, `bearer-signing-key`, `policy-signing-key`, `scim-token`, `nats-password`, `pg-app-password`, `pg-control-dsn`, `pg-data-dsn`, `sealing-key`, `acr-pull-user`, `acr-pull-token`, `nats-ca`, `nats-cert-<i>`, `nats-key-<i>`, `pg-server-cert`, `pg-server-key`, `pg-ca`, `harness-gateway-token`, `saml-sp-cert`, `saml-sp-key`, `vm-ssh-key`; NO `object-sas` - S3 is reached by the instance role; absent keys = not minted for this answer set) |
+| `secret_names` | map(string) | logical -> Secrets Manager secret name (the SAME logical keys as Azure's C1b `secret_names`: `session-key`, `bearer-signing-key`, `policy-signing-key`, `scim-token`, `nats-password`, `pg-app-password`, `pg-control-dsn`, `pg-data-dsn`, `sealing-key`, `acr-pull-user`, `acr-pull-token`, `nats-ca`, `nats-cert-<i>`, `nats-key-<i>`, `pg-server-cert`, `pg-server-key`, `pg-ca`, `harness-gateway-token`, `saml-sp-cert`, `saml-sp-key`, `vm-ssh-key`, `agentgateway-session-key` (`agent_access = true` only, 64 hex); NO `object-sas` - S3 is reached by the instance role; absent keys = not minted for this answer set) |
 | `sealing_key_secret_arn` | string | the `sealing-key` secret (`prevent_destroy`, `recovery_window_in_days = 30`), echoed by app |
 | `pg_ca_secret_name` | string | Secrets Manager secret holding the CA the client verifies (`verify-full`): the RDS CA bundle `rds-ca-rsa2048-g1` (fetched by the module from the AWS-published PEM) on managed-*, the module-minted CA on self-hosted-separate |
 | `postgres_endpoint` | string | host[:port] of the control/data database: the RDS address (never a guessed FQDN - D20's lesson), the PostgreSQL instance's private IP, or empty for `existing` |
@@ -828,6 +879,8 @@ ctx = {
   object_bucket        = string          # C8-aws: OBSERVER_OBJECT_BUCKET ("" when object_store = local-disk)
   object_region        = string          # C8-aws: OBSERVER_OBJECT_REGION
   trusted_proxy_cidr   = string          # C9: the CIDR written into [server].trusted_proxies ("" = leave commented; the ALB subnets' CIDRs on managed-l7, P3-D8)
+  agent_access         = bool            # C1 agent_access - PRESENT (true) ONLY when var.agent_access is on, on every role (the promoted Caddyfile / haproxy.cfg templates read try(ctx.agent_access, false); first boot and env-sync read `.agent_access == true`); absent on an off render, so its user_data is byte-identical to a pre-Agent-Access one
+  agent_access_bind    = string          # app role, agent_access only: the host side of the companion's :8850/:8851 publish (OBSERVER_AGENT_ACCESS_BIND): "" on caddy-on-box (Caddy on the compose network; the override's 127.0.0.1 default), else this node's private IP (haproxy-pair / managed-l7)
 }
 ```
 
@@ -853,8 +906,12 @@ long-lived credential anywhere on the box; the ONLY reader of Secrets Manager on
 | `OBSERVER_OBJECT_BACKEND`, `OBSERVER_OBJECT_ENDPOINT`, `OBSERVER_OBJECT_BUCKET`, `OBSERVER_OBJECT_REGION` | ctx (non-secret): `s3`, `https://s3.<region>.amazonaws.com`, `<bucket>`, `<region>` | `object_store = cloud-bucket` only; NO access key - the default chain resolves the instance role (P3-D4); no `OBSERVER_OBJECT_ACCOUNT_SAS` row exists on AWS |
 | `OBSERVER_ORG_SECRET_KEY` | Secrets Manager `sealing-key` | the env rail, as on Azure |
 | `OBSERVER_PG_APP_PASSWORD` (the plan's `POSTGRES_PASSWORD`) | Secrets Manager `pg-app-password` | compact (colocated) only |
-| `OBSERVER_ORG_IMAGE`, `OBSERVER_POSTGRES_IMAGE`, `HARNESS_GATEWAY_IMAGE` | rendered by the planner (registry + tag) | never CHANGEME on the module path |
+| `OBSERVER_ORG_IMAGE`, `OBSERVER_POSTGRES_IMAGE`, `HARNESS_GATEWAY_IMAGE` | rendered by the planner (registry + tag) | never CHANGEME on the module path; first boot pins each image it cosign-verifies to the verified digest (`repo:tag@sha256:...`, Sol AA-s3 F1), and the bundle re-fetch restores the bare tag so every boot re-verifies and re-pins. `OBSERVER_ORG_IMAGE` (and the pg role's `OBSERVER_POSTGRES_IMAGE`) MUST resolve to its pin in `docker compose config`; the harness-gateway and colocated observer-postgres pins are checked one-way only |
 | `GATEWAY_TOKEN` (the plan's `HARNESS_GATEWAY_TOKEN`) | Secrets Manager `harness-gateway-token` | `harness = on` only |
+| `AGENTGATEWAY_SESSION_KEY` | Secrets Manager `agentgateway-session-key` | `agent_access = true` only; 64 hex (checked before the write; agentgateway refuses any other length); the same pending / committed / operator_override tracking as every Secrets Manager key (a rotated version replaces a value env-sync wrote, never an operator override; Sol AA-s3 F2); scope `agentgateway` (a change RE-CREATES the sidecar, which reads it from env); the app root's `.env` leak gate refuses a hand-filled value |
+| `OBSERVER_MCPGW_IMAGE` | ctx (non-secret): `<registry>/observer-mcpgw:<image_tag>` | `agent_access = true` only; the ctx tag, or first boot's verified `@sha256` pin of that tag, kept (`mcpgw_image_pinned`, Sol AA-s3 F1); any other value is forced back to the bare ctx tag (D15), which first boot then re-verifies and pins, so the companion can never drift off the org's tag (DR-38 lockstep) |
+| `AGENTGATEWAY_IMAGE` | rendered by the planner / the operator | `agent_access = true` only; never written by env-sync, REFUSED unless `<registry>/agentgateway:<vX.Y.Z>@sha256:<64 hex>` (the app root refuses it at plan time, env-sync and first boot on the box; first boot's step 3 cosign-verifies it and `observer-mcpgw`) |
+| `OBSERVER_AGENT_ACCESS_BIND` | ctx `agent_access_bind` | `agent_access = true` only; ctx-authoritative both ways (the D19 precedent); empty = the override's `127.0.0.1` default; a change re-creates org, and with it both companions (they share org's network namespace) |
 | `secrets/session.key`, `secrets/bearer/signing.key`, `secrets/policy/signing.key`, `secrets/scim/token` | Secrets Manager `session-key`, `bearer-signing-key`, `policy-signing-key`, `scim-token` | 0600, uid 65532; `policy/signing.key` as on Azure (the org's POLICY signing key, `[policy].signing_key_path`) |
 | `secrets/saml/sp.crt`, `secrets/saml/sp.key` | Secrets Manager `saml-sp-cert`, `saml-sp-key` | `identity = saml` only |
 | `secrets/pg-tls/{server.crt,server.key,ca.crt}` | Secrets Manager `pg-server-cert`, `pg-server-key`, `pg-ca` | self-hosted only; key owner uid 999 |

@@ -79,7 +79,6 @@ func f(v float64) *float64 { return &v }
 const (
 	ownerConfigMigrate = "`observer config migrate` (schema-version stamp; never hand-set)"
 	ownerOrgEnroll     = "`observer org enroll` / `observer org unenroll` (enrolment identity)"
-	ownerDeprecated    = "a deprecated alias — the loader honours it for one release; set the replacement key instead"
 	ownerPricingEditor = "the Settings → Pricing editor (PUT /api/config/pricing)"
 	ownerRoutingEditor = "the Settings → Routing rules editor / config.toml"
 	ownerExperiments   = "`observer experiment` (the [[experiments]] list)"
@@ -87,6 +86,7 @@ const (
 	ownerFileOnly      = "config.toml directly (a compound table the generic editor does not render)"
 	ownerSSHProfiles   = "config.toml [[terminal.ssh.profiles]] (the dashboard profile editor is plan item P0-6, not yet shipped)"
 	ownerLaunchTools   = "config.toml [launch.tools.<tool>] (per-tool launch overrides)"
+	ownerShellWrap     = "`observer shell-wrap enable|disable` / the Settings → Terminal \"Command wrapping\" card (writes these keys AND the shell files together)"
 )
 
 // rules is THE annotation table. Ordered for reading, not for precedence —
@@ -165,7 +165,6 @@ var rules = []rule{
 
 	// ------------------------------------------------------------- compression
 	{prefix: "compression", tier: TierPlain, restart: RestartRequired, section: "compression"},
-	{prefix: "compression.code_graph", tier: TierOwnerElsewhere, ownedBy: ownerDeprecated, deprecated: "use codeintel.enabled / codeintel.index.on_start (see docs/codeintel/configuration.md); run `observer config migrate`", prominence: ProminenceExpert},
 	{prefix: "compression.conversation.mode", exact: true, enum: []string{"token", "cache", "cache_aware"}},
 	{prefix: "compression.conversation.target_ratio", exact: true, min: f(0), max: f(1)},
 	{prefix: "compression.conversation.logs", prominence: ProminenceAdvanced},
@@ -186,7 +185,6 @@ var rules = []rule{
 	// Each AI session spawns a fresh `observer serve` that runs config.Load
 	// itself — a restart chip would lie (plan §3.2).
 	{prefix: "intelligence.mcp", restart: RestartNextSpawn, section: "mcp"},
-	{prefix: "intelligence.code_graph", tier: TierOwnerElsewhere, ownedBy: ownerDeprecated, deprecated: "use codeintel.enabled (see docs/codeintel/configuration.md); run `observer config migrate`", prominence: ProminenceExpert},
 
 	// -------------------------------------------------------------- org_client
 	// Every share/scope switch is data egress consent (§4.2).
@@ -200,10 +198,6 @@ var rules = []rule{
 	{prefix: "org_client.policy_state_heartbeat_seconds", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
 	{prefix: "org_client.max_push_bytes", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
 	{prefix: "org_client.policy", prominence: ProminenceAdvanced},
-	{prefix: "org_client.share.obs_summary", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerDeprecated, deprecated: "use org_client.share.obs.summary; run `observer config migrate`", prominence: ProminenceExpert},
-	{prefix: "org_client.share.obs_traces", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerDeprecated, deprecated: "use org_client.share.obs.traces; run `observer config migrate`", prominence: ProminenceExpert},
-	{prefix: "org_client.share.obs_content", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerDeprecated, deprecated: "use org_client.share.obs.content; run `observer config migrate`", prominence: ProminenceExpert},
-	{prefix: "org_client.share.obs_eval_summary", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerDeprecated, deprecated: "use org_client.share.obs.eval_summary; run `observer config migrate`", prominence: ProminenceExpert},
 
 	// ------------------------------------------------------- exporter / ingest
 	{prefix: "exporter", tier: TierSensitive, restart: RestartRequired, section: "otel"},
@@ -246,6 +240,31 @@ var rules = []rule{
 	// the direction that loosens the endpoint.
 	{prefix: "loc", tier: TierPlain, restart: RestartRequired, section: "intelligence", prominence: ProminenceAdvanced},
 	{prefix: "loc.editor_token_required", exact: true, tier: TierSensitive},
+
+	// ---------------------------------------------------------------- projects
+	// Projects page (docs/projects-page.md): the daemon-lifetime read-only
+	// commit scanner, its skills-history step, and the alignment-judge tier.
+	// Restart-required: every key is copied once at daemon start - the
+	// scanner (interval / active window / link window / skills step) in
+	// cmd/observer/commitscan_wire.go, the dashboard's link window and
+	// skew margin into dashboard.Options.Projects, and the judge closure
+	// in projects_judge_wire.go. (skill_history is ALSO read by each hook
+	// process, so the hook-snapshot half follows the next hook spawn; the
+	// git step still needs the restart.) Plain: local, passive, network-
+	// free capture bounds - EXCEPT alignment_judge, whose "obs_judge"
+	// value sends prompt/commit evidence to the [observability] judge,
+	// which may be remote, so it is an egress switch (SENSITIVE). The
+	// section is "intelligence", where guidance/loc/predict already live.
+	// Non-positive ints fall back to the built-in default (or, for
+	// active_project_days, to every project), so the floor is 0.
+	{prefix: "projects", tier: TierPlain, restart: RestartRequired, section: "intelligence", prominence: ProminenceAdvanced},
+	{prefix: "projects.commit_scan", exact: true, prominence: ProminencePrimary},
+	{prefix: "projects.skill_history", exact: true, prominence: ProminencePrimary},
+	{prefix: "projects.alignment_judge", exact: true, tier: TierSensitive, prominence: ProminencePrimary, enum: []string{"off", "obs_judge"}},
+	{prefix: "projects.commit_scan_interval_seconds", exact: true, min: f(0)},
+	{prefix: "projects.commit_link_window_days", exact: true, min: f(0)},
+	{prefix: "projects.active_project_days", exact: true, min: f(0)},
+	{prefix: "projects.skill_history_skew_seconds", exact: true, min: f(0)},
 
 	// ----------------------------------------------------------------- browser
 	// [tasks] — session-level task/todo/plan checklist tracking
@@ -291,6 +310,7 @@ var rules = []rule{
 	{prefix: "terminal.sandbox", tier: TierSensitive},
 	{prefix: "terminal.sandbox.backend", exact: true, enum: []string{"", "bwrap"}},
 	{prefix: "terminal.sandbox.home_mode", exact: true, enum: []string{"", "tmpfs", "readonly"}},
+	{prefix: "terminal.sandbox.egress", exact: true, enum: []string{"", "host", "internet", "proxy_only", "none"}},
 	{prefix: "terminal.sandbox.prep_timeout_seconds", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
 	{prefix: "terminal.sandbox.workspace_retention_days", exact: true, tier: TierPlain},
 	{prefix: "terminal.ssh", tier: TierSensitive},
@@ -299,6 +319,11 @@ var rules = []rule{
 	// ------------------------------------------------------------------ launch
 	{prefix: "launch", tier: TierPlain, restart: RestartNextSpawn, section: "terminal", prominence: ProminenceAdvanced},
 	{prefix: "launch.tools", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerLaunchTools},
+	// [shell_wrap] (backlog item 7): the recorded command-wrapping choice.
+	// Owner-elsewhere because a key write alone would not touch the shims or
+	// the shell start-up files; the dedicated card/CLI writes both together.
+	// next_spawn: a change reaches the next shell the operator opens.
+	{prefix: "shell_wrap", tier: TierOwnerElsewhere, restart: RestartNextSpawn, section: "terminal", ownedBy: ownerShellWrap, prominence: ProminenceAdvanced},
 
 	// --------------------------------------------------------------- codeintel
 	{prefix: "codeintel", tier: TierPlain, restart: RestartRequired, section: "intelligence"},
@@ -355,6 +380,19 @@ var rules = []rule{
 	{prefix: "update.max_download_bytes", exact: true, prominence: ProminenceAdvanced},
 	{prefix: "update.drain_timeout", exact: true, prominence: ProminenceAdvanced},
 	{prefix: "update.handshake_timeout", exact: true, prominence: ProminenceAdvanced},
+
+	// --------------------------------------------------------------- mcp_relay
+	// Agent Access P4 node relay (doc3 §8.2). Bind-at-start; enabling
+	// rewrites every verified AI client's MCP entry (journaled), so the
+	// switch is a consent/exposure flip (§4.2) — sensitive.
+	{prefix: "mcp_relay", tier: TierPlain, restart: RestartRequired, section: "mcp"},
+	{prefix: "mcp_relay.enabled", exact: true, tier: TierSensitive},
+	{prefix: "mcp_relay.mode", exact: true, enum: []string{"", "stdio_wrapper", "ipc", "loopback"}},
+	{prefix: "mcp_relay.audit_mode", exact: true, enum: []string{"", "async", "strict"}},
+	{prefix: "mcp_relay.gateway_url", exact: true, prominence: ProminenceAdvanced},
+	{prefix: "mcp_relay.listen", exact: true, prominence: ProminenceAdvanced},
+	{prefix: "mcp_relay.ipc_path", exact: true, prominence: ProminenceAdvanced},
+	{prefix: "mcp_relay.poll_interval_seconds", exact: true, prominence: ProminenceAdvanced, min: f(10), max: f(3600)},
 
 	// ------------------------------------------------------------------- guard
 	{prefix: "guard", tier: TierPlain, restart: RestartRequired, section: "guard"},

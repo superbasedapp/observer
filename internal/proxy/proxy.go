@@ -269,6 +269,9 @@ type Options struct {
 	AutoDefaultLane string
 	// ForceChatGPTHTTP rejects ChatGPT backend websocket upgrades so Codex falls
 	// back to HTTPS POST, which is the path Observer can currently compress.
+	// A Responses websocket (`.../responses`) is refused with 426 regardless
+	// of this flag (wsupgrade.go); the flag still covers every OTHER
+	// chatgpt.com backend websocket path.
 	ForceChatGPTHTTP bool
 	// Sink receives one APITurn per request. Required.
 	Sink Sink
@@ -421,6 +424,15 @@ type Options struct {
 	// proxy's behavior byte-identical to the pre-guard baseline.
 	// Optional.
 	Guard GuardScanner
+	// ToolsAllowlist is the Agent Access P4 tools[] filter seam (doc3
+	// §12.5, mcptools.go): consulted once per request that declares an
+	// `mcp__*` tool or a provider-hosted MCP connector; disallowed
+	// declarations are spliced out of the tools array (rewriteTopLevelModel's
+	// span splice + json.Valid backstop) and a non-approved hosted connector
+	// refuses the request through serveGuardDeny. The daemon composition
+	// binds it to the compiled node decision table; the proxy never imports
+	// the relay. nil = inert, byte-identical forwarding. Optional.
+	ToolsAllowlist ToolsAllowlistSeam
 	// ObsSink, when non-nil, receives one ChatTurnFacts per successfully
 	// inserted api_turn (the "gateway rail" — docs/observability.md "proxy
 	// turn (automatic)") so it can synthesize a Plane-A obs_traces/obs_spans
@@ -500,6 +512,12 @@ type AuthCredentials struct {
 
 // Proxy is the API reverse proxy. Safe for concurrent use.
 type Proxy struct {
+	// requireLoopbackHost turns on the DNS-rebinding row of the browser
+	// provenance table (browserguard.go, SR27-B1). ListenAndServe sets it when
+	// the listener is bound to a loopback address; a deliberately exposed bind
+	// (and a bare Handler() used in-process) leaves it off.
+	requireLoopbackHost atomic.Bool
+
 	anthropicURL *url.URL
 	openaiURL    *url.URL
 	chatgptURL   *url.URL
@@ -575,6 +593,9 @@ type Proxy struct {
 	// guard, when non-nil, is the guard layer's proxy seam (spec §8).
 	// See Options.Guard.
 	guard GuardScanner
+	// toolsAllowlist is Options.ToolsAllowlist (nil = inert). See
+	// mcptools.go.
+	toolsAllowlist ToolsAllowlistSeam
 	// compressTypes holds the configured `compress_types` slice so the
 	// per-request V7-2 codex-variant warning can decide whether to
 	// fire. See Options.CompressTypes.
@@ -816,6 +837,7 @@ func New(opts Options) (*Proxy, error) {
 		networkSink:         opts.NetworkSink,
 		networkCapture:      opts.NetworkCapture,
 		router:              opts.ModelRouter,
+		toolsAllowlist:      opts.ToolsAllowlist,
 		reliability:         opts.Reliability,
 		localUpstreams:      localUpstreams,
 		keyPools:            buildKeyPools(opts.KeyPools),
@@ -1218,6 +1240,7 @@ func hostIsLoopback(host string) bool {
 }
 
 func (p *Proxy) ListenAndServe(ctx context.Context, addr string) error {
+	p.requireLoopbackHost.Store(hostIsLoopback(hostnameOnly(addr)))
 	if host := hostnameOnly(addr); host != "" && !hostIsLoopback(host) {
 		p.logger.Warn("proxy bound to a non-loopback address — the listener has no client auth and, when a routing key_pool is configured, will substitute the operator's own API keys on a 429; anything that can reach it can drive requests upstream", "addr", addr)
 	}
@@ -1290,6 +1313,17 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	// path supports (see healthzPath's doc comment on why it can't collide).
 	if r.URL.Path == healthzPath {
 		serveHealthz(w, r)
+		return
+	}
+
+	// Browser provenance (SR27-B1): a request a web page made - cross-origin,
+	// opaque-origin, cross-site, or DNS-rebound onto a loopback bind - is
+	// refused before any routing, body read or credential substitution, so a
+	// website cannot spend the gateway virtual key or a key_pool key, nor read
+	// an answer back. CLI / SDK / editor clients send none of these headers.
+	if reason := browserProvenanceRefusal(r, p.requireLoopbackHost.Load()); reason != "" {
+		p.logger.Warn("proxy: refused a browser-originated request", "reason", reason, "path", r.URL.Path)
+		writeBrowserRefusal(w, reason)
 		return
 	}
 
@@ -1396,8 +1430,18 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isWebSocketUpgrade(r) {
-		if p.forceChatGPTHTTP && (isChatGPTBackendPath(r.URL.Path) || chatgptAuth) {
-			http.Error(w, "observer: ChatGPT websocket disabled; use HTTP fallback", http.StatusUpgradeRequired)
+		// The upgrade decision table (wsupgrade.go): a Responses websocket is
+		// answered 426 so the client (codex) re-sends over HTTP streaming,
+		// where the turn is captured; the org-gateway refusal and the
+		// passthrough follow.
+		decision, _ := decideUpgrade(upgradeFacts{
+			forceChatGPTHTTP: p.forceChatGPTHTTP,
+			chatGPTTraffic:   isChatGPTBackendPath(r.URL.Path) || chatgptAuth,
+			httpEquivalent:   isResponsesEndpoint(r.URL.Path),
+			gatewayRouted:    gatewayRouted,
+		})
+		if decision == upgradeHTTPFallback {
+			writeUpgradeFallback(w)
 			return
 		}
 		// G1 (custody blocker on the WS path): when this upgrade resolved to the
@@ -1410,7 +1454,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		// (internal/aigateway/gwhttp/handler.go has no Upgrade/Hijack shape), so
 		// a WS upgrade to it is not a supported request: fail closed. The
 		// upstream is never dialed and no developer credential leaves the node.
-		if gatewayRouted {
+		if decision == upgradeRefuseGateway {
 			p.logger.Warn("proxy: refusing websocket upgrade routed to the org AI gateway (HTTP-only data plane)", "path", r.URL.Path)
 			http.Error(w, "observer: websocket upgrade is not supported on the org AI gateway", http.StatusBadGateway)
 			return
@@ -1817,6 +1861,23 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Agent Access P4 tools[] filter (doc3 §12.5, mcptools.go): AFTER the
+	// guard scan (which must see the declarations the client actually sent)
+	// and BEFORE parseRequest (so the shape the router sees reflects the
+	// stripped array). A non-approved hosted connector refuses the whole
+	// request with the same provider-shaped 403 the guard uses (R-307); a
+	// disallowed `mcp__*` declaration is spliced out (R-306). nil seam =
+	// inert, byte-identical.
+	if mt := p.applyToolsAllowlist(provider, reqShapeBody, sessionID); mt.deny != nil {
+		p.serveGuardDeny(w, r, provider, *mt.deny, reqShapeBody, sessionID)
+		return
+	} else if mt.mutated {
+		reqShapeBody = mt.body
+		bodyMutated = true
+		p.logger.Info("proxy: stripped disallowed MCP tool declarations",
+			"session_id", sessionID, "stripped", mt.stripped)
+	}
+
 	// include-usage injection (aider capture gap, 2026-08-21): OpenAI Chat
 	// Completions streams carry NO usage unless the caller sets
 	// stream_options.include_usage — aider/LiteLLM counts tokens client-side
@@ -2183,7 +2244,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Spec §17: proxy upstream failure — forward an error. Don't swallow.
 		p.reportEgressRealized(r.Context(), egressRoute, proxyRequestID, false, false, egressOutcomeUpstreamErr)
-		p.logger.Warn("proxy: upstream error", "provider", provider, "err", err)
+		p.logger.Warn("proxy: upstream error", "provider", provider, "err", redactCredentialQueryText(err.Error()))
 		captureNetwork(0, nil, false, 0, "", "upstream_transport_error", err, nil)
 		http.Error(w, fmt.Sprintf("proxy: upstream: %v", err), http.StatusBadGateway)
 		return
@@ -2197,6 +2258,19 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	// already recorded the fallback (that request did NOT reach the target).
 	if egressApplied && !egressRealizedReported {
 		p.reportEgressRealized(r.Context(), egressRoute, proxyRequestID, resp.StatusCode < 400, false, egressOutcomeApplied)
+	}
+
+	// stampTurn finalizes every turn this response produces before it is
+	// persisted: the resolved request id, the Plane B route stamps, and the
+	// client's prompt-grouping and request-class hints (prompthint.go) when
+	// sent.
+	promptID := promptIDFromHeader(r.Header)
+	reqClass := requestClassFromHeader(r.Header)
+	stampTurn := func(t *models.APITurn) {
+		t.RequestID = resolveRequestID(t.RequestID)
+		stampRoute(t, gatewayRouted, routeGeneration)
+		t.PromptID = promptID
+		t.RequestClass = reqClass
 	}
 
 	// Copy upstream headers and status to the client.
@@ -2245,8 +2319,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 				errBody = captured
 			}
 			turn := buildErrorTurn(provider, reqShape, errBody, resp.Header, resp.StatusCode, start, sessionID)
-			turn.RequestID = resolveRequestID(turn.RequestID)
-			stampRoute(&turn, gatewayRouted, routeGeneration)
+			stampTurn(&turn)
 			p.applyCost(&turn)
 			errTurnID := p.insertTurnDetached(turn, routerToken, "proxy: insert error api_turn (stream)")
 			p.synthesizeObsTrace(turn, errTurnID, r, reqShapeBody, errBody)
@@ -2254,8 +2327,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		turn := p.buildStreamTurn(provider, reqShape, captured, resp.Header, start, sessionID)
-		turn.RequestID = resolveRequestID(turn.RequestID)
-		stampRoute(&turn, gatewayRouted, routeGeneration)
+		stampTurn(&turn)
 		var apiTurnID int64
 		switch {
 		case turn.Model == "":
@@ -2313,8 +2385,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		// Non-2xx error already handled above; skip to the success path.
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			turn := p.buildStreamTurn(provider, reqShape, respBody, resp.Header, start, sessionID)
-			turn.RequestID = resolveRequestID(turn.RequestID)
-			stampRoute(&turn, gatewayRouted, routeGeneration)
+			stampTurn(&turn)
 			var apiTurnID int64
 			switch {
 			case turn.Model == "":
@@ -2340,8 +2411,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	// lands on api_turns.{http_status, error_class, error_message}.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		turn := buildErrorTurn(provider, reqShape, respBody, resp.Header, resp.StatusCode, start, sessionID)
-		turn.RequestID = resolveRequestID(turn.RequestID)
-		stampRoute(&turn, gatewayRouted, routeGeneration)
+		stampTurn(&turn)
 		p.applyCost(&turn)
 		errTurnID := p.insertTurnDetached(turn, routerToken, "proxy: insert error api_turn")
 		p.synthesizeObsTrace(turn, errTurnID, r, reqShapeBody, respBody)
@@ -2350,8 +2420,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	turn := p.buildTurn(provider, reqShape, respBody, resp.Header, start, sessionID)
-	turn.RequestID = resolveRequestID(turn.RequestID)
-	stampRoute(&turn, gatewayRouted, routeGeneration)
+	stampTurn(&turn)
 	var apiTurnID int64
 	switch {
 	case turn.Model == "":
@@ -3695,7 +3764,7 @@ func (p *Proxy) doWithRetry(req *http.Request, body []byte) (*http.Response, err
 	}
 	// Transport-level transient. Drain whatever pooled idle connection
 	// might still be poisoned, then rebuild and retry once.
-	p.logger.Info("proxy: upstream transport hiccup, retrying once", "err", err)
+	p.logger.Info("proxy: upstream transport hiccup, retrying once", "err", redactCredentialQueryText(err.Error()))
 	if rt, ok := p.client.Transport.(*http.Transport); ok {
 		rt.CloseIdleConnections()
 	}

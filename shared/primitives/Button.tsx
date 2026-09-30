@@ -6,6 +6,9 @@ import type {
   MouseEventHandler,
   ReactNode,
 } from "react";
+import type { LucideIcon } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
+import { Icon } from "./Icon";
 
 // Button — the one solid/soft/quiet action control for every app surface.
 //
@@ -20,13 +23,14 @@ import type {
 //      both themes).
 //   2. A solid accent button must use `text-accent-on`, never a hard-coded
 //      `text-white`: `--on-accent` is near-black navy in dark and white in
-//      light. `danger` is the one variant that keeps white, because
-//      `--danger` is a saturated red in both themes.
+//      light. `danger` likewise uses `text-danger-on` (`--on-danger`): the
+//      dark theme's red is light enough that white text fails contrast.
 export type ButtonVariant =
   | "primary"
   | "secondary"
   | "soft"
   | "danger"
+  | "danger-outline"
   | "ghost";
 
 export type ButtonSize = "sm" | "md";
@@ -36,7 +40,12 @@ const VARIANT_CLASS: Record<ButtonVariant, string> = {
   secondary: "border-line-2 bg-bg-3 text-fg-2 hover:bg-bg-4 hover:text-fg-1",
   // The "soft" tint CTA, as proven by the dashboard's Jump-in control.
   soft: "border-accent/40 bg-accent/10 text-accent hover:bg-accent/20",
-  danger: "border-danger/40 bg-danger text-white hover:bg-danger/90",
+  danger: "border-danger/40 bg-danger text-danger-on hover:bg-danger/90",
+  // The quieter destructive control: a per-row "Revoke" or a danger-zone
+  // action that still needs a confirm step. Outline + danger text, tinting
+  // on hover; `danger` stays the solid, final-step button.
+  "danger-outline":
+    "border-danger/55 bg-transparent text-danger hover:border-danger hover:bg-danger-soft",
   ghost: "border-transparent bg-transparent text-fg-2 hover:bg-bg-3 hover:text-fg-1",
 };
 
@@ -77,6 +86,10 @@ export type ButtonProps = Omit<
   size?: ButtonSize;
   /** Renders a spinner and disables the control. */
   loading?: boolean;
+  /** Optional lucide glyph before / after the label (drawn through <Icon>).
+   *  While `loading`, the spinner takes the leading slot. */
+  iconLeft?: LucideIcon;
+  iconRight?: LucideIcon;
   /** When set, renders an `<a>` with the identical look (external CTAs). */
   href?: string;
   target?: string;
@@ -94,6 +107,8 @@ export const Button = forwardRef<HTMLButtonElement | HTMLAnchorElement, ButtonPr
       variant = "secondary",
       size = "md",
       loading,
+      iconLeft,
+      iconRight,
       disabled,
       href,
       target,
@@ -106,11 +121,17 @@ export const Button = forwardRef<HTMLButtonElement | HTMLAnchorElement, ButtonPr
     ref,
   ) {
   const isDisabled = Boolean(disabled) || Boolean(loading);
+  const glyph = size === "sm" ? "xs" : "sm";
   const cls = clsx(buttonClasses({ variant, size, disabled: isDisabled }), className);
   const body = (
     <>
-      {loading && <Spinner />}
+      {loading ? (
+        <Icon icon={LoaderCircle} size={glyph} className="shrink-0 animate-spin" />
+      ) : (
+        iconLeft && <Icon icon={iconLeft} size={glyph} className="shrink-0" />
+      )}
       {children}
+      {iconRight && <Icon icon={iconRight} size={glyph} className="shrink-0" />}
     </>
   );
 
@@ -159,22 +180,3 @@ export const Button = forwardRef<HTMLButtonElement | HTMLAnchorElement, ButtonPr
   );
   },
 );
-
-function Spinner() {
-  return (
-    <svg
-      className="h-3 w-3 animate-spin"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden
-    >
-      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.25" />
-      <path
-        d="M14 8a6 6 0 0 0-6-6"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}

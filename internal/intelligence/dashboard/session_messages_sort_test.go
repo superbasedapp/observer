@@ -130,6 +130,14 @@ func TestMessageSortOrder_PerKey(t *testing.T) {
 			wantDesc: []int{1, 3, 2},
 		},
 		{
+			key: "response_ms",
+			set: func(f *messageSortField, i int) {
+				f.ResponseMs = []*int64{i64p(3000), i64p(1000), i64p(2000)}[i]
+			},
+			wantAsc:  []int{2, 3, 1},
+			wantDesc: []int{1, 3, 2},
+		},
+		{
 			key: "tokens_per_sec",
 			set: func(f *messageSortField, i int) {
 				f.TokensPerSec = []*float64{f64p(90.5), f64p(10.25), f64p(50)}[i]
@@ -202,7 +210,7 @@ func TestMessageSortOrder_PerKey(t *testing.T) {
 func TestMessageSortKeys_AllColumnsCovered(t *testing.T) {
 	want := []string{
 		"seq", "timestamp", "message_id", "role", "account", "model", "effort_level",
-		"input", "cache_read", "cache_creation", "output", "elapsed_ms",
+		"input", "cache_read", "cache_creation", "output", "elapsed_ms", "response_ms",
 		"tokens_per_sec", "tool_call_count", "attachments", "ai_cost_usd", "tool_cost_usd",
 		"cost_usd", "content",
 	}
@@ -226,6 +234,9 @@ func TestMessageSortOrder_NullSink(t *testing.T) {
 	}{
 		{"elapsed_ms", func(f *messageSortField, i int) {
 			f.ElapsedMs = []*int64{i64p(200), nil, i64p(100), nil}[i]
+		}},
+		{"response_ms", func(f *messageSortField, i int) {
+			f.ResponseMs = []*int64{i64p(200), nil, i64p(100), nil}[i]
 		}},
 		{"tokens_per_sec", func(f *messageSortField, i int) {
 			f.TokensPerSec = []*float64{f64p(200), nil, f64p(100), nil}[i]

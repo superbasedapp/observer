@@ -204,15 +204,23 @@ func lowerShareOptions(local store.ShareOptions, eff govern.Effective) store.Sha
 		out.TargetActionAllowlist = eff.RaiseList("target_action_allowlist", out.TargetActionAllowlist)
 	}
 
-	// The Plane B enterprise-content grant (§5.3 scope item 4): a managed
-	// node whose enrolment grant honors extract.managed AND all three
-	// highest-sensitivity extraction tokens unlocks the SAME raw-content
+	// The Plane B enterprise-content grant (§5.3 scope item 4; Agent Access
+	// R9.5 / R11.10, PR-014): a MANAGED node whose org-signed enrolment grant
+	// carries the extract.managed umbrella unlocks the SAME raw-content
 	// posture FullContent/AdminManaged already provide, without requiring the
-	// node operator to separately flip full_content. Computed fresh every
-	// push from the live grant (govern.Effective), never cached, so a grant
-	// lapsing takes effect on the very next push — same posture as every
-	// other raise in this function.
-	out.EnterpriseGranted = eff.GrantsEnterpriseContent()
+	// node operator to separately flip full_content — this is how a node
+	// enrolled BEFORE `observer org enroll` wrote full_content = true for
+	// managed enrolments is raised to full content (L2): by the grant the
+	// org signed and the developer was shown, never by a silent rewrite of
+	// its config file. EnterpriseContentInForce (not the bare
+	// GrantsEnterpriseContent) is read so an intentional admin LOWERING —
+	// the org body's share.full_content = false directive, already applied
+	// to out.FullContent by the LowerBool row above — is honoured here too;
+	// otherwise the grant path would ship raw content straight past the
+	// lowering. Computed fresh every push from the live grant
+	// (govern.Effective), never cached, so a grant lapsing takes effect on
+	// the very next push — same posture as every other raise here.
+	out.EnterpriseGranted = eff.EnterpriseContentInForce()
 	return out
 }
 

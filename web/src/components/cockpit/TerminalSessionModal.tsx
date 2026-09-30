@@ -1,6 +1,6 @@
 import { useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
-import { SlideOver } from "@/components/primitives";
+import { Icon, LiveDot, SlideOver } from "@/components/primitives";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SessionDetailPanel } from "@/components/SessionDetailPanel";
 import { useApi } from "@/lib/useApi";
@@ -12,6 +12,7 @@ import {
   terminalLinkPath,
   type TerminalSessionLink,
 } from "@/lib/cockpit";
+import { CircleDot } from "lucide-react";
 
 // TerminalSessionModal — what the terminal's "⊙ Session" control now opens
 // (Task 9). It resolves the terminal→session link and then shows the FULL
@@ -131,7 +132,12 @@ export default function TerminalSessionModal({
       onClose={onClose}
       width={560}
       zIndex={TERMINAL_OVERLAY_Z}
-      title="⊙ Session"
+      title={
+        <span className="inline-flex items-center gap-1.5">
+          <Icon icon={CircleDot} size="sm" />
+          Session
+        </span>
+      }
       subtitle={tool ? `${toolMeta(tool).label} · linking…` : undefined}
     >
       <div className="p-5">
@@ -186,7 +192,7 @@ function UncorrelatedNote({
   return (
     <div className="rounded-3 border border-line-2 bg-bg-2 p-4">
       <div className="flex items-center gap-2 text-[13px] font-semibold text-fg-1">
-        <span className="inline-block size-2 animate-pulse rounded-full bg-info" aria-hidden />
+        <LiveDot tone="info" className="size-2 shrink-0" />
         No session linked to this terminal yet
       </div>
       <p className="mt-2 text-[12px] leading-relaxed text-fg-3">

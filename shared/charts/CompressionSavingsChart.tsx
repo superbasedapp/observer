@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import {
   Bar,
   BarChart,
@@ -12,8 +12,10 @@ import {
 import { ChartTooltip } from "./ChartTooltip";
 import { ChartLegend } from "./ChartLegend";
 import { fmtBytes, fmtCompact, fmtUSD } from "../lib/format";
+import type { Granularity } from "../lib/granularity";
 import type { CompressionTimeseriesPoint } from "../lib/types";
-import { CHART_AXIS, CHART_GRID } from "./common";
+import { bucketTooltipLabel, categoryAxis, CHART_AXIS, CHART_GRID } from "./common";
+import { useChartMotion } from "./useChartMotion";
 
 export type SavingsUnit = "tokens" | "usd" | "bytes";
 
@@ -36,14 +38,17 @@ const MECH_COLORS: Record<string, string> = {
 
 const FALLBACK = "var(--tool-other)";
 
-export function CompressionSavingsChart({
+export const CompressionSavingsChart = memo(function CompressionSavingsChart({
   data,
   unit,
   height = 240,
+  granularity = "1d",
 }: {
   data: CompressionTimeseriesPoint[];
   unit: SavingsUnit;
   height?: number;
+  /** Bucket granularity the rows were served at (the response `bucket`); drives the axis/tooltip labels. */
+  granularity?: Granularity;
 }) {
   const { rows, mechs, fmtTick } = useMemo(() => {
     // Build a single row per bucket with one key per mechanism.
@@ -72,23 +77,23 @@ export function CompressionSavingsChart({
     return { rows, mechs, fmtTick };
   }, [data, unit]);
 
+  const motion = useChartMotion(rows, "bucket", unit, mechs.length);
   return (
     <ResponsiveContainer width="100%" height={height + 28}>
       <BarChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
         <Legend
           verticalAlign="top"
           align="left"
-          height={28}
           content={<ChartLegend />}
         />
         <CartesianGrid {...CHART_GRID} />
-        <XAxis dataKey="bucket" {...CHART_AXIS} tickFormatter={shortDate} />
+        <XAxis {...CHART_AXIS} {...categoryAxis(rows, granularity)} />
         <YAxis {...CHART_AXIS} tickFormatter={fmtTick} />
         <Tooltip
           content={
             <ChartTooltip
               labelKey="bucket"
-              labelFormatter={shortDate}
+              labelFormatter={bucketTooltipLabel(granularity)}
               formatItem={(name, value) =>
                 `${name}: ${
                   unit === "usd"
@@ -104,6 +109,7 @@ export function CompressionSavingsChart({
         />
         {mechs.map((m, i) => (
           <Bar
+            {...motion}
             key={m}
             dataKey={m}
             name={m}
@@ -115,10 +121,4 @@ export function CompressionSavingsChart({
       </BarChart>
     </ResponsiveContainer>
   );
-}
-
-function shortDate(s: string): string {
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return s;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
+});

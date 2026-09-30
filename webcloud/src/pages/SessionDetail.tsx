@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { FadeIn } from "@shared/primitives/Motion";
+import { Icon } from "@shared/primitives/Icon";
+import { ChevronLeft, Pencil } from "lucide-react";
+import { Skeleton } from "@shared/primitives/Skeleton";
+import { invalidatePortal, portalCache, usePortalQuery } from "../lib/query";
+import { CardSkeleton, ErrorPanel } from "../components/LoadState";
 import { Link, useParams } from "react-router-dom";
 import {
   CorrectionConflict,
@@ -13,8 +19,19 @@ import type {
   SessionResult,
 } from "../api";
 import { Pill } from "@shared/primitives/Pill";
+import { ModelId } from "@shared/primitives/ModelId";
 import { CopyOnClick } from "@shared/primitives/CopyOnClick";
 import { fmtDateTime, fmtShortId } from "@shared/lib/format";
+import { Button } from "@shared/primitives/Button";
+import { SuccessCheck } from "@shared/primitives/SuccessCheck";
+import { Card } from "@shared/primitives/Card";
+import { Input } from "@shared/primitives/Input";
+import { Textarea } from "@shared/primitives/Textarea";
+import { ToolBadge } from "@shared/primitives/ToolBadge";
+import { IntelResultCard } from "@shared/components/sessiondetail/IntelResultCard";
+import type { IntelResultLike } from "@shared/lib/types";
+import { PageHeader } from "@shared/primitives/PageHeader";
+import { routeIcon } from "../lib/nav";
 
 // Session detail (divergence plan §3 W6c / D12, D21; operator ruling R6). Shows
 // every result for one session, the head result marked, superseded ones marked,
@@ -74,9 +91,9 @@ function TagList({ label, tags }: { label: string; tags: string[] }) {
       <span className="kv-key">{label}</span>
       <span className="kv-val tag-row">
         {tags.map((t) => (
-          <span key={t} className="tag-pill">
+          <Pill key={t} variant="neutral">
             {t}
-          </span>
+          </Pill>
         ))}
       </span>
     </div>
@@ -137,10 +154,13 @@ function RevisionList({ r }: { r: SessionResult }) {
 function EditForm({
   result,
   onCancel,
+  onSaved,
   reload,
 }: {
   result: SessionResult;
   onCancel: () => void;
+  /** Called after a successful save, once the editor has closed. */
+  onSaved: () => void;
   reload: () => Promise<void>;
 }) {
   const eff = useMemo(() => effectiveOf(result), [result]);
@@ -204,39 +224,39 @@ function EditForm({
     await reload();
     setSaving(false);
     onCancel();
+    onSaved();
   }
 
   return (
     <div className="edit-form">
       {conflictNote && <div className="banner banner-warn">{conflictNote}</div>}
       {saveError && <div className="banner banner-error">{saveError}</div>}
-      <label htmlFor="edit-title">Title</label>
-      <input
+      <label htmlFor="edit-title" className="field-label">Title</label>
+      <Input
         id="edit-title"
         type="text"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Session title"
       />
-      <label htmlFor="edit-desc">Description</label>
-      <textarea
+      <label htmlFor="edit-desc" className="field-label">Description</label>
+      <Textarea
         id="edit-desc"
-        className="edit-textarea"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         rows={3}
         placeholder="A short description (optional)"
       />
-      <label htmlFor="edit-tax">Taxonomy tags</label>
-      <input
+      <label htmlFor="edit-tax" className="field-label">Taxonomy tags</label>
+      <Input
         id="edit-tax"
         type="text"
         value={taxonomy}
         onChange={(e) => setTaxonomy(e.target.value)}
         placeholder="comma, separated, tags"
       />
-      <label htmlFor="edit-sug">Suggested tags</label>
-      <input
+      <label htmlFor="edit-sug" className="field-label">Suggested tags</label>
+      <Input
         id="edit-sug"
         type="text"
         value={suggested}
@@ -244,12 +264,12 @@ function EditForm({
         placeholder="comma, separated, tags"
       />
       <div className="edit-actions">
-        <button className="btn btn-ghost btn-sm" onClick={onCancel} disabled={saving}>
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={saving}>
           Cancel
-        </button>
-        <button className="btn btn-primary" onClick={save} disabled={saving}>
-          {saving ? "Saving..." : "Save correction"}
-        </button>
+        </Button>
+        <Button variant="primary" size="sm" onClick={save} loading={saving}>
+          {saving ? "Saving" : "Save correction"}
+        </Button>
       </div>
       <p className="muted small">
         Saving appends a revision - the AI original is kept unchanged, and your
@@ -259,53 +279,64 @@ function EditForm({
   );
 }
 
-// NarrativeSections renders the enrichment's reader-facing half: the five
-// narrative lists in reading order, then the limitations, each omitted when
-// absent or empty. It renders NOTHING at all when the result carries none of
-// them, which is the back-compat case for every result stored before the
-// fields existed.
-function NarrativeSections({ ai }: { ai: ResultBody }) {
-  const sections: Array<[string, string[] | null | undefined]> = [
-    ["What was done", ai.work_done],
-    ["Plans", ai.plans_implemented],
-    ["Issues found", ai.issues_found],
-    ["Failures", ai.failures],
-    ["Next steps", ai.next_steps],
-    ["Limitations", ai.limitations],
-  ];
-  const present = sections.filter(([, items]) => items && items.length > 0);
-  if (present.length === 0) return null;
-  return (
-    <div className="result-section">
-      {present.map(([label, items]) => (
-        <div className="kv" key={label}>
-          <span className="kv-key">{label}</span>
-          <span className="kv-val">
-            <ul className="mini-list">
-              {(items ?? []).map((s, i) => (
-                <li key={i}>{s}</li>
-              ))}
-            </ul>
-          </span>
-        </div>
-      ))}
-    </div>
-  );
+// toIntelResult is the ONE boundary between the portal's result wire shape
+// (ResultBody plus the user's revisions) and the shared IntelResultCard's
+// IntelResultLike. The card shows what the session reads as NOW: the effective
+// title, description and tags (the AI original overlaid with every revision),
+// and the AI body's never-edited parts (confidence, the five narrative lists,
+// limitations). A portal result carries no job state, provider, model, token
+// or cost figure, so none is set and the card omits them rather than showing a
+// guess. evidence_refs are never mapped: the card never renders them.
+function toIntelResult(eff: Effective, ai: ResultBody | undefined): IntelResultLike {
+  const list = (items: string[] | null | undefined): string[] | undefined =>
+    items && items.length > 0 ? items : undefined;
+  return {
+    title: eff.title,
+    description: eff.description || undefined,
+    taxonomyTags: eff.taxonomy,
+    suggestedTags: eff.suggested,
+    confidence: ai?.confidence || undefined,
+    workDone: list(ai?.work_done),
+    plansImplemented: list(ai?.plans_implemented),
+    issuesFound: list(ai?.issues_found),
+    failures: list(ai?.failures),
+    nextSteps: list(ai?.next_steps),
+    limitations: list(ai?.limitations),
+    schemaVersion: ai?.schema_version || undefined,
+  };
 }
+
+// RESULT_BADGES: the flags a result can carry, walked in order; each row that
+// applies draws its pill.
+const RESULT_BADGES: readonly {
+  label: string;
+  variant: "accent" | "neutral" | "danger" | "info";
+  applies: (r: SessionResult, isHead: boolean) => boolean;
+}[] = [
+  { label: "Current", variant: "accent", applies: (_r, isHead) => isHead },
+  { label: "Superseded", variant: "neutral", applies: (r) => r.superseded },
+  { label: "Deleted", variant: "danger", applies: (r) => r.tombstoned },
+  { label: "Edited", variant: "info", applies: (r) => r.revisions.length > 0 && !r.tombstoned },
+];
 
 function ResultCard({
   result,
   isHead,
   editing,
+  saved,
   onEdit,
   onCancel,
+  onSaved,
   reload,
 }: {
   result: SessionResult;
   isHead: boolean;
   editing: boolean;
+  /** A correction to this result was just saved (draws the success check). */
+  saved: boolean;
   onEdit: () => void;
   onCancel: () => void;
+  onSaved: () => void;
   reload: () => Promise<void>;
 }) {
   const eff = effectiveOf(result);
@@ -313,69 +344,42 @@ function ResultCard({
   const canEdit = isHead && !result.tombstoned;
 
   return (
-    <div className="card result-card">
+    <div className="mb-4">
       <div className="result-head">
         <div className="result-badges">
-          {isHead && <Pill variant="accent">Current</Pill>}
-          {result.superseded && <Pill variant="neutral">Superseded</Pill>}
-          {result.tombstoned && <Pill variant="danger">Deleted</Pill>}
-          {result.revisions.length > 0 && !result.tombstoned && (
-            <Pill variant="info">Edited</Pill>
-          )}
+          {RESULT_BADGES.filter((b) => b.applies(result, isHead)).map((b) => (
+            <Pill key={b.label} variant={b.variant}>
+              {b.label}
+            </Pill>
+          ))}
         </div>
         <span className="muted small">{fmtDateTime(result.created_at)}</span>
       </div>
 
-      {result.tombstoned ? (
-        <p className="muted">
-          This result was deleted. Its text was tombstoned and is no longer
-          available.
-        </p>
-      ) : (
-        <>
-          {/* Current effective metadata — what the session reads as now. */}
-          <div className="result-section">
-            <div className="result-section-label">Current</div>
-            <div className="kv">
-              <span className="kv-key">Title</span>
-              <span className="kv-val strong">
-                {eff.title || <span className="muted">Untitled</span>}
-              </span>
-            </div>
-            {eff.description && (
-              <div className="kv">
-                <span className="kv-key">Description</span>
-                <span className="kv-val">{eff.description}</span>
-              </div>
-            )}
-            <TagList label="Taxonomy tags" tags={eff.taxonomy} />
-            <TagList label="Suggested tags" tags={eff.suggested} />
-          </div>
+      {/* What the session reads as now, through the shared enrichment card.
+          A tombstoned result renders the card's honest empty state. */}
+      <IntelResultCard
+        result={result.tombstoned ? null : toIntelResult(eff, ai)}
+        emptyMessage="This result was deleted. Its text was tombstoned and is no longer available."
+      />
 
-          {/* The narrative half of the enrichment: what was done, whether the
-              stated plans landed, what is broken, what failed, what to do
-              next - then, separately labelled, what the analysis could NOT
-              see. None of these are user-editable, so they read off the AI
-              body directly. Every one is optional: a result stored before
-              these fields existed renders nothing here rather than an empty
-              heading. evidence_refs are deliberately never rendered - they
-              are server-side grounding tokens ("a136", "m5",
-              "activity_mix"), not an answer for a human. */}
-          {ai && <NarrativeSections ai={ai} />}
-
+      {!result.tombstoned && (
+        <Card className="mt-2">
           {canEdit && !editing && (
-            <div className="result-actions">
-              <button className="btn btn-sm" onClick={onEdit}>
+            <div className="result-actions flex flex-wrap items-center gap-3">
+              <Button size="sm" iconLeft={Pencil} onClick={onEdit}>
                 Edit title, description &amp; tags
-              </button>
+              </Button>
+              {saved && <SuccessCheck label="Correction saved" />}
             </div>
           )}
 
           {editing && (
-            <EditForm result={result} onCancel={onCancel} reload={reload} />
+            <EditForm result={result} onCancel={onCancel} onSaved={onSaved} reload={reload} />
           )}
 
-          {/* AI original — kept immutable forever (R6). */}
+          {/* AI original - kept immutable forever (R6). The narrative lists
+              are never edited, so they are rendered ONCE, in the card above. */}
           {ai && result.revisions.length > 0 && (
             <div className="result-section result-original">
               <div className="result-section-label">AI original</div>
@@ -391,16 +395,6 @@ function ResultCard({
               )}
               <TagList label="Taxonomy tags" tags={ai.taxonomy_tags ?? []} />
               <TagList label="Suggested tags" tags={ai.suggested_tags ?? []} />
-              {ai.confidence && (
-                <div className="kv">
-                  <span className="kv-key">Confidence</span>
-                  <span className="kv-val">{ai.confidence}</span>
-                </div>
-              )}
-              {/* Limitations (and the five narrative lists) are never edited,
-                  so they are rendered ONCE, in the NarrativeSections block
-                  above, rather than duplicated in this immutable-original
-                  view alongside the fields an edit can actually change. */}
             </div>
           )}
 
@@ -409,7 +403,7 @@ function ResultCard({
             <div className="result-section-label">Edit history</div>
             <RevisionList r={result} />
           </div>
-        </>
+        </Card>
       )}
     </div>
   );
@@ -418,41 +412,27 @@ function ResultCard({
 export function SessionDetail() {
   const params = useParams();
   const id = params.id ?? "";
-  const [detail, setDetail] = useState<SessionDetailView | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [editingResultId, setEditingResultId] = useState<string | null>(null);
+  // The result whose correction was just saved; cleared when any editor opens.
+  const [savedResultId, setSavedResultId] = useState<string | null>(null);
+  // Keyed on the session id, WITHOUT keep-previous: following a link to
+  // another session shows its skeleton, never the previous session's
+  // content under the new URL.
+  const key = `session:${id}`;
+  const q = usePortalQuery<SessionDetailView>(key, () => getSessionDetail(id));
+  const detail = q.data;
+  const error = q.error;
+  const loading = q.loading;
 
+  // reload after a correction: refetch this session (awaited, so the edit
+  // form sees the new revision) and refresh the list's effective titles.
   const reload = useCallback(async (): Promise<void> => {
-    try {
-      const d = await getSessionDetail(id);
-      setDetail(d);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "failed to load");
-    }
-  }, [id]);
-
-  useEffect(() => {
-    let live = true;
-    setLoading(true);
-    getSessionDetail(id)
-      .then((d) => {
-        if (live) {
-          setDetail(d);
-          setError(null);
-        }
-      })
-      .catch((err: unknown) => {
-        if (live) setError(err instanceof Error ? err.message : "failed to load");
-      })
-      .finally(() => {
-        if (live) setLoading(false);
-      });
-    return () => {
-      live = false;
-    };
-  }, [id]);
+    await portalCache.fetch(key, () => getSessionDetail(id), {
+      force: true,
+      foreground: true,
+    });
+    invalidatePortal("sessions:first");
+  }, [key, id]);
 
   const headResultId = detail?.head_result_id ?? "";
 
@@ -467,26 +447,38 @@ export function SessionDetail() {
     <div>
       <p className="page-intro">
         <Link className="back-link" to="/sessions">
-          <span aria-hidden>‹</span> All sessions
+          <Icon icon={ChevronLeft} size="sm" /> All sessions
         </Link>
       </p>
 
-      {error && (
-        <div className="banner banner-error">Could not load session: {error}</div>
+      {error && !detail && (
+        <ErrorPanel variant="page" what="session" error={error} onRetry={q.reload} />
       )}
-      {loading && !error && <div className="muted">Loading session...</div>}
+      {loading && !error && (
+        <div className="flex flex-col gap-4" role="status" aria-label="Loading">
+          <Skeleton className="h-6 w-2/3" />
+          <Skeleton className="h-3 w-1/2" />
+          <div className="rounded-3 border border-line-2 bg-bg-2 p-4">
+            <CardSkeleton lines={5} />
+          </div>
+        </div>
+      )}
 
       {detail && (
-        <>
-          <h1>{headTitle.trim() || "Untitled session"}</h1>
+        <FadeIn key={detail.cloud_session_id}>
+          <PageHeader
+            title={headTitle.trim() || "Untitled session"}
+            icon={routeIcon("/sessions")}
+            className="mb-2"
+          />
           <div className="session-meta detail-meta">
-            <span className="mono">{detail.tool}</span>
+            <ToolBadge tool={detail.tool} />
             {detail.model_family && (
               <>
                 <span className="session-dot" aria-hidden>
                   ·
                 </span>
-                <span>{detail.model_family}</span>
+                <ModelId model={detail.model_family} mono={false} markSize={12} />
               </>
             )}
             <span className="session-dot" aria-hidden>
@@ -502,9 +494,9 @@ export function SessionDetail() {
           </div>
 
           {detail.results.length === 0 ? (
-            <div className="card">
+            <Card className="mb-4">
               <p className="muted">This session has no enrichment results.</p>
-            </div>
+            </Card>
           ) : (
             detail.results.map((r) => (
               <ResultCard
@@ -512,13 +504,18 @@ export function SessionDetail() {
                 result={r}
                 isHead={r.result_id === headResultId}
                 editing={editingResultId === r.result_id}
-                onEdit={() => setEditingResultId(r.result_id)}
+                saved={savedResultId === r.result_id}
+                onEdit={() => {
+                  setSavedResultId(null);
+                  setEditingResultId(r.result_id);
+                }}
                 onCancel={() => setEditingResultId(null)}
+                onSaved={() => setSavedResultId(r.result_id)}
                 reload={reload}
               />
             ))
           )}
-        </>
+        </FadeIn>
       )}
     </div>
   );

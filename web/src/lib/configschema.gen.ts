@@ -96,10 +96,6 @@ export type ConfigKeyPath =
   "proxy.org_route.direct_fallback_custody_ack" |
   "dashboard.addr" |
   "dashboard.org_announcements" |
-  "compression.code_graph.enabled" |
-  "compression.code_graph.auto_install" |
-  "compression.code_graph.auto_index" |
-  "compression.code_graph.path" |
   "compression.shell.enabled" |
   "compression.shell.exclude_commands" |
   "compression.indexing.enabled" |
@@ -124,7 +120,6 @@ export type ConfigKeyPath =
   "compression.conversation.rolling.summary_model" |
   "compression.conversation.rolling.openai_summary_model" |
   "compression.conversation.rolling.auth_cache_size" |
-  "intelligence.code_graph.enabled" |
   "intelligence.pricing.models" |
   "intelligence.pricing.dated" |
   "intelligence.api_key_env" |
@@ -146,6 +141,10 @@ export type ConfigKeyPath =
   "intelligence.mcp.retrieve_stashed.max_shas_per_call" |
   "intelligence.mcp.audit.enabled" |
   "intelligence.org_enrichment" |
+  "intelligence.scoring.auto" |
+  "intelligence.scoring.interval_minutes" |
+  "intelligence.scoring.idle_minutes" |
+  "intelligence.scoring.max_per_pass" |
   "org_client.enabled" |
   "org_client.org_server_url" |
   "org_client.push_interval_seconds" |
@@ -167,6 +166,7 @@ export type ConfigKeyPath =
   "org_client.share.terminal_detail" |
   "org_client.share.task_detail" |
   "org_client.share.tool_account_detail" |
+  "org_client.share.mcp_activity" |
   "org_client.share.policy_state" |
   "org_client.share.obs.summary" |
   "org_client.share.obs.traces" |
@@ -175,10 +175,6 @@ export type ConfigKeyPath =
   "org_client.share.obs.admission" |
   "org_client.share.obs.eval_items" |
   "org_client.share.obs.egress" |
-  "org_client.share.obs_summary" |
-  "org_client.share.obs_traces" |
-  "org_client.share.obs_content" |
-  "org_client.share.obs_eval_summary" |
   "org_client.scope.project_root_allowlist" |
   "org_client.scope.project_root_denylist" |
   "org_client.policy.accept_families" |
@@ -230,6 +226,13 @@ export type ConfigKeyPath =
   "guidance.pass_timeout_minutes" |
   "guidance.startup_delay_seconds" |
   "guidance.first_scan_poll_seconds" |
+  "projects.commit_scan" |
+  "projects.commit_scan_interval_seconds" |
+  "projects.commit_link_window_days" |
+  "projects.active_project_days" |
+  "projects.alignment_judge" |
+  "projects.skill_history" |
+  "projects.skill_history_skew_seconds" |
   "update.enabled" |
   "update.channel" |
   "update.auto_apply" |
@@ -298,6 +301,9 @@ export type ConfigKeyPath =
   "terminal.sandbox.extra_ro_binds" |
   "terminal.sandbox.extra_rw_binds" |
   "terminal.sandbox.prep_timeout_seconds" |
+  "terminal.sandbox.egress" |
+  "terminal.sandbox.egress_allow_cidrs" |
+  "terminal.sandbox.allow_tool_config_writes" |
   "terminal.ssh.enabled" |
   "terminal.ssh.connect_timeout_seconds" |
   "terminal.ssh.keepalive_seconds" |
@@ -321,10 +327,21 @@ export type ConfigKeyPath =
   "codeintel.compression.preview_only" |
   "codeintel.semantic.embedder" |
   "codeintel.semantic.similar_to" |
+  "shell_wrap.enabled" |
+  "shell_wrap.tools" |
+  "shell_wrap.shells" |
+  "shell_wrap.shim_dir" |
   "archive.enabled" |
   "archive.path" |
   "archive.max_projects_per_pass" |
   "archive.batch_rows" |
+  "mcp_relay.enabled" |
+  "mcp_relay.mode" |
+  "mcp_relay.gateway_url" |
+  "mcp_relay.audit_mode" |
+  "mcp_relay.listen" |
+  "mcp_relay.ipc_path" |
+  "mcp_relay.poll_interval_seconds" |
   "advisor.enabled" |
   "advisor.window_days" |
   "advisor.min_confidence" |

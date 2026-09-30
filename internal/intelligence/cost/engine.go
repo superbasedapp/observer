@@ -53,6 +53,10 @@ type Engine struct {
 	// now is the clock the effective_from resolution reads. nil means
 	// time.Now; only this package's tests replace it.
 	now func() time.Time
+	// rows is the opt-in raw-row load cache (rowcache.go). Engine-owned so
+	// the one process-wide engine is also the one owner of the cache; it is
+	// consulted only for a context marked with WithRowCache.
+	rows rowCache
 }
 
 // NewEngine returns an engine seeded with baked-in defaults + user pricing
@@ -108,7 +112,8 @@ func (e *Engine) rebuild() {
 	doc := e.orgRows.Load()
 	authoritative := doc != nil && doc.Authoritative
 
-	t := NewTable()
+	now := e.clock()
+	t := newTableAt(now)
 
 	// The local explicit overrides, resolved once so the org composition can
 	// see which keys the developer authored.
@@ -127,12 +132,13 @@ func (e *Engine) rebuild() {
 	// consulted at lookup time — a table that had to remember whose rate it
 	// held would be a second owner of the precedence rule.
 	var orgOwned map[string]bool
+	var orgTimelines map[string][]DatedPricing
 	var orgWarnings []string
 	if authoritative {
 		t.Merge(local)
-		orgOwned, orgWarnings = composeOrgRows(t, doc, localKeys, e.clock())
+		orgOwned, orgTimelines, orgWarnings = composeOrgRows(t, doc, localKeys, now)
 	} else {
-		orgOwned, orgWarnings = composeOrgRows(t, doc, localKeys, e.clock())
+		orgOwned, orgTimelines, orgWarnings = composeOrgRows(t, doc, localKeys, now)
 		t.Merge(local)
 	}
 
@@ -152,6 +158,16 @@ func (e *Engine) rebuild() {
 	// answer that keeps them consistent, and it is honest: the org's document
 	// carries its own effective_from, already resolved.
 	t.markOrg(orgOwned)
+	// ...unless the org's (or the feed's) row carried its OWN dated history,
+	// or is itself dated: then that history, laid over the seed, IS the key's
+	// timeline (lane R2-PRICING-2; a single dated row since the
+	// PRICE-REPRICE-1 review), so an old session prices at the rate in force
+	// when it ran - the seed's own dated history before the org's first date -
+	// and LookupAt and Lookup still agree today (the flat rate is the
+	// timeline's period in force at `now`).
+	for k, tl := range orgTimelines {
+		t.setDated(k, tl)
+	}
 	// LOCAL provenance, resolved the same way: a key the developer authored
 	// owns its rate unless the org took it (which only happens on an
 	// authoritative node, where orgOwned already contains it and markOrg ran
@@ -166,7 +182,7 @@ func (e *Engine) rebuild() {
 	t.markLocal(localOwned)
 
 	warnings = append(warnings, orgWarnings...)
-	warnings = append(warnings, t.ValidateDated()...)
+	warnings = append(warnings, t.ValidateDatedAt(now)...)
 	if doc != nil {
 		t.enrollmentBinding = doc.Binding
 		t.pricingDocumentWitness = doc.Witness

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
-import { SegmentedControl, SlideOver, Toggle, Tooltip } from "@/components/primitives";
+import { ModelMark, SegmentedControl, SlideOver, Toggle, Tooltip } from "@/components/primitives";
 import { shortModel } from "@/lib/models";
 import type { Reliability, SessionRow } from "@/lib/types";
 
@@ -194,12 +194,13 @@ export function SessionsFiltersDrawer({
                         type="button"
                         onClick={() => toggleModel(m)}
                         className={clsx(
-                          "rounded-pill border px-2 py-0.5 font-mono text-[10.5px] transition-colors",
+                          "inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 font-mono text-[10.5px] transition-colors",
                           on
                             ? "border-accent bg-accent-soft text-accent"
                             : "border-line-2 bg-bg-2 text-fg-2 hover:bg-bg-3",
                         )}
                       >
+                        <ModelMark model={m} size={11} tooltip={false} />
                         {shortModel(m)}
                       </button>
                     </Tooltip>

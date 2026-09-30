@@ -346,12 +346,16 @@ func TestSweepActionCorrelationRelinksLateRow(t *testing.T) {
 	}
 	// "go build" ran first (turn 1, at sessStart); "npm test" later (turn 2).
 	if _, err := st.Ingest(ctx, []models.ToolEvent{
-		{SourceFile: "cc.jsonl", SourceEventID: "a2", SessionID: "late-sess", ProjectRoot: "/proj",
+		{
+			SourceFile: "cc.jsonl", SourceEventID: "a2", SessionID: "late-sess", ProjectRoot: "/proj",
 			Timestamp: sessStart, Tool: models.ToolClaudeCode,
-			ActionType: models.ActionRunCommand, Target: "go build", TurnIndex: 1, Success: true},
-		{SourceFile: "cc.jsonl", SourceEventID: "a1", SessionID: "late-sess", ProjectRoot: "/proj",
+			ActionType: models.ActionRunCommand, Target: "go build", TurnIndex: 1, Success: true,
+		},
+		{
+			SourceFile: "cc.jsonl", SourceEventID: "a1", SessionID: "late-sess", ProjectRoot: "/proj",
 			Timestamp: sessStart.Add(10 * time.Second), Tool: models.ToolClaudeCode,
-			ActionType: models.ActionRunCommand, Target: "npm test", TurnIndex: 2, Success: true},
+			ActionType: models.ActionRunCommand, Target: "npm test", TurnIndex: 2, Success: true,
+		},
 	}, nil, store.IngestOptions{}); err != nil {
 		t.Fatalf("Ingest actions: %v", err)
 	}

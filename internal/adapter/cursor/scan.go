@@ -68,6 +68,18 @@ type Adapter struct {
 	// cloned). Keyed on the slug dir, so two conversations under the
 	// same workspace share one resolution.
 	rootCache sync.Map
+
+	// transcriptCheck reports whether a conversation already carries
+	// activity rows from a non-hook source (its agent transcript or
+	// state.vscdb). The hooks-log replay consults it so it never adds a
+	// second, differently-keyed copy of turns the transcript path
+	// already captured — the mirror of hookCheck. nil = emit.
+	transcriptCheck SessionHookChecker
+	// rootLookup resolves a session's STORED project root, so a
+	// root-less event of a known folder session is attributed to that
+	// folder instead of flipping it onto SyntheticProjectRoot
+	// (ResolveSyntheticRoots). nil = batch-local resolution only.
+	rootLookup SessionRootLookup
 }
 
 // New returns an Adapter with platform-default cross-mount roots.
@@ -103,6 +115,23 @@ func (a *Adapter) WithSessionHookChecker(check SessionHookChecker) *Adapter {
 	return a
 }
 
+// WithSessionTranscriptChecker injects the predicate the hooks-log
+// replay uses to detect "this conversation already has non-hook
+// activity rows; replay only its usage and outcomes". nil (the default)
+// means always emit. Returns the adapter for chaining.
+func (a *Adapter) WithSessionTranscriptChecker(check SessionHookChecker) *Adapter {
+	a.transcriptCheck = check
+	return a
+}
+
+// WithSessionRootLookup injects the stored-project-root resolver used by
+// ResolveSyntheticRoots on the replay and state.vscdb paths. Returns the
+// adapter for chaining.
+func (a *Adapter) WithSessionRootLookup(lookup SessionRootLookup) *Adapter {
+	a.rootLookup = lookup
+	return a
+}
+
 // Name implements adapter.Adapter.
 func (*Adapter) Name() string { return models.ToolCursor }
 
@@ -117,7 +146,7 @@ func (a *Adapter) WatchPaths() []string { return a.roots }
 // normalised to `/` so the matcher works against backslash-shaped
 // strings even on Linux (where filepath.Base wouldn't split on `\`).
 func (a *Adapter) IsSessionFile(path string) bool {
-	if !matchesSessionShape(path) && !matchesStoreDBShape(path) && !matchesStateDBShape(path) && !matchesCLIUsageLog(path) {
+	if !matchesSessionShape(path) && !matchesStoreDBShape(path) && !matchesStateDBShape(path) && !matchesCLIUsageLog(path) && !matchesHooksLog(path) {
 		return false
 	}
 	return adapter.UnderAnyWatchRoot(path, a.WatchPaths())
@@ -190,6 +219,8 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	switch layout {
 	case layoutCLIUsage:
 		res, err = a.parseCLIUsageLog(ctx, path, fromOffset)
+	case layoutHooksLog:
+		res, err = a.parseHooksLog(ctx, path, fromOffset)
 	case layoutStoreDB:
 		res, err = a.parseStoreDBFile(path, fromOffset)
 	case layoutStateDB:
@@ -343,6 +374,18 @@ func (a *Adapter) parseStoreDBFile(path string, fromOffset int64) (adapter.Parse
 	for _, sec := range store.Sections {
 		if ev, ok := a.promptSectionEvent(sec, convID, projectRoot, path, ts); ok {
 			res.ToolEvents = append(res.ToolEvents, ev)
+		}
+	}
+	// The per-turn blobs are the only place an Auto-mode ("default")
+	// conversation names the model that actually answered (e.g.
+	// cursor-grok-4.5-high). Stamping it here upgrades sessions.model; the
+	// store never lets a later placeholder ("default"/"auto") from a hook
+	// downgrade it again (store.UpsertSession).
+	if store.Model != "" {
+		for i := range res.ToolEvents {
+			if res.ToolEvents[i].Model == "" {
+				res.ToolEvents[i].Model = store.Model
+			}
 		}
 	}
 	return res, nil
@@ -874,5 +917,9 @@ func defaultRoots() []string {
 			roots = append(roots, filepath.Join(dir, "state.vscdb"))
 		}
 	}
+	// <Cursor userData>/logs → the IDE hooks output-channel log, the
+	// durable replay source for hook payloads (incl. per-request token
+	// usage) the live receiver failed to persist. See hookslog.go.
+	roots = append(roots, hooksLogRoots(homes)...)
 	return append(roots, cliUsageRoots(homes)...)
 }

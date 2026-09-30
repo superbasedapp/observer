@@ -22,7 +22,7 @@ func TestEnsureOrgClientBlockWritesServerURL(t *testing.T) {
 		t.Fatalf("seed config: %v", err)
 	}
 
-	added, err := ensureOrgClientBlock(path, "https://org.acme.example")
+	added, err := ensureOrgClientBlock(path, "https://org.acme.example", false)
 	if err != nil || !added {
 		t.Fatalf("ensureOrgClientBlock = (%v, %v), want (true, nil)", added, err)
 	}
@@ -44,7 +44,7 @@ func TestEnsureOrgClientBlockWritesServerURL(t *testing.T) {
 
 	// Idempotent: a second call must not touch the file.
 	before, _ := os.ReadFile(path)
-	added, err = ensureOrgClientBlock(path, "https://other.example")
+	added, err = ensureOrgClientBlock(path, "https://other.example", false)
 	if err != nil || added {
 		t.Fatalf("second ensureOrgClientBlock = (%v, %v), want (false, nil)", added, err)
 	}
@@ -59,7 +59,7 @@ func TestEnsureOrgClientBlockWritesServerURL(t *testing.T) {
 // an empty string TOML users would have to clean up.
 func TestEnsureOrgClientBlockToleratesEmptyURL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	added, err := ensureOrgClientBlock(path, "  ")
+	added, err := ensureOrgClientBlock(path, "  ", false)
 	if err != nil || !added {
 		t.Fatalf("ensureOrgClientBlock = (%v, %v), want (true, nil)", added, err)
 	}
@@ -102,7 +102,7 @@ func TestEnsureOrgClientBlockIgnoresCommentMentions(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			added, err := ensureOrgClientBlock(path, "https://org.acme.example")
+			added, err := ensureOrgClientBlock(path, "https://org.acme.example", false)
 			if err != nil {
 				t.Fatal(err)
 			}

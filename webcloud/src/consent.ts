@@ -30,6 +30,13 @@ export interface ConsentPurpose {
  * offers but this map does not know still renders, under its id.
  */
 export const CONSENT_COPY: Record<string, ConsentPurpose> = {
+  account_device_operations: {
+    id: "account_device_operations",
+    label: "Account and device operations",
+    description:
+      "Your identity link, devices, signed-in sessions and security events. " +
+      "Active once you sign in; it authorizes no upload of session data.",
+  },
   structural_activity_insights: {
     id: "structural_activity_insights",
     label: "Name and tag my sessions",
@@ -53,6 +60,28 @@ export const CONSENT_COPY: Record<string, ConsentPurpose> = {
     description:
       "A derived structural contribution compared against a minimum-size " +
       "cohort, used to show your own private percentile against similar work.",
+  },
+  extended_evidence_deep_review: {
+    id: "extended_evidence_deep_review",
+    label: "Extended evidence for deep reviews",
+    description:
+      "The evidence fields a deeper review needs, shown to you in a preview " +
+      "and asked for just in time, job by job.",
+  },
+  public_community_profile: {
+    id: "public_community_profile",
+    label: "Public community profile",
+    description:
+      "An eligible cohort contribution listed publicly under a handle you " +
+      "choose.",
+  },
+  research_model_improvement: {
+    id: "research_model_improvement",
+    label: "Research and model improvement",
+    description:
+      "Contribute to a separately described future research corpus. It is " +
+      "separate from everything else here: serving your own results never " +
+      "depends on it.",
   },
 };
 

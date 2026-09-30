@@ -193,9 +193,10 @@ func (a *Adapter) loadMessageEvents(ctx context.Context, db *sql.DB, sourceFile,
 	if !tableExists(ctx, db, "messages") {
 		return nil, nil
 	}
+	/* #nosec G202 -- messageModelExpr returns one of two compile-time literals */
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, session_id, role, parts,
-		       COALESCE(model, ''), COALESCE(provider, ''),
+		       `+messageModelExpr(ctx, db)+`, COALESCE(provider, ''),
 		       created_at, updated_at, COALESCE(finished_at, 0)
 		  FROM messages
 		 WHERE updated_at > ?
@@ -447,12 +448,35 @@ func (a *Adapter) toolCallEvent(sourceFile, projectRoot, gitRemote string, m mes
 }
 
 // loadTokenEvents emits one TokenEvent per session whose updated_at
-// exceeds fromOffset. Crush stores token counts and its own dollar cost
-// at the SESSION level (cumulative), not per message, so the SourceEventID
-// is stable across parses and the store's MAX-upgrade ON CONFLICT keeps
-// the monotonically-growing counts correct. Model+provider come from the
-// newest assistant message in the session (so a provider-failover session
-// reports the provider that finished the turn).
+// exceeds fromOffset. Crush keeps usage only at the SESSION level, and
+// the two kinds of column there mean different things:
+//
+//   - sessions.cost IS cumulative: updateSessionUsage does
+//     `session.Cost += cost` on every step.
+//   - sessions.prompt_tokens / completion_tokens are NOT cumulative:
+//     updateSessionTokenCounters OVERWRITES them with the LAST step's
+//     (input + cache-read) and output - they are the context-window
+//     occupancy the TUI header renders ("ContextUsed"), not billed
+//     tokens. Grounded in charmbracelet/crush internal/agent/agent.go at
+//     both v0.83.0 (the grounding install) and v0.96.1.
+//
+// So the token counters are reported only when they provably equal the
+// session total - a session with at most ONE usage-bearing step (Crush's
+// PrepareStep creates exactly one assistant message per step; steps that
+// ended in error/canceled never touched the counters - see
+// assistantStepCount and sessionTokenCounts). Every other non-vacant
+// session STILL gets its row (full coverage: the model and Crush's own
+// cost are known even when the counts are not), carrying zero counts
+// marked Reliability = unknown - "unknown means unknown", never a
+// context-window size passed off as billed tokens (the freebuff
+// contextTokenCount rule). That includes a zero-cost multi-step session,
+// whose row carries only its model and $0. The prompt counter is gross
+// of cache reads - see sessionTokenCounts for the zero-cost re-pricing
+// limitation. The SourceEventID is stable across parses and the store's
+// MAX-upgrade ON CONFLICT keeps the growing cost correct. Model+provider
+// come from the newest assistant message in the session (so a
+// provider-failover session reports the provider that finished the
+// turn).
 func (a *Adapter) loadTokenEvents(ctx context.Context, db *sql.DB, sourceFile, projectRoot, gitRemote string, fromOffset int64) ([]models.TokenEvent, error) {
 	if !tableExists(ctx, db, "sessions") {
 		return nil, nil
@@ -489,12 +513,16 @@ func (a *Adapter) loadTokenEvents(ctx context.Context, db *sql.DB, sourceFile, p
 
 	var out []models.TokenEvent
 	for _, s := range sessions {
-		// Skip observationally-vacant sessions (no tokens, no cost) —
-		// a fresh session with nothing but a title.
+		// Skip observationally-vacant sessions: the session row carries
+		// no usage evidence at all (no counters, no cost) - a fresh
+		// session with nothing but a title, or one whose first step is
+		// still in flight (Crush writes the counters and the cost
+		// together when a step finishes).
 		if s.Prompt == 0 && s.Completion == 0 && s.Cost == 0 {
 			continue
 		}
 		model, _ := newestAssistantModel(ctx, db, s.ID)
+		u := sessionTokenCounts(s.Prompt, s.Completion, assistantStepCount(ctx, db, s.ID))
 		out = append(out, models.TokenEvent{
 			SourceFile:       sourceFile,
 			SourceEventID:    "tokens:" + s.ID,
@@ -504,34 +532,148 @@ func (a *Adapter) loadTokenEvents(ctx context.Context, db *sql.DB, sourceFile, p
 			Timestamp:        secondsToTime(s.UpdatedAt),
 			Tool:             models.ToolCrush,
 			Model:            model,
-			InputTokens:      s.Prompt,
-			OutputTokens:     s.Completion,
+			InputTokens:      u.In,
+			OutputTokens:     u.Out,
 			EstimatedCostUSD: s.Cost,
 			// Crush persists the upstream usage envelope + its own cost
-			// into the session store; trustworthy but not invoice-
-			// verified — approximate, JSONL-class source.
+			// into the session store: a JSONL-class source. Reliability
+			// is approximate when the counts are reported (trustworthy
+			// but not invoice-verified) and unknown when they are not.
 			Source:      models.TokenSourceJSONL,
-			Reliability: models.ReliabilityApproximate,
+			Reliability: u.Reliability,
 		})
 	}
 	return out, nil
 }
 
+// sessionUsage is what one Crush session row can honestly report.
+type sessionUsage struct {
+	// In / Out are the reported prompt / completion counts; both are 0
+	// when the counts are not reportable.
+	In, Out int64
+	// Reliability is models.ReliabilityApproximate when In/Out are the
+	// session's real totals and models.ReliabilityUnknown when they are
+	// not measured (the zeros then mean "not reported", never "zero
+	// tokens").
+	Reliability string
+}
+
+// tokenReportRules is the ordered reportability table sessionTokenCounts
+// walks top-down; the first matching row decides. steps is the session's
+// usage-bearing step count (assistantStepCount).
+var tokenReportRules = []struct {
+	name     string
+	match    func(prompt, completion int64, steps int) bool
+	reported bool
+}{
+	// The counters hold the LAST step's context size (see
+	// loadTokenEvents): a snapshot, not the session total.
+	{"multi-step: last-step snapshot", func(_, _ int64, steps int) bool { return steps > 1 }, false},
+	// Crush never wrote the counters (only a cost): zero counters are
+	// "not recorded", not "zero tokens".
+	{"no counters recorded", func(prompt, completion int64, _ int) bool { return prompt == 0 && completion == 0 }, false},
+	// At most one step: the counters ARE the total.
+	{"at most one step: counters are the total", func(int64, int64, int) bool { return true }, true},
+}
+
+// sessionTokenCounts decides which of a Crush session row's token
+// counters are reportable by walking tokenReportRules. The counters hold
+// the LAST step's usage (see loadTokenEvents), so they equal the session
+// total only when the session has had at most one step. steps is the
+// session's usage-bearing step count (assistantStepCount).
+//
+//	steps > 1          -> last-step context snapshot: 0/0, reliability unknown
+//	both counters zero -> nothing recorded:           0/0, reliability unknown
+//	otherwise          -> the counters ARE the total: reported, approximate
+//
+// KNOWN LIMITATION (zero-cost one-step sessions). The prompt counter is
+// GROSS: updateSessionTokenCounters stores InputTokens + CacheReadTokens
+// and crush.db persists the cache split nowhere. A positive Crush cost
+// always wins over a read-side re-price (cost.Engine.priceRow), so that
+// is harmless there; but a session whose own cost is 0 (a flat-rate
+// provider, a zero-priced model, estimated usage) is re-priced from its
+// tokens, and the cached share is then billed as fresh input. The counts
+// are real usage and are kept (full coverage); no existing TokenEvent
+// field lets an adapter say "cost authoritative at 0, do not re-price"
+// without a schema change, so the estimate may over-bill. An UNREPORTED
+// row carries zero counts, so a re-price of it is $0 and its stored cost
+// (zero or Crush's own positive figure) is never misstated. See
+// docs/crush-adapter.md.
+func sessionTokenCounts(prompt, completion int64, steps int) sessionUsage {
+	for _, r := range tokenReportRules {
+		if !r.match(prompt, completion, steps) {
+			continue
+		}
+		if r.reported {
+			return sessionUsage{In: prompt, Out: completion, Reliability: models.ReliabilityApproximate}
+		}
+		break
+	}
+	return sessionUsage{Reliability: models.ReliabilityUnknown}
+}
+
+// assistantStepCount returns how many USAGE-BEARING agent steps a
+// session holds: its assistant messages (Crush creates one per step in
+// PrepareStep) minus those finished with reason "error" or "canceled".
+// Those two are written on the stream's error path, where OnStepFinish
+// - the only caller of updateSessionUsage - never runs, so they never
+// touched the counters (grounded: the live windows_failover capture is
+// a Forbidden bedrock step followed by one successful openai step, and
+// its counters are that one step's). Returns a sentinel above 1 on a
+// query error (e.g. a malformed parts blob) so an unreadable count never
+// promotes a snapshot to "total".
+func assistantStepCount(ctx context.Context, db *sql.DB, sessionID string) int {
+	if !tableExists(ctx, db, "messages") {
+		return 0
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM messages m
+		 WHERE m.session_id = ? AND m.role = 'assistant'
+		   AND NOT EXISTS (
+		       SELECT 1 FROM json_each(m.parts) p
+		        WHERE json_extract(p.value, '$.type') = 'finish'
+		          AND json_extract(p.value, '$.data.reason') IN ('error', 'canceled'))`,
+		sessionID).Scan(&n); err != nil {
+		return 2
+	}
+	return n
+}
+
 // newestAssistantModel returns the model (and provider) of the most
 // recent assistant message in a session. Empty strings when the session
-// has no assistant message yet.
+// has no assistant message yet. The model resolves through
+// messageModelExpr, so a Hyper turn routed by Prism reports the model
+// that actually served it.
 func newestAssistantModel(ctx context.Context, db *sql.DB, sessionID string) (model, provider string) {
 	if !tableExists(ctx, db, "messages") {
 		return "", ""
 	}
+	/* #nosec G202 -- messageModelExpr returns one of two compile-time literals */
 	row := db.QueryRowContext(ctx, `
-		SELECT COALESCE(model, ''), COALESCE(provider, '')
+		SELECT `+messageModelExpr(ctx, db)+`, COALESCE(provider, '')
 		  FROM messages
 		 WHERE session_id = ? AND role = 'assistant'
 		 ORDER BY created_at DESC, id DESC
 		 LIMIT 1`, sessionID)
 	_ = row.Scan(&model, &provider)
 	return model, provider
+}
+
+// messageModelExpr is the SQL expression a messages query selects the
+// model through. Crush v0.96 (migration 20260902000000) added
+// messages.prism_model_id: on a Hyper turn served through a Prism
+// router model, messages.model holds the configured ROUTER model while
+// prism_model_id holds "the model that actually served the turn"
+// (internal/agent/agent.go extractPrismModel, from the X-Prism-Model-Id
+// response header). The served model is what prices the turn, so it
+// wins when present; older stores without the column keep reading
+// messages.model unchanged. Both branches are compile-time literals.
+func messageModelExpr(ctx context.Context, db *sql.DB) string {
+	if columnExists(ctx, db, "messages", "prism_model_id") {
+		return `COALESCE(NULLIF(prism_model_id, ''), model, '')`
+	}
+	return `COALESCE(model, '')`
 }
 
 // mapTool resolves a Crush built-in tool name onto the normalized action
@@ -759,6 +901,17 @@ func tableExists(ctx context.Context, db *sql.DB, name string) bool {
 	var n int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
+// columnExists reports whether table has the named column. False on any
+// query error, so a caller falls back to the pre-column query shape.
+func columnExists(ctx context.Context, db *sql.DB, table, column string) bool {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n); err != nil {
 		return false
 	}
 	return n > 0

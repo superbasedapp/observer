@@ -1,0 +1,38 @@
+-- 133_mcp_relay_launch_vserver.sql — Agent Access P4, Sol P3+P4 fold
+-- re-review finding 2 (doc3 §11.7 "spawn original from the approved registry
+-- entry", §12.1/§12.2 "the wrapper applies the local PDP to the resolved
+-- server").
+--
+-- A wrapped stdio entry is spawned as `observer mcp-relay wrap --client
+-- <tool> --server <entry key>`. The local PDP keys every decision on the
+-- compiled node table's VSERVER ID (localpdp.Table.NodePrincipal refuses an
+-- unknown or empty vserver), but before this migration the launch journal
+-- carried only the client config's entry key - so the wrapper handed the PDP
+-- an empty vserver and every mediated request was refused.
+--
+-- The binding is resolved at PROJECTION time from the accepted
+-- tools.mcp_access table (project.Bind: the entry key must name exactly one
+-- approved vserver and one member of it, else the entry is NOT wrapped and
+-- the refusal is reported) and persisted HERE, with the row, rather than
+-- re-derived at launch: the accepted table can change between projection
+-- and launch (a new resource can add a second vserver that makes the key
+-- ambiguous, or rebind it), and a launch-time re-derivation would silently
+-- decide calls against a vserver the projection never approved. With the
+-- binding journaled, a later table that drops the vserver fails CLOSED in
+-- the local PDP ("virtual server not in the node policy") until the next
+-- projection re-binds the entry.
+--
+--   vserver_id          the compiled node table vserver ID the entry binds to
+--   registry_server_id  the registry member (mcp_server.id) the entry is;
+--                       NULL for a vserver that lists no member
+--
+-- Both NULL on a remote row (the relay ADDED the entry; nothing is spawned)
+-- and on a pre-133 row, which the wrapper refuses to launch with a typed
+-- error rather than guess (re-running `observer mcp-relay disable` then
+-- `enable` re-projects it bound).
+--
+-- NODE-LOCAL, like every mcp_relay_* column: the table never reaches the org
+-- wire (tests/invariant/privacy_test.go forbiddenCacheTables). No paired
+-- server migration.
+ALTER TABLE mcp_relay_launch_spec ADD COLUMN vserver_id TEXT;
+ALTER TABLE mcp_relay_launch_spec ADD COLUMN registry_server_id TEXT;

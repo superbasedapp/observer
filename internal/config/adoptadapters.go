@@ -8,6 +8,14 @@ import (
 	"strings"
 )
 
+// AdoptDefaultsRemediationCmd is the one command that fixes the
+// Invariant #51 drift AdoptEnabledAdapters detects. Every surface that
+// reports a missing-default-adapter finding (the daemon startup WARN in
+// cmd/observer/main.go, the `observer config adopt-defaults` CLI's own
+// help text, and the dashboard's Connected-tools panel) quotes this
+// exact string so the remediation never drifts across surfaces.
+const AdoptDefaultsRemediationCmd = "observer config adopt-defaults --write"
+
 // AdoptResult reports what AdoptEnabledAdapters found and (if asked to
 // write) changed.
 type AdoptResult struct {

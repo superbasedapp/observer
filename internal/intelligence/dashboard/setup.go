@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,6 +27,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/marmutapp/superbased-observer/internal/proxyroute"
+	"github.com/marmutapp/superbased-observer/internal/shellwrapsvc"
 )
 
 // codexSetupSnapshot is the GET /api/setup/codex response. The frontend
@@ -386,7 +386,9 @@ func (s *Server) claudeSetupSnapshot() claudeSetupSnapshot {
 	if hasOAuthAccessToken(out.CredentialsPath) {
 		out.HasOAuthCredentials = true
 	}
-	if path, err := exec.LookPath("claude"); err == nil {
+	// shellwrapsvc.LookPath skips a command-wrapping shim: a shim named
+	// `claude` is not a Claude Code install.
+	if path, err := shellwrapsvc.LookPath("claude"); err == nil {
 		out.ClaudeBinaryFound = true
 		out.ClaudeBinaryPath = path
 	}

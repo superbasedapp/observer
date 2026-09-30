@@ -1,4 +1,6 @@
 import clsx from "clsx";
+import { X } from "lucide-react";
+import { Icon } from "./Icon";
 import { Tooltip } from "./Tooltip";
 
 // ActiveFilterChips — generic active-filter strip. Pages compute the
@@ -41,9 +43,7 @@ export function ActiveFilterChips({
             className="inline-flex items-center gap-1 rounded-pill border border-accent/40 bg-accent-soft px-2 py-0.5 text-[10.5px] text-accent transition-colors hover:bg-accent-soft/70"
           >
             {c.label}
-            <span aria-hidden className="text-fg-3 hover:text-fg-1">
-              ×
-            </span>
+            <Icon icon={X} size={10} className="text-fg-3 hover:text-fg-1" />
           </button>
         </Tooltip>
       ))}

@@ -20,6 +20,7 @@ WEB_EMBED_DIST := internal/intelligence/dashboard/webapp/dist
         taxonomy-migration-build verify-taxonomy-migration \
         assistant-migration-build verify-assistant-migration \
         reasoning-migration-build verify-reasoning-migration \
+        pricing-snapshot verify-pricing-snapshot \
         verify-webcloud-dist
 
 # Targets whose INPUTS are private-only paths (cmd/observer-org*,
@@ -165,9 +166,11 @@ clean:
 # Web (redesigned React/Vite dashboard, mounted at /v2/).
 #
 # `make build` stays pure-Go and does NOT require Node. The built
-# artifacts at $(WEB_EMBED_DIST) are committed; regenerate them
-# via `make web-build` whenever you touch web/ sources, before
-# committing.
+# artifacts at $(WEB_EMBED_DIST) are committed (go install and the
+# Docker/CI Go builds compile against them); regenerate them via
+# `make web-build` whenever you touch web/ sources, before
+# committing. $(WEB_DIST) itself is an ignored build output, and the
+# copy into the embed dir drops source maps (scripts/sync-web-embed.sh).
 # ---------------------------------------------------------------
 web-install:
 	npm ci
@@ -178,9 +181,7 @@ web-dev:
 web-build:
 	npm ci --silent
 	cd $(WEB_DIR) && npm run build
-	@rm -rf $(WEB_EMBED_DIST)
-	@mkdir -p $(WEB_EMBED_DIST)
-	@cp -R $(WEB_DIST)/. $(WEB_EMBED_DIST)/
+	@scripts/sync-web-embed.sh $(WEB_DIST) $(WEB_EMBED_DIST)
 	@echo "web: rebuilt $(WEB_EMBED_DIST) from $(WEB_DIST)"
 
 web-clean:
@@ -262,6 +263,33 @@ config-schema-build:
 # Mirrors verify-taxonomy-build's build-into-temp pattern.
 verify-config-schema:
 	@scripts/verify-config-schema-build.sh
+
+# ---------------------------------------------------------------
+# Build-time price snapshot (internal/intelligence/cost/pricing_snapshot.json).
+#
+# The compiled price table's GENERATED half. tools/pricing-snapshotgen reads a
+# SIGNED Tokenomics pricing-feed bundle (the air-gap file
+# model-pricing/cmd/observerpublish writes), verifies it against the vendor keys
+# compiled into this tree, and projects it onto the artifact the cost engine
+# embeds. That is what makes a new model a DATABASE row plus one make target
+# rather than a Go edit, and what stops the shipped table and the published feed
+# from ever disagreeing.
+#
+#   make pricing-snapshot BUNDLE=model-pricing/dist/observer-pricing-v7.json
+#   make verify-pricing-snapshot BUNDLE=model-pricing/dist/observer-pricing-v7.json
+#
+# verify- is the drift gate (writes nothing, exits non-zero on a stale file),
+# the same shape as verify-distribution-readmes. It is NOT wired into `ci.yml`:
+# the bundle is not in the public tree, so CI has nothing to verify against.
+# Run it beside a publish.
+# ---------------------------------------------------------------
+pricing-snapshot:
+	@test -n "$(BUNDLE)" || { echo "pricing-snapshot: set BUNDLE=<signed observer-pricing-vN.json>" >&2; exit 2; }
+	$(GO) run ./tools/pricing-snapshotgen -bundle "$(BUNDLE)"
+
+verify-pricing-snapshot:
+	@test -n "$(BUNDLE)" || { echo "verify-pricing-snapshot: set BUNDLE=<signed observer-pricing-vN.json>" >&2; exit 2; }
+	$(GO) run ./tools/pricing-snapshotgen -bundle "$(BUNDLE)" -check
 
 # ---------------------------------------------------------------
 # webcloud portal dist drift gate (gap 3.7). cmd/observer-cloud go:embed's

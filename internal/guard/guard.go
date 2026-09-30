@@ -161,6 +161,13 @@ type Guard struct {
 	// onPolicyState is Options.OnPolicyState (may be nil).
 	onPolicyState func(PolicyState)
 
+	// mcpAccess is the Agent Access node MCP-access lookup
+	// (mcpaccess.go: SetMCPAccessLookup), behind an atomic.Pointer because
+	// the daemon binds it after construction, once the relay's table holder
+	// exists. nil = no compiled table in this process → no R-306/R-307
+	// finding is ever stamped.
+	mcpAccess atomic.Pointer[MCPAccessLookup]
+
 	// set holds the ENTIRE org-derived engine snapshot behind ONE
 	// atomic.Pointer (P0-7 hot-reload): the base engine, the parsed
 	// org + user layers, the builtin/org/user layer states + rule
@@ -683,6 +690,10 @@ func (g *Guard) evaluateWith(es *engineSet, ev policy.Event) (verdict policy.Ver
 			verdict = g.failureVerdict(guardErr)
 		}
 	}()
+	// Agent Access (doc3 §12.6): stamp the node MCP-access finding on the
+	// event copy before the engine runs — the ONE place every KindMCPCall
+	// channel (hook, ingest, proxy inspection) passes through.
+	g.stampMCPAccess(&ev)
 	return es.engineFor(g, ev.ProjectRoot).Evaluate(ev), nil
 }
 

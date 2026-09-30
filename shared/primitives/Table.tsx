@@ -26,6 +26,13 @@ export type TableProps = {
   size?: "sm" | "md";
   /** Shrink-to-content instead of filling the container. */
   fit?: boolean;
+  /** Alternate row shading. Row hover is always on. */
+  zebra?: boolean;
+  /** Opt in to the table's own density-aware cell padding (th: py-head
+   *  px-cell, td: py-row px-cell - the --density-* tokens, which follow the
+   *  viewer's comfortable / compact choice). Off by default: existing
+   *  callers pad their own cells and must render exactly as before. */
+  padded?: boolean;
   className?: string;
   tableClassName?: string;
 };
@@ -45,6 +52,8 @@ export function Table({
   stickyHead,
   size = "md",
   fit,
+  zebra,
+  padded,
   className,
   tableClassName,
 }: TableProps) {
@@ -94,12 +103,22 @@ export function Table({
             className={clsx(
               "text-[10px] uppercase tracking-[0.06em] text-fg-3 [&_th]:border-b [&_th]:border-line-2",
               effectiveStickyHead && "sticky top-0 z-[1] bg-bg-2",
+              padded && "[&_th]:px-cell [&_th]:py-head",
             )}
           >
             {head}
           </thead>
         )}
-        <tbody>{children}</tbody>
+        <tbody
+          className={clsx(
+            // Row hover everywhere; zebra shading is opt-in.
+            "[&>tr]:transition-colors [&>tr:hover]:bg-bg-3",
+            zebra && "[&>tr:nth-child(even)]:bg-bg-3/50",
+            padded && "[&>tr>td]:px-cell [&>tr>td]:py-row",
+          )}
+        >
+          {children}
+        </tbody>
       </table>
     </div>
   );

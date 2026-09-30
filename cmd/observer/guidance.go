@@ -645,15 +645,18 @@ func guidanceSeamsFor(st *store.Store, cfg config.GuidanceConfig, logger *slog.L
 				}
 			}
 			anchor := root
+			fsys := guidance.OSFSProject(root)
 			if root == store.GuidanceUserScopeRoot {
 				o.UserScopeOnly = true
 				anchor = o.UserHome
+				fsys = guidance.OSFS(anchor)
 			} else {
 				// Project passes never re-walk the home tree; the sentinel
-				// root owns it.
+				// root owns it. They also never READ under home: a repo
+				// symlink into $HOME is refused (SR27-A3).
 				o.IncludeUserScope = false
 			}
-			res, err := guidance.Scan(ctx, anchor, guidance.OSFS(anchor), o)
+			res, err := guidance.Scan(ctx, anchor, fsys, o)
 			if err != nil {
 				return res, err
 			}

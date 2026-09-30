@@ -43,6 +43,14 @@
 //     (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
 //     reasoning_tokens). Per-message granularity is also available via
 //     messages.token_count but is less precise.
+//   - SQLite path, auxiliary calls: newer Hermes schemas (v30 at
+//     v2026.9.24) record auxiliary LLM calls (vision, compression,
+//     title_generation, background_review, ...) ONLY in
+//     session_model_usage rows with a non-empty task, never in the
+//     sessions aggregate, and fire them through the distinct
+//     post_auxiliary_call plugin event rather than post_api_request.
+//     One TokenEvent per such row (auxTokenEvent), emitted whatever the
+//     hook coverage; a store without the table emits none.
 //
 // Reasoning emission (B3, 2026-07-31): messages.reasoning /
 // reasoning_content mint NO action row. The chain-of-thought is threaded

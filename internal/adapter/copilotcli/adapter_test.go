@@ -2118,3 +2118,97 @@ func TestParseEventsJSONL_ReasoningEffortMergesWithPermissionMetadata(t *testing
 		t.Errorf("EffortLevel = %q, want %q (must merge with permission metadata, not clobber it)", permRow.Metadata.EffortLevel, "medium")
 	}
 }
+
+// TestParseEventsJSONL_AutoModeResolvedReplacesSentinel pins Auto-routing
+// attribution. When the user picks Auto, Copilot CLI writes
+// session.model_change{newModel:"auto"} (the router sentinel, which prices as a
+// MISS) and then session.auto_mode_resolved{chosenModel:<routed id>}. A token
+// row whose assistant.message omits data.model must bill at the ROUTED id, and
+// a row that does carry data.model keeps its own (per-message wins). Shape from
+// a live ~/.copilot/session-state events.jsonl (2026-08).
+func TestParseEventsJSONL_AutoModeResolvedReplacesSentinel(t *testing.T) {
+	uuid := "533a8529-1d64-41ec-a43c-c312c0222ee2"
+	toAuto := `{"type":"session.model_change","data":{"previousModel":"gpt-5-mini","newModel":"auto"},"id":"mc1","timestamp":"2026-08-01T11:40:00.000Z","parentId":"e1"}`
+	// Before the router resolves, the only session-level identity is the
+	// sentinel; an id-less message here stays "auto" (an honest MISS).
+	preResolve := `{"type":"assistant.message","data":{"messageId":"m0","content":"x","outputTokens":5,"requestId":"req-0"},"id":"am0","timestamp":"2026-08-01T11:40:01.000Z","parentId":"mc1"}`
+	resolved := `{"type":"session.auto_mode_resolved","data":{"chosenModel":"claude-haiku-4.5","candidateModels":["gpt-5-mini","claude-haiku-4.5"]},"id":"ar1","timestamp":"2026-08-01T11:40:02.000Z","parentId":"mc1"}`
+	noModel := `{"type":"assistant.message","data":{"messageId":"m1","content":"x","outputTokens":7,"requestId":"req-1"},"id":"am1","timestamp":"2026-08-01T11:40:03.000Z","parentId":"ar1"}`
+	ownModel := `{"type":"assistant.message","data":{"messageId":"m2","content":"x","outputTokens":9,"requestId":"req-2","model":"gpt-5-mini"},"id":"am2","timestamp":"2026-08-01T11:40:04.000Z","parentId":"ar1"}`
+	emptyResolve := `{"type":"session.auto_mode_resolved","data":{"candidateModels":["gpt-5-mini"]},"id":"ar2","timestamp":"2026-08-01T11:40:05.000Z","parentId":"ar1"}`
+	afterEmpty := `{"type":"assistant.message","data":{"messageId":"m3","content":"x","outputTokens":11,"requestId":"req-3"},"id":"am3","timestamp":"2026-08-01T11:40:06.000Z","parentId":"ar2"}`
+
+	evt := writeMinimalEventsFile(t, uuid, toAuto, preResolve, resolved, noModel, ownModel, emptyResolve, afterEmpty)
+	a := NewWithOptions(nil, filepath.Dir(filepath.Dir(evt)))
+	res, err := a.ParseSessionFile(context.Background(), evt, 0)
+	if err != nil {
+		t.Fatalf("ParseSessionFile: %v", err)
+	}
+	want := map[string]string{
+		"req-0": "auto",             // pre-resolution: the sentinel, never a guess
+		"req-1": "claude-haiku-4.5", // routed id replaces the sentinel
+		"req-2": "gpt-5-mini",       // per-message data.model wins
+		"req-3": "claude-haiku-4.5", // an empty chosenModel does not clobber
+	}
+	got := map[string]string{}
+	for _, te := range res.TokenEvents {
+		got[te.MessageID] = te.Model
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("token row %s model = %q, want %q (all rows: %v)", id, got[id], w, got)
+		}
+	}
+}
+
+// TestParseProcessLog_SiblingFallbackUsesAutoResolvedModel pins the same fix
+// on the process-log lane: a Tier-1 usage block with no model of its own
+// recovers the session model from the sibling events.jsonl, and under Auto
+// that must be the router's chosenModel rather than the "auto" sentinel.
+func TestParseProcessLog_SiblingFallbackUsesAutoResolvedModel(t *testing.T) {
+	dir := t.TempDir()
+	uuid := "26df8a84-8f2d-4b5b-babe-04146c5e7b0b"
+	logsRoot := filepath.Join(dir, ".copilot", "logs")
+	sessDir := filepath.Join(dir, ".copilot", "session-state", uuid)
+	for _, d := range []string{logsRoot, sessDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events := `{"type":"session.start","data":{"sessionId":"` + uuid + `","selectedModel":"gpt-5-mini"},"id":"e1","timestamp":"2026-08-01T11:39:00.000Z","parentId":null}` + "\n" +
+		`{"type":"session.model_change","data":{"previousModel":"gpt-5-mini","newModel":"auto"},"id":"mc1","timestamp":"2026-08-01T11:40:00.000Z","parentId":"e1"}` + "\n" +
+		`{"type":"session.auto_mode_resolved","data":{"chosenModel":"claude-haiku-4.5","candidateModels":["gpt-5-mini","claude-haiku-4.5"]},"id":"ar1","timestamp":"2026-08-01T11:40:02.000Z","parentId":"mc1"}` + "\n"
+	if err := os.WriteFile(filepath.Join(sessDir, "events.jsonl"), []byte(events), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(logsRoot, "process-1785584340000-4242.log")
+	body := `2026-08-01T11:39:00.000Z [INFO] Workspace initialized: ` + uuid + ` (checkpoints: 0)
+2026-08-01T11:40:03.000Z [DEBUG] response (Request-ID 00000-auto-1):
+2026-08-01T11:40:03.000Z [DEBUG] data:
+2026-08-01T11:40:03.000Z [DEBUG] {
+  "usage": {
+    "completion_tokens": 120,
+    "prompt_tokens": 9000,
+    "total_tokens": 9120,
+    "prompt_tokens_details": {
+      "cached_tokens": 4000
+    }
+  }
+}
+2026-08-01T11:40:04.000Z [INFO] some non-DEBUG line that closes the block
+`
+	if err := os.WriteFile(log, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := NewWithOptions(nil, logsRoot)
+	res, err := a.ParseSessionFile(context.Background(), log, 0)
+	if err != nil {
+		t.Fatalf("ParseSessionFile: %v", err)
+	}
+	if len(res.TokenEvents) != 1 {
+		t.Fatalf("TokenEvents = %d, want 1 (got %+v)", len(res.TokenEvents), res.TokenEvents)
+	}
+	if got := res.TokenEvents[0].Model; got != "claude-haiku-4.5" {
+		t.Errorf("Model = %q, want claude-haiku-4.5 (the Auto router's chosenModel, not the sentinel)", got)
+	}
+}

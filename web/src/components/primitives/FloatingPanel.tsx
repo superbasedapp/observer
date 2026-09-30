@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Tooltip } from "./Tooltip";
+import { Icon } from "@shared/primitives/Icon";
 import { useCompanionRegistry } from "./companion";
 import {
   clampRectToViewport,
@@ -7,6 +8,7 @@ import {
   type DragDelta,
   type Rect,
 } from "@/lib/useDrag";
+import { ArrowRightToLine, X } from "lucide-react";
 
 // FloatingPanel — a NON-MODAL, draggable, resizable window primitive (the
 // systemic fix behind the per-terminal project panel rework). Unlike SlideOver
@@ -305,9 +307,9 @@ export function FloatingPanel({
               type="button"
               onClick={snapDefault}
               aria-label="Dock to default position"
-              className="grid h-6 w-6 place-items-center rounded-2 border border-line-2 bg-bg-1 text-[13px] text-fg-2 hover:bg-bg-3 hover:text-fg-0"
+              className="grid h-6 w-6 place-items-center rounded-2 border border-line-2 bg-bg-1 text-fg-2 hover:bg-bg-3 hover:text-fg-0"
             >
-              ↦
+              <Icon icon={ArrowRightToLine} size="sm" />
             </button>
           </Tooltip>
           <Tooltip content={<>Close <kbd>Esc</kbd></>}>
@@ -315,9 +317,9 @@ export function FloatingPanel({
               type="button"
               onClick={onClose}
               aria-label="Close"
-              className="grid h-6 w-6 place-items-center rounded-2 border border-line-2 bg-bg-1 text-[14px] text-fg-2 hover:bg-bg-3 hover:text-fg-0"
+              className="grid h-6 w-6 place-items-center rounded-2 border border-line-2 bg-bg-1 text-fg-2 hover:bg-bg-3 hover:text-fg-0"
             >
-              ×
+              <Icon icon={X} size="sm" />
             </button>
           </Tooltip>
         </div>

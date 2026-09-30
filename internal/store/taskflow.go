@@ -457,96 +457,76 @@ type TaskTokenRow struct {
 	ReasoningTokens    int64
 	WebSearchRequests  int64
 	RecordedCostUSD    float64
+	// Fast is the row's served tier (a proxy row's includes the fast tier it
+	// inherits from its fast transcript twin), for the caller's pricing.
+	Fast bool
 }
 
-// LoadTaskTokenRows returns a session's non-sidechain token_usage rows
-// in chronological order, for the caller to attribute via
+// LoadTaskTokenRows returns a session's non-sidechain spend rows in
+// chronological order, for the caller to attribute via
 // taskflow.NewAttributor and price via its own cost.Engine.
 //
+// The rows are the session's SpendTurns (spendturns.go): api_turns ∪
+// token_usage under the ONE session rule, so a session's task totals sum to
+// its session header - a proxied turn the transcript missed is attributed
+// too, and a turn both captured counts once (lane R2-ONERULE; this used to
+// read token_usage alone).
+//
 // includeSidechains=false (the [tasks].include_sidechains default)
-// excludes token_usage.is_sidechain=1 rows (migration 087) — a spawned
-// sub-agent's own usage is reported separately, never folded into
-// whichever task happened to be open at the same wall-clock time
-// (§3.3's option (a); option (b), resolving TaskUpdate.owner to an
-// actual child session, is not implementable — owner is free text, not
-// a session id, §R2.6 item 6).
+// excludes sidechain rows (migration 087's is_sidechain; a proxy row takes
+// its transcript partner's flag) — a spawned sub-agent's own usage is
+// reported separately, never folded into whichever task happened to be
+// open at the same wall-clock time (§3.3's option (a); option (b),
+// resolving TaskUpdate.owner to an actual child session, is not
+// implementable — owner is free text, not a session id, §R2.6 item 6).
 func (s *Store) LoadTaskTokenRows(ctx context.Context, sessionID string, includeSidechains bool) ([]TaskTokenRow, error) {
-	q := `
-		SELECT timestamp, COALESCE(model,''), COALESCE(input_tokens,0), COALESCE(output_tokens,0),
-		       COALESCE(cache_read_tokens,0), COALESCE(cache_creation_tokens,0),
-		       COALESCE(cache_creation_1h_tokens,0), COALESCE(reasoning_tokens,0),
-		       COALESCE(web_search_requests,0), COALESCE(estimated_cost_usd,0)
-		  FROM token_usage
-		 WHERE session_id = ?`
-	if !includeSidechains {
-		q += ` AND is_sidechain = 0`
-	}
-	q += ` ORDER BY timestamp ASC, id ASC`
-	rows, err := s.db.QueryContext(ctx, q, sessionID)
+	rows, err := s.taskTokenRows(ctx, sessionID, func(t SpendTurn) bool { return includeSidechains || !t.Sidechain })
 	if err != nil {
 		return nil, fmt.Errorf("store.LoadTaskTokenRows: %w", err)
 	}
-	defer rows.Close()
-
-	var out []TaskTokenRow
-	for rows.Next() {
-		var r TaskTokenRow
-		var ts string
-		if err := rows.Scan(&ts, &r.Model, &r.InputTokens, &r.OutputTokens,
-			&r.CacheReadTokens, &r.CacheWriteTokens, &r.CacheWrite1hTokens, &r.ReasoningTokens,
-			&r.WebSearchRequests, &r.RecordedCostUSD); err != nil {
-			return nil, fmt.Errorf("store.LoadTaskTokenRows: scan: %w", err)
-		}
-		if t, ok := parseDBTime(ts); ok {
-			r.Ts = t
-		}
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store.LoadTaskTokenRows: rows: %w", err)
-	}
-	return out, nil
+	return rows, nil
 }
 
-// LoadSidechainOnlyTaskTokenRows returns ONLY a session's is_sidechain=1
-// token_usage rows, same shape as LoadTaskTokenRows. A Phase-2 report
-// builder calls this (instead of re-deriving a set-difference against
-// LoadTaskTokenRows(ctx, id, true)) to report a session's sub-agent
-// spend as its OWN total when [tasks].include_sidechains is false —
-// "counted, just not attributed to a specific task" (§3.3 option (a)),
-// never silently dropped from the session's totals altogether.
+// LoadSidechainOnlyTaskTokenRows returns ONLY a session's sidechain spend
+// rows, same shape as LoadTaskTokenRows. A Phase-2 report builder calls this
+// (instead of re-deriving a set-difference against
+// LoadTaskTokenRows(ctx, id, true)) to report a session's sub-agent spend as
+// its OWN total when [tasks].include_sidechains is false — "counted, just
+// not attributed to a specific task" (§3.3 option (a)), never silently
+// dropped from the session's totals altogether.
 func (s *Store) LoadSidechainOnlyTaskTokenRows(ctx context.Context, sessionID string) ([]TaskTokenRow, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT timestamp, COALESCE(model,''), COALESCE(input_tokens,0), COALESCE(output_tokens,0),
-		       COALESCE(cache_read_tokens,0), COALESCE(cache_creation_tokens,0),
-		       COALESCE(cache_creation_1h_tokens,0), COALESCE(reasoning_tokens,0),
-		       COALESCE(web_search_requests,0), COALESCE(estimated_cost_usd,0)
-		  FROM token_usage
-		 WHERE session_id = ? AND is_sidechain = 1
-		 ORDER BY timestamp ASC, id ASC`, sessionID)
+	rows, err := s.taskTokenRows(ctx, sessionID, func(t SpendTurn) bool { return t.Sidechain })
 	if err != nil {
 		return nil, fmt.Errorf("store.LoadSidechainOnlyTaskTokenRows: %w", err)
 	}
-	defer rows.Close()
+	return rows, nil
+}
 
+// taskTokenRows projects the session's SpendTurns that keep() admits onto
+// TaskTokenRow.
+func (s *Store) taskTokenRows(ctx context.Context, sessionID string, keep func(SpendTurn) bool) ([]TaskTokenRow, error) {
+	turns, err := s.LoadSessionSpendTurns(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return taskTokenRowsOf(turns, keep), nil
+}
+
+// taskTokenRowsOf is taskTokenRows over already-loaded turns.
+func taskTokenRowsOf(turns []SpendTurn, keep func(SpendTurn) bool) []TaskTokenRow {
 	var out []TaskTokenRow
-	for rows.Next() {
-		var r TaskTokenRow
-		var ts string
-		if err := rows.Scan(&ts, &r.Model, &r.InputTokens, &r.OutputTokens,
-			&r.CacheReadTokens, &r.CacheWriteTokens, &r.CacheWrite1hTokens, &r.ReasoningTokens,
-			&r.WebSearchRequests, &r.RecordedCostUSD); err != nil {
-			return nil, fmt.Errorf("store.LoadSidechainOnlyTaskTokenRows: scan: %w", err)
+	for _, t := range turns {
+		if !keep(t) {
+			continue
 		}
-		if t, ok := parseDBTime(ts); ok {
-			r.Ts = t
-		}
-		out = append(out, r)
+		out = append(out, TaskTokenRow{
+			Ts: t.Ts, Model: t.Model, InputTokens: t.InputTokens, OutputTokens: t.OutputTokens,
+			CacheReadTokens: t.CacheReadTokens, CacheWriteTokens: t.CacheWriteTokens,
+			CacheWrite1hTokens: t.CacheWrite1hTokens, ReasoningTokens: t.ReasoningTokens,
+			WebSearchRequests: t.WebSearchRequests, RecordedCostUSD: t.RecordedCostUSD, Fast: t.Fast,
+		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store.LoadSidechainOnlyTaskTokenRows: rows: %w", err)
-	}
-	return out, nil
+	return out
 }
 
 // LoadTaskActionTimestamps returns a session's non-sidechain action
@@ -599,6 +579,228 @@ func (s *Store) LoadTaskUnmatchedCount(ctx context.Context, sessionID string) (i
 		return 0, fmt.Errorf("store.LoadTaskUnmatchedCount: %w", err)
 	}
 	return n, nil
+}
+
+// taskBatchChunkSize bounds how many session ids one IN(...) sweep below
+// binds at once — the internal/store/locread.go::locLinesChunkSize
+// precedent (SQLite's default per-statement parameter limit is 999; each
+// query here binds one placeholder per session id, so 400 leaves ample
+// headroom without the extra chunk-count-doubling locread.go needs for
+// its two-armed CTE).
+const taskBatchChunkSize = 400
+
+// chunkSessionIDs splits ids into taskBatchChunkSize-sized slices, or
+// returns nil when ids is empty — every *Batch loader below early-returns
+// on that before running any query.
+func chunkSessionIDs(ids []string) [][]string {
+	if len(ids) == 0 {
+		return nil
+	}
+	var chunks [][]string
+	for start := 0; start < len(ids); start += taskBatchChunkSize {
+		end := start + taskBatchChunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunks = append(chunks, ids[start:end])
+	}
+	return chunks
+}
+
+func sessionIDPlaceholders(n int) string {
+	return strings.TrimRight(strings.Repeat("?,", n), ",")
+}
+
+func sessionIDArgs(chunk []string) []any {
+	args := make([]any, len(chunk))
+	for i, id := range chunk {
+		args[i] = id
+	}
+	return args
+}
+
+// LoadTaskItemsBatch is LoadTaskItems' N-session sibling: one chunked
+// `session_id IN (...)` sweep (taskBatchChunkSize per round trip)
+// instead of one query per session, for callers folding
+// taskreport.LoadSessionTaskReport over many sessions at once (SOL-F18(b)
+// of the 2026-09-22 Projects-page rework — LoadTaskRollup and
+// GET /api/project/<id>/cost?by=task both do). Each session's slice
+// preserves LoadTaskItems' own order_index/first_seen_at ordering; a
+// session with no rows is simply absent from the map (callers must treat
+// a missing key as "no tasks", never an error).
+func (s *Store) LoadTaskItemsBatch(ctx context.Context, sessionIDs []string) (map[string][]TaskItemRow, error) {
+	out := make(map[string][]TaskItemRow, len(sessionIDs))
+	for _, chunk := range chunkSessionIDs(sessionIDs) {
+		//nolint:gosec // G202: only the ?-placeholder list is concatenated; every value binds via args.
+		q := `
+			SELECT session_id, key, key_kind, COALESCE(content,''), COALESCE(active_form,''),
+			       COALESCE(owner,''), COALESCE(raw_status,''), status, order_index,
+			       first_seen_at, last_seen_at, unmatched
+			  FROM task_items
+			 WHERE session_id IN (` + sessionIDPlaceholders(len(chunk)) + `)
+			 ORDER BY session_id, order_index ASC, first_seen_at ASC`
+		rows, err := s.db.QueryContext(ctx, q, sessionIDArgs(chunk)...)
+		if err != nil {
+			return nil, fmt.Errorf("store.LoadTaskItemsBatch: %w", err)
+		}
+		for rows.Next() {
+			var sid string
+			var r TaskItemRow
+			var firstSeen, lastSeen string
+			var unmatched int
+			if err := rows.Scan(&sid, &r.Key, &r.KeyKind, &r.Content, &r.ActiveForm, &r.Owner,
+				&r.RawStatus, &r.Status, &r.Order, &firstSeen, &lastSeen, &unmatched); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("store.LoadTaskItemsBatch: scan: %w", err)
+			}
+			if t, ok := parseDBTime(firstSeen); ok {
+				r.FirstSeenAt = t
+			}
+			if t, ok := parseDBTime(lastSeen); ok {
+				r.LastSeenAt = t
+			}
+			r.Unmatched = unmatched != 0
+			out[sid] = append(out[sid], r)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store.LoadTaskItemsBatch: rows: %w", err)
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+// LoadTaskTransitionsBatch is LoadTaskTransitions' N-session sibling —
+// see LoadTaskItemsBatch's doc comment for the shared chunking/missing-
+// key contract.
+func (s *Store) LoadTaskTransitionsBatch(ctx context.Context, sessionIDs []string) (map[string][]taskflow.Transition, error) {
+	out := make(map[string][]taskflow.Transition, len(sessionIDs))
+	for _, chunk := range chunkSessionIDs(sessionIDs) {
+		//nolint:gosec // G202: only the ?-placeholder list is concatenated; every value binds via args.
+		q := `
+			SELECT session_id, key, from_status, to_status, ts, COALESCE(action_id, 0), source_event_id
+			  FROM task_transitions
+			 WHERE session_id IN (` + sessionIDPlaceholders(len(chunk)) + `)
+			 ORDER BY session_id, ts ASC, id ASC`
+		rows, err := s.db.QueryContext(ctx, q, sessionIDArgs(chunk)...)
+		if err != nil {
+			return nil, fmt.Errorf("store.LoadTaskTransitionsBatch: %w", err)
+		}
+		for rows.Next() {
+			var sid string
+			var tr taskflow.Transition
+			var ts string
+			if err := rows.Scan(&sid, &tr.Key, &tr.FromStatus, &tr.ToStatus, &ts, &tr.ActionID, &tr.SourceEventID); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("store.LoadTaskTransitionsBatch: scan: %w", err)
+			}
+			if t, ok := parseDBTime(ts); ok {
+				tr.Ts = t
+			}
+			out[sid] = append(out[sid], tr)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store.LoadTaskTransitionsBatch: rows: %w", err)
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+// LoadTaskTokenRowsBatch is LoadTaskTokenRows' N-session sibling: one
+// chunked sweep (LoadSessionsSpendTurns), whatever the session count.
+func (s *Store) LoadTaskTokenRowsBatch(ctx context.Context, sessionIDs []string, includeSidechains bool) (map[string][]TaskTokenRow, error) {
+	return s.taskTokenRowsBatch(ctx, sessionIDs, func(t SpendTurn) bool { return includeSidechains || !t.Sidechain })
+}
+
+// LoadSidechainOnlyTaskTokenRowsBatch is LoadSidechainOnlyTaskTokenRows'
+// N-session sibling.
+func (s *Store) LoadSidechainOnlyTaskTokenRowsBatch(ctx context.Context, sessionIDs []string) (map[string][]TaskTokenRow, error) {
+	return s.taskTokenRowsBatch(ctx, sessionIDs, func(t SpendTurn) bool { return t.Sidechain })
+}
+
+func (s *Store) taskTokenRowsBatch(ctx context.Context, sessionIDs []string, keep func(SpendTurn) bool) (map[string][]TaskTokenRow, error) {
+	all, err := s.LoadSessionsSpendTurns(ctx, sessionIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store.LoadTaskTokenRowsBatch: %w", err)
+	}
+	out := make(map[string][]TaskTokenRow, len(all))
+	for id, turns := range all {
+		if rows := taskTokenRowsOf(turns, keep); len(rows) > 0 {
+			out[id] = rows
+		}
+	}
+	return out, nil
+}
+
+// LoadTaskActionTimestampsBatch is LoadTaskActionTimestamps' N-session
+// sibling.
+func (s *Store) LoadTaskActionTimestampsBatch(ctx context.Context, sessionIDs []string, includeSidechains bool) (map[string][]time.Time, error) {
+	out := make(map[string][]time.Time, len(sessionIDs))
+	clause := " AND is_sidechain = 0"
+	if includeSidechains {
+		clause = ""
+	}
+	for _, chunk := range chunkSessionIDs(sessionIDs) {
+		//nolint:gosec // G202: only the ?-placeholder list and the fixed clause literal are concatenated; every value binds via args.
+		q := `SELECT session_id, timestamp FROM actions WHERE session_id IN (` +
+			sessionIDPlaceholders(len(chunk)) + `)` + clause + ` ORDER BY session_id, timestamp ASC, id ASC`
+		rows, err := s.db.QueryContext(ctx, q, sessionIDArgs(chunk)...)
+		if err != nil {
+			return nil, fmt.Errorf("store.LoadTaskActionTimestampsBatch: %w", err)
+		}
+		for rows.Next() {
+			var sid, ts string
+			if err := rows.Scan(&sid, &ts); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("store.LoadTaskActionTimestampsBatch: scan: %w", err)
+			}
+			if t, ok := parseDBTime(ts); ok {
+				out[sid] = append(out[sid], t)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store.LoadTaskActionTimestampsBatch: rows: %w", err)
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+// LoadTaskUnmatchedCountBatch is LoadTaskUnmatchedCount's N-session
+// sibling; a session with zero unmatched rows is simply absent from the
+// map (callers must treat a missing key as 0, never an error).
+func (s *Store) LoadTaskUnmatchedCountBatch(ctx context.Context, sessionIDs []string) (map[string]int, error) {
+	out := make(map[string]int, len(sessionIDs))
+	for _, chunk := range chunkSessionIDs(sessionIDs) {
+		//nolint:gosec // G202: only the ?-placeholder list is concatenated; every value binds via args.
+		q := `
+			SELECT session_id, COUNT(*) FROM task_items
+			 WHERE session_id IN (` + sessionIDPlaceholders(len(chunk)) + `) AND unmatched = 1
+			 GROUP BY session_id`
+		rows, err := s.db.QueryContext(ctx, q, sessionIDArgs(chunk)...)
+		if err != nil {
+			return nil, fmt.Errorf("store.LoadTaskUnmatchedCountBatch: %w", err)
+		}
+		for rows.Next() {
+			var sid string
+			var n int
+			if err := rows.Scan(&sid, &n); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("store.LoadTaskUnmatchedCountBatch: scan: %w", err)
+			}
+			out[sid] = n
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store.LoadTaskUnmatchedCountBatch: rows: %w", err)
+		}
+		rows.Close()
+	}
+	return out, nil
 }
 
 // TaskSessionRef is one session-with-tasks row as needed by the

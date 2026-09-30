@@ -36,6 +36,16 @@ export type ToolKey =
   | "zcode"
   | "mistral-code"
   | "freebuff"
+  // 2026-09 wave: registry rows that had no frontend entry (they rendered
+  // their raw key in --tool-other grey).
+  | "grokbot"
+  | "kiro-crew"
+  | "muse"
+  | "prime-agent"
+  | "deepseek"
+  | "junie"
+  | "poolside"
+  | "zed"
   // Browser-chatbot rail (Phase 2) — captured by the opt-in MV3 browser
   // extension, NOT coding CLIs. Tokens are ALWAYS estimated.
   | "chatgpt-web"
@@ -273,6 +283,26 @@ const TOOLS: Record<string, ToolMeta> = {
     colorVar: "var(--tool-freebuff)",
     provider: "agnostic",
   },
+  // 2026-09 wave (dashboard visual upgrade): eight registry rows that had no
+  // frontend entry. provider stays "agnostic" for all eight: the five modelled
+  // providers are reserved for tools whose single true upstream is one of
+  // them (the zcode / mistral-code / devin precedent).
+  // Grok Bot desktop app (Anysphere-built "sand"); distinct from the grok CLI.
+  grokbot: { key: "grokbot", label: "Grok Bot", colorVar: "var(--tool-grokbot)", provider: "agnostic" },
+  // AWS Kiro Crew desktop app, which drives kiro-cli.
+  "kiro-crew": { key: "kiro-crew", label: "Kiro Crew", colorVar: "var(--tool-kiro-crew)", provider: "agnostic" },
+  // Meta's Muse Code CLI.
+  muse: { key: "muse", label: "Muse", colorVar: "var(--tool-muse)", provider: "agnostic" },
+  // Prime Intellect's Prime Agent CLI.
+  "prime-agent": { key: "prime-agent", label: "Prime Agent", colorVar: "var(--tool-prime-agent)", provider: "agnostic" },
+  // DeepSeek Harness (web-only local GUI).
+  deepseek: { key: "deepseek", label: "DeepSeek", colorVar: "var(--tool-deepseek)", provider: "agnostic" },
+  // JetBrains Junie (IDE plugin / CLI / local).
+  junie: { key: "junie", label: "Junie", colorVar: "var(--tool-junie)", provider: "agnostic" },
+  // Poolside (JetBrains AI Assistant ACP agent).
+  poolside: { key: "poolside", label: "Poolside", colorVar: "var(--tool-poolside)", provider: "agnostic" },
+  // Zed editor's native agent.
+  zed: { key: "zed", label: "Zed", colorVar: "var(--tool-zed)", provider: "agnostic" },
   // Browser-chatbot rail (Phase 2). provider names the vendor whose web app
   // the extension observes; browser:true forces the mandatory "est." label
   // on every token/cost figure (§9).

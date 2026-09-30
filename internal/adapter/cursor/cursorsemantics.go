@@ -17,8 +17,25 @@ func (a *Adapter) CursorSemanticsFor(path string) adapter.FileCursorSemantics {
 	if !a.IsSessionFile(path) {
 		return adapter.FileCursorSemantics{}
 	}
+	if matchesHooksLog(path) {
+		// The replay emits hook rows under the LIVE hook's source_file
+		// ("cursor:hook"), never under this path, so the file-keyed
+		// zero-action fingerprint is meaningless here; it seeks to the
+		// persisted offset and streams (parseHooksLog), so the oversize
+		// guard bounds the unread tail, not the ~30 MB file. Cursor
+		// rotates it in place (`.log` -> `.1.log`, same path restarts
+		// empty), so the cursor may rewind.
+		return adapter.FileCursorSemantics{
+			Kind:              adapter.CursorNoActions,
+			StreamsFromCursor: true,
+			RewindsOnTruncate: true,
+			Detail:            "Cursor IDE hooks output log: replayed hook payloads land under the live hook's source identity (cursor:hook), not this file",
+		}
+	}
 	if matchesCLIUsageLog(path) {
-		return adapter.FileCursorSemantics{Kind: adapter.CursorNoActions, Detail: "Cursor CLI structured log carries reported token usage, not actions"}
+		// parseCLIUsageLog seeks to the persisted offset and reads
+		// line by line through a bounded reader (cli_usage.go).
+		return adapter.FileCursorSemantics{Kind: adapter.CursorNoActions, StreamsFromCursor: true, Detail: "Cursor CLI debug log carries reported token usage and, for turns that never finished, evidence rows only - not activity"}
 	}
 	switch filepath.Base(path) {
 	case "state.vscdb":

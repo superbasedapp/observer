@@ -1,0 +1,1 @@
+import{a9 as n,bc as e,a as i}from"./index-DuIb9bgB.js";function c({id:s,children:a,className:o}){return n.jsx(e,{content:n.jsx("span",{className:"break-all font-mono",children:s}),children:n.jsx("span",{tabIndex:0,className:i("rounded-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring",o),children:a})})}export{c as R};

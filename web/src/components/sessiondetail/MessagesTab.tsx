@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
-import { Pill, SegmentedControl, Tooltip } from "@/components/primitives";
+import { InlineLoading, LiveDot, Pill, SegmentedControl, Table, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { CopyOnClick } from "@/components/CopyOnClick";
 import { Pagination } from "@/components/DataTable";
@@ -8,6 +8,8 @@ import { useApi } from "@/lib/useApi";
 import { fmtClock, fmtInt } from "@/lib/format";
 import type { SessionGuardEvent, SessionGuardEventsResponse, SessionMessages, SessionRawEvents } from "@/lib/types";
 import { guardBannersWithContext } from "@shared/lib/guardMessages";
+import { decisionTone } from "@shared/lib/guardCatalog";
+import { VocabPill } from "@shared/lib/vocabPill";
 import {
   MESSAGES_LIMIT,
   MESSAGE_COLUMNS,
@@ -38,18 +40,6 @@ import { MessagesTable } from "./MessagesTable";
 // it, so threading it through SessionDetailPanel would be a prop for
 // nothing. It keys off messages.data.session_id rather than taking its own
 // sessionId prop, since the shell already resolves and carries that value.
-
-// Mirrors Security.tsx's exported DECISION_VARIANT (guard decision ->
-// Pill variant). Kept as a small local copy rather than importing it: that
-// page is lazy-loaded as its own chunk (App.tsx), and a static import from
-// this always-eagerly-mounted panel would pull the whole Security page into
-// the main bundle instead.
-const GUARD_DECISION_VARIANT: Record<string, "neutral" | "warn" | "danger" | "accent"> = {
-  flag: "warn",
-  ask: "accent",
-  deny: "danger",
-  allow: "neutral",
-};
 
 // isPromptGuardEvent reports whether a guard verdict came from the
 // prompt-submit guard subsystem (R-172 secrets / R-190 PII in the prompt
@@ -96,9 +86,13 @@ function GuardVerdictsStrip({
             key={event.id}
             className="flex flex-wrap items-center gap-1.5 rounded-1 border border-line-2 bg-bg-2 px-2 py-1 text-[11px]"
           >
-            <Pill variant={GUARD_DECISION_VARIANT[event.decision ?? ""] ?? "neutral"}>
+            {/* Guard decision tone + glyph: the ONE owner is
+                @shared/lib/guardCatalog (+ vocabIcons), a small pure module,
+                so this eagerly-mounted panel no longer copies a table to
+                avoid pulling the lazy Security page into the main bundle. */}
+            <VocabPill vocab="guardDecision" value={event.decision} tone={decisionTone(event.decision)}>
               {event.decision || "verdict"}
-            </Pill>
+            </VocabPill>
             {isPromptGuard ? (
               <Pill variant="accent">prompt guard</Pill>
             ) : (
@@ -153,6 +147,8 @@ export function MessagesTab({
     data: SessionMessages | null;
     loading: boolean;
     error: Error | null;
+    denied?: boolean;
+    deniedPermission?: string | null;
   };
   watchMode: boolean;
   onStopWatch: () => void;
@@ -174,6 +170,8 @@ export function MessagesTab({
     data: SessionRawEvents | null;
     loading: boolean;
     error: Error | null;
+    denied?: boolean;
+    deniedPermission?: string | null;
     page: number;
     onPage: (p: number) => void;
   };
@@ -207,6 +205,8 @@ export function MessagesTab({
         data={raw.data}
         loading={raw.loading}
         error={raw.error}
+        denied={raw.denied}
+        deniedPermission={raw.deniedPermission}
         page={raw.page}
         onPage={raw.onPage}
       />
@@ -215,7 +215,7 @@ export function MessagesTab({
       )}
 
       {messages.data?.account_summary && (
-        <div className="rounded border border-stroke px-3 py-2 text-xs text-fg-3" aria-label="Session account coverage">
+        <div className="rounded-2 border border-line-2 px-3 py-2 text-small text-fg-3" aria-label="Session account coverage">
           <span className="font-medium text-fg-2">Observed accounts: </span>
           {messages.data.account_summary.accounts.map(a => a.email || a.name || a.account_id).join(", ") || "None captured"}
           <span className="block mt-1">{messages.data.account_summary.observed} messages with login evidence · {messages.data.account_summary.unknown} unknown · {messages.data.account_summary.conflicts} conflicting. Login snapshots do not confirm billing identity.</span>
@@ -231,20 +231,19 @@ export function MessagesTab({
           </span>
           <span className="flex flex-wrap items-center gap-3">
             {watchMode && (
-              <span className="flex items-center gap-1.5 rounded-pill border border-success/30 bg-success-soft px-2 py-0.5 text-[10px] font-semibold lowercase tracking-[0.02em] text-success">
-                <span className="relative h-1.5 w-1.5 rounded-full bg-success">
-                  <span className="absolute inset-0 animate-ping rounded-full bg-success/50" />
-                </span>
+              <Pill variant="success" className="gap-1.5">
+                <LiveDot tone="success" className="h-1.5 w-1.5 shrink-0" />
                 Watching live - read-only
-                <button
-                  type="button"
-                  onClick={onStopWatch}
-                  className="ml-1 text-fg-3 underline hover:text-fg-1 focus:outline-none"
-                  title="Stop watching - return to normal 8s refresh and free navigation."
-                >
-                  stop
-                </button>
-              </span>
+                <Tooltip content="Stop watching - return to normal 8s refresh and free navigation.">
+                  <button
+                    type="button"
+                    onClick={onStopWatch}
+                    className="ml-1 text-fg-3 underline hover:text-fg-1 focus:outline-none"
+                  >
+                    stop
+                  </button>
+                </Tooltip>
+              </Pill>
             )}
             {/* Group toggle is meaningful for codex (v1.7.24+ emits
                 one token row per model inference). Codex DEFAULTS to
@@ -255,7 +254,7 @@ export function MessagesTab({
                 msg_xxx — so the toggle is a no-op and stays hidden. */}
             {tool === "codex" && (
               <>
-                <Tooltip content="Group token rows by model inference (default for codex - one row per token_count event) or by user-turn (sums each turn's inferences). Tool calls always stay grouped at the turn level. Tok/s is more accurate in Turn view: a single inference has no measured duration, so per-inference rows show “-”, while a turn spans its inferences' timestamps.">
+                <Tooltip content="Group token rows by model inference (default for codex - one row per token_count event) or by user-turn (sums each turn's inferences). Tool calls always stay grouped at the turn level. Tok/s is shown only for model calls whose duration was captured (the proxy, or a span proven from the rollout); a Turn row divides the timed calls' tokens by their summed durations, never by the turn's wall-clock span, which includes tool runs.">
                   <span>
                     <SegmentedControl
                       size="sm"
@@ -268,16 +267,6 @@ export function MessagesTab({
                     />
                   </span>
                 </Tooltip>
-                {effectiveDetail === "inference" && (
-                  <button
-                    type="button"
-                    onClick={() => onTokenDetail("turn")}
-                    className="text-[10.5px] text-accent hover:underline focus:outline-none"
-                    title="Per-inference rows have no measured duration; switch to Turn for accurate Tok/s."
-                  >
-                    Tok/s? use Turn
-                  </button>
-                )}
               </>
             )}
             {/* Column preset. SegmentedControl (not a checkbox popover) for
@@ -322,7 +311,9 @@ export function MessagesTab({
             <span className="text-[10.5px] text-fg-3">
               {messages.data
                 ? `${fmtInt(messages.data.total)} total · click row to expand tool calls`
-                : "Loading…"}
+                : (
+                    <InlineLoading size="sm" label="Loading messages" />
+                  )}
               {/* Say out loud that columns are hidden — a narrowed table that
                   doesn't admit it reads as missing data. */}
               {hidden > 0 && ` · ${hidden} columns hidden`}
@@ -332,6 +323,8 @@ export function MessagesTab({
         <ChartState
           loading={messages.loading}
           error={messages.error}
+          denied={messages.denied}
+          deniedPermission={messages.deniedPermission}
           empty={!messages.data?.messages.length}
           emptyHint="No messages indexed for this session."
           height={160}
@@ -372,6 +365,8 @@ function RawEventsPanel({
   data,
   loading,
   error,
+  denied,
+  deniedPermission,
   page,
   onPage,
 }: {
@@ -380,6 +375,8 @@ function RawEventsPanel({
   data: SessionRawEvents | null;
   loading: boolean;
   error: Error | null;
+  denied?: boolean;
+  deniedPermission?: string | null;
   page: number;
   onPage: (page: number) => void;
 }) {
@@ -409,6 +406,8 @@ function RawEventsPanel({
           <ChartState
             loading={loading && !data}
             error={error}
+            denied={denied}
+            deniedPermission={deniedPermission}
             empty={!data?.rows.length}
             emptyHint="No source JSONL rows found for this session."
             height={140}
@@ -434,52 +433,52 @@ function RawEventsPanel({
                     ))}
                   </div>
                 </div>
-                <div className="max-h-[520px] overflow-auto">
-                  <table className="w-full min-w-[980px] text-left text-[12px]">
-                    <thead className="sticky top-0 z-[1] border-b border-line-2 bg-bg-2 text-[10px] uppercase tracking-[0.06em] text-fg-3">
-                      <tr>
-                        <th className="w-[86px] px-3 py-2">Line</th>
-                        <th className="w-[170px] px-2 py-2">Type</th>
-                        <th className="w-[160px] px-2 py-2">ID</th>
-                        <th className="w-[180px] px-2 py-2">Time</th>
-                        <th className="px-2 py-2">Row</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-line-1">
-                      {data.rows.map((row) => (
-                        <tr key={`${row.source_index}:${row.line}:${row.byte_offset}`} className="align-top">
-                          <td className="px-3 py-2 font-mono text-[11px] text-fg-3">
-                            {row.source_index + 1}:{row.line}
-                          </td>
-                          <td className="px-2 py-2">
-                            <div className="flex flex-wrap gap-1">
-                              {row.type && <Pill variant="neutral">{row.type}</Pill>}
-                              {row.payload_type && row.payload_type !== row.type && (
-                                <Pill variant="neutral">{row.payload_type}</Pill>
-                              )}
-                              {row.role && <Pill variant="neutral">{row.role}</Pill>}
-                              {!row.valid_json && <Pill variant="warn">not json</Pill>}
-                            </div>
-                          </td>
-                          <td className="max-w-[160px] truncate px-2 py-2 font-mono text-[11px] text-fg-2">
-                            {row.event_id || "-"}
-                          </td>
-                          <td className="px-2 py-2 font-mono text-[11px] text-fg-3">
-                            {row.timestamp || "-"}
-                          </td>
-                          <td className="px-2 py-2">
-                            <CopyOnClick value={row.excerpt} className="block">
-                              <pre className="max-h-[160px] overflow-auto whitespace-pre-wrap break-words rounded-1 bg-bg-0 p-2 font-mono text-[11px] leading-5 text-fg-1">
-                                {row.excerpt}
-                                {row.excerpt_truncated ? "\n...(truncated)" : ""}
-                              </pre>
-                            </CopyOnClick>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <Table
+                  maxHeight={520}
+                  stickyHead
+                  minWidth={980}
+                  head={
+                    <tr>
+                      <th className="w-[86px] px-3 py-2">Line</th>
+                      <th className="w-[170px] px-2 py-2">Type</th>
+                      <th className="w-[160px] px-2 py-2">ID</th>
+                      <th className="w-[180px] px-2 py-2">Time</th>
+                      <th className="px-2 py-2">Row</th>
+                    </tr>
+                  }
+                >
+                  {data.rows.map((row) => (
+                    <tr key={`${row.source_index}:${row.line}:${row.byte_offset}`} className="border-t border-line-1 align-top first:border-t-0">
+                      <td className="px-3 py-2 font-mono text-[11px] text-fg-3">
+                        {row.source_index + 1}:{row.line}
+                      </td>
+                      <td className="px-2 py-2">
+                        <div className="flex flex-wrap gap-1">
+                          {row.type && <Pill variant="neutral">{row.type}</Pill>}
+                          {row.payload_type && row.payload_type !== row.type && (
+                            <Pill variant="neutral">{row.payload_type}</Pill>
+                          )}
+                          {row.role && <Pill variant="neutral">{row.role}</Pill>}
+                          {!row.valid_json && <Pill variant="warn">not json</Pill>}
+                        </div>
+                      </td>
+                      <td className="max-w-[160px] truncate px-2 py-2 font-mono text-[11px] text-fg-2">
+                        {row.event_id || "-"}
+                      </td>
+                      <td className="px-2 py-2 font-mono text-[11px] text-fg-3">
+                        {row.timestamp || "-"}
+                      </td>
+                      <td className="px-2 py-2">
+                        <CopyOnClick value={row.excerpt} className="block">
+                          <pre className="max-h-[160px] overflow-auto whitespace-pre-wrap break-words rounded-1 bg-bg-0 p-2 font-mono text-[11px] leading-5 text-fg-1">
+                            {row.excerpt}
+                            {row.excerpt_truncated ? "\n...(truncated)" : ""}
+                          </pre>
+                        </CopyOnClick>
+                      </td>
+                    </tr>
+                  ))}
+                </Table>
               </div>
             )}
           </ChartState>

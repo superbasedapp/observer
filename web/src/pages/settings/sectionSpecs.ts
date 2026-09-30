@@ -55,7 +55,7 @@ export type SectionSpec = {
   fields?: FieldDef[];
   // Optional nested groups — for sections whose live data lives across
   // multiple sub-objects rather than one flat record (Compression's
-  // CodeGraph / Shell / Indexing / Conversation). Each group renders
+  // Shell / Indexing / Conversation). Each group renders
   // as its own card under the section header.
   groups?: SectionGroup[];
 };
@@ -631,7 +631,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "compression",
     // Saving POSTs the section root to PUT /api/config/section/compression
     // which decodes the body as config.CompressionConfig. The body keys
-    // therefore have to be {CodeGraph, Shell, Indexing, Conversation}
+    // therefore have to be {Shell, Indexing, Conversation}
     // at the top level — i.e. spec.path must root at ["Compression"].
     // An empty spec.path here (the prior shape) made draft = the whole
     // root config and every Save zeroed cfg.Compression server-side.
@@ -642,7 +642,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     // the wrong object (D14).
     path: ["Compression"],
     description:
-      "Three live compression layers - shell output filters, FTS5 tool-output indexing, and conversation-level compression (with stash / rolling-summarisation / compaction sub-toggles). Each layer toggles independently; defaults err on the side of safety. (Code-graph integration is configured under Settings → Intelligence per the v1.4.20 audit - the compression.code_graph fields had no Go consumers and were removed.)",
+      "Three live compression layers - shell output filters, FTS5 tool-output indexing, and conversation-level compression (with stash / rolling-summarisation / compaction sub-toggles). Each layer toggles independently; defaults err on the side of safety. (The in-process code index is configured under Settings → Intelligence as [codeintel].)",
     groups: [
       {
         id: "shell",
@@ -934,7 +934,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     // touch it (test-pinned).
     path: ["OrgClient"],
     description:
-      "What this node shares with your organisation's SuperBased server - and only when enrolled ([org_client] enabled via `observer enroll`; see the Enrolment section). The privacy default is metadata-only: sha256 hashes and counts, never raw commands, prose, or paths. Raw-content sharing (full_content) is node opt-in only - the org admin has no remote switch for it. The reporting-tier shares below (routing_summary, obs_summary, etc.) are node opt-in, or can be raised by the org on a managed node via node governance policy.",
+      "What this node shares with your organisation's SuperBased server - and only when enrolled ([org_client] enabled via `observer enroll`; see the Enrolment section). The privacy default is metadata-only: sha256 hashes and counts, never raw commands, prose, or paths. Raw-content sharing (full_content) is node opt-in only - the org admin has no remote switch for it. The reporting-tier shares below (routing_summary, obs.summary, etc.) are node opt-in, or can be raised by the org on a managed node via node governance policy.",
     fields: [
       {
         id: "PushIntervalSeconds",

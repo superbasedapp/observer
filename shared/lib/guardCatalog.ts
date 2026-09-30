@@ -16,11 +16,42 @@
 
 // --- Decision / Severity (shared enums) ---
 
+import { toneOf, type Tone } from "./tone";
+
 export type Decision = "allow" | "flag" | "ask" | "deny";
 export type Severity = "info" | "warn" | "high" | "critical";
 
 export const DECISIONS: Decision[] = ["allow", "flag", "ask", "deny"];
 export const SEVERITIES: Severity[] = ["info", "warn", "high", "critical"];
+
+// The ONE tone per guard decision / severity for every surface (web Security,
+// Policies, Egress, web2 Security / GuardEvents / Sessions). Before
+// 2026-09-28 the apps disagreed (allow neutral vs success, ask accent vs
+// info, severity warn rendered as info). Glyphs: VOCAB_ICONS.guardDecision /
+// .guardSeverity in ./vocabIcons.
+export const DECISION_TONE: Readonly<Record<Decision, Tone>> = {
+  allow: "success",
+  flag: "warn",
+  ask: "info",
+  deny: "danger",
+};
+
+export const SEVERITY_TONE: Readonly<Record<Severity, Tone>> = {
+  info: "info",
+  warn: "warn",
+  high: "danger",
+  critical: "danger",
+};
+
+/** decisionTone - the tone for a guard decision, "neutral" if unknown. */
+export function decisionTone(d: string | null | undefined): Tone {
+  return toneOf(DECISION_TONE, d);
+}
+
+/** severityTone - the tone for a guard severity, "neutral" if unknown. */
+export function severityTone(s: string | null | undefined): Tone {
+  return toneOf(SEVERITY_TONE, s);
+}
 
 // --- TOML string helpers ---
 

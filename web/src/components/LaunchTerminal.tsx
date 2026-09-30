@@ -1,9 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTerminalTheme } from "@/lib/terminalTheme";
+import type { TerminalThemePref } from "@shared/lib/terminalTheme";
 import { isRemoteView } from "@/lib/remote";
 import { pushToast } from "@/components/Toast";
 import { useCompanionRegistry } from "@/components/primitives/companion";
-import { Tooltip, TooltipSpan } from "@/components/primitives";
+import { ConfirmButton, Icon, LiveDot, Tooltip, TooltipSpan } from "@/components/primitives";
+import { TRANSPORT_DOT, liveDotProps, withDotClass } from "@/lib/liveSignals";
+import {
+  CircleDot,
+  Copy,
+  Ellipsis,
+  Expand,
+  FolderTree,
+  Fullscreen,
+  GitBranch,
+  Keyboard,
+  LayoutGrid,
+  Minus,
+  Moon,
+  RotateCcw,
+  Shrink,
+  Sun,
+  SunMoon,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { useMobileTerminal } from "@/lib/useMediaQuery";
 import { platformPrefLabel, useKeyPlatform } from "@/lib/keyPlatform";
 import {
@@ -273,6 +295,13 @@ export function LaunchTerminal({
   // desktop user who merely narrows the window, gets the shipped rendering
   // unchanged (CLAUDE.md rule 3).
   const isTouch = useMobileTerminal();
+  // Terminal theme: follows the app theme unless pinned in Settings. The
+  // panel root carries data-theme-scope so its chrome tokens (--term-*,
+  // fg-*, line-*) resolve to the TERMINAL's theme; the xterm canvas gets the
+  // matching ANSI palette below.
+  const termTheme = useTerminalTheme();
+  const termColorsRef = useRef(termTheme.colors);
+  termColorsRef.current = termTheme.colors;
   // D13: which modifier VOCABULARY the on-screen key bar prints — the DAEMON's
   // OS (/api/status.host_os), overridable from the ⋯ menu. The host, not the
   // browser: the browser is often a phone that is not the machine whose PTY
@@ -569,7 +598,7 @@ export function LaunchTerminal({
         fontFamily:
           'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
         fontSize: 12,
-        theme: { background: "#0b0b0f", foreground: "#e6e6e6" },
+        theme: termColorsRef.current,
         // A full-screen TUI (opencode, claude-code 2.1.220+, etc.) turns on
         // DECSET mouse-tracking (?1000/1002/1003/1006h) so it can receive
         // clicks/drags itself. xterm couples that 1:1 to its OWN selection
@@ -1865,17 +1894,13 @@ export function LaunchTerminal({
 
   // Closing kills the child process tree (ws teardown → server reap), so
   // confirm when it's still live. Minimize is the non-destructive exit.
-  function requestClose() {
-    // A reconnecting seat is still backed by a LIVE process (only the transport
-    // dropped), so it must get the same destructive confirmation as an open one.
-    if (
-      (status === "open" || status === "reconnecting") &&
-      !window.confirm(`Stop the running ${tool} session? This ends the process.`)
-    ) {
-      return;
-    }
-    onClose();
-  }
+  // A reconnecting seat is still backed by a LIVE process (only the transport
+  // dropped), so it must get the same destructive confirmation as an open one.
+  // The confirm is the in-place two-step ConfirmButton (unstyled, so it keeps
+  // the terminal header's own button look), never a native window.confirm:
+  // the first click arms it and names what is about to happen, only a second
+  // click stops the process.
+  const closeIsDestructive = status === "open" || status === "reconnecting";
 
   // ── D10: copy off a touch device ───────────────────────────────────────
   // xterm.css sets `.xterm { user-select: none }` and xterm's own selection is
@@ -2094,13 +2119,20 @@ export function LaunchTerminal({
     return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, []);
 
+  // Swap the canvas palette live when the app theme or the preference flips.
+  useEffect(() => {
+    const t = termRef.current;
+    if (t) t.options.theme = termTheme.colors;
+  }, [termTheme.colors]);
+
   return (
     <div
       ref={rootRef}
+      data-theme-scope={termTheme.name}
       className={
         fill
-          ? "flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-2 border bg-[#0b0b0f]"
-          : "flex h-[60vh] min-h-[360px] flex-col overflow-hidden rounded-2 border bg-[#0b0b0f]"
+          ? "flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-2 border bg-term-bg"
+          : "flex h-[60vh] min-h-[360px] flex-col overflow-hidden rounded-2 border bg-term-bg"
       }
     >
       {/* D9: the desktop header carries EIGHT always-on actions in one 33px
@@ -2112,7 +2144,7 @@ export function LaunchTerminal({
           Desktop keeps the exact shipped class string. */}
       <div
         className={
-          "flex items-center justify-between gap-x-2 gap-y-1 border-b border-white/10 bg-[#14141a] " +
+          "flex items-center justify-between gap-x-2 gap-y-1 border-b border-line-2 bg-term-chrome " +
           // Touch: NEVER wrap (D15). The header budget is what forced minimize
           // down to a glyph; making the row structurally un-wrappable buys the
           // space back the honest way — the identity span on the left is the
@@ -2127,17 +2159,16 @@ export function LaunchTerminal({
       >
         <span
           className={
-            "flex min-w-0 items-center gap-2 text-[11px] text-white/60 " +
+            "flex min-w-0 items-center gap-2 text-[11px] text-fg-2 " +
             (isTouch ? "flex-nowrap overflow-hidden" : "flex-wrap")
           }
         >
-          {/* Literal palette, not theme tokens: this header is hardcoded
-              bg-[#14141a] (terminal chrome is always dark, independent of
-              sb_theme), so text-fg-1/text-fg-2 resolve LIGHT under the light
-              theme and render near-invisible on it. */}
+          {/* Theme-scoped tokens: the panel root sets data-theme-scope, so
+              fg-* here resolve to the TERMINAL's theme (dark or light), never
+              to the app's - the old literal white-on-dark palette is gone. */}
           <span
             className={
-              "font-mono text-white/85" + (isTouch ? " min-w-0 truncate" : "")
+              "font-mono text-fg-1" + (isTouch ? " min-w-0 truncate" : "")
             }
           >
             {tool}
@@ -2167,7 +2198,8 @@ export function LaunchTerminal({
             <TerminalOverflowMenu
               items={[
                 onOpenFiles && {
-                  label: "▤ Files",
+                  label: "Files",
+                  icon: FolderTree,
                   onSelect: onOpenFiles,
                   disabled: !projectPanelEnabled || !isLiveStatus(status),
                   disabledTitle: !isLiveStatus(status)
@@ -2175,7 +2207,8 @@ export function LaunchTerminal({
                     : "This terminal has no directory on this machine to browse",
                 },
                 onOpenGit && {
-                  label: "⎇ Git",
+                  label: "Git",
+                  icon: GitBranch,
                   onSelect: onOpenGit,
                   disabled: !projectPanelEnabled || !isLiveStatus(status),
                   disabledTitle: !isLiveStatus(status)
@@ -2183,14 +2216,20 @@ export function LaunchTerminal({
                     : "This terminal has no directory on this machine to browse",
                 },
                 onOpenSession && {
-                  label: "⊙ Session",
+                  label: "Session",
+                  icon: CircleDot,
                   onSelect: onOpenSession,
                   disabled: !sessionPanelEnabled || !isLiveStatus(status),
                   disabledTitle: !isLiveStatus(status)
                     ? "This session is no longer running - its activity can no longer be shown"
                     : "No AI tool running in this terminal",
                 },
-                { label: "⧉ Copy visible", onSelect: () => void copyVisible() },
+                { label: "Copy visible", icon: Copy, onSelect: () => void copyVisible() },
+                {
+                  label: TERMINAL_THEME[termTheme.pref].label,
+                  icon: TERMINAL_THEME[termTheme.pref].icon,
+                  onSelect: () => termTheme.setPref(nextTerminalThemePref(termTheme.pref)),
+                },
                 // D13: the key-label override. It lives here rather than in the
                 // key bar because a control in the bar would have to clear the
                 // 44px tap floor and would cost a whole extra row of a phone's
@@ -2200,21 +2239,24 @@ export function LaunchTerminal({
                 // hatch for anything that fact cannot describe.
                 canWrite && {
                   label: platformPrefLabel(keyPlatform.pref, keyPlatform.platform),
+                  icon: Keyboard,
                   onSelect: keyPlatform.cycle,
                 },
                 canWrite && {
-                  label: sizeMode === "original" ? "⤢ Fit" : "↺ Original size",
+                  label: sizeMode === "original" ? "Fit" : "Original size",
+                  icon: sizeMode === "original" ? Expand : RotateCcw,
                   onSelect: sizeMode === "original" ? enterFitSize : enterOriginalSize,
                   disabled: sizeMode !== "original" && !initialDims,
                   disabledTitle: "Original size unknown for this session",
                 },
                 {
-                  label: focusMode ? "⤢ Exit focus" : "⤢ Focus mode",
+                  label: focusMode ? "Exit focus" : "Focus mode",
+                  icon: focusMode ? Shrink : Fullscreen,
                   onSelect: focusMode ? exitFocusMode : enterFocusMode,
                   disabled: !focusModeSupported,
                   disabledTitle: FOCUS_MODE_UNSUPPORTED,
                 },
-                onAddToGrid && { label: "⊞ Add to grid", onSelect: onAddToGrid },
+                onAddToGrid && { label: "Add to grid", icon: LayoutGrid, onSelect: onAddToGrid },
               ]}
             />
           )}
@@ -2224,7 +2266,8 @@ export function LaunchTerminal({
               and this never touches the ws bridge. */}
           {!isTouch && onOpenFiles && (
             <ProjectPanelButton
-              label="▤ Files"
+              label="Files"
+              icon={FolderTree}
               enabled={!!projectPanelEnabled && isLiveStatus(status)}
               onClick={onOpenFiles}
               enabledTitle="Browse this terminal's files"
@@ -2237,7 +2280,8 @@ export function LaunchTerminal({
           )}
           {!isTouch && onOpenGit && (
             <ProjectPanelButton
-              label="⎇ Git"
+              label="Git"
+              icon={GitBranch}
               enabled={!!projectPanelEnabled && isLiveStatus(status)}
               onClick={onOpenGit}
               enabledTitle="Show git status, changes, and history for this terminal's directory"
@@ -2260,7 +2304,8 @@ export function LaunchTerminal({
               bridge. */}
           {!isTouch && onOpenSession && (
             <ProjectPanelButton
-              label="⊙ Session"
+              label="Session"
+              icon={CircleDot}
               enabled={!!sessionPanelEnabled && isLiveStatus(status)}
               onClick={onOpenSession}
               enabledTitle="Open this session's full details - context and limit headroom, next-message cost, messages, cache and system"
@@ -2290,6 +2335,22 @@ export function LaunchTerminal({
               convention it now renders disabled, naming the missing dependency
               — the button is a bonus (keyboard capture), not the only usable
               view, so its absence must not look like a bug. */}
+          {!isTouch && (
+            <Tooltip
+              maxWidth={300}
+              content="Terminal colors: follow the dashboard theme, or pin dark or light. Remembered in this browser."
+            >
+              <button
+                type="button"
+                data-testid="terminal-theme-toggle"
+                onClick={() => termTheme.setPref(nextTerminalThemePref(termTheme.pref))}
+                className="inline-flex items-center gap-1 rounded-2 px-2 py-0.5 text-[11px] text-fg-3 hover:bg-overlay-1 hover:text-fg-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring"
+              >
+                <Icon icon={TERMINAL_THEME[termTheme.pref].icon} size="xs" />
+                {TERMINAL_THEME[termTheme.pref].label}
+              </button>
+            </Tooltip>
+          )}
           {!isTouch &&
             (focusModeSupported ? (
               <Tooltip
@@ -2304,13 +2365,14 @@ export function LaunchTerminal({
                   type="button"
                   onClick={focusMode ? exitFocusMode : enterFocusMode}
                   className={
-                    "rounded-2 px-2 py-0.5 text-[11px] focus:outline-none " +
+                    "inline-flex items-center gap-1 rounded-2 px-2 py-0.5 text-[11px] focus:outline-none " +
                     (focusMode
                       ? "bg-accent/20 text-accent hover:bg-accent/30"
-                      : "text-fg-3 hover:bg-white/10 hover:text-fg-1")
+                      : "text-fg-3 hover:bg-overlay-1 hover:text-fg-1")
                   }
                 >
-                  {focusMode ? "⤢ Exit focus" : "⤢ Focus mode"}
+                  <Icon icon={focusMode ? Shrink : Fullscreen} size="xs" />
+                  {focusMode ? "Exit focus" : "Focus mode"}
                 </button>
               </Tooltip>
             ) : (
@@ -2319,9 +2381,10 @@ export function LaunchTerminal({
                   type="button"
                   disabled
                   aria-label={FOCUS_MODE_UNSUPPORTED}
-                  className="cursor-not-allowed rounded-2 px-2 py-0.5 text-[11px] text-fg-4 opacity-60"
+                  className="inline-flex cursor-not-allowed items-center gap-1 rounded-2 px-2 py-0.5 text-[11px] text-fg-4 opacity-60"
                 >
-                  ⤢ Focus mode
+                  <Icon icon={Fullscreen} size="xs" />
+                  Focus mode
                 </button>
               </TooltipSpan>
             ))}
@@ -2330,9 +2393,10 @@ export function LaunchTerminal({
               <button
                 type="button"
                 onClick={onAddToGrid}
-                className="rounded-2 px-2 py-0.5 text-[11px] text-fg-3 hover:bg-white/10 hover:text-fg-1 focus:outline-none"
+                className="inline-flex items-center gap-1 rounded-2 px-2 py-0.5 text-[11px] text-fg-3 hover:bg-overlay-1 hover:text-fg-1 focus:outline-none"
               >
-                ⊞ Add to grid
+                <Icon icon={LayoutGrid} size="xs" />
+                Add to grid
               </button>
             </Tooltip>
           )}
@@ -2360,50 +2424,75 @@ export function LaunchTerminal({
                   : undefined
               }
               className={
-                "rounded-2 px-2 py-0.5 text-[11px] focus:outline-none " +
+                "inline-flex items-center justify-center gap-1 rounded-2 px-2 py-0.5 text-[11px] focus:outline-none " +
                 (isTouch
                   ? TOUCH_TARGET +
-                    " shrink-0 whitespace-nowrap bg-white/10 text-white/90 hover:bg-white/20"
-                  : "text-fg-3 hover:bg-white/10 hover:text-fg-1")
+                    " shrink-0 whitespace-nowrap bg-overlay-1 text-fg-1 hover:bg-overlay-2"
+                  : "text-fg-3 hover:bg-overlay-1 hover:text-fg-1")
               }
             >
-              ▾ Minimize
+              <Icon icon={Minus} size="xs" />
+              Minimize
             </button>
           </Tooltip>
           <Tooltip
             content={
-              status === "open" || status === "reconnecting"
+              closeIsDestructive
                 ? "Stop the running process and close"
                 : "Close"
             }
           >
-            <button
-              type="button"
-              onClick={requestClose}
-              aria-label={
-                isTouch
-                  ? status === "open" || status === "reconnecting"
-                    ? "Stop the running process and close"
-                    : "Close terminal"
-                  : undefined
-              }
-              // Touch: this is the DESTRUCTIVE action sitting next to Minimize
-              // at 19px in the measured layout. It gets the 44px floor, an
-              // extra gap from its neighbour, and a danger tint so a thumb
-              // aiming at Minimize has both distance and colour to go on.
-              className={
-                "rounded-2 px-2 py-0.5 text-[11px] focus:outline-none " +
-                (isTouch
-                  ? TOUCH_TARGET + " ml-2 text-danger hover:bg-danger/15"
-                  : "text-fg-3 hover:bg-white/10 hover:text-fg-1")
-              }
-            >
-              {isTouch
-                ? "✕"
-                : status === "open" || status === "reconnecting"
-                  ? "✕ Stop & close"
-                  : "✕ Close"}
-            </button>
+            {/* The span is the Tooltip trigger: ConfirmButton is a plain
+                function component, so it cannot take the floating ref. */}
+            <span className="inline-flex">
+              <ConfirmButton
+                unstyled
+                requireConfirm={closeIsDestructive}
+                onConfirm={onClose}
+                ariaLabel={
+                  isTouch
+                    ? closeIsDestructive
+                      ? "Stop the running process and close"
+                      : "Close terminal"
+                    : undefined
+                }
+                // Touch: this is the DESTRUCTIVE action sitting next to Minimize
+                // at 19px in the measured layout. It gets the 44px floor, an
+                // extra gap from its neighbour, and a danger tint so a thumb
+                // aiming at Minimize has both distance and colour to go on.
+                className={
+                  "inline-flex items-center justify-center gap-1 rounded-2 px-2 py-0.5 text-[11px] focus:outline-none " +
+                  (isTouch
+                    ? TOUCH_TARGET + " ml-2 text-danger hover:bg-danger/15"
+                    : "text-fg-3 hover:bg-overlay-1 hover:text-fg-1")
+                }
+                // Armed: the same button, tinted danger, so the second click
+                // reads as the destructive one.
+                armedClassName={
+                  "inline-flex items-center justify-center gap-1 rounded-2 px-2 py-0.5 text-[11px] font-medium focus:outline-none bg-danger/15 text-danger hover:bg-danger/25 " +
+                  (isTouch ? TOUCH_TARGET + " ml-2" : "")
+                }
+                confirmLabel={
+                  <>
+                    <Icon icon={X} size={isTouch ? "md" : "xs"} />
+                    {isTouch ? "Stop?" : "Confirm stop"}
+                  </>
+                }
+                armedNote={`Stop the running ${tool} session? This ends the process.`}
+                armedNoteClassName={
+                  isTouch
+                    ? "max-w-[10rem] text-[10.5px] leading-tight text-fg-2"
+                    : "max-w-[16rem] text-[11px] leading-snug text-fg-2"
+                }
+              >
+                <Icon icon={X} size={isTouch ? "md" : "xs"} />
+                {isTouch
+                  ? null
+                  : closeIsDestructive
+                    ? "Stop & close"
+                    : "Close"}
+              </ConfirmButton>
+            </span>
           </Tooltip>
         </span>
       </div>
@@ -2450,7 +2539,7 @@ export function LaunchTerminal({
         <button
           type="button"
           onClick={() => reacquireLocalRef.current()}
-          className="flex w-full items-center gap-2 border-b border-white/10 bg-warn/10 px-3 py-1.5 text-left text-[11px] text-warn hover:bg-warn/15"
+          className="flex w-full items-center gap-2 border-b border-line-2 bg-warn/10 px-3 py-1.5 text-left text-[11px] text-warn hover:bg-warn/15"
         >
           <span className="rounded-full bg-warn/20 px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-[0.05em]">
             read-only
@@ -2463,7 +2552,7 @@ export function LaunchTerminal({
         </button>
       )}
       {!isRemote && control === "requesting" && (
-        <div className="border-b border-white/10 bg-bg-1 px-3 py-1.5 text-[11px] text-fg-3">
+        <div className="border-b border-line-2 bg-bg-1 px-3 py-1.5 text-[11px] text-fg-3">
           Taking back control…
         </div>
       )}
@@ -2575,6 +2664,7 @@ function TerminalContextMenu({
   onCopyVisible: () => void;
   onClose: () => void;
 }) {
+  const menuTheme = useTerminalTheme();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ x, y });
 
@@ -2629,10 +2719,10 @@ function TerminalContextMenu({
       role="menu"
       data-testid="terminal-context-menu"
       style={{ top: pos.y, left: pos.x }}
-      // Terminal chrome is always dark in both themes (same reasoning as
-      // TerminalKeyBar), so this uses literal dark surfaces rather than theme
-      // tokens that would resolve light.
-      className="fixed z-[200] min-w-[190px] overflow-hidden rounded-2 border border-white/12 bg-[#14141a] py-1 text-[12px] text-white/90 shadow-drawer"
+      // Portaled out of the panel, so it re-declares the terminal's theme
+      // scope itself to match the chrome it was opened from.
+      data-theme-scope={menuTheme.name}
+      className="fixed z-[200] min-w-[190px] overflow-hidden rounded-2 border border-line-3 bg-term-chrome py-1 text-[12px] text-fg-1 shadow-drawer"
       onContextMenu={(e) => e.preventDefault()}
     >
       <MenuItem
@@ -2655,7 +2745,7 @@ function TerminalContextMenu({
           onClose();
         }}
       />
-      <div className="my-1 border-t border-white/10" />
+      <div className="my-1 border-t border-line-2" />
       <MenuItem
         label="Copy visible output"
         onSelect={() => {
@@ -2694,12 +2784,12 @@ function MenuItem({
       className={
         "flex w-full items-center justify-between gap-4 px-3 py-1.5 text-left " +
         (disabled
-          ? "cursor-not-allowed text-white/30"
-          : "text-white/90 hover:bg-white/10")
+          ? "cursor-not-allowed text-fg-4"
+          : "text-fg-1 hover:bg-overlay-1")
       }
     >
       <span>{label}</span>
-      {hint && <span className="shrink-0 text-[10px] text-white/40">{hint}</span>}
+      {hint && <span className="shrink-0 text-[10px] text-fg-3">{hint}</span>}
     </button>
   );
 }
@@ -2719,6 +2809,8 @@ const TOUCH_TARGET = "min-h-[44px] min-w-[44px]";
 
 type OverflowItem = {
   label: string;
+  /** Leading glyph, rendered through <Icon> before the label. */
+  icon?: LucideIcon;
   onSelect: () => void;
   disabled?: boolean;
   /** Honest reason shown (and announced) when disabled. */
@@ -2748,9 +2840,9 @@ function TerminalOverflowMenu({
         aria-label="More terminal actions"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={`${TOUCH_TARGET} rounded-2 px-2 text-[15px] leading-none text-white/70 hover:bg-white/10 hover:text-white focus:outline-none`}
+        className={`${TOUCH_TARGET} inline-flex items-center justify-center rounded-2 px-2 leading-none text-fg-2 hover:bg-overlay-1 hover:text-fg-0 focus:outline-none`}
       >
-        ⋯
+        <Icon icon={Ellipsis} size="md" />
       </button>
       {open && (
         <>
@@ -2762,11 +2854,9 @@ function TerminalOverflowMenu({
           />
           <span
             data-testid="terminal-overflow-menu"
-            // Terminal chrome is always dark (the panel hardcodes #0b0b0f /
-            // #14141a rather than theme tokens). `bg-bg-1`/`text-fg-2` resolve
-            // to WHITE-on-dark-grey under the light theme, so this surface uses
-            // the same literal palette as the header it drops out of.
-            className="absolute right-0 top-full z-50 mt-1 flex w-56 flex-col overflow-hidden rounded-2 border border-white/15 bg-[#1b1b23] shadow-lg"
+            // Inside the panel's data-theme-scope, so the term-* / fg-* tokens
+            // resolve to the terminal's own theme, matching the header.
+            className="absolute right-0 top-full z-50 mt-1 flex w-56 flex-col overflow-hidden rounded-2 border border-line-3 bg-term-pop shadow-lg"
           >
             {live.map((item) => (
               <button
@@ -2782,12 +2872,13 @@ function TerminalOverflowMenu({
                   item.onSelect();
                 }}
                 className={
-                  `${TOUCH_TARGET} flex items-center px-3 text-left text-[13px] ` +
+                  `${TOUCH_TARGET} flex items-center gap-2 px-3 text-left text-[13px] ` +
                   (item.disabled
-                    ? "cursor-not-allowed text-white/35"
-                    : "text-white/85 hover:bg-white/10 hover:text-white")
+                    ? "cursor-not-allowed text-fg-4"
+                    : "text-fg-1 hover:bg-overlay-1 hover:text-fg-0")
                 }
               >
+                {item.icon && <Icon icon={item.icon} size="sm" className="shrink-0" />}
                 {item.label}
               </button>
             ))}
@@ -2807,12 +2898,14 @@ function TerminalOverflowMenu({
 // host (per the honest-disabled-copy convention).
 function ProjectPanelButton({
   label,
+  icon,
   enabled,
   onClick,
   enabledTitle,
   disabledTitle = "This terminal has no directory on this machine to browse",
 }: {
   label: string;
+  icon: LucideIcon;
   enabled: boolean;
   onClick: () => void;
   enabledTitle: string;
@@ -2824,18 +2917,19 @@ function ProjectPanelButton({
       type="button"
       disabled={!enabled}
       onClick={onClick}
-      // Enabled: accessible name stays the visible glyph+word label
-      // ("▤ Files" / "⊙ Session"). Disabled: a disabled control can't
+      // Enabled: accessible name stays the visible word label ("Files" /
+      // "Session"; the glyph is an aria-hidden <Icon>). Disabled: a disabled control can't
       // carry a title tooltip a screen reader announces, so surface the
       // honest reason as the accessible name (the 417 e2e asserts this).
       aria-label={enabled ? undefined : tip}
       className={
-        "rounded-2 px-2 py-0.5 text-[11px] focus:outline-none " +
+        "inline-flex items-center gap-1 rounded-2 px-2 py-0.5 text-[11px] focus:outline-none " +
         (enabled
-          ? "text-fg-3 hover:bg-white/10 hover:text-fg-1"
+          ? "text-fg-3 hover:bg-overlay-1 hover:text-fg-1"
           : "cursor-not-allowed text-fg-4 opacity-60")
       }
     >
+      <Icon icon={icon} size="xs" />
       {label}
     </button>
   );
@@ -2850,9 +2944,21 @@ function ProjectPanelButton({
   );
 }
 
+// Terminal theme cycle: follow app -> dark -> light -> follow app.
+function nextTerminalThemePref(p: TerminalThemePref): TerminalThemePref {
+  return p === "app" ? "dark" : p === "dark" ? "light" : "app";
+}
+// TERMINAL_THEME is the label + glyph per terminal theme preference, shared
+// by the desktop header toggle and the touch overflow menu.
+const TERMINAL_THEME: Record<TerminalThemePref, { label: string; icon: LucideIcon }> = {
+  app: { label: "Theme: auto", icon: SunMoon },
+  dark: { label: "Theme: dark", icon: Moon },
+  light: { label: "Theme: light", icon: Sun },
+};
+
 // SizeModeControl is the Feature-A size-mode toggle shown in the terminal
-// chrome. In "fit" it offers "↺ Original size" (honest-disabled when the native
-// geometry is unknown); in "original" it shows an active "⤢ Fit" to return to
+// chrome. In "fit" it offers "Original size" (honest-disabled when the native
+// geometry is unknown); in "original" it shows an active "Fit" to return to
 // container-tracking. Writer-gated by its caller.
 function SizeModeControl({
   mode,
@@ -2871,9 +2977,10 @@ function SizeModeControl({
         <button
           type="button"
           onClick={onFit}
-          className="rounded-2 bg-accent/20 px-2 py-0.5 text-[11px] text-accent hover:bg-accent/30 focus:outline-none"
+          className="inline-flex items-center gap-1 rounded-2 bg-accent/20 px-2 py-0.5 text-[11px] text-accent hover:bg-accent/30 focus:outline-none"
         >
-          ⤢ Fit
+          <Icon icon={Expand} size="xs" />
+          Fit
         </button>
       </Tooltip>
     );
@@ -2886,9 +2993,10 @@ function SizeModeControl({
         <button
           type="button"
           disabled
-          className="cursor-not-allowed rounded-2 px-2 py-0.5 text-[11px] text-fg-4 opacity-60"
+          className="inline-flex cursor-not-allowed items-center gap-1 rounded-2 px-2 py-0.5 text-[11px] text-fg-4 opacity-60"
         >
-          ↺ Original size
+          <Icon icon={RotateCcw} size="xs" />
+          Original size
         </button>
       </TooltipSpan>
     );
@@ -2901,9 +3009,10 @@ function SizeModeControl({
       <button
         type="button"
         onClick={onOriginal}
-        className="rounded-2 px-2 py-0.5 text-[11px] text-fg-3 hover:bg-white/10 hover:text-fg-1 focus:outline-none"
+        className="inline-flex items-center gap-1 rounded-2 px-2 py-0.5 text-[11px] text-fg-3 hover:bg-overlay-1 hover:text-fg-1 focus:outline-none"
       >
-        ↺ Original size
+        <Icon icon={RotateCcw} size="xs" />
+        Original size
       </button>
     </Tooltip>
   );
@@ -2973,10 +3082,10 @@ function RemoteControlBar({
   const pillCls = writer
     ? "bg-ok/20 text-ok"
     : requesting
-      ? "bg-white/10 text-fg-3"
+      ? "bg-overlay-1 text-fg-3"
       : "bg-warn/20 text-warn";
   return (
-    <div className="border-b border-white/10 bg-[#101017] px-3 py-1.5 text-[11px]">
+    <div className="border-b border-line-2 bg-term-banner px-3 py-1.5 text-[11px]">
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <span className="flex min-w-0 flex-wrap items-center gap-2">
           <span
@@ -3128,14 +3237,14 @@ function StatusPill({
   exitCode: number | null;
 }) {
   const map: Record<Status, { label: string; cls: string }> = {
-    connecting: { label: "connecting…", cls: "bg-white/10 text-fg-3" },
+    connecting: { label: "connecting…", cls: "bg-overlay-1 text-fg-3" },
     open: { label: "live", cls: "bg-ok/20 text-ok" },
     // The session is still running server-side — only this browser's transport
     // dropped. Warn-coloured (something is off) but never "exited".
     reconnecting: { label: "reconnecting…", cls: "bg-warn/20 text-warn" },
     exited: {
       label: exitCode === null ? "exited" : `exited (${exitCode})`,
-      cls: "bg-white/10 text-fg-3",
+      cls: "bg-overlay-1 text-fg-3",
     },
     error: { label: "error", cls: "bg-danger/20 text-danger" },
   };
@@ -3145,8 +3254,11 @@ function StatusPill({
       // shrink-0: in the touch header the identity row never wraps, so the
       // pill must keep its full width and let the tool NAME be the thing that
       // truncates — a half-clipped "reconnecting…" says nothing.
-      className={`shrink-0 whitespace-nowrap rounded-full px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-[0.05em] ${cls}`}
+      className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-[0.05em] ${cls}`}
     >
+      {/* Same transport dot as the dock chip and the workspace tile
+          (TRANSPORT_DOT in lib/liveSignals). */}
+      <LiveDot {...withDotClass(liveDotProps(TRANSPORT_DOT, status), "h-1.5 w-1.5 shrink-0")} />
       {label}
     </span>
   );

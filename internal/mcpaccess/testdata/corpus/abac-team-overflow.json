@@ -1,0 +1,44 @@
+{
+  "name": "abac team overflow (P11 fold PF2): a roster over the sbo_team_ids bound is minted as sbo_team_overflow; every team subject is untrusted for that token - team allow never matches, team deny / ask always matches - even beside a roster",
+  "spec": {
+    "registry": {
+      "issuer": "https://auth.acme.superbased.app",
+      "org": "acme",
+      "gateway_base_uri": "https://mcp-gw.acme.superbased.app",
+      "policy_gen": 41,
+      "vservers": [
+        {"id": "vs-gh", "slug": "gh", "sender_constraint": "bearer",
+         "servers": [{"id": "gh", "target": "gh", "credential_mode": "service"}]}
+      ]
+    },
+    "grants": [
+      {"id": "g-team-allow", "ord": 1, "subject": {"kind": "team", "value": "team-eng"},
+       "resource": {"vserver": "vs-gh", "name": "create_issue"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "g-team-deny", "ord": 2, "subject": {"kind": "team", "value": "team-contractors"},
+       "resource": {"vserver": "vs-gh", "name": "delete_repo"}, "action": "call", "effect": "deny", "enabled": true},
+      {"id": "g-any-dr", "ord": 3, "subject": {"kind": "any"},
+       "resource": {"vserver": "vs-gh", "name": "delete_repo"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "g-team-ask", "ord": 4, "subject": {"kind": "team", "value": "team-ops"},
+       "resource": {"vserver": "vs-gh", "name": "deploy"}, "action": "call", "effect": "ask", "enabled": true}
+    ]
+  },
+  "principal_defaults": {
+    "issuer": "https://auth.acme.superbased.app", "org": "acme",
+    "audience": ["https://mcp-gw.acme.superbased.app/mcp/gh"], "policy_gen": 42,
+    "subject": "usr_1", "client_id": "agent:claude-code",
+    "product": "claude-code", "agent_kind": "coding_agent", "env": "dev",
+    "cred_assurance": "node_enrolled", "client_attestation": "ipc_bound"
+  },
+  "rows": [
+    {"name": "known roster in team-eng is allowed (control)", "principal": {"teams_known": true, "team_ids": ["team-eng"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "allow", "want_grant": "g-team-allow"},
+    {"name": "overflow never satisfies a team allow", "principal": {"teams_overflow": true}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "overflow beside a roster naming the team still never satisfies the allow", "principal": {"teams_known": true, "team_ids": ["team-eng"], "teams_overflow": true}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "known roster outside team-contractors falls to the any-allow (control)", "principal": {"teams_known": true, "team_ids": ["team-eng"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "delete_repo"}, "want": "allow", "want_grant": "g-any-dr"},
+    {"name": "overflow always hits the team deny", "principal": {"teams_overflow": true}, "input": {"vserver": "vs-gh", "action": "call", "name": "delete_repo"}, "want": "deny", "want_grant": "g-team-deny"},
+    {"name": "overflow beside a roster without the denied team still hits the deny", "principal": {"teams_known": true, "team_ids": ["team-eng"], "teams_overflow": true}, "input": {"vserver": "vs-gh", "action": "call", "name": "delete_repo"}, "want": "deny", "want_grant": "g-team-deny"},
+    {"name": "known roster in team-ops parks the ask (control)", "principal": {"teams_known": true, "team_ids": ["team-ops"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "deploy"}, "want": "ask", "want_grant": "g-team-ask"},
+    {"name": "known roster outside team-ops is denied (no grant)", "principal": {"teams_known": true, "team_ids": ["team-eng"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "deploy"}, "want": "deny"},
+    {"name": "overflow always escalates the team ask", "principal": {"teams_overflow": true}, "input": {"vserver": "vs-gh", "action": "call", "name": "deploy"}, "want": "ask", "want_grant": "g-team-ask"},
+    {"name": "overflow beside a roster without team-ops still escalates the ask", "principal": {"teams_known": true, "team_ids": ["team-eng"], "teams_overflow": true}, "input": {"vserver": "vs-gh", "action": "call", "name": "deploy"}, "want": "ask", "want_grant": "g-team-ask"}
+  ]
+}

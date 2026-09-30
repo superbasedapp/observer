@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import type { LucideIcon } from "lucide-react";
 import { Button, type ButtonSize, type ButtonVariant } from "./Button";
 
 // ConfirmButton — the in-place two-step confirm. First click ARMS the
@@ -30,6 +31,19 @@ export type ConfirmButtonProps = {
   loading?: boolean;
   title?: string;
   className?: string;
+  /** Leading glyph (Trash2 for delete, Ban for revoke, ...); kept while armed. */
+  iconLeft?: LucideIcon;
+  /** Render a plain <button> styled only by the caller (`className` idle,
+   *  `armedClassName` armed, defaulting to `className`), for a surface with
+   *  its own theme (the terminal header). variant / size / iconLeft /
+   *  loading do not apply; put a glyph in `children` / `confirmLabel`. */
+  unstyled?: boolean;
+  /** Unstyled only: the class while armed (default: `className`). */
+  armedClassName?: string;
+  /** Unstyled only: the armed note's class (default: the muted 11px line). */
+  armedNoteClassName?: string;
+  /** Accessible name for the button, for an icon-only label. */
+  ariaLabel?: string;
 };
 
 export function ConfirmButton({
@@ -46,6 +60,11 @@ export function ConfirmButton({
   loading,
   title,
   className,
+  iconLeft,
+  unstyled,
+  armedClassName,
+  armedNoteClassName,
+  ariaLabel,
 }: ConfirmButtonProps) {
   const [armed, setArmed] = useState(false);
   const timer = useRef<number | null>(null);
@@ -88,6 +107,27 @@ export function ConfirmButton({
   }
 
   const showArmed = armed && requireConfirm;
+  if (unstyled) {
+    return (
+      <span className="inline-flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={disabled}
+          title={title}
+          aria-label={ariaLabel}
+          className={showArmed ? (armedClassName ?? className) : className}
+          onClick={onClick}
+        >
+          {showArmed ? confirmLabel : children}
+        </button>
+        {showArmed && armedNote !== undefined && (
+          <span role="status" className={armedNoteClassName ?? "text-[11px] leading-snug text-fg-3"}>
+            {armedNote}
+          </span>
+        )}
+      </span>
+    );
+  }
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
       <Button
@@ -97,6 +137,8 @@ export function ConfirmButton({
         loading={loading}
         title={title}
         className={className}
+        iconLeft={iconLeft}
+        aria-label={ariaLabel}
         onClick={onClick}
       >
         {showArmed ? confirmLabel : children}

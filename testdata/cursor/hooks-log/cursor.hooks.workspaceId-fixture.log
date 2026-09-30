@@ -1,0 +1,661 @@
+[2026-09-19T14:07:26.428Z] Initializing Cursor Hooks Service...
+[2026-09-19T14:07:30.001Z] Loaded 18 user hook(s) for steps: afterAgentResponse, stop
+[2026-09-19T14:07:49.991Z] Hook 2 executed successfully and returned valid response
+═══════════════════════════════════════════════════════════════════════════════════════
+beforeSubmitPrompt
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: /home/dev/demo-repo/bin/observer hook cursor beforeSubmitPrompt --config '/home/dev/.observer/config.toml' (661ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "generation_id": "ed2e9caf-ed8d-4485-9865-8af0b65d037d",
+  "model": "cursor-grok-4.6-high",
+  "model_id": "grok-4.6",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "high"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ],
+  "composer_mode": "agent",
+  "prompt": "<redacted prompt, 1056 chars>",
+  "attachments": [
+    {
+      "type": "rule",
+      "file_path": "CLAUDE.md"
+    },
+    {
+      "type": "rule",
+      "file_path": "AGENTS.md"
+    }
+  ],
+  "session_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "hook_event_name": "beforeSubmitPrompt",
+  "cursor_version": "3.20.21",
+  "workspace_roots": [
+    "/home/dev/demo-repo"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": null
+}
+
+OUTPUT:
+{
+  "continue": true
+}
+
+STDERR:
+
+
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-19T14:07:49.991Z] Hook 2 executed successfully and returned valid response
+[2026-09-19T14:07:49.992Z] Merged 2 valid response(s) for step sessionStart
+[2026-09-19T14:07:49.992Z] Merged 2 valid response(s) for step beforeSubmitPrompt
+[2026-09-19T14:08:00.383Z] Hook step requested: afterAgentThought
+[2026-09-19T14:08:00.491Z] Hook step requested: afterAgentThought
+[2026-09-19T14:08:00.491Z] Hook step requested: preToolUse
+[2026-09-19T14:08:00.491Z] Hook step requested: preToolUse
+[2026-09-19T14:08:00.491Z] Hook step requested: preToolUse
+[2026-09-19T14:08:00.491Z] Hook step requested: preToolUse
+[2026-09-19T14:08:00.534Z] Found 1 hook(s) to execute for step: afterAgentThought
+[2026-09-19T14:08:00.534Z] Executing hook 1/1 from user config
+[2026-09-19T14:08:00.534Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:00.574Z] Found 1 hook(s) to execute for step: afterAgentThought
+[2026-09-19T14:08:00.574Z] Executing hook 1/1 from user config
+[2026-09-19T14:08:00.574Z] Found 2 hook(s) to execute for step: preToolUse
+[2026-09-19T14:08:00.574Z] Executing hook 1/2 from user config
+[2026-09-19T14:08:00.574Z] Executing hook 2/2 from claude-user config
+[2026-09-19T14:08:00.574Z] Found 2 hook(s) to execute for step: preToolUse
+[2026-09-19T14:08:00.574Z] Executing hook 1/2 from user config
+[2026-09-19T14:08:00.574Z] Executing hook 2/2 from claude-user config
+[2026-09-19T14:08:00.574Z] Found 2 hook(s) to execute for step: preToolUse
+[2026-09-19T14:08:00.574Z] Executing hook 1/2 from user config
+[2026-09-19T14:08:00.574Z] Executing hook 2/2 from claude-user config
+[2026-09-19T14:08:00.575Z] Found 2 hook(s) to execute for step: preToolUse
+[2026-09-19T14:08:00.575Z] Executing hook 1/2 from user config
+[2026-09-19T14:08:00.575Z] Executing hook 2/2 from claude-user config
+[2026-09-19T14:08:00.575Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:00.575Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:00.575Z] Running script in directory: /home/dev/.claude
+[2026-09-19T14:08:00.575Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:00.575Z] Running script in directory: /home/dev/.claude
+[2026-09-19T14:08:00.575Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:00.575Z] Running script in directory: /home/dev/.claude
+[2026-09-19T14:08:00.575Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:00.575Z] Running script in directory: /home/dev/.claude
+[2026-09-19T14:08:00.587Z] Running hook 1 with timeout 60000ms
+═══════════════════════════════════════════════════════════════════════════════════════
+afterAgentThought
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: /home/dev/demo-repo/bin/observer hook cursor afterAgentThought --config '/home/dev/.observer/config.toml' (287ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "generation_id": "ed2e9caf-ed8d-4485-9865-8af0b65d037d",
+  "text": "<redacted text, 510 chars>",
+  "duration_ms": 3319,
+  "model": "cursor-grok-4.6-high",
+  "model_id": "grok-4.6",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "high"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ],
+  "session_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "hook_event_name": "afterAgentThought",
+  "cursor_version": "3.20.21",
+  "workspace_roots": [
+    "/home/dev/demo-repo"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": null
+}
+
+OUTPUT:
+{
+  "permission": "allow",
+  "continue": true
+}
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-19T14:08:01.961Z] Hook 2 executed successfully and returned valid response
+[2026-09-19T14:08:01.962Z] Merged 2 valid response(s) for step preToolUse
+[2026-09-19T14:08:03.333Z] Hook step requested: beforeReadFile
+[2026-09-19T14:08:03.333Z] Hook step requested: beforeReadFile
+[2026-09-19T14:08:03.339Z] Hook step requested: beforeReadFile
+[2026-09-19T14:08:03.352Z] Found 1 hook(s) to execute for step: beforeReadFile
+[2026-09-19T14:08:03.352Z] Executing hook 1/1 from user config
+[2026-09-19T14:08:03.352Z] Found 1 hook(s) to execute for step: beforeReadFile
+[2026-09-19T14:08:03.352Z] Executing hook 1/1 from user config
+[2026-09-19T14:08:03.353Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:03.353Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:03.354Z] Hook step requested: beforeReadFile
+[2026-09-19T14:08:03.354Z] Hook step requested: beforeReadFile
+[2026-09-19T14:08:03.358Z] Running hook 1 with timeout 60000ms
+[2026-09-19T14:08:03.358Z] Running hook 1 with timeout 60000ms
+[2026-09-19T14:08:03.360Z] Found 1 hook(s) to execute for step: beforeReadFile
+[2026-09-19T14:08:03.360Z] Executing hook 1/1 from user config
+[2026-09-19T14:08:03.360Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:03.364Z] Running hook 1 with timeout 60000ms
+[2026-09-19T14:08:03.366Z] Found 1 hook(s) to execute for step: beforeReadFile
+[2026-09-19T14:08:03.366Z] Executing hook 1/1 from user config
+[2026-09-19T14:08:03.366Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:03.369Z] Found 1 hook(s) to execute for step: beforeReadFile
+[2026-09-19T14:08:03.369Z] Executing hook 1/1 from user config
+[2026-09-19T14:08:03.369Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:03.371Z] Running hook 1 with timeout 60000ms
+[2026-09-19T14:08:03.377Z] Running hook 1 with timeout 60000ms
+[2026-09-19T14:08:03.937Z] Hook step requested: beforeReadFile
+[2026-09-19T14:08:03.982Z] Found 1 hook(s) to execute for step: beforeReadFile
+[2026-09-19T14:08:03.982Z] Executing hook 1/1 from user config
+[2026-09-19T14:08:03.982Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:08:03.990Z] Running hook 1 with timeout 60000ms
+═══════════════════════════════════════════════════════════════════════════════════════
+beforeReadFile
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: /home/dev/demo-repo/bin/observer hook cursor beforeReadFile --config '/home/dev/.observer/config.toml' (1000ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "generation_id": "ed2e9caf-ed8d-4485-9865-8af0b65d037d",
+  "model": "grok-4.6",
+  "content": "<redacted content, 9247 chars>",
+  "file_path": "/home/dev/.cursor/skills-cursor/canvas/SKILL.md",
+  "attachments": [],
+  "session_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "hook_event_name": "beforeReadFile",
+  "cursor_version": "3.20.21",
+  "workspace_roots": [
+    "/home/dev/demo-repo"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/home-dev-demo-repo/agent-transcripts/8be96a3f-5490-4d9c-bb7c-8459b183a8bf/8be96a3f-5490-4d9c-bb7c-8459b183a8bf.jsonl"
+}
+
+OUTPUT:
+{
+  "permission": "allow",
+  "continue": true
+}
+
+STDERR:
+observer-hook: cursor beforeReadFile insert deadline exceeded
+
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-19T14:08:04.905Z] Hook 1 executed successfully and returned valid response
+═══════════════════════════════════════════════════════════════════════════════════════
+postToolUse
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: /home/dev/demo-repo/bin/observer hook cursor postToolUse --config '/home/dev/.observer/config.toml' (485ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "generation_id": "ed2e9caf-ed8d-4485-9865-8af0b65d037d",
+  "model": "grok-4.6",
+  "tool_name": "Read",
+  "tool_input": {
+    "redacted": true
+  },
+  "tool_output": "<redacted tool_output, 91 chars>",
+  "duration": 1401.838,
+  "tool_use_id": "call-aa55e4b2-53b0-4db6-be21-201bdd3f7c45-1\nfc_fed22555-0a8f-97ed-b719-ba11c5a701a6_1",
+  "session_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "hook_event_name": "postToolUse",
+  "cursor_version": "3.20.21",
+  "workspace_roots": [
+    "/home/dev/demo-repo"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/home-dev-demo-repo/agent-transcripts/8be96a3f-5490-4d9c-bb7c-8459b183a8bf/8be96a3f-5490-4d9c-bb7c-8459b183a8bf.jsonl"
+}
+
+OUTPUT:
+{
+  "permission": "allow",
+  "continue": true
+}
+
+STDERR:
+observer-hook: cursor postToolUse outcome update touched 0 rows (sourceEventID=ed2e9caf-ed8d-4485-9865-8af0b65d037d:beforeReadFile:)
+
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-19T14:14:57.137Z] Hook 1 executed successfully and returned valid response
+[2026-09-19T14:14:57.138Z] Merged 1 valid response(s) for step afterAgentThought
+[2026-09-19T14:15:08.409Z] Hook step requested: afterAgentResponse
+[2026-09-19T14:15:08.418Z] Found 1 hook(s) to execute for step: afterAgentResponse
+[2026-09-19T14:15:08.418Z] Executing hook 1/1 from user config
+[2026-09-19T14:15:08.418Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:15:08.420Z] Running hook 1 with timeout 60000ms
+═══════════════════════════════════════════════════════════════════════════════════════
+afterAgentResponse
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: /home/dev/demo-repo/bin/observer hook cursor afterAgentResponse --config '/home/dev/.observer/config.toml' (683ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "generation_id": "ed2e9caf-ed8d-4485-9865-8af0b65d037d",
+  "model": "cursor-grok-4.6-high",
+  "model_id": "grok-4.6",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "high"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ],
+  "text": "<redacted text, 5058 chars>",
+  "input_tokens": 2783511,
+  "output_tokens": 21724,
+  "cache_read_tokens": 2529792,
+  "cache_write_tokens": 0,
+  "session_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "hook_event_name": "afterAgentResponse",
+  "cursor_version": "3.20.21",
+  "workspace_roots": [
+    "/home/dev/demo-repo"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/home-dev-demo-repo/agent-transcripts/8be96a3f-5490-4d9c-bb7c-8459b183a8bf/8be96a3f-5490-4d9c-bb7c-8459b183a8bf.jsonl"
+}
+
+OUTPUT:
+{
+  "permission": "allow",
+  "continue": true
+}
+
+STDERR:
+observer-hook: cursor afterAgentResponse insert deadline exceeded
+
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-19T14:15:09.101Z] Hook 1 executed successfully and returned valid response
+[2026-09-19T14:15:09.102Z] Merged 1 valid response(s) for step afterAgentResponse
+[2026-09-19T14:15:09.103Z] Hook step requested: stop
+[2026-09-19T14:15:09.128Z] Found 2 hook(s) to execute for step: stop
+[2026-09-19T14:15:09.128Z] Executing hook 1/2 from user config
+[2026-09-19T14:15:09.128Z] Executing hook 2/2 from claude-user config
+[2026-09-19T14:15:09.128Z] Running script in directory: /home/dev/.cursor
+[2026-09-19T14:15:09.128Z] Running script in directory: /home/dev/.claude
+[2026-09-19T14:15:09.134Z] Running hook 1 with timeout 60000ms
+[2026-09-19T14:15:09.134Z] Running hook 2 with timeout 60000ms
+═══════════════════════════════════════════════════════════════════════════════════════
+stop
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: /home/dev/demo-repo/bin/observer hook claude-code stop --config '/home/dev/.observer/config.toml' (454ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "generation_id": "ed2e9caf-ed8d-4485-9865-8af0b65d037d",
+  "model": "cursor-grok-4.6-high",
+  "model_id": "grok-4.6",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "high"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ],
+  "status": "completed",
+  "loop_count": 0,
+  "input_tokens": 2783511,
+  "output_tokens": 21724,
+  "cache_read_tokens": 2529792,
+  "cache_write_tokens": 0,
+  "session_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "hook_event_name": "stop",
+  "cursor_version": "3.20.21",
+  "workspace_roots": [
+    "/home/dev/demo-repo"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/home-dev-demo-repo/agent-transcripts/8be96a3f-5490-4d9c-bb7c-8459b183a8bf/8be96a3f-5490-4d9c-bb7c-8459b183a8bf.jsonl"
+}
+
+OUTPUT:
+{
+  "decision": "approve"
+}
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-19T14:15:09.582Z] Hook 2 executed successfully and returned valid response
+═══════════════════════════════════════════════════════════════════════════════════════
+stop
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: /home/dev/demo-repo/bin/observer hook cursor stop --config '/home/dev/.observer/config.toml' (877ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "generation_id": "ed2e9caf-ed8d-4485-9865-8af0b65d037d",
+  "model": "cursor-grok-4.6-high",
+  "model_id": "grok-4.6",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "high"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ],
+  "status": "completed",
+  "loop_count": 0,
+  "input_tokens": 2783511,
+  "output_tokens": 21724,
+  "cache_read_tokens": 2529792,
+  "cache_write_tokens": 0,
+  "session_id": "8be96a3f-5490-4d9c-bb7c-8459b183a8bf",
+  "hook_event_name": "stop",
+  "cursor_version": "3.20.21",
+  "workspace_roots": [
+    "/home/dev/demo-repo"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/home-dev-demo-repo/agent-transcripts/8be96a3f-5490-4d9c-bb7c-8459b183a8bf/8be96a3f-5490-4d9c-bb7c-8459b183a8bf.jsonl"
+}
+
+OUTPUT:
+{
+  "permission": "allow",
+  "continue": true
+}
+
+STDERR:
+observer-hook: cursor stop insert deadline exceeded
+
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-08T04:36:36.039Z] Hook 1 executed successfully and returned valid response
+[2026-09-08T04:36:36.040Z] Merged 1 valid response(s) for step afterAgentThought
+[2026-09-08T04:36:36.040Z] Merged 1 valid response(s) for step afterAgentThought
+[2026-09-08T04:36:36.388Z] Refreshing team hooks...
+[2026-09-08T04:36:42.756Z] Hook step requested: afterAgentResponse
+[2026-09-08T04:36:42.856Z] Found 1 hook(s) to execute for step: afterAgentResponse
+[2026-09-08T04:36:42.856Z] Executing hook 1/1 from user config
+[2026-09-08T04:36:42.856Z] Running script in directory: /home/dev/.cursor
+[2026-09-08T04:36:42.860Z] Running hook 1 with timeout 60000ms
+═══════════════════════════════════════════════════════════════════════════════════════
+afterAgentResponse
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: /home/dev/demo-repo/bin/observer hook cursor afterAgentResponse --config '/home/dev/.observer/config.toml' (1308ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "cc8322af-e062-47f1-a4ab-5055b938c963",
+  "generation_id": "52f30b63-3669-4351-a9a2-fb79404ff458",
+  "model": "cursor-grok-4.6-high",
+  "model_id": "grok-4.6",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "high"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ],
+  "text": "<redacted text, 2016 chars>",
+  "input_tokens": 15944697,
+  "output_tokens": 53139,
+  "cache_read_tokens": 15524224,
+  "cache_write_tokens": 0,
+  "session_id": "cc8322af-e062-47f1-a4ab-5055b938c963",
+  "hook_event_name": "afterAgentResponse",
+  "cursor_version": "3.17.21",
+  "workspace_roots": [
+    "/home/dev/demo-repo"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/home-dev-demo-repo/agent-transcripts/cc8322af-e062-47f1-a4ab-5055b938c963/cc8322af-e062-47f1-a4ab-5055b938c963.jsonl"
+}
+
+OUTPUT:
+{
+  "permission": "allow",
+  "continue": true
+}
+
+STDERR:
+observer-hook: cursor afterAgentResponse insert deadline exceeded
+
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-08T04:36:44.164Z] Hook 1 executed successfully and returned valid response
+[2026-09-08T04:36:44.165Z] Merged 1 valid response(s) for step afterAgentResponse
+[2026-09-08T04:36:44.165Z] Hook step requested: stop
+[2026-09-08T04:36:44.213Z] Found 2 hook(s) to execute for step: stop
+[2026-09-08T04:36:44.213Z] Executing hook 1/2 from user config
+[2026-09-08T04:36:44.214Z] Executing hook 2/2 from claude-user config
+[2026-09-08T04:36:44.215Z] Running script in directory: /home/dev/.cursor
+[2026-09-08T04:36:44.215Z] Running script in directory: /home/dev/.claude
+[2026-09-08T04:36:44.244Z] Running hook 1 with timeout 60000ms
+[2026-09-08T04:36:44.244Z] Running hook 2 with timeout 60000ms
+═══════════════════════════════════════════════════════════════════════════════════════
+stop
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: /home/dev/demo-repo/bin/observer hook claude-code stop --config '/home/dev/.observer/config.toml' (640ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "cc8322af-e062-47f1-a4ab-5055b938c963",
+  "generation_id": "93c94255-d69d-4b19-a623-6ac06bb6f4b7",
+  "model": "cursor-grok-4.6-high",
+  "model_id": "grok-4.6",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "high"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ],
+  "status": "completed",
+  "loop_count": 0,
+  "input_tokens": 15944697,
+  "output_tokens": 53139,
+  "cache_read_tokens": 15524224,
+  "cache_write_tokens": 0,
+  "session_id": "cc8322af-e062-47f1-a4ab-5055b938c963",
+  "hook_event_name": "stop",
+  "cursor_version": "3.17.21",
+  "workspace_roots": [
+    "/home/dev/demo-repo"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/home-dev-demo-repo/agent-transcripts/cc8322af-e062-47f1-a4ab-5055b938c963/cc8322af-e062-47f1-a4ab-5055b938c963.jsonl"
+}
+
+OUTPUT:
+{
+  "decision": "approve"
+}
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-08T04:36:44.856Z] Hook 2 executed successfully and returned valid response
+═══════════════════════════════════════════════════════════════════════════════════════
+stop
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: /home/dev/demo-repo/bin/observer hook cursor stop --config '/home/dev/.observer/config.toml' (1156ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "cc8322af-e062-47f1-a4ab-5055b938c963",
+  "generation_id": "93c94255-d69d-4b19-a623-6ac06bb6f4b7",
+  "model": "cursor-grok-4.6-high",
+  "model_id": "grok-4.6",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "high"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ],
+  "status": "completed",
+  "loop_count": 0,
+  "input_tokens": 15944697,
+  "output_tokens": 53139,
+  "cache_read_tokens": 15524224,
+  "cache_write_tokens": 0,
+  "session_id": "cc8322af-e062-47f1-a4ab-5055b938c963",
+  "hook_event_name": "stop",
+  "cursor_version": "3.17.21",
+  "workspace_roots": [
+    "/home/dev/demo-repo"
+  ],
+  "user_email": "dev@example.com",
+  "transcript_path": "/home/dev/.cursor/projects/home-dev-demo-repo/agent-transcripts/cc8322af-e062-47f1-a4ab-5055b938c963/cc8322af-e062-47f1-a4ab-5055b938c963.jsonl"
+}
+
+OUTPUT:
+{
+  "permission": "allow",
+  "continue": true
+}
+
+STDERR:
+observer-hook: cursor stop insert deadline exceeded
+
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-22T20:04:46.451Z] ERROR: Failed to parse JSON response from hook 1
+[2026-09-22T20:04:46.451Z] Error: Failed to parse hook stdout as JSON
+[2026-09-22T20:04:46.452Z] All hooks for step afterAgentThought completed but none returned a valid response
+[2026-09-22T20:09:34.115Z] Hook step requested: afterAgentThought
+[2026-09-22T20:09:34.202Z] Found 1 hook(s) to execute for step: afterAgentThought
+[2026-09-22T20:09:34.202Z] Executing hook 1/1 from user config
+[2026-09-22T20:09:34.202Z] Running script in directory: c:\Users\dev\.cursor
+[2026-09-22T20:09:34.211Z] Running hook 1 with timeout 60000ms
+═══════════════════════════════════════════════════════════════════════════════════════
+afterAgentThought
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: curl.exe -sS --max-time 3 -X POST -H "Content-Type: application/json" -H "X-Observer-Token: 0000000000000000000000000000000000000000000000000000000000000000" --data-binary '@-' http://127.0.0.1:8081/api/cursor/hook/afterAgentThought (587ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "bc-4e387d38-4596-4b70-8ca8-5c1f2db7290a",
+  "generation_id": "",
+  "text": "<redacted text, 780 chars>",
+  "duration_ms": 5352,
+  "model": "cursor-grok-4.6-high",
+  "model_id": "grok-4.6",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "high"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ],
+  "session_id": "bc-4e387d38-4596-4b70-8ca8-5c1f2db7290a",
+  "hook_event_name": "afterAgentThought",
+  "cursor_version": "3.21.13",
+  "workspace_roots": [],
+  "user_email": "dev@example.com",
+  "transcript_path": null
+}
+
+OUTPUT:
+(empty)
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-22T20:09:34.790Z] ERROR: Failed to parse JSON response from hook 1
+[2026-09-22T20:09:34.790Z] Error: Failed to parse hook stdout as JSON
+[2026-09-22T20:09:34.791Z] All hooks for step afterAgentThought completed but none returned a valid response
+[2026-09-22T20:22:16.983Z] Hook step requested: afterAgentThought
+[2026-09-22T20:22:17.014Z] Found 1 hook(s) to execute for step: afterAgentThought
+[2026-09-22T20:22:17.014Z] Executing hook 1/1 from user config
+[2026-09-22T20:22:17.014Z] Running script in directory: c:\Users\dev\.cursor
+[2026-09-22T20:22:17.019Z] Running hook 1 with timeout 60000ms
+═══════════════════════════════════════════════════════════════════════════════════════
+afterAgentThought
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: curl.exe -sS --max-time 3 -X POST -H "Content-Type: application/json" -H "X-Observer-Token: 0000000000000000000000000000000000000000000000000000000000000000" --data-binary '@-' http://127.0.0.1:8081/api/cursor/hook/afterAgentThought (638ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "bc-4e387d38-4596-4b70-8ca8-5c1f2db7290a",
+  "generation_id": "",
+  "text": "<redacted text, 312 chars>",
+  "duration_ms": 2092,
+  "model": "cursor-grok-4.6-high",
+  "model_id": "grok-4.6",
+  "model_params": [
+    {
+      "id": "effort",
+      "value": "high"
+    },
+    {
+      "id": "fast",
+      "value": "false"
+    }
+  ],
+  "session_id": "bc-4e387d38-4596-4b70-8ca8-5c1f2db7290a",
+  "hook_event_name": "afterAgentThought",
+  "cursor_version": "3.21.13",
+  "workspace_roots": [],
+  "user_email": "dev@example.com",
+  "transcript_path": null
+}
+
+OUTPUT:
+(empty)
+═══════════════════════════════════════════════════════════════════════════════════════
+[2026-09-22T14:27:47.043Z] ERROR: Failed to parse JSON response from hook 1
+[2026-09-22T14:27:47.043Z] Error: Failed to parse hook stdout as JSON
+[2026-09-22T14:27:47.044Z] All hooks for step afterAgentThought completed but none returned a valid response
+[2026-09-22T14:27:54.988Z] Hook step requested: subagentStart
+[2026-09-22T14:27:55.084Z] Found 1 hook(s) to execute for step: subagentStart
+[2026-09-22T14:27:55.084Z] Executing hook 1/1 from user config
+[2026-09-22T14:27:55.085Z] Running script in directory: c:\Users\dev\.cursor
+[2026-09-22T14:27:55.105Z] Running hook 1 with timeout 60000ms
+═══════════════════════════════════════════════════════════════════════════════════════
+subagentStart
+═══════════════════════════════════════════════════════════════════════════════════════
+Command: curl.exe -sS --max-time 3 -X POST -H "Content-Type: application/json" -H "X-Observer-Token: 0000000000000000000000000000000000000000000000000000000000000000" --data-binary '@-' http://127.0.0.1:8081/api/cursor/hook/subagentStart (557ms) exit code: 0
+
+INPUT:
+{
+  "conversation_id": "bc-4e387d38-4596-4b70-8ca8-5c1f2db7290a",
+  "generation_id": "bc-4e387d38-4596-4b70-8ca8-5c1f2db7290a",
+  "model": "claude-4.5-sonnet",
+  "subagent_id": "call-df857503-2fc3-49c8-b751-6b767d922fad-58\nfc_37d45931-1872-9571-94a5-b0bb7071a837_1",
+  "subagent_type": "computerUse",
+  "task": "<redacted task, 2113 chars>",
+  "parent_conversation_id": "bc-4e387d38-4596-4b70-8ca8-5c1f2db7290a",
+  "tool_call_id": "call-df857503-2fc3-49c8-b751-6b767d922fad-58\nfc_37d45931-1872-9571-94a5-b0bb7071a837_1",
+  "subagent_model": "claude-4.5-sonnet",
+  "is_parallel_worker": false,
+  "session_id": "bc-4e387d38-4596-4b70-8ca8-5c1f2db7290a",
+  "hook_event_name": "subagentStart",
+  "cursor_version": "3.21.13",
+  "workspace_roots": [],
+  "user_email": "dev@example.com",
+  "transcript_path": null
+}
+
+OUTPUT:
+(empty)
+═══════════════════════════════════════════════════════════════════════════════════════

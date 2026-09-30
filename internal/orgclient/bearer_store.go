@@ -83,7 +83,7 @@ func OpenBearerStore(service, fallbackDir string, logger *slog.Logger) BearerSto
 		// Recovered from a previous downgrade — clear the sentinel so a
 		// future downgrade warns again.
 		_ = os.Remove(sentinel)
-		return &keychainStore{service: service}
+		return &keychainStore{service: service, fallbackDir: fallbackDir}
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		logger.Warn(
@@ -94,7 +94,15 @@ func OpenBearerStore(service, fallbackDir string, logger *slog.Logger) BearerSto
 		_ = os.MkdirAll(storeDir, 0o700)
 		_ = os.WriteFile(sentinel, []byte("1"), 0o600)
 	}
-	return &fileStore{dir: storeDir, service: service}
+	return &fileStore{dir: storeDir, service: service, fallbackDir: fallbackDir}
+}
+
+// agentAccessKeyClearer is implemented by the two real BearerStore backends:
+// it names the agent-access key store living under the SAME service and
+// fallback directory, so Unenroll clears that key (keychain record AND 0600
+// file) even when no AgentAccessKeyStore was injected (ledger AA-5).
+type agentAccessKeyClearer interface {
+	agentAccessKeys() AgentAccessKeyStore
 }
 
 // keychainUsable probes the keyring with a throwaway record. A full
@@ -112,9 +120,18 @@ func keychainUsable(service string) bool {
 
 // --- keychain-backed store -------------------------------------------------
 
-type keychainStore struct{ service string }
+type keychainStore struct {
+	service string
+	// fallbackDir is the directory OpenBearerStore was given; it locates
+	// the agent-access key's file fallback for Unenroll's clear.
+	fallbackDir string
+}
 
 func (s *keychainStore) Backend() string { return "keychain" }
+
+func (s *keychainStore) agentAccessKeys() AgentAccessKeyStore {
+	return agentAccessKeyStoreForClear(s.service, s.fallbackDir, true)
+}
 
 func (s *keychainStore) SaveBearer(bearer string) error {
 	if err := keyring.Set(s.service, recBearer, bearer); err != nil {
@@ -219,9 +236,15 @@ func (s *keychainStore) Clear() error {
 type fileStore struct {
 	dir     string
 	service string
+	// fallbackDir is the directory OpenBearerStore was given (dir's parent).
+	fallbackDir string
 }
 
 func (s *fileStore) Backend() string { return "file" }
+
+func (s *fileStore) agentAccessKeys() AgentAccessKeyStore {
+	return agentAccessKeyStoreForClear(s.service, s.fallbackDir, false)
+}
 
 func (s *fileStore) path(rec string) string {
 	return filepath.Join(s.dir, s.service+"."+rec)

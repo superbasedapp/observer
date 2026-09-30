@@ -462,15 +462,34 @@ func (s *Server) handleSessionSubagents(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, fmt.Sprintf("load sidechain actions: %v", err), http.StatusInternalServerError)
 		return
 	}
-	tokens, err := st.SidechainTokenUsageForSession(r.Context(), sessionID)
+	// The session's one-rule spend rows (store.SpendTurn): the sidechain
+	// ones feed the legacy windows, each priced the way the session header
+	// prices it, so the windows and the header count the same turns.
+	turns, err := st.LoadSessionSpendTurns(r.Context(), sessionID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("load sidechain token usage: %v", err), http.StatusInternalServerError)
 		return
+	}
+	var tokens []models.SubagentTokenRef
+	for _, t := range turns {
+		if !t.Sidechain {
+			continue
+		}
+		tokens = append(tokens, models.SubagentTokenRef{
+			Timestamp: t.Ts, InputTokens: t.InputTokens, OutputTokens: t.OutputTokens,
+			CacheReadTokens: t.CacheReadTokens, CacheCreationTokens: t.CacheWriteTokens,
+			EstimatedCostUSD: s.priceSpendTurns([]store.SpendTurn{t}),
+		})
 	}
 	children, err := st.ChildSubagentsForSession(r.Context(), sessionID)
 	if err != nil {
 		writeErr(w, err)
 		return
+	}
+	// A linked child's cost is its own header's: priced over its one-rule
+	// rows, not its recorded cost alone.
+	for i := range children {
+		children[i].CostUSD = s.priceSpendTurns(children[i].Turns)
 	}
 	subagents := mergeChildSubagents(children, refs, tokens)
 	if subagents == nil {

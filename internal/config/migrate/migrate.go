@@ -22,8 +22,9 @@ type step struct {
 
 // steps is the ordered migration registry. Order within a step matters
 // for precedence: when two legacy keys map to the same target and the
-// target is absent, the FIRST listed wins (mirrors the in-memory
-// migrateLegacyCodeGraph precedence — compression over intelligence).
+// target is absent, the FIRST listed wins (step 1: compression over
+// intelligence). A later step that names a key an earlier step already
+// dropped is a no-op for that key.
 var steps = []step{
 	{
 		version: 1, // codegraph → codeintel (Phase 4 decommission)
@@ -54,6 +55,55 @@ var steps = []step{
 			{from: k("codeintel", "index", "disk_budget_mb"), to: nil, note: "removed (never implemented; use codeintel.retention_days + [archive])"},
 		},
 	},
+	{
+		// Final removal of the legacy code-graph blocks (post-Agent-Access
+		// backlog item 3, 2026-09-27). Step 1 moved their VALUES onto
+		// [codeintel] for files that had never been migrated, but the
+		// config structs still declared (and Default() seeded) both blocks,
+		// so every full re-marshal (config.WriteToml: dashboard save,
+		// `observer config set`) wrote them back into files already
+		// stamped >= 1, where step 1 never re-runs. The structs and the
+		// in-memory Load mapping are now gone (BurntSushi ignores the
+		// orphan keys, so such a file still loads); this step strips the
+		// leftovers durably. Removal only: a stamped file's [codeintel]
+		// values are authoritative, and a full re-marshal always wrote
+		// [codeintel] alongside the blocks.
+		version: 4,
+		renames: []rename{
+			{from: k("compression", "code_graph", "enabled"), to: nil, note: "removed (legacy block; codeintel.enabled is authoritative)"},
+			{from: k("compression", "code_graph", "auto_index"), to: nil, note: "removed (legacy block; codeintel.index.on_start is authoritative)"},
+			{from: k("compression", "code_graph", "auto_install"), to: nil, note: "removed (in-process index; no binary download)"},
+			{from: k("compression", "code_graph", "path"), to: nil, note: "removed (no external graph.db)"},
+			{from: k("intelligence", "code_graph", "enabled"), to: nil, note: "removed (legacy block; codeintel.enabled is authoritative)"},
+		},
+	},
+	{
+		// Final removal of the flat [org_client.share] obs_* aliases
+		// (post-Agent-Access backlog item 12, 2026-09-27) - the same leak
+		// step 4 closed for the code-graph blocks. Step 2 moved their
+		// VALUES onto [org_client.share.obs] for files that had never been
+		// migrated, but the config struct still declared the four flat
+		// fields, so every full re-marshal (config.WriteToml) wrote them
+		// back into files already stamped >= 2, where step 2 never
+		// re-runs. The fields and the in-memory Load mapping are now gone;
+		// this step removes the leftovers durably.
+		//
+		// The rows keep step 2's rename shape rather than a bare removal
+		// because Apply's target-wins rule makes that a strip in every
+		// re-marshaled file (a full re-marshal always writes the nested
+		// keys, so the flat source is dropped and the nested value stays
+		// authoritative), while a flat key an operator hand-added to a
+		// stamped file with no nested counterpart still lands on the
+		// nested key - the value the loader honored until this release,
+		// so the migration never silently turns a share tier off or on.
+		version: 5,
+		renames: []rename{
+			{from: k("org_client", "share", "obs_summary"), to: k("org_client", "share", "obs", "summary"), note: "moved to org_client.share.obs.summary (flat alias removed)"},
+			{from: k("org_client", "share", "obs_traces"), to: k("org_client", "share", "obs", "traces"), note: "moved to org_client.share.obs.traces (flat alias removed)"},
+			{from: k("org_client", "share", "obs_content"), to: k("org_client", "share", "obs", "content"), note: "moved to org_client.share.obs.content (flat alias removed)"},
+			{from: k("org_client", "share", "obs_eval_summary"), to: k("org_client", "share", "obs", "eval_summary"), note: "moved to org_client.share.obs.eval_summary (flat alias removed)"},
+		},
+	},
 }
 
 func k(segs ...string) []string { return segs }
@@ -78,6 +128,27 @@ type Result struct {
 	Migrated    bool     // true iff ≥1 change was applied and Text differs
 	Skipped     bool     // true iff a needed edit was unsafe; Text == input
 	SkipReason  string
+}
+
+// RetiredKeys returns the dotted path of every key the registry renames
+// or removes, deduplicated, in registry order. A retired key must never
+// come back as a config struct field: a declared field is re-emitted by
+// every full re-marshal (config.WriteToml) into files already stamped past
+// the step that removed it, which is exactly the leak steps 4 and 5 close.
+// tests/invariant pins that no config.Config TOML path is in this set.
+func RetiredKeys() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range steps {
+		for _, rn := range s.renames {
+			p := dottedPath(rn.from)
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 // LatestVersion is the config_version a fully-migrated file carries.
@@ -134,8 +205,8 @@ func Apply(text string) (Result, error) {
 		}
 		for _, rn := range st.renames {
 			idx := doc.findKey(rn.from)
-			if idx < 0 {
-				continue // legacy key not present
+			if idx < 0 || drop[idx] {
+				continue // legacy key not present, or an earlier step already took it
 			}
 			// Every touched source line must be a single-line scalar,
 			// else we can't safely delete/move it → Skip the whole run.

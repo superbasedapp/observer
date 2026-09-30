@@ -853,3 +853,58 @@ func TestRegistrar_UnknownTool(t *testing.T) {
 		t.Error("expected error for unknown tool")
 	}
 }
+
+// TestRegistrar_JSONSiblingsSurviveVerbatim pins the W4a fix to the stdio
+// writer: sibling servers under mcpServers are kept as RAW JSON, so a user's
+// remote server (url/type/headers) or env-bearing stdio server survives
+// Register AND Unregister with every field intact. Before the fix the whole
+// map was decoded into mcpServerEntry{Command,Args} and re-encoded, turning
+// `{"url":…}` into `{"command":"","args":null}`.
+func TestRegistrar_JSONSiblingsSurviveVerbatim(t *testing.T) {
+	r, home := newRegistrar(t, false)
+	path := filepath.Join(home, ".claude.json")
+	prior := `{
+  "mcpServers": {
+    "remote-sib": {"type": "http", "url": "https://x.example/mcp", "headers": {"X-A": "1"}},
+    "env-sib": {"command": "/opt/x", "args": ["a"], "env": {"K": "v"}, "disabled": true}
+  }
+}`
+	if err := os.WriteFile(path, []byte(prior), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var priorTop struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(prior), &priorTop); err != nil {
+		t.Fatal(err)
+	}
+	check := func(stage string) {
+		t.Helper()
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: read: %v", stage, err)
+		}
+		var top struct {
+			MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		}
+		if err := json.Unmarshal(body, &top); err != nil {
+			t.Fatalf("%s: parse: %v", stage, err)
+		}
+		for name, want := range priorTop.MCPServers {
+			if !jsonEquivalent(top.MCPServers[name], want) {
+				t.Errorf("%s: sibling %s changed: %s -> %s", stage, name, want, top.MCPServers[name])
+			}
+		}
+	}
+	if res := r.Register("claude-code"); res.Error != nil || !res.Added {
+		t.Fatalf("Register: %+v", res)
+	}
+	check("after register")
+	if res := r.Register("claude-code"); res.Error != nil || !res.AlreadySet {
+		t.Fatalf("re-register: %+v", res)
+	}
+	if ures := r.Unregister("claude-code"); ures.Error != nil || !ures.Removed {
+		t.Fatalf("Unregister: %+v", ures)
+	}
+	check("after unregister")
+}

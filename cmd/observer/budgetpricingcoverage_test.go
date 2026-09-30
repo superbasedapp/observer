@@ -114,6 +114,10 @@ func TestBudgetPricingCoverageSplitsFallbackFromTrueMiss(t *testing.T) {
 	ctx := context.Background()
 	engine := cost.NewEngine(config.IntelligenceConfig{})
 	table := engine.Table()
+	const trueMissModel = "zz-no-such-model-9000"
+	if _, _, ok := table.LookupWithSourceAt(trueMissModel, time.Time{}); ok {
+		t.Fatalf("%q is priced; this test needs a true miss", trueMissModel)
+	}
 	if _, source, ok := table.LookupWithSourceAt(fallbackPricedModel, time.Time{}); !ok ||
 		source == cost.PricingSourceExact || source == cost.PricingSourceOrg {
 		t.Fatalf("%q is not a fallback rung; this test needs one", fallbackPricedModel)
@@ -139,7 +143,10 @@ func TestBudgetPricingCoverageSplitsFallbackFromTrueMiss(t *testing.T) {
 			InputTokens: 52_000, OutputTokens: 1_000, Source: "jsonl", Reliability: "approximate",
 		},
 		{
-			SessionID: "opencode-session", SourceEventID: "miss-one", Tool: "opencode", Model: "big-pickle",
+			// The live proof's true miss was opencode's "big-pickle", which the
+			// price database now publishes (OpenCode Zen, $0; in the embedded
+			// snapshot), so the miss is a model no rung can price.
+			SessionID: "opencode-session", SourceEventID: "miss-one", Tool: "opencode", Model: trueMissModel,
 			ProjectRoot: root, SourceFile: "fixture", Timestamp: now,
 			InputTokens: 1_000, OutputTokens: 10, Source: "jsonl", Reliability: "approximate",
 		},
@@ -162,12 +169,12 @@ func TestBudgetPricingCoverageSplitsFallbackFromTrueMiss(t *testing.T) {
 	if cov.FallbackRows != 2 || len(cov.FallbackModels) != 1 || cov.FallbackModels[0] != fallbackPricedModel {
 		t.Fatalf("fallback list = rows %d models %v, want 2 rows naming %q only", cov.FallbackRows, cov.FallbackModels, fallbackPricedModel)
 	}
-	if cov.UnpricedRows != 1 || len(cov.UnpricedModels) != 1 || cov.UnpricedModels[0] != "big-pickle" {
-		t.Fatalf("true-miss list = rows %d models %v, want 1 row naming big-pickle only", cov.UnpricedRows, cov.UnpricedModels)
+	if cov.UnpricedRows != 1 || len(cov.UnpricedModels) != 1 || cov.UnpricedModels[0] != trueMissModel {
+		t.Fatalf("true-miss list = rows %d models %v, want 1 row naming %s only", cov.UnpricedRows, cov.UnpricedModels, trueMissModel)
 	}
 	line := budgetPricingCoverageLine(cov)
 	if !strings.Contains(line, "fallback_rows=2") || !strings.Contains(line, "fallback_models="+fallbackPricedModel) ||
-		!strings.Contains(line, "unpriced_rows=1") || !strings.Contains(line, "unpriced_models=big-pickle") {
+		!strings.Contains(line, "unpriced_rows=1") || !strings.Contains(line, "unpriced_models="+trueMissModel) {
 		t.Fatalf("status line = %q, want both class pairs printed separately", line)
 	}
 }

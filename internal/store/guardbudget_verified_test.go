@@ -105,7 +105,9 @@ func TestManagedBudgetAmbiguousSourcesAreWindowScoped(t *testing.T) {
 	guardBudgetTestSession(t, st, "mixed")
 	guardBudgetTestSession(t, st, "separate")
 	day, week, month := guardBudgetTestWindows()
-	insertGuardBudgetUsage(t, database, "mixed", "fixture", "native", day, 100, 10, 0)
+	// "mixed" is ONE turn captured twice: the native copy (same model and
+	// token shape) is the proxy row's twin.
+	insertGuardBudgetUsage(t, database, "mixed", "fixture", "native", day, 200, 20, 0)
 	insertGuardBudgetAPI(t, database, "mixed", "fixture", day.Add(-time.Hour), 200, 20, 0)
 	insertGuardBudgetAPI(t, database, "separate", "fixture", day, 300, 30, 0)
 	_, err := database.ExecContext(context.Background(), `UPDATE token_usage SET cache_read_tokens=0,cache_creation_tokens=0,reasoning_tokens=0,reliability='approximate'`)
@@ -117,10 +119,11 @@ func TestManagedBudgetAmbiguousSourcesAreWindowScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	// NEITHER unit treats a session seen by both the proxy and the native
-	// parser as ambiguous: per-session MAX(proxy, watcher) is the
-	// de-duplication rule, and every proxy-launched-and-parsed tool produces
-	// this shape. The $ read dropped the rule in the accounting-readiness
-	// correction (2026-09-14); the token read follows it on the same ruling,
+	// parser as ambiguous: the one session rule (the stored sessionmsg dedup
+	// verdicts) counts each turn once, and every proxy-launched-and-parsed
+	// tool produces this shape. The $ read dropped the ambiguity rule in the
+	// accounting-readiness correction (2026-09-14); the token read follows it
+	// on the same ruling,
 	// so the two units can never disagree about which turns they counted.
 	got, err := st.GuardBudgetSpendPriced(context.Background(), "mixed", day, week, month,
 		func(string, time.Time, PushTokenSplit) (float64, string, bool) { return 0.1, "exact", true }, GuardBudgetReadOptions{Managed: true})
@@ -131,13 +134,14 @@ func TestManagedBudgetAmbiguousSourcesAreWindowScoped(t *testing.T) {
 	if err != nil || tokens.Unavailable != (GuardBudgetUnavailableWindows{}) {
 		t.Fatalf("token mixed coverage=%+v err=%v", tokens, err)
 	}
-	// The overlapping session counts ONCE, at the larger substrate: the proxy
-	// turn's 200+20 rather than that plus the native row's 100+10.
+	// The overlapping turn counts ONCE, as its proxy row: 200+20, not that
+	// plus the native copy's.
 	if tokens.SessionTokens != 220 {
-		t.Fatalf("overlapping session tokens=%d, want the larger substrate (220)", tokens.SessionTokens)
+		t.Fatalf("overlapping session tokens=%d, want the turn once (220)", tokens.SessionTokens)
 	}
-	// The two sources use distinct sessions today; no overlap is guessed.
-	if tokens.DailyTokens != 440 {
+	// Only "separate" (330) is inside the day: the mixed turn is counted at
+	// its proxy row's time, an hour before the day starts.
+	if tokens.DailyTokens != 330 {
 		t.Fatalf("daily separate-source total=%d", tokens.DailyTokens)
 	}
 	_, err = database.ExecContext(context.Background(), `UPDATE token_usage SET input_tokens=NULL`)

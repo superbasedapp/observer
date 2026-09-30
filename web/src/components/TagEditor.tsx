@@ -7,6 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
+import { Star } from "lucide-react";
 import {
   postSessionTags,
   fetchTagRollup,
@@ -26,6 +27,7 @@ import {
 import { TagPill } from "@/components/TagPill";
 import { useCompanionRegistry } from "@/components/primitives/companion";
 import { AnchoredPopover } from "@/components/primitives/AnchoredPopover";
+import { Icon, Tooltip } from "@/components/primitives";
 
 // TagEditor — the popover that adds/removes a session's tags, plus the
 // favorite star that shares its POST endpoint.
@@ -130,19 +132,16 @@ export function FavoriteStar({
   className?: string;
 }) {
   const blocked = !canClassifySessions();
+  // Enabled: a themed Tooltip. Blocked (disabled): the reason stays a native
+  // title, since a disabled button fires no hover for the Tooltip.
   return (
+    <Tooltip content={blocked ? undefined : favorite ? "Favorited - click to unstar" : "Mark as favorite"}>
     <button
       type="button"
       aria-pressed={favorite}
       aria-label={favorite ? "Remove from favorites" : "Mark as favorite"}
       disabled={blocked}
-      title={
-        blocked
-          ? CLASSIFY_REMOTE_BLOCKED_MSG
-          : favorite
-            ? "Favorited - click to unstar"
-            : "Mark as favorite"
-      }
+      title={blocked ? CLASSIFY_REMOTE_BLOCKED_MSG : undefined}
       onClick={(e) => {
         e.stopPropagation();
         if (blocked) return;
@@ -155,19 +154,9 @@ export function FavoriteStar({
         className,
       )}
     >
-      <svg
-        width={size}
-        height={size}
-        viewBox="0 0 16 16"
-        fill={favorite ? "currentColor" : "none"}
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-        aria-hidden
-      >
-        <path d="M8 1.8 10 6l4.4.5-3.3 3 .9 4.4L8 11.7 4 13.9l.9-4.4-3.3-3L6 6z" />
-      </svg>
+      <Icon icon={Star} size={size} fill={favorite ? "currentColor" : "none"} />
     </button>
+    </Tooltip>
   );
 }
 
@@ -214,20 +203,23 @@ export function RatingStars({
         const value = i + 1;
         const filled = value <= shown;
         return (
-          <button
+          <Tooltip
             key={value}
+            content={
+              blocked
+                ? undefined
+                : rating === value
+                  ? `Rated ${value}/${MAX_RATING} - click to clear`
+                  : `Rate ${value}/${MAX_RATING}`
+            }
+          >
+          <button
             type="button"
             role="radio"
             aria-checked={rating === value}
             aria-label={`Rate ${value} out of ${MAX_RATING}`}
             disabled={blocked}
-            title={
-              blocked
-                ? CLASSIFY_REMOTE_BLOCKED_MSG
-                : rating === value
-                  ? `Rated ${value}/${MAX_RATING} - click to clear`
-                  : `Rate ${value}/${MAX_RATING}`
-            }
+            title={blocked ? CLASSIFY_REMOTE_BLOCKED_MSG : undefined}
             onMouseEnter={() => {
               if (!blocked) setHover(value);
             }}
@@ -246,19 +238,9 @@ export function RatingStars({
               blocked && "cursor-not-allowed opacity-60",
             )}
           >
-            <svg
-              width={size}
-              height={size}
-              viewBox="0 0 16 16"
-              fill={filled ? "currentColor" : "none"}
-              stroke="currentColor"
-              strokeWidth="1.4"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M8 1.8 10 6l4.4.5-3.3 3 .9 4.4L8 11.7 4 13.9l.9-4.4-3.3-3L6 6z" />
-            </svg>
+            <Icon icon={Star} size={size} fill={filled ? "currentColor" : "none"} />
           </button>
+          </Tooltip>
         );
       })}
       {showValue && rating > 0 && (
@@ -336,19 +318,12 @@ export function RatingChip({
           className,
         )}
       >
-        <svg
-          width={compact ? 10 : 12}
-          height={compact ? 10 : 12}
-          viewBox="0 0 16 16"
+        <Icon
+          icon={Star}
+          size={compact ? 10 : 12}
           fill={rating > 0 ? "currentColor" : "none"}
-          stroke="currentColor"
-          strokeWidth="1.4"
-          strokeLinejoin="round"
-          aria-hidden
           className={rating > 0 ? "text-warn" : undefined}
-        >
-          <path d="M8 1.8 10 6l4.4.5-3.3 3 .9 4.4L8 11.7 4 13.9l.9-4.4-3.3-3L6 6z" />
-        </svg>
+        />
         {rating > 0 ? (
           <span className="font-mono text-[10px] tabular-nums">{rating}</span>
         ) : (
@@ -634,13 +609,14 @@ export function TagEditor({
 
   return (
     <>
+      <Tooltip content={blocked ? undefined : "Edit this session's tags"}>
       <button
         ref={triggerRef}
         type="button"
         aria-haspopup="dialog"
         aria-expanded={open}
         disabled={blocked}
-        title={blocked ? CLASSIFY_REMOTE_BLOCKED_MSG : "Edit this session's tags"}
+        title={blocked ? CLASSIFY_REMOTE_BLOCKED_MSG : undefined}
         onClick={(e) => {
           e.stopPropagation();
           if (blocked) return;
@@ -657,6 +633,7 @@ export function TagEditor({
       >
         {label ?? "+ tag"}
       </button>
+      </Tooltip>
 
       {open &&
         createPortal(

@@ -491,11 +491,16 @@ func TestSummary_SourceAuto_KeepsJSONLWhenSessionMissingFromProxy(t *testing.T) 
 	}
 }
 
-// TestSummary_SourceAuto_FingerprintDedup_NullProxySession guards against
-// audit item A2: when an api_turns row landed with session_id=NULL (typical
-// for pre-v1.2.1 pidbridge behaviour), the JSONL row for the same logical
-// turn used to escape the dedup and get summed on top. The fingerprint
-// fallback (model + ts-bucketed-to-minute + token columns) must catch it.
+// TestSummary_SourceAuto_FingerprintDedup_NullProxySession pins the one
+// session rule's domain (lane R2-PARITY-2): an api_turns row with
+// session_id=NULL (the pre-v1.2.1 pidbridge shape, audit item A2) belongs to
+// no session, so sessionmsg.Derive never sees it and it can never erase a
+// session's transcript row. The old minute-bucketed "orphan shape" level did
+// erase it, which made the session's row here disagree with its own session
+// detail header. Both rows now count: the transcript row inside its session,
+// the session-less proxy row as itself. The residual is a double count of a
+// legacy session-less proxy row whose transcript twin exists (2 rows of 6,805
+// session-less proxy rows on the 2026-09-27 grounding install).
 func TestSummary_SourceAuto_FingerprintDedup_NullProxySession(t *testing.T) {
 	database := openTestDB(t)
 	f := seedSession(t, database, "/repo/a", "sess-A", "claude-code")
@@ -544,14 +549,24 @@ func TestSummary_SourceAuto_FingerprintDedup_NullProxySession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Summary: %v", err)
 	}
-	if got.TurnCount != 1 {
-		t.Errorf("TurnCount: got %d want 1 (fingerprint should drop the JSONL dupe)", got.TurnCount)
+	if got.TurnCount != 2 {
+		t.Errorf("TurnCount: got %d want 2 (a session-less proxy row never erases a session's row)", got.TurnCount)
 	}
-	if got.TotalTokens.Input != 1_000_000 {
-		t.Errorf("TotalTokens.Input: got %d want 1_000_000 (no double-count)", got.TotalTokens.Input)
+	if got.TotalTokens.Input != 2_000_000 {
+		t.Errorf("TotalTokens.Input: got %d want 2_000_000", got.TotalTokens.Input)
 	}
-	if got.TotalTokens.Output != 500_000 {
-		t.Errorf("TotalTokens.Output: got %d want 500_000", got.TotalTokens.Output)
+	// The session's own figure is its transcript row alone - what its session
+	// detail header (sessionmsg.Derive) reports.
+	bySession, err := e.Summary(context.Background(), database, Options{
+		GroupBy: GroupBySession, Source: SourceAuto,
+	})
+	if err != nil {
+		t.Fatalf("Summary by session: %v", err)
+	}
+	for _, row := range bySession.Rows {
+		if row.Key == f.sessionID && (row.Tokens.Input != 1_000_000 || row.Tokens.Output != 500_000) {
+			t.Errorf("session row = %+v, want its transcript row's 1_000_000 / 500_000", row.Tokens)
+		}
 	}
 }
 
@@ -870,6 +885,43 @@ func TestSummary_CopilotOutputShadowDeduped(t *testing.T) {
 	}
 }
 
+// TestSummary_CopilotOutputShadowDedupedOneToOne pins 2026-09-22 rework
+// finding #9: pairing is ONE-TO-ONE, not set membership. Two full-usage
+// rows and three output-only shadow rows share the SAME output value
+// (152) in one session — pre-fix, a single set entry "152 is owned by a
+// full row" would have dropped ALL THREE shadow rows, when only two of
+// them have a real full-usage row to pair against. The third (with no
+// remaining pairing capacity) is a legitimate distinct turn and must
+// survive.
+func TestSummary_CopilotOutputShadowDedupedOneToOne(t *testing.T) {
+	database := openTestDB(t)
+	now := time.Now().UTC()
+
+	cp := seedSession(t, database, "/repo/cp-1to1", "sess-cp-1to1", "copilot-cli")
+	// Two full-usage rows, same output value.
+	insertTokenUsageWithEventID(t, database, cp, now, "copilot-cli", "claude-haiku-4-5-20251001", 100, 152, "approximate", "full-1")
+	insertTokenUsageWithEventID(t, database, cp, now.Add(time.Second), "copilot-cli", "claude-haiku-4-5-20251001", 200, 152, "approximate", "full-2")
+	// Three output-only shadow rows, same output value — only 2 have
+	// pairing capacity.
+	insertTokenUsageWithEventID(t, database, cp, now, "copilot-cli", "claude-haiku-4.5", 0, 152, "unreliable", "shadow-1")
+	insertTokenUsageWithEventID(t, database, cp, now.Add(time.Second), "copilot-cli", "claude-haiku-4.5", 0, 152, "unreliable", "shadow-2")
+	insertTokenUsageWithEventID(t, database, cp, now.Add(2*time.Second), "copilot-cli", "claude-haiku-4.5", 0, 152, "unreliable", "shadow-3-no-capacity")
+
+	e := NewEngine(config.IntelligenceConfig{})
+	got, err := e.Summary(context.Background(), database, Options{GroupBy: GroupByNone, Source: SourceJSONL})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	// 2 full rows + 1 unpaired shadow row survive = 3 turns, output
+	// 152+152+152 = 456 (the two paired shadows are dropped).
+	if got.TurnCount != 3 {
+		t.Errorf("TurnCount = %d, want 3 (2 full rows + 1 shadow with no pairing capacity)", got.TurnCount)
+	}
+	if got.TotalTokens.Output != 456 {
+		t.Errorf("TotalTokens.Output = %d, want 456 (152*3 — the third shadow is a real extra turn, not a duplicate)", got.TotalTokens.Output)
+	}
+}
+
 func TestSummary_DaysFilter(t *testing.T) {
 	database := openTestDB(t)
 	f := seedSession(t, database, "/repo/a", "sess-A", "claude-code")
@@ -917,6 +969,47 @@ func TestSummary_ProxyCostUSDRespected(t *testing.T) {
 	}
 	if got.TotalCost != 42.0 {
 		t.Errorf("recorded cost_usd should win: got %v, want 42", got.TotalCost)
+	}
+}
+
+// TestSummary_NegativeRecordedCostIsRejected pins 2026-09-22 rework
+// finding #14: a malformed/negative recorded cost_usd must NEVER win
+// over the pricing table — priceRow now only trusts a recorded cost
+// when it is strictly positive. A known model with a real per-token
+// rate must price normally instead of silently going negative.
+func TestSummary_NegativeRecordedCostIsRejected(t *testing.T) {
+	database := openTestDB(t)
+	f := seedSession(t, database, "/repo/negcost", "sess-negcost", "claude-code")
+	now := time.Now().UTC()
+	_, err := database.ExecContext(context.Background(),
+		`INSERT INTO api_turns (session_id, project_id, timestamp, provider, model,
+			input_tokens, output_tokens, cost_usd)
+		 VALUES (?, ?, ?, 'anthropic', 'claude-sonnet-4-20250514', 1000000, 0, ?)`,
+		f.sessionID, f.projectID, now.Format(time.RFC3339Nano), -4.0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := NewEngine(config.IntelligenceConfig{})
+	got, err := e.Summary(context.Background(), database, Options{
+		GroupBy: GroupByModel, Source: SourceProxy,
+	})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if got.TotalCost < 0 {
+		t.Fatalf("TotalCost = %v, must never be negative", got.TotalCost)
+	}
+	if got.TotalCost == -4.0 {
+		t.Fatalf("TotalCost = %v, the negative recorded cost must not win", got.TotalCost)
+	}
+	// claude-sonnet-4-20250514 has a real pricing-table entry, so the
+	// fallback price must be a real positive number, not a bare 0 miss.
+	if got.TotalCost <= 0 {
+		t.Errorf("TotalCost = %v, want > 0 (priced through the table instead of the rejected negative recorded cost)", got.TotalCost)
+	}
+	if got.UnpricedTurnCount != 0 {
+		t.Errorf("UnpricedTurnCount = %d, want 0 (the model IS priced — rejecting the negative recorded cost falls through to a real pricing-table hit, not a miss)", got.UnpricedTurnCount)
 	}
 }
 
@@ -1212,6 +1305,61 @@ func TestSummary_SourceAuto_TaggedAsObserverTool(t *testing.T) {
 	}
 	if !tools["observer-rolling-summary"] {
 		t.Errorf("expected an 'observer-rolling-summary' tool row, got %v", tools)
+	}
+}
+
+// TestSummary_SourceAuto_SummaryCallsGroupByProjectParity pins 2026-09-22
+// rework finding #3: an UNSCOPED GroupByProject caller (the Projects
+// list, `/api/cost?group_by=project`) must resolve a summary_calls row's
+// project the same way a project-SCOPED caller (TurnRows(ProjectID),
+// the detail panel) already does — landing it under its real project
+// key, never under "<no-project>". Pre-fix, loadSummaryCallRows only
+// joined sessions/projects when a project scope was requested, so the
+// row's rawRow.projectPath was never populated for an unscoped
+// GroupByProject rollup.
+func TestSummary_SourceAuto_SummaryCallsGroupByProjectParity(t *testing.T) {
+	t.Parallel()
+	database := openTestDB(t)
+	f := seedSession(t, database, "/repo/summarycalls", "sess-summarycalls", "claude-code")
+	now := time.Now().UTC()
+	insertSummaryCall(t, database, f.sessionID, now, "claude-haiku-4-5", 5000, 200, 0.0042)
+
+	e := NewEngine(config.IntelligenceConfig{})
+
+	// The project-SCOPED per-turn view (what the detail panel uses).
+	turns, err := e.TurnRows(context.Background(), database, Options{ProjectID: f.projectID, Days: 1})
+	if err != nil {
+		t.Fatalf("TurnRows: %v", err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("TurnRows returned %d rows, want 1", len(turns))
+	}
+
+	// The UNSCOPED GroupByProject rollup (what the Projects list uses).
+	summary, err := e.Summary(context.Background(), database, Options{GroupBy: GroupByProject, Days: 1, Limit: 1000})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	var projectRow, noProjectRow *Row
+	for i := range summary.Rows {
+		switch summary.Rows[i].Key {
+		case "/repo/summarycalls":
+			projectRow = &summary.Rows[i]
+		case "<no-project>":
+			noProjectRow = &summary.Rows[i]
+		}
+	}
+	if projectRow == nil {
+		t.Fatalf("Summary(GroupByProject) has no row for /repo/summarycalls: %+v", summary.Rows)
+	}
+	if projectRow.TurnCount != 1 {
+		t.Errorf("project row TurnCount = %d, want 1", projectRow.TurnCount)
+	}
+	if d := projectRow.CostUSD - turns[0].CostUSD; d < -1e-9 || d > 1e-9 {
+		t.Errorf("project row CostUSD = %v, want %v (must match TurnRows)", projectRow.CostUSD, turns[0].CostUSD)
+	}
+	if noProjectRow != nil {
+		t.Errorf("the summary_calls row landed under <no-project> instead of its real project: %+v", noProjectRow)
 	}
 }
 
@@ -1557,5 +1705,245 @@ func TestSummary_AvgLatencyMS_IgnoresZeroProxy(t *testing.T) {
 	}
 	if got := sum.Rows[0].AvgLatencyMS; got != 100 {
 		t.Errorf("AvgLatencyMS: got %d, want 100 (zero-latency row excluded)", got)
+	}
+}
+
+// ---------------------------------------------------------------------
+// 2026-09-22 arc review (SOL-F1..F9): reasoning-aware dedup, per-index
+// dedup capacity, session-aggregate reconciliation, and COALESCE
+// project scoping. See docs/plans/projects-page-roi-and-commit-
+// alignment-plan-2026-09-21.md's rework log and A-REPORT.md.
+// ---------------------------------------------------------------------
+
+// insertJSONLTurnWithReasoning seeds a token_usage row with an explicit
+// reasoning_tokens split — insertTokenUsage/insertTokenUsageWithEventID
+// don't expose that column.
+func insertJSONLTurnWithReasoning(t *testing.T, database *sql.DB, f fixture, ts time.Time, tool, model string, in, out, reasoning int64, eventID string) {
+	t.Helper()
+	if _, err := database.ExecContext(context.Background(),
+		`INSERT INTO token_usage (session_id, timestamp, tool, model,
+			input_tokens, output_tokens, reasoning_tokens, source, reliability,
+			source_file, source_event_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'jsonl', 'accurate', ?, ?)`,
+		f.sessionID, ts.UTC().Format(time.RFC3339Nano), tool, model, in, out, reasoning,
+		"file-"+f.sessionID, eventID); err != nil {
+		t.Fatalf("insert jsonl turn with reasoning: %v", err)
+	}
+}
+
+// TestSummary_SourceAuto_ReasoningSplitDedup is the end-to-end SOL-F1
+// regression: a proxy turn reports Output=100 (gross, reasoning folded
+// in — api_turns has no reasoning column) while the JSONL twin for the
+// SAME turn reports Output=80 + Reasoning=20 (net). Pre-fix, shapeKey
+// hashed raw Output alone, so the two rows looked like different turns
+// and both survived dedup, double-billing the reasoning subset.
+func TestSummary_SourceAuto_ReasoningSplitDedup(t *testing.T) {
+	t.Parallel()
+	database := openTestDB(t)
+	f := seedSession(t, database, "/repo/reasoning", "sess-reasoning", "codex")
+	now := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+	insertAPITurn(t, database, f, now, "gpt-5.4", 1000, 100) // gross output incl. reasoning
+	insertJSONLTurnWithReasoning(t, database, f, now.Add(5*time.Second), "codex", "gpt-5.4", 1000, 80, 20, "evt-reasoning-1")
+
+	e := NewEngine(config.IntelligenceConfig{})
+	got, err := e.Summary(context.Background(), database, Options{GroupBy: GroupByNone, Source: SourceAuto})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if got.TurnCount != 1 {
+		t.Fatalf("TurnCount = %d, want 1 (reasoning-split shape must collapse proxy+jsonl)", got.TurnCount)
+	}
+	// The proxy row is kept and carries its twin's split, exactly as the
+	// session detail header (sessionmsg.Derive) reports it: 80 visible + 20
+	// reasoning, never the gross 100 on top of the twin's 80 + 20.
+	if got.TotalTokens.Output != 80 || got.TotalTokens.Reasoning != 20 {
+		t.Errorf("TotalTokens output/reasoning = %d/%d, want 80/20 (proxy row kept with its twin's split, not doubled)",
+			got.TotalTokens.Output, got.TotalTokens.Reasoning)
+	}
+}
+
+// TestSummary_SourceAuto_SessionAggregateReconciliationEndToEnd runs
+// the session-cumulative reconciliation (sessionmsg.reconcileCumulative,
+// applied through the stored verdicts) through the full Summary(SourceAuto) path
+// (SOL-F3): a droid-shaped session-cumulative token_usage row
+// ("tokens:<session>") must not be summed alongside the SAME session's
+// api_turns rows once the proxy has already seen more of the session
+// than the aggregate reports.
+func TestSummary_SourceAuto_SessionAggregateReconciliationEndToEnd(t *testing.T) {
+	t.Parallel()
+	database := openTestDB(t)
+	f := seedSession(t, database, "/repo/droid", "sess-droid", "droid")
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	// Two proxy turns the whole session's life (1500 total tokens).
+	insertAPITurn(t, database, f, now, "claude-sonnet-4-6", 1000, 400)
+	insertAPITurn(t, database, f, now.Add(time.Minute), "claude-sonnet-4-6", 100, 0)
+	// A stale session-cumulative snapshot from BEFORE the second proxy
+	// turn landed (900 total) — less than what the proxy now covers.
+	insertJSONLTurnWithReasoning(t, database, f, now.Add(30*time.Second), "droid", "claude-sonnet-4-6", 800, 100, 0, "tokens:sess-droid")
+
+	e := NewEngine(config.IntelligenceConfig{})
+	got, err := e.Summary(context.Background(), database, Options{GroupBy: GroupByNone, Source: SourceAuto})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if got.TurnCount != 2 {
+		t.Fatalf("TurnCount = %d, want 2 (both proxy turns kept, session-aggregate dropped as stale)", got.TurnCount)
+	}
+	if got.TotalTokens.Input != 1100 {
+		t.Errorf("TotalTokens.Input = %d, want 1100 (1000+100 from the two proxy turns; the 800-token aggregate must not be added)", got.TotalTokens.Input)
+	}
+}
+
+// TestSummary_SourceAuto_OneToOneDedupCapacity is the SOL-F4/F7
+// regression: ONE proxy row offers exactly ONE unit of dedup capacity.
+// Two independent JSONL turns that happen to share the same session +
+// token shape in the same window must not BOTH be dropped just because
+// one proxy row of that shape exists — only one is a true duplicate;
+// the other is a legitimate second turn and must survive.
+func TestSummary_SourceAuto_OneToOneDedupCapacity(t *testing.T) {
+	t.Parallel()
+	database := openTestDB(t)
+	f := seedSession(t, database, "/repo/onetoone", "sess-onetoone", "codex")
+	now := time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC)
+	// One proxy row of this shape (turnID-less on the JSONL side, so the
+	// match falls through to the session-shape queue, same as codex).
+	insertAPITurn(t, database, f, now, "gpt-5.4", 100, 50)
+	// TWO independent JSONL rows sharing the identical session+shape —
+	// only one of them is this proxy row's twin.
+	insertJSONLTurnWithReasoning(t, database, f, now.Add(5*time.Second), "codex", "gpt-5.4", 100, 50, 0, "tk:rollout-1:L1")
+	insertJSONLTurnWithReasoning(t, database, f, now.Add(6*time.Second), "codex", "gpt-5.4", 100, 50, 0, "tk:rollout-2:L1")
+
+	e := NewEngine(config.IntelligenceConfig{})
+	got, err := e.Summary(context.Background(), database, Options{GroupBy: GroupByNone, Source: SourceAuto})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if got.TurnCount != 2 {
+		t.Fatalf("TurnCount = %d, want 2 (1 proxy row consumes exactly 1 JSONL duplicate; the second independent JSONL turn must survive)", got.TurnCount)
+	}
+}
+
+// TestEngine_TurnRows_MatchesSummaryGroupByProject pins SOL-F6: TurnRows
+// (the Projects-page per-turn export) and Summary's GroupByProject
+// rollup run the SAME loadRows+priceRow pipeline, so a project's total
+// spend and turn count must agree exactly between the two grains.
+func TestEngine_TurnRows_MatchesSummaryGroupByProject(t *testing.T) {
+	t.Parallel()
+	database := openTestDB(t)
+	f := seedSession(t, database, "/repo/turnrows", "sess-turnrows", "claude-code")
+	now := time.Date(2026, 9, 22, 8, 0, 0, 0, time.UTC)
+	insertAPITurn(t, database, f, now, "claude-opus-4", 1000, 200)
+	insertAPITurn(t, database, f, now.Add(time.Hour), "claude-opus-4", 500, 100)
+	insertJSONLTurnWithReasoning(t, database, f, now.Add(2*time.Hour), "claude-code", "claude-sonnet-4-6", 300, 50, 0, "evt-turnrows-1")
+
+	e := NewEngine(config.IntelligenceConfig{})
+	turns, err := e.TurnRows(context.Background(), database, Options{ProjectID: f.projectID})
+	if err != nil {
+		t.Fatalf("TurnRows: %v", err)
+	}
+	if len(turns) != 3 {
+		t.Fatalf("TurnRows returned %d rows, want 3", len(turns))
+	}
+	var turnRowsTotal float64
+	for _, tr := range turns {
+		turnRowsTotal += tr.CostUSD
+	}
+
+	summary, err := e.Summary(context.Background(), database, Options{GroupBy: GroupByProject, Limit: 1000})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	var projectRow *Row
+	for i := range summary.Rows {
+		if summary.Rows[i].Key == "/repo/turnrows" {
+			projectRow = &summary.Rows[i]
+		}
+	}
+	if projectRow == nil {
+		t.Fatalf("Summary(GroupByProject) has no row for /repo/turnrows: %+v", summary.Rows)
+	}
+	if projectRow.TurnCount != 3 {
+		t.Errorf("Summary project row TurnCount = %d, want 3 (must match TurnRows' count)", projectRow.TurnCount)
+	}
+	if d := turnRowsTotal - projectRow.CostUSD; d < -1e-9 || d > 1e-9 {
+		t.Errorf("TurnRows total $%.6f != Summary(GroupByProject) $%.6f — list and detail must price identically", turnRowsTotal, projectRow.CostUSD)
+	}
+}
+
+// TestLoadProxyRows_ProjectIDScopesViaSessionFallback pins the
+// COALESCE(at.project_id, s.project_id) fix (SOL-F6/F9): a real
+// api_turns row NEVER carries its own project_id (the proxy learns the
+// session id, not the cwd) — every grounded install's api_turns.project_id
+// is NULL. Scoping by ProjectID must still find the row through the
+// session's project_id.
+func TestLoadProxyRows_ProjectIDScopesViaSessionFallback(t *testing.T) {
+	t.Parallel()
+	database := openTestDB(t)
+	f := seedSession(t, database, "/repo/nullproject", "sess-nullproject", "claude-code")
+	now := time.Date(2026, 9, 22, 7, 0, 0, 0, time.UTC)
+	// Insert directly with project_id = NULL on api_turns, the real-world shape.
+	if _, err := database.ExecContext(context.Background(),
+		`INSERT INTO api_turns (session_id, project_id, timestamp, provider, model, input_tokens, output_tokens, cost_usd)
+		 VALUES (?, NULL, ?, 'anthropic', 'claude-opus-4', 100, 50, 1.00)`,
+		f.sessionID, now.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("seed null-project api_turns: %v", err)
+	}
+
+	e := NewEngine(config.IntelligenceConfig{})
+	turns, err := e.TurnRows(context.Background(), database, Options{ProjectID: f.projectID, Source: SourceProxy})
+	if err != nil {
+		t.Fatalf("TurnRows: %v", err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("TurnRows(ProjectID=%d) = %d rows, want 1 (session-fallback must resolve the NULL-project proxy row)", f.projectID, len(turns))
+	}
+	if turns[0].CostUSD != 1.00 {
+		t.Errorf("turns[0].CostUSD = %v, want 1.00", turns[0].CostUSD)
+	}
+}
+
+// TestEngine_TurnRows_AppliesNoiseFilterAndCopilotShadowCollapse pins
+// SOL-F3/F4 of the 2026-09-22 arc review: TurnRows runs the SAME
+// loadRows pipeline Summary does, so the Projects page automatically
+// inherits the noise filter (isNoiseRow — an all-zero-usage row
+// contributes no turn) and the Copilot output-only shadow collapse
+// (dropCopilotOutputShadows), neither of which the pre-fix
+// projectdetail.go dedup (a hand-rolled copy that only matched
+// proxy-vs-JSONL turn identity) ever applied.
+func TestEngine_TurnRows_AppliesNoiseFilterAndCopilotShadowCollapse(t *testing.T) {
+	t.Parallel()
+	database := openTestDB(t)
+	now := time.Now().UTC()
+
+	// Noise: an all-zero-token, zero-cost row must not become a turn.
+	noise := seedSession(t, database, "/repo/noiseturns", "sess-noise-tr", "claude-code")
+	insertTokenUsage(t, database, noise, now, "claude-code", "claude-sonnet-4-6", 0, 0, "approximate")
+	insertTokenUsage(t, database, noise, now.Add(time.Minute), "claude-code", "claude-sonnet-4-6", 100, 50, "approximate")
+
+	// Copilot shadow: full-usage row + an output-only duplicate must
+	// collapse to ONE turn.
+	cp := seedSessionInProject(t, database, noise, "sess-cp-tr", "copilot-cli")
+	insertTokenUsageWithEventID(t, database, cp, now, "copilot-cli", "claude-haiku-4-5-20251001", 16267, 152, "approximate", "log:null:1")
+	insertTokenUsageWithEventID(t, database, cp, now, "copilot-cli", "claude-haiku-4.5", 0, 152, "unreliable", "evt:token")
+
+	e := NewEngine(config.IntelligenceConfig{})
+	turns, err := e.TurnRows(context.Background(), database, Options{ProjectID: noise.projectID, Source: SourceJSONL})
+	if err != nil {
+		t.Fatalf("TurnRows: %v", err)
+	}
+	var noiseSessionTurns, copilotSessionTurns int
+	for _, tr := range turns {
+		switch tr.SessionID {
+		case "sess-noise-tr":
+			noiseSessionTurns++
+		case "sess-cp-tr":
+			copilotSessionTurns++
+		}
+	}
+	if noiseSessionTurns != 1 {
+		t.Errorf("noise session turns = %d, want 1 (the all-zero row must be filtered by TurnRows)", noiseSessionTurns)
+	}
+	if copilotSessionTurns != 1 {
+		t.Errorf("copilot session turns = %d, want 1 (the output-only shadow must collapse into the full-usage row)", copilotSessionTurns)
 	}
 }

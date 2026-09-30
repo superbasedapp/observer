@@ -13,6 +13,10 @@ type Props = TooltipProps<ValueType, NameType> & {
   labelFormatter?: (raw: string) => string;
   formatItem?: (name: string, value: number) => string;
   extra?: (row: Record<string, number | string>) => string | null;
+  // Item order. "reverse" (default) lists the last-drawn series first,
+  // which matches a stack read top-down. "value" lists largest first, for
+  // overlaid (unstacked) series where draw order says nothing about height.
+  sort?: "reverse" | "value";
 };
 
 export function ChartTooltip({
@@ -22,6 +26,7 @@ export function ChartTooltip({
   labelFormatter,
   formatItem,
   extra,
+  sort = "reverse",
 }: Props) {
   if (!active || !payload || !payload.length) return null;
 
@@ -33,10 +38,12 @@ export function ChartTooltip({
     <div className="rounded-2 border border-line-3 bg-bg-3/95 px-3 py-2 text-[11px] shadow-2 backdrop-blur">
       <div className="mb-1 text-fg-3">{labelOut}</div>
       <ul className="space-y-0.5">
-        {payload
-          .slice()
-          .reverse()
-          .map((p, i) => (
+        {(sort === "value"
+          ? payload
+              .slice()
+              .sort((a, b) => Number(b.value ?? 0) - Number(a.value ?? 0))
+          : payload.slice().reverse()
+        ).map((p, i) => (
             <li key={i} className="flex items-center gap-2 text-fg-1">
               <span
                 className="h-1.5 w-1.5 rounded-full"

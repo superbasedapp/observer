@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +93,9 @@ type toolsStatusWire struct {
 		ActionCount  int64  `json:"action_count"`
 		LastSeenAt   string `json:"last_seen_at"`
 	} `json:"tools"`
+	MissingDefaultAdapters    []string `json:"missing_default_adapters"`
+	MissingDefaultRemediation string   `json:"missing_default_remediation"`
+	MissingDefaultNote        string   `json:"missing_default_note"`
 }
 
 // TestToolsStatusMatrix pins the composition rules: catalog detection
@@ -145,6 +149,128 @@ func TestToolsStatusMatrix(t *testing.T) {
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST: got %d want 405", rr.Code)
 	}
+}
+
+// TestToolsStatusMissingDefaultAdapters pins the Invariant #51
+// diagnostic on GET /api/tools/status (the grokbot 2026-09-22 capture
+// gap: grokbot was a compiled-in default adapter absent from this
+// operator's explicit enabled_adapters array, so nothing ever captured
+// it — see docs/new-adapter-checklist.md and the daemon's own startup
+// WARN in cmd/observer/main.go::warnMissingDefaultsFromAllowList).
+//
+// The response's missing_default_adapters/_remediation/_note fields
+// must stay byte-for-byte consistent with config.AdoptEnabledAdapters
+// — the SAME pure diff the CLI's `observer config adopt-defaults` and
+// the daemon startup WARN already use — since this handler is a third
+// reader of that one function, never a second implementation of the
+// diff.
+func TestToolsStatusMissingDefaultAdapters(t *testing.T) {
+	catalog := []ToolCatalogEntry{{Tool: "aaa"}, {Tool: "bbb"}, {Tool: "ccc"}}
+
+	tests := []struct {
+		name           string
+		configBody     string // "" means no config file at all
+		wantMissing    []string
+		wantRemediate  bool
+		wantNoteSubstr string // "" means no note expected
+	}{
+		{
+			name:        "no config file at all",
+			configBody:  "",
+			wantMissing: nil,
+		},
+		{
+			name:        "no explicit enabled_adapters key",
+			configBody:  "[observer.watch]\nmax_file_size_mb = 50\n",
+			wantMissing: nil,
+		},
+		{
+			name:          "explicit list missing two of three catalog defaults",
+			configBody:    "[observer.watch]\nenabled_adapters = [\"aaa\"]\n",
+			wantMissing:   []string{"bbb", "ccc"},
+			wantRemediate: true,
+		},
+		{
+			name:        "explicit list already covers every default",
+			configBody:  "[observer.watch]\nenabled_adapters = [\"aaa\", \"bbb\", \"ccc\", \"zzz\"]\n",
+			wantMissing: nil,
+		},
+		{
+			name:           "unsafe-to-edit array is reported as a note, never silently empty",
+			configBody:     "[observer.watch]\nenabled_adapters = local_list\n",
+			wantMissing:    nil,
+			wantNoteSubstr: "not a single literal array",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tdir := t.TempDir()
+			cfgPath := filepath.Join(tdir, "config.toml")
+			if tc.configBody != "" {
+				if err := os.WriteFile(cfgPath, []byte(tc.configBody), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			database, err := openTestDB(context.Background(), db.Options{Path: filepath.Join(tdir, "d.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { database.Close() })
+
+			server, err := New(Options{DB: database, ConfigPath: cfgPath, ToolCatalog: catalog})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rr := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/tools/status", nil))
+			if rr.Code != 200 {
+				t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+			}
+			var got toolsStatusWire
+			if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+				t.Fatal(err)
+			}
+
+			if !slicesEqualUnordered(got.MissingDefaultAdapters, tc.wantMissing) {
+				t.Errorf("missing_default_adapters = %v, want %v", got.MissingDefaultAdapters, tc.wantMissing)
+			}
+			hasRemediation := got.MissingDefaultRemediation != ""
+			if hasRemediation != tc.wantRemediate {
+				t.Errorf("missing_default_remediation present=%v, want %v (value=%q)", hasRemediation, tc.wantRemediate, got.MissingDefaultRemediation)
+			}
+			if tc.wantRemediate && got.MissingDefaultRemediation != "observer config adopt-defaults --write" {
+				t.Errorf("missing_default_remediation = %q, want the exact CLI command", got.MissingDefaultRemediation)
+			}
+			if tc.wantNoteSubstr == "" {
+				if got.MissingDefaultNote != "" {
+					t.Errorf("missing_default_note = %q, want empty", got.MissingDefaultNote)
+				}
+			} else if !strings.Contains(got.MissingDefaultNote, tc.wantNoteSubstr) {
+				t.Errorf("missing_default_note = %q, want it to contain %q", got.MissingDefaultNote, tc.wantNoteSubstr)
+			}
+		})
+	}
+}
+
+// slicesEqualUnordered compares two string slices ignoring order and
+// treating nil/empty as equal — handleToolsStatus's missing-adapters
+// list order is registry order (stable but not the point of this
+// test), and json.Decode leaves an absent/empty JSON array as nil.
+func slicesEqualUnordered(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ac := append([]string(nil), a...)
+	bc := append([]string(nil), b...)
+	sort.Strings(ac)
+	sort.Strings(bc)
+	for i := range ac {
+		if ac[i] != bc[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestProbeFromResultReportsPluginWiring is codex finding M4: a

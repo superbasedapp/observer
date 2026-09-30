@@ -1,9 +1,13 @@
 import clsx from "clsx";
 import type { ReactNode } from "react";
+import type { LucideIcon } from "lucide-react";
+import { Icon } from "./Icon";
 
 export type Segment<T extends string> = {
   value: T;
   label: ReactNode;
+  /** Optional lucide glyph before the label (drawn through <Icon>). */
+  icon?: LucideIcon;
   /** When true the segment is not selectable; `disabledReason` is then
    * required (honest-disabled-copy convention — see Tabs.tsx). */
   disabled?: boolean;
@@ -47,7 +51,7 @@ export function SegmentedControl<T extends string>({
             title={opt.disabled ? opt.disabledReason : undefined}
             onClick={() => !opt.disabled && onChange(opt.value)}
             className={clsx(
-              "rounded-1 font-medium transition-colors",
+              "inline-flex items-center gap-1 rounded-1 font-medium transition-colors",
               padding,
               opt.disabled
                 ? "cursor-not-allowed text-fg-4"
@@ -56,6 +60,7 @@ export function SegmentedControl<T extends string>({
                   : "text-fg-2 hover:text-fg-1",
             )}
           >
+            {opt.icon && <Icon icon={opt.icon} size="xs" className="shrink-0" />}
             {opt.label}
           </button>
         );

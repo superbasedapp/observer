@@ -91,18 +91,31 @@ func matchesStateDBShape(path string) bool {
 // fork and keeps the same per-OS globalStorage layout. Returns "" for
 // an unrecognized h.OS so callers can skip it without special-casing.
 func cursorGlobalStorageDir(h crossmount.HomeRoot) string {
+	dir := cursorUserDataDir(h)
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "User", "globalStorage")
+}
+
+// cursorUserDataDir resolves the per-home Cursor (VS Code fork)
+// user-data directory — the parent of both `User/globalStorage`
+// (state.vscdb) and `logs/` (the hooks output-channel log, see
+// hookslog.go). The ONE owner of the per-OS table so the two readers
+// cannot drift. Returns "" for an unrecognized h.OS.
+func cursorUserDataDir(h crossmount.HomeRoot) string {
 	switch h.OS {
 	case crossmount.OSWindows:
 		if h.Origin == "native" && runtime.GOOS == "windows" {
 			if appData := os.Getenv("APPDATA"); appData != "" {
-				return filepath.Join(appData, "Cursor", "User", "globalStorage")
+				return filepath.Join(appData, "Cursor")
 			}
 		}
-		return filepath.Join(h.Path, "AppData", "Roaming", "Cursor", "User", "globalStorage")
+		return filepath.Join(h.Path, "AppData", "Roaming", "Cursor")
 	case crossmount.OSDarwin:
-		return filepath.Join(h.Path, "Library", "Application Support", "Cursor", "User", "globalStorage")
+		return filepath.Join(h.Path, "Library", "Application Support", "Cursor")
 	case crossmount.OSLinux:
-		return filepath.Join(h.Path, ".config", "Cursor", "User", "globalStorage")
+		return filepath.Join(h.Path, ".config", "Cursor")
 	}
 	return ""
 }
@@ -245,21 +258,34 @@ func (a *Adapter) parseStateDBFile(ctx context.Context, path string, fromOffset 
 		return c
 	}
 
-	for cid, val := range sessions {
-		if coveredElsewhere(cid) {
-			continue
+	// A conversation with no resolvable workspace (empty-window chat,
+	// Cursor Cloud Agent) gets SyntheticProjectRoot: store.Ingest drops
+	// any event with an empty ProjectRoot, so without it the very
+	// conversations this reader exists for never landed a single row.
+	rootFor := func(cid string) string {
+		if r := roots[cid]; r != "" {
+			return r
 		}
-		if ev, ok := a.composerSessionEvent(val, cid, path, roots[cid], ts); ok {
-			res.ToolEvents = append(res.ToolEvents, ev)
-		}
+		return SyntheticProjectRoot
 	}
+	hasBubble := map[string]bool{}
+	for _, b := range bubbles {
+		hasBubble[b.composerID] = true
+	}
+	res.ToolEvents = append(res.ToolEvents,
+		a.composerSessionEvents(sessions, roots, hasBubble, coveredElsewhere, rootFor, path, ts)...)
 	for _, b := range bubbles {
 		if coveredElsewhere(b.composerID) {
 			continue
 		}
-		if ev, ok := a.bubbleEvent(b.value, b.composerID, b.bubbleID, path, roots[b.composerID], ts); ok {
+		if ev, ok := a.bubbleEvent(b.value, b.composerID, b.bubbleID, path, rootFor(b.composerID), ts); ok {
 			res.ToolEvents = append(res.ToolEvents, ev)
 		}
+	}
+	// A placeholder-rooted conversation the store already knows under a
+	// real folder keeps that folder (ResolveSyntheticRoots).
+	if err := ResolveSyntheticRoots(ctx, res.ToolEvents, nil, a.rootLookup); err != nil {
+		res.Warnings = append(res.Warnings, err.Error())
 	}
 
 	return res, nil
@@ -406,6 +432,49 @@ func cursorWorkspaceRoots(db *sql.DB) map[string]string {
 // `name` is JSON `null` on some rows (a conversation the user never
 // titled): Go decodes a null into the zero string, so no tolerant type
 // is needed there.
+// composerSessionEvents emits one session_start per composerData row
+// not already captured elsewhere. Under the placeholder root, only a
+// conversation that has content may bootstrap a session: Cursor writes a
+// composerData row for every draft and every opened-but-never-used chat
+// (41 of 138 rows on the 2026-09-23 grounding store, incl. `draft-*`),
+// and each would otherwise become a phantom "[cursor]" session with no
+// rows.
+func (a *Adapter) composerSessionEvents(sessions map[string][]byte, roots map[string]string, hasBubble map[string]bool,
+	coveredElsewhere func(string) bool, rootFor func(string) string, path string, ts time.Time,
+) []models.ToolEvent {
+	var out []models.ToolEvent
+	for cid, val := range sessions {
+		if coveredElsewhere(cid) {
+			continue
+		}
+		if roots[cid] == "" && !composerWorthBootstrapping(cid, val, hasBubble[cid]) {
+			continue
+		}
+		if ev, ok := a.composerSessionEvent(val, cid, path, rootFor(cid), ts); ok {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// composerWorthBootstrapping reports whether a root-less composerData
+// row describes a real conversation: a Cursor Cloud Agent (`bc-` id,
+// whose turns run remotely), one whose own header list names at least
+// one bubble (fullConversationHeadersOnly, current builds), or one with
+// a bubble in the same delta (builds without the header list).
+func composerWorthBootstrapping(composerID string, raw []byte, bubbleInDelta bool) bool {
+	if bubbleInDelta || strings.HasPrefix(composerID, "bc-") {
+		return true
+	}
+	var doc struct {
+		Headers []json.RawMessage `json:"fullConversationHeadersOnly"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return false
+	}
+	return len(doc.Headers) > 0
+}
+
 type composerDataDoc struct {
 	Name        string         `json:"name"`
 	CreatedAt   flexTime       `json:"createdAt"`

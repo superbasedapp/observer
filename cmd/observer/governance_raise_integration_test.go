@@ -29,16 +29,26 @@ const (
 )
 
 // raiseChainGrant builds a grant carrying capture.pin (populates
-// Effective.Share from the org body's share block) plus the managed
-// extraction authority. tenancy selects the plane: govern.ConsentManaged for
-// the enterprise raise, govern.ConsentInteractive for the individual floor.
+// Effective.Share from the org body's share block) plus the PER-TIER
+// extraction authorities the two tier tests below drive (tool bodies, full
+// traces). tenancy selects the plane: govern.ConsentManaged for the
+// enterprise raise, govern.ConsentInteractive for the individual floor.
+//
+// It deliberately does NOT carry the extract.managed umbrella: since Agent
+// Access R9.5 / R11.10 (2026-09-24) the umbrella alone on a managed node IS
+// the full-content raise (govern.Effective.GrantsEnterpriseContent →
+// store.ShareOptions.EnterpriseGranted → shipsRawContent), so a fixture
+// carrying it would ship raw paths by design and could no longer prove the
+// tier ORTHOGONALITY these tests exist for. TestManagedRaiseChainUmbrella
+// pins the umbrella's own behaviour.
 func raiseChainGrant(now time.Time, tenancy string) *govern.Grant {
 	return &govern.Grant{
 		OrgKey: "ok", Generation: 2, OrgName: "Acme", KeyPinSHA256: "pin",
 		ConsentMode: tenancy,
 		Authority: []string{
 			govern.AuthorityCapturePin,
-			govern.AuthorityExtractManaged,
+			govern.AuthorityExtractToolBodies,
+			govern.AuthorityExtractTraces,
 		},
 		GrantedAt: now.Add(-time.Hour), ExpiresAt: now.Add(30 * 24 * time.Hour),
 	}
@@ -201,6 +211,11 @@ func TestManagedRaiseChainPerTierIsolation(t *testing.T) {
 	if !umbrella.CacheDetail || !umbrella.FullToolBodies {
 		t.Fatalf("umbrella extract.managed did not raise both tiers; ShareOptions=%+v", umbrella)
 	}
+	// A single per-tier token is NOT the enterprise-content grant: it raises
+	// its tier and nothing else, and raw content stays where the node left it.
+	if managed.EnterpriseGranted || managed.ShipsRawContent() {
+		t.Fatalf("a lone extract.cache grant set EnterpriseGranted — the per-tier split leaked into raw content; ShareOptions=%+v", managed)
+	}
 
 	// The same single-tier grant is inert on the individual plane.
 	individual := resolveRaiseBody(t, raiseChainGrantAuth(now, govern.ConsentInteractive, govern.AuthorityExtractCache), body)
@@ -223,4 +238,59 @@ func raiseBatchUnder(ctx context.Context, t *testing.T, share store.ShareOptions
 		t.Fatalf("marshal batch: %v", err)
 	}
 	return raw
+}
+
+// TestManagedRaiseChainUmbrella is the W4f (Agent Access R9.5 / R11.10,
+// PR-014) end-to-end proof for an ALREADY-ENROLLED teams/enterprise node: an
+// org-signed grant carrying the extract.managed umbrella, on a MANAGED
+// enrolment, raises the node to full content through the real Resolve →
+// lowerShareOptions → SelectUnpushedSince chain — raw paths ship — with the
+// node's own config left at the metadata-only floor (no config rewrite is
+// involved anywhere in this chain). The identical grant on an INDIVIDUAL
+// enrolment ships nothing; and an org body that deliberately LOWERS
+// full_content makes the raise yield (intentional admin lowering preserved).
+func TestManagedRaiseChainUmbrella(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	// A body that says nothing about full_content: the grant alone decides.
+	const silentBody = `{"schema":2,"share":{"cache_detail":true}}`
+
+	managed := resolveRaiseBody(t, raiseChainGrantAuth(now, govern.ConsentManaged, govern.AuthorityExtractManaged), silentBody)
+	if !managed.EnterpriseGranted || !managed.ShipsRawContent() {
+		t.Fatalf("umbrella grant on a managed node did not raise to full content; ShareOptions=%+v", managed)
+	}
+	if managed.FullContent {
+		t.Errorf("the raise landed on FullContent — it must ride EnterpriseGranted so the node's own key is untouched; ShareOptions=%+v", managed)
+	}
+	batch := raiseBatchUnder(ctx, t, managed)
+	for _, s := range []string{raiseSentinelTarget, raiseSentinelSource} {
+		if !bytes.Contains(batch, []byte(s)) {
+			t.Errorf("raw path %q did NOT ship under the umbrella grant — the R9.5 raise is broken", s)
+		}
+	}
+
+	// Individual plane: structurally excluded.
+	individual := resolveRaiseBody(t, raiseChainGrantAuth(now, govern.ConsentInteractive, govern.AuthorityExtractManaged), silentBody)
+	if individual.EnterpriseGranted || individual.ShipsRawContent() {
+		t.Fatalf("individual grant was raised to full content by the umbrella; ShareOptions=%+v", individual)
+	}
+	indBatch := raiseBatchUnder(ctx, t, individual)
+	for _, s := range []string{raiseSentinelTarget, raiseSentinelSource} {
+		if bytes.Contains(indBatch, []byte(s)) {
+			t.Errorf("raw path %q shipped on the INDIVIDUAL plane under an umbrella grant", s)
+		}
+	}
+
+	// Admin lowering: the org's signed body says full_content = false.
+	const loweringBody = `{"schema":2,"share":{"full_content":false}}`
+	lowered := resolveRaiseBody(t, raiseChainGrantAuth(now, govern.ConsentManaged, govern.AuthorityExtractManaged), loweringBody)
+	if lowered.EnterpriseGranted || lowered.ShipsRawContent() {
+		t.Fatalf("the org lowered full_content and the grant raised straight past it; ShareOptions=%+v", lowered)
+	}
+	lowBatch := raiseBatchUnder(ctx, t, lowered)
+	for _, s := range []string{raiseSentinelTarget, raiseSentinelSource} {
+		if bytes.Contains(lowBatch, []byte(s)) {
+			t.Errorf("raw path %q shipped although the org lowered full_content", s)
+		}
+	}
 }

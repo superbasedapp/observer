@@ -35,22 +35,42 @@ func (t *TaskTokenTotals) add(o TaskTokenTotals) {
 }
 
 // TaskCostBucket bundles a bucket's tokens/actions with its priced
-// cost and the "don't lie about precision" flag: Unpriced is true when
-// at least one row in this bucket had NEITHER a recorded provider cost
-// NOR a pricing-table entry for its model — the bucket's CostUSD is
-// then a known UNDER-count, and a surface must render "unpriced"
-// rather than implying $0.00 is the true cost (§R2.3.6/caveat #5).
+// cost and the "don't lie about precision" caveats: UnpricedTurns is
+// the EXACT count of rows folded into this bucket that had NEITHER a
+// recorded provider cost NOR a pricing-table entry for its model — the
+// bucket's CostUSD is then a known UNDER-count by at least that many
+// turns' worth of tokens (§R2.3.6/caveat #5). Unpriced is kept for API
+// stability and is simply UnpricedTurns > 0.
+//
+// 2026-09-22 review round 4 finding #9: Unpriced used to be the ONLY
+// signal a caller had, so a consumer that needed a number (the Projects
+// page's ?by=task cost bucket) had no honest choice but to collapse an
+// arbitrary count down to 0 or 1 — a task with 40 unpriced turns and a
+// task with 1 rendered identically. UnpricedTurns removes that
+// collapse at the source, for every bucket this type backs (per-task,
+// between_tasks, shared, sidechain, and the project/tool/window
+// rollup's own buckets, all of which addRow into a TaskCostBucket).
 type TaskCostBucket struct {
-	Tokens       TaskTokenTotals `json:"tokens"`
-	ActionsCount int             `json:"actions_count"`
-	CostUSD      float64         `json:"cost_usd"`
-	Unpriced     bool            `json:"unpriced"`
+	Tokens        TaskTokenTotals `json:"tokens"`
+	ActionsCount  int             `json:"actions_count"`
+	CostUSD       float64         `json:"cost_usd"`
+	UnpricedTurns int             `json:"unpriced_turns"`
+	Unpriced      bool            `json:"unpriced"`
 }
 
-func (b *TaskCostBucket) addRow(tot TaskTokenTotals, rowCost float64, unpriced bool) {
+// addRow folds one contribution into the bucket. unprizedTurns is the
+// number of unpriced turns this contribution represents — 1 (or 0) for
+// a single raw token/turn row (attributeTokenRows, the sidechain loop),
+// or an already-aggregated sub-bucket's own UnpricedTurns when addRow
+// is used to merge a smaller bucket (a ReportItem, or a session's
+// BetweenTasks/Shared) into a larger rollup bucket — never re-derived
+// from the bool, which would re-introduce the exact collapse-to-one
+// bug this field exists to fix.
+func (b *TaskCostBucket) addRow(tot TaskTokenTotals, rowCost float64, unpricedTurns int) {
 	b.Tokens.add(tot)
 	b.CostUSD += rowCost
-	if unpriced {
+	if unpricedTurns > 0 {
+		b.UnpricedTurns += unpricedTurns
 		b.Unpriced = true
 	}
 }
@@ -158,27 +178,124 @@ const taskCostNote = "Costs are list pricing at each token row's own timestamp �
 // they already hold (dashboard.Options.Tasks / the loaded CLI config /
 // the MCP server's own config) — see each call site.
 func LoadSessionTaskReport(ctx context.Context, st *store.Store, costEngine *cost.Engine, sessionID string, opts taskflow.Options) (SessionTaskReport, error) {
-	rep := SessionTaskReport{
+	zero := SessionTaskReport{
 		SessionID:             sessionID,
 		MatchMode:             opts.MatchMode,
 		ConcurrentAttribution: opts.ConcurrentAttribution,
 		IncludeSidechains:     opts.IncludeSidechains,
 	}
-
-	items, err := st.LoadTaskItems(ctx, sessionID)
+	reports, err := loadSessionTaskReportsBatch(ctx, st, costEngine, []string{sessionID}, opts)
 	if err != nil {
-		return rep, fmt.Errorf("taskreport.LoadSessionTaskReport: %w", err)
+		return zero, fmt.Errorf("taskreport.LoadSessionTaskReport: %w", err)
 	}
-	if len(items) == 0 {
-		return rep, nil // HasTasks stays false — the calm empty state.
+	if rep, ok := reports[sessionID]; ok {
+		return rep, nil
 	}
-	rep.HasTasks = true
+	return zero, nil // HasTasks stays false — the calm empty state.
+}
 
-	unmatchedCount, err := st.LoadTaskUnmatchedCount(ctx, sessionID)
+// LoadSessionTaskReportsBatch is LoadSessionTaskReport's N-session
+// sibling: byte-identical per-session composition (both call the same
+// private loadSessionTaskReportsBatch/composeSessionTaskReport pair), but
+// O(1) store queries per underlying table instead of O(N) — see
+// internal/store/taskflow.go's *Batch loaders (LoadTaskItemsBatch etc.)
+// and internal/store/cursor_usage.go's CursorUsageNoteBatch.
+//
+// LoadTaskRollup and GET /api/project/<id>/cost?by=task both fold a task
+// report over every session SessionsWithTasksInWindow returns; at
+// project/window scale that N ran into the thousands, each iteration
+// issuing 6-7 individual `session_id = ?` queries before this existed
+// (SOL-F18(b) of the 2026-09-22 Projects-page rework). A session with no
+// task_items rows is simply absent from the returned map (HasTasks would
+// be false anyway) — callers must treat a missing key the same as a
+// present-but-HasTasks=false one.
+func LoadSessionTaskReportsBatch(ctx context.Context, st *store.Store, costEngine *cost.Engine, sessionIDs []string, opts taskflow.Options) (map[string]SessionTaskReport, error) {
+	out, err := loadSessionTaskReportsBatch(ctx, st, costEngine, sessionIDs, opts)
 	if err != nil {
-		return rep, fmt.Errorf("taskreport.LoadSessionTaskReport: %w", err)
+		return nil, fmt.Errorf("taskreport.LoadSessionTaskReportsBatch: %w", err)
 	}
-	rep.UnmatchedCount = unmatchedCount
+	return out, nil
+}
+
+// loadSessionTaskReportsBatch is the shared internal loader
+// LoadSessionTaskReport and LoadSessionTaskReportsBatch both build on: it
+// issues exactly one chunked sweep per underlying table (via the store's
+// *Batch loaders) regardless of len(sessionIDs), then composes each
+// session's report with composeSessionTaskReport — the exact same
+// composition LoadSessionTaskReport used to run inline before this was
+// extracted, so a caller cannot observe a behavioral difference for a
+// given session between the single-session and batched paths.
+func loadSessionTaskReportsBatch(ctx context.Context, st *store.Store, costEngine *cost.Engine, sessionIDs []string, opts taskflow.Options) (map[string]SessionTaskReport, error) {
+	out := make(map[string]SessionTaskReport, len(sessionIDs))
+	if len(sessionIDs) == 0 {
+		return out, nil
+	}
+
+	itemsBySession, err := st.LoadTaskItemsBatch(ctx, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	unmatchedBySession, err := st.LoadTaskUnmatchedCountBatch(ctx, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	transitionsBySession, err := st.LoadTaskTransitionsBatch(ctx, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	tokenRowsBySession, err := st.LoadTaskTokenRowsBatch(ctx, sessionIDs, opts.IncludeSidechains)
+	if err != nil {
+		return nil, err
+	}
+	notesBySession, err := st.CursorUsageNoteBatch(ctx, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	actionTsBySession, err := st.LoadTaskActionTimestampsBatch(ctx, sessionIDs, opts.IncludeSidechains)
+	if err != nil {
+		return nil, err
+	}
+	var sideBySession map[string][]store.TaskTokenRow
+	if !opts.IncludeSidechains {
+		sideBySession, err = st.LoadSidechainOnlyTaskTokenRowsBatch(ctx, sessionIDs)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	for _, sid := range sessionIDs {
+		items := itemsBySession[sid]
+		if len(items) == 0 {
+			continue // HasTasks stays false — the calm empty state; simply absent from out.
+		}
+		out[sid] = composeSessionTaskReport(
+			sid, items, unmatchedBySession[sid], transitionsBySession[sid],
+			tokenRowsBySession[sid], notesBySession[sid], actionTsBySession[sid],
+			sideBySession[sid], opts, costEngine,
+		)
+	}
+	return out, nil
+}
+
+// composeSessionTaskReport is the pure (no I/O) composition step both
+// loadSessionTaskReportsBatch and (before the SOL-F18(b) extraction)
+// LoadSessionTaskReport itself run: given one session's already-loaded
+// rows, build its SessionTaskReport. items must be non-empty — callers
+// check that first (an empty-items session never gets a report, it's
+// simply absent from the map / returns the zero value).
+func composeSessionTaskReport(
+	sessionID string, items []store.TaskItemRow, unmatchedCount int,
+	transitions []taskflow.Transition, tokenRows []store.TaskTokenRow, tokensNote string,
+	actionTs []time.Time, sideRows []store.TaskTokenRow, opts taskflow.Options, costEngine *cost.Engine,
+) SessionTaskReport {
+	rep := SessionTaskReport{
+		SessionID:             sessionID,
+		MatchMode:             opts.MatchMode,
+		ConcurrentAttribution: opts.ConcurrentAttribution,
+		IncludeSidechains:     opts.IncludeSidechains,
+		HasTasks:              true,
+		UnmatchedCount:        unmatchedCount,
+	}
 
 	rep.AllKeysNative = true
 	for _, it := range items {
@@ -188,27 +305,11 @@ func LoadSessionTaskReport(ctx context.Context, st *store.Store, costEngine *cos
 		}
 	}
 
-	transitions, err := st.LoadTaskTransitions(ctx, sessionID)
-	if err != nil {
-		return rep, fmt.Errorf("taskreport.LoadSessionTaskReport: %w", err)
-	}
-
 	intervals := taskflow.BuildOpenIntervals(transitions)
 	attributor := taskflow.NewAttributor(intervals).SetConcurrentAttribution(opts.ConcurrentAttribution)
 
-	tokenRows, err := st.LoadTaskTokenRows(ctx, sessionID, opts.IncludeSidechains)
-	if err != nil {
-		return rep, fmt.Errorf("taskreport.LoadSessionTaskReport: %w", err)
-	}
 	rep.TokenUsageAvailable = len(tokenRows) > 0
-	rep.TokensNote, err = st.CursorUsageNote(ctx, sessionID)
-	if err != nil {
-		return rep, fmt.Errorf("taskreport.LoadSessionTaskReport: %w", err)
-	}
-	actionTs, err := st.LoadTaskActionTimestamps(ctx, sessionID, opts.IncludeSidechains)
-	if err != nil {
-		return rep, fmt.Errorf("taskreport.LoadSessionTaskReport: %w", err)
-	}
+	rep.TokensNote = tokensNote
 
 	// asOf ("as of when do we measure a still-open task's elapsed time")
 	// is the latest activity this seam can observe — never wall-clock
@@ -233,22 +334,16 @@ func LoadSessionTaskReport(ctx context.Context, st *store.Store, costEngine *cos
 	anyPriced := attributeTokenRows(&rep, perTask, attributor, tokenRows, costEngine)
 	attributeActionTimestamps(&rep, perTask, attributor, actionTs)
 
-	if !opts.IncludeSidechains {
-		sideRows, serr := st.LoadSidechainOnlyTaskTokenRows(ctx, sessionID)
-		if serr != nil {
-			return rep, fmt.Errorf("taskreport.LoadSessionTaskReport: %w", serr)
-		}
-		if len(sideRows) > 0 {
-			var side TaskCostBucket
-			for _, tr := range sideRows {
-				tot, rowCost, unpriced := priceTaskTokenRow(costEngine, tr)
-				side.addRow(tot, rowCost, unpriced)
-				if !unpriced {
-					anyPriced = true
-				}
+	if !opts.IncludeSidechains && len(sideRows) > 0 {
+		var side TaskCostBucket
+		for _, tr := range sideRows {
+			tot, rowCost, unpriced := priceTaskTokenRow(costEngine, tr)
+			side.addRow(tot, rowCost, unpricedCount(unpriced))
+			if !unpriced {
+				anyPriced = true
 			}
-			rep.Sidechain = &side
 		}
+		rep.Sidechain = &side
 	}
 
 	sort.SliceStable(rep.Items, func(i, j int) bool { return rep.Items[i].Order < rep.Items[j].Order })
@@ -256,7 +351,7 @@ func LoadSessionTaskReport(ctx context.Context, st *store.Store, costEngine *cos
 	if anyPriced {
 		rep.CostNote = taskCostNote
 	}
-	return rep, nil
+	return rep
 }
 
 // buildTaskReportItems populates rep.Items from task_items rows layered
@@ -305,18 +400,31 @@ func attributeTokenRows(rep *SessionTaskReport, perTask map[string]*ReportItem, 
 		if !unpriced {
 			anyPriced = true
 		}
+		n := unpricedCount(unpriced)
 		switch a := attributor.At(tr.Ts); a.Bucket {
 		case taskflow.BucketSingle:
 			if ri, ok := perTask[a.Key]; ok {
-				ri.addRow(tot, rowCost, unpriced)
+				ri.addRow(tot, rowCost, n)
 			}
 		case taskflow.BucketShared:
-			rep.Shared.addRow(tot, rowCost, unpriced)
+			rep.Shared.addRow(tot, rowCost, n)
 		default:
-			rep.BetweenTasks.addRow(tot, rowCost, unpriced)
+			rep.BetweenTasks.addRow(tot, rowCost, n)
 		}
 	}
 	return anyPriced
+}
+
+// unpricedCount converts priceTaskTokenRow's per-row unpriced bool into
+// the 0/1 contribution TaskCostBucket.addRow expects — the ONLY place a
+// bool is turned back into a count, so every other addRow call site
+// threads an already-aggregated bucket's own UnpricedTurns instead of
+// re-deriving it.
+func unpricedCount(unpriced bool) int {
+	if unpriced {
+		return 1
+	}
+	return 0
 }
 
 // attributeActionTimestamps is attributeTokenRows' action-count sibling
@@ -361,6 +469,7 @@ func priceTaskTokenRow(costEngine *cost.Engine, tr store.TaskTokenRow) (tot Task
 		Input: tr.InputTokens, Output: tr.OutputTokens, CacheRead: tr.CacheReadTokens,
 		CacheCreation: tr.CacheWriteTokens, CacheCreation1h: tr.CacheWrite1hTokens,
 		Reasoning: tr.ReasoningTokens, WebSearchRequests: tr.WebSearchRequests,
+		Fast: tr.Fast,
 	}
 	p, ok := costEngine.LookupAt(tr.Model, tr.Ts)
 	if !ok {
@@ -397,14 +506,16 @@ type ToolTaskRollup struct {
 	Sessions int     `json:"sessions"`
 	Tasks    int     `json:"tasks"`
 	CostUSD  float64 `json:"cost_usd"`
-	// Unpriced mirrors TaskCostBucket.Unpriced at tool granularity: true
-	// when at least one row folded into this tool's CostUSD (any task's
-	// attributed_single row, or its sessions' between_tasks/shared
-	// buckets) had neither a recorded provider cost nor a pricing-table
-	// entry for its model. CostUSD is then a known UNDER-count for this
-	// tool — a surface must render "unpriced" rather than implying
-	// CostUSD (possibly $0.00) is the true total.
-	Unpriced bool `json:"unpriced"`
+	// UnpricedTurns mirrors TaskCostBucket.UnpricedTurns at tool
+	// granularity: the exact count of rows folded into this tool's
+	// CostUSD (any task's attributed_single row, or its sessions'
+	// between_tasks/shared buckets) that had neither a recorded
+	// provider cost nor a pricing-table entry for its model. CostUSD is
+	// then a known UNDER-count for this tool by at least that many
+	// turns. Unpriced (kept for API stability) is simply
+	// UnpricedTurns > 0.
+	UnpricedTurns int  `json:"unpriced_turns"`
+	Unpriced      bool `json:"unpriced"`
 }
 
 // TaskLifecycleCounts tallies task_items across every session the
@@ -492,12 +603,23 @@ func LoadTaskRollup(ctx context.Context, st *store.Store, costEngine *cost.Engin
 	rollup.Counts.AllSessionsKeysNative = true
 	var anyPriced bool
 
+	// One batched sweep (SOL-F18(b), 2026-09-22 rework) instead of the
+	// former per-session LoadSessionTaskReport loop, which issued 6-7
+	// `session_id = ?` queries per iteration — O(N) round trips across
+	// every task-bearing session in the window/project scope this rollup
+	// covers.
+	sessionIDs := make([]string, len(refs))
+	for i, ref := range refs {
+		sessionIDs[i] = ref.SessionID
+	}
+	reports, err := loadSessionTaskReportsBatch(ctx, st, costEngine, sessionIDs, opts)
+	if err != nil {
+		return rollup, fmt.Errorf("taskreport.LoadTaskRollup: %w", err)
+	}
+
 	for _, ref := range refs {
-		rep, err := LoadSessionTaskReport(ctx, st, costEngine, ref.SessionID, opts)
-		if err != nil {
-			return rollup, fmt.Errorf("taskreport.LoadTaskRollup: session %s: %w", ref.SessionID, err)
-		}
-		if !rep.HasTasks {
+		rep, ok := reports[ref.SessionID]
+		if !ok || !rep.HasTasks {
 			continue // race: task_items existed at the SessionsWithTasksInWindow scan, gone since (pruned).
 		}
 		if rep.CostNote != "" {
@@ -528,20 +650,22 @@ func LoadTaskRollup(ctx context.Context, st *store.Store, costEngine *cost.Engin
 			case item.TerminalStatus == taskflow.StatusCancelled:
 				rollup.Counts.Cancelled++
 			}
-			rollup.AttributedSingle.addRow(item.Tokens, item.CostUSD, item.Unpriced)
+			rollup.AttributedSingle.addRow(item.Tokens, item.CostUSD, item.UnpricedTurns)
 			rollup.AttributedSingle.ActionsCount += item.ActionsCount
 			tr.CostUSD += item.CostUSD
-			if item.Unpriced {
+			if item.UnpricedTurns > 0 {
 				tr.Unpriced = true
+				tr.UnpricedTurns += item.UnpricedTurns
 			}
 		}
-		rollup.BetweenTasks.addRow(rep.BetweenTasks.Tokens, rep.BetweenTasks.CostUSD, rep.BetweenTasks.Unpriced)
+		rollup.BetweenTasks.addRow(rep.BetweenTasks.Tokens, rep.BetweenTasks.CostUSD, rep.BetweenTasks.UnpricedTurns)
 		rollup.BetweenTasks.ActionsCount += rep.BetweenTasks.ActionsCount
-		rollup.Shared.addRow(rep.Shared.Tokens, rep.Shared.CostUSD, rep.Shared.Unpriced)
+		rollup.Shared.addRow(rep.Shared.Tokens, rep.Shared.CostUSD, rep.Shared.UnpricedTurns)
 		rollup.Shared.ActionsCount += rep.Shared.ActionsCount
 		tr.CostUSD += rep.BetweenTasks.CostUSD + rep.Shared.CostUSD
-		if rep.BetweenTasks.Unpriced || rep.Shared.Unpriced {
+		if rep.BetweenTasks.UnpricedTurns > 0 || rep.Shared.UnpricedTurns > 0 {
 			tr.Unpriced = true
+			tr.UnpricedTurns += rep.BetweenTasks.UnpricedTurns + rep.Shared.UnpricedTurns
 		}
 	}
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -143,8 +144,61 @@ func validateRows(feedVersion int64, rows []Row) error {
 		if err := validateEconomics(r.Economics); err != nil {
 			return fmt.Errorf("%w: row %d (%s): %w", ErrInvalidRows, i, r.Model, err)
 		}
+		if err := validateHistory(r); err != nil {
+			return fmt.Errorf("%w: row %d (%s): %w", ErrInvalidRows, i, r.Model, err)
+		}
 	}
 	return nil
+}
+
+// validateHistory enforces the shape a consumer relies on when it builds a
+// timeline from Row.History: every period names the row's own model, carries
+// no nested history, quotes an input or an output rate, has a parseable
+// effective_from ("" = since forever), and the periods are STRICTLY ascending
+// (two periods at one instant would make "which rate was in force" a coin
+// flip). A row without history is not checked. A bad history fails the whole
+// envelope (all-or-nothing, §E), never a silently dropped period.
+func validateHistory(r Row) error {
+	var prev time.Time
+	for i, p := range r.History {
+		switch {
+		case !strings.EqualFold(strings.TrimSpace(p.Model), strings.TrimSpace(r.Model)):
+			return fmt.Errorf("history period %d names model %q", i, p.Model)
+		case p.History != nil:
+			return fmt.Errorf("history period %d carries a nested history", i)
+		case p.InputPerMTok == nil && p.OutputPerMTok == nil:
+			return fmt.Errorf("history period %d quotes neither an input nor an output rate", i)
+		}
+		from, err := parseHistoryStart(p.EffectiveFrom)
+		if err != nil {
+			return fmt.Errorf("history period %d: %w", i, err)
+		}
+		if i > 0 && !from.After(prev) {
+			return fmt.Errorf("history periods %d and %d are not strictly ascending", i-1, i)
+		}
+		prev = from
+		if err := validateEconomics(p.Economics); err != nil {
+			return fmt.Errorf("history period %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// parseHistoryStart reads a period's effective_from: "" is the zero time (since
+// forever), otherwise RFC3339 or a bare YYYY-MM-DD (midnight UTC), the two
+// spellings every other effective_from on these rails accepts.
+func parseHistoryStart(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.UTC(), nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("effective_from %q is not RFC3339 or YYYY-MM-DD", s)
 }
 
 // validateEconomics enforces the CLOSED enum vocabularies and the SafeText

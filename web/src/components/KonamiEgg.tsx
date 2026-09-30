@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { Obs } from "@/components/Obs";
+import { Icon } from "@/components/primitives";
+import { X } from "lucide-react";
 
 // KonamiEgg — delight moment D-7 (usability arc P6.11 / §9.3):
 // ↑ ↑ ↓ ↓ ← → ← → B A anywhere in the dashboard → Obs runs once
@@ -119,7 +121,7 @@ export function KonamiEgg() {
           className="ml-2 self-start text-[11px] text-fg-4 hover:text-fg-2"
           aria-label="Dismiss"
         >
-          ✕
+          <Icon icon={X} size="xs" />
         </button>
       </div>
     </>

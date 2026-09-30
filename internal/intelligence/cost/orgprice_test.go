@@ -1,6 +1,7 @@
 package cost
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -225,12 +226,21 @@ func TestOrgRowsFlattenAtBuildTime(t *testing.T) {
 	if !ok || p.Input != 2 {
 		t.Fatalf("input = %v (ok=%v), want the row in force (2), never the undated 1 nor the future 9", p.Input, ok)
 	}
-	// And the un-dated Lookup and the dated LookupAt must agree for an
-	// org-priced model: the org authored ONE rate, and a seed timeline for
-	// the same id must not answer a historical question differently.
+	// The un-dated Lookup and the dated LookupAt agree TODAY: the flat rate is
+	// the period in force now.
+	if cur, _ := e.LookupAt(model, now); cur.Input != 2 {
+		t.Errorf("LookupAt(now) = %v, want the row in force (2), the same answer Lookup gives", cur.Input)
+	}
+	// And a historical question is answered by the row in force THEN: the
+	// document states this model's history (undated 1, then 2 from
+	// 2026-09-01), so 400 days back is the undated row's 1, never the dated
+	// row reaching back before its own date (PRICE-REPRICE-1 review finding 1).
 	at, _ := e.LookupAt(model, now.AddDate(0, 0, -400))
-	if at.Input != 2 {
-		t.Errorf("LookupAt = %v, want the org's own rate (%v) — a leftover timeline would make two surfaces disagree", at.Input, 2.0)
+	if at.Input != 1 {
+		t.Errorf("LookupAt(-400d) = %v, want the undated row in force then (1)", at.Input)
+	}
+	if fut, _ := e.LookupAt(model, time.Date(2027, 2, 1, 0, 0, 0, 0, time.UTC)); fut.Input != 9 {
+		t.Errorf("LookupAt(2027-02) = %v, want the stated future row (9) at its instant", fut.Input)
 	}
 }
 
@@ -408,15 +418,13 @@ func TestOrgUnquotedRateFallsThroughToTheSeed(t *testing.T) {
 	}
 }
 
-// TestOrgPriceOverlayPeakWholesaleReplace pins Phase 2's R1/N2 ruling
-// (peak-off-peak plan §R2): overlay treats Peak as a WHOLESALE REPLACE, not a
-// Set-gated field like the scalar rates, and there is no OrgPriceSet.Peak
-// bool. A quoted org row REPLACES the seed's peak variant outright —
-// including with nil, which is the negotiated-flat-rate case: an org that
-// negotiates a model's base rate but says nothing about a time-of-day
-// premium must NOT inherit the seed's peak multiplier, or a flat-rate deal
-// would silently double during the seed's peak window.
-func TestOrgPriceOverlayPeakWholesaleReplace(t *testing.T) {
+// TestOrgPriceOverlayPresenceSemantics pins the ONE overlay rule shared by the
+// seed snapshot, the standalone feed and the org document (rework 2026-09-23,
+// coordinator ruling): a STATED peak / positive threshold / Set fast
+// multiplier replaces the seed's; an unstated one KEEPS it. This supersedes the
+// earlier peak-off-peak §R2 R1/N2 "a nil org peak wipes the seed's peak" pin -
+// omission must never clear seed values.
+func TestOrgPriceOverlayPresenceSemantics(t *testing.T) {
 	t.Parallel()
 	seedPeak := &PeakRates{
 		RateSet: RateSet{Input: 20, Output: 40, LongContextThreshold: 128000, LongContextInput: 30},
@@ -424,46 +432,200 @@ func TestOrgPriceOverlayPeakWholesaleReplace(t *testing.T) {
 			{Days: []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday}, StartUTC: "00:00", EndUTC: "16:00"},
 		}},
 	}
-	base := Pricing{Input: 5, Output: 10, LongContextThreshold: 128000, Peak: seedPeak}
+	base := Pricing{Input: 5, Output: 10, LongContextThreshold: 128000, LongContextInput: 12, Peak: seedPeak, FastMultiplier: 2}
+	orgPeak := &PeakRates{
+		RateSet:  RateSet{Input: 3, Output: 6},
+		Schedule: PeakSchedule{Windows: []PeakWindow{{Days: []time.Weekday{time.Saturday}, StartUTC: "01:00", EndUTC: "02:00"}}},
+	}
 
-	orgPeak := &PeakRates{RateSet: RateSet{Input: 3, Output: 6}}
-
-	cases := []struct {
-		name       string
-		org        OrgPrice
-		wantPeak   *PeakRates
-		wantPeakOK bool // whether wantPeak should equal the composed Peak by IDENTITY
+	for _, tc := range []struct {
+		name          string
+		org           OrgPrice
+		wantPeak      *PeakRates
+		wantThreshold int64
+		wantFast      float64
 	}{
 		{
-			name: "a non-nil org peak replaces the seed's peak",
-			org: OrgPrice{
-				Pricing: Pricing{Input: 1, Output: 2, LongContextThreshold: 500, Peak: orgPeak},
-				Set:     OrgPriceSet{Input: true, Output: true},
-			},
-			wantPeak:   orgPeak,
-			wantPeakOK: true,
+			name:          "a stated org peak and threshold replace the seed's",
+			org:           OrgPrice{Pricing: Pricing{Input: 1, Output: 2, LongContextThreshold: 500, Peak: orgPeak}, Set: OrgPriceSet{Input: true, Output: true, LongContextThreshold: true, Peak: true}},
+			wantPeak:      orgPeak,
+			wantThreshold: 500,
+			wantFast:      2,
 		},
 		{
-			name: "a nil org peak WIPES the seed's peak (the negotiated-flat case)",
-			org: OrgPrice{
-				Pricing: Pricing{Input: 1, Output: 2, LongContextThreshold: 500},
-				Set:     OrgPriceSet{Input: true, Output: true},
-			},
-			wantPeak:   nil,
-			wantPeakOK: true,
+			name:          "an unstated peak, threshold and fast multiplier keep the seed's",
+			org:           OrgPrice{Pricing: Pricing{Input: 1, Output: 2}, Set: OrgPriceSet{Input: true, Output: true}},
+			wantPeak:      seedPeak,
+			wantThreshold: 128000,
+			wantFast:      2,
 		},
-	}
-	for _, tc := range cases {
+		{
+			// Values present but NOT marked quoted: a projection that could
+			// not tell absence from zero leaves them unset, so they never
+			// erase the seed's.
+			name:          "unflagged threshold/peak values are not quoted",
+			org:           OrgPrice{Pricing: Pricing{Input: 1, Output: 2, LongContextThreshold: 500, Peak: orgPeak}, Set: OrgPriceSet{Input: true, Output: true}},
+			wantPeak:      seedPeak,
+			wantThreshold: 128000,
+			wantFast:      2,
+		},
+		{
+			// (d) at the overlay: a QUOTED threshold of 0 = negotiated flat.
+			name:          "a quoted threshold of 0 removes the seed's long-context tier",
+			org:           OrgPrice{Pricing: Pricing{Input: 1, Output: 2}, Set: OrgPriceSet{Input: true, Output: true, LongContextThreshold: true}},
+			wantPeak:      seedPeak,
+			wantThreshold: 0,
+			wantFast:      2,
+		},
+		{
+			// (e) at the overlay: the §R2 R1/N2 case, kept for the explicit
+			// statement - a quoted empty peak clears the seed's peak.
+			name:          "a quoted empty peak clears the seed's peak",
+			org:           OrgPrice{Pricing: Pricing{Input: 1, Output: 2, Peak: &PeakRates{}}, Set: OrgPriceSet{Input: true, Output: true, Peak: true}},
+			wantPeak:      nil,
+			wantThreshold: 128000,
+			wantFast:      2,
+		},
+		{
+			name:          "a quoted nil peak also clears it",
+			org:           OrgPrice{Pricing: Pricing{Input: 1, Output: 2}, Set: OrgPriceSet{Input: true, Output: true, Peak: true}},
+			wantPeak:      nil,
+			wantThreshold: 128000,
+			wantFast:      2,
+		},
+		{
+			name:          "a Set fast multiplier wins, a quoted 0 included",
+			org:           OrgPrice{Pricing: Pricing{Input: 1, Output: 2, FastMultiplier: 0}, Set: OrgPriceSet{Input: true, Output: true, FastMultiplier: true}},
+			wantPeak:      seedPeak,
+			wantThreshold: 128000,
+			wantFast:      0,
+		},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := tc.org.overlay(base)
-			if tc.wantPeakOK && out.Peak != tc.wantPeak {
+			if out.Peak != tc.wantPeak {
 				t.Errorf("Peak = %+v, want %+v (identity)", out.Peak, tc.wantPeak)
 			}
-			// LongContextThreshold behavior is unchanged by the Peak addition:
-			// it still always comes from the org row (the pre-existing wholesale
-			// precedent this change mirrors).
-			if out.LongContextThreshold != 500 {
-				t.Errorf("LongContextThreshold = %d, want 500 (unchanged by the Peak wholesale-replace)", out.LongContextThreshold)
+			if out.LongContextThreshold != tc.wantThreshold {
+				t.Errorf("LongContextThreshold = %d, want %d", out.LongContextThreshold, tc.wantThreshold)
+			}
+			if out.FastMultiplier != tc.wantFast {
+				t.Errorf("FastMultiplier = %v, want %v", out.FastMultiplier, tc.wantFast)
+			}
+			if out.LongContextInput != 12 {
+				t.Errorf("unquoted LongContextInput = %v, want the seed's 12", out.LongContextInput)
+			}
+		})
+	}
+}
+
+// TestOrgRows_NegotiatedInputOutputKeepsSeedTiers is coordinator test (a): an
+// org NEGOTIATED row for gpt-6-astra quoting only input/output, composed on an
+// authoritative (managed) node AND an individual node, leaves the seed's
+// >272K long-context tier and 2x fast multiplier in force - and they still
+// reprice a long prompt / fast turn.
+func TestOrgRows_NegotiatedInputOutputKeepsSeedTiers(t *testing.T) {
+	t.Parallel()
+	seed, _ := NewTable().Lookup("gpt-6-astra")
+	if seed.LongContextThreshold != 272_000 || seed.FastMultiplier != 2 {
+		t.Fatalf("precondition: seed gpt-6-astra = %+v", seed)
+	}
+	row := OrgPrice{
+		Model: "gpt-6-astra", Pricing: Pricing{Input: 8, Output: 40},
+		Set: OrgPriceSet{Input: true, Output: true},
+	}
+	for _, authoritative := range []bool{true, false} {
+		e := NewEngine(config.IntelligenceConfig{})
+		e.SetOrgRows([]OrgPrice{row}, 3, authoritative)
+		p, src, ok := e.LookupWithSource("gpt-6-astra")
+		if !ok || src != PricingSourceOrg || p.Input != 8 || p.Output != 40 {
+			t.Fatalf("authoritative=%v: %+v %q %v, want the negotiated 8/40 at source org", authoritative, p, src, ok)
+		}
+		if p.LongContextThreshold != 272_000 || p.LongContextInput != seed.LongContextInput || p.LongContextOutput != seed.LongContextOutput {
+			t.Errorf("authoritative=%v: LC tier cleared: %+v", authoritative, p)
+		}
+		if p.FastMultiplier != 2 {
+			t.Errorf("authoritative=%v: FastMultiplier = %v, want the seed's 2", authoritative, p.FastMultiplier)
+		}
+		if bd, _ := e.ComputeBreakdown("gpt-6-astra", TokenBundle{Input: 300_000}); bd.InputCost < 300_000*seed.LongContextInput/1e6-1e-9 {
+			t.Errorf("authoritative=%v: a 300K prompt billed %v, want the long-context input rate", authoritative, bd.InputCost)
+		}
+	}
+}
+
+// TestOrgRows_StatedThresholdStillOverrides is coordinator test (c): a row
+// that EXPLICITLY states a long-context threshold (and LC rates) still wins.
+func TestOrgRows_StatedThresholdStillOverrides(t *testing.T) {
+	t.Parallel()
+	e := NewEngine(config.IntelligenceConfig{})
+	e.SetOrgRows([]OrgPrice{{
+		Model: "gpt-6-astra",
+		Pricing: Pricing{
+			Input: 8, Output: 40, LongContextThreshold: 500_000, LongContextInput: 16,
+		},
+		Set: OrgPriceSet{Input: true, Output: true, LongContextInput: true, LongContextThreshold: true},
+	}}, 4, true)
+	p, _ := e.Lookup("gpt-6-astra")
+	if p.LongContextThreshold != 500_000 || p.LongContextInput != 16 {
+		t.Errorf("stated threshold/LC input = %d/%v, want 500000/16", p.LongContextThreshold, p.LongContextInput)
+	}
+	seed, _ := NewTable().Lookup("gpt-6-astra")
+	if p.LongContextOutput != seed.LongContextOutput {
+		t.Errorf("unquoted LC output = %v, want the seed's %v", p.LongContextOutput, seed.LongContextOutput)
+	}
+}
+
+// TestOrgRows_QuotedZeroThresholdFlattensTier is test (d): an org row that
+// QUOTES a long-context threshold of 0 (negotiated flat) removes the seed's
+// >272K tier for gpt-6-astra, so a 300K prompt bills at the base rate.
+func TestOrgRows_QuotedZeroThresholdFlattensTier(t *testing.T) {
+	t.Parallel()
+	e := NewEngine(config.IntelligenceConfig{})
+	e.SetOrgRows([]OrgPrice{{
+		Model:   "gpt-6-astra",
+		Pricing: Pricing{Input: 8, Output: 40, LongContextThreshold: 0},
+		Set:     OrgPriceSet{Input: true, Output: true, LongContextThreshold: true},
+	}}, 5, true)
+	p, _ := e.Lookup("gpt-6-astra")
+	if p.LongContextThreshold != 0 {
+		t.Fatalf("threshold = %d, want 0 (quoted flat)", p.LongContextThreshold)
+	}
+	if bd, _ := e.ComputeBreakdown("gpt-6-astra", TokenBundle{Input: 300_000}); math.Abs(bd.InputCost-300_000*8/1e6) > 1e-9 {
+		t.Errorf("300K prompt input = %v, want the flat base rate %v", bd.InputCost, 300_000*8/1e6)
+	}
+}
+
+// TestOrgRows_QuotedEmptyPeakClearsSeedPeak is test (e), the kept §R2 R1/N2
+// case: an org row with an EXPLICIT empty peak for deepseek-v4-pro (negotiated
+// flat) clears the seed's peak, so a peak-window instant bills the org's base.
+func TestOrgRows_QuotedEmptyPeakClearsSeedPeak(t *testing.T) {
+	t.Parallel()
+	peakAt := time.Date(2026, 9, 23, 2, 0, 0, 0, time.UTC) // Wednesday 02:00 UTC, inside the seed's window
+	seed, _ := NewTable().LookupAt("deepseek-v4-pro", peakAt)
+	if seed.Input != 1.32 {
+		t.Fatalf("precondition: seed peak input = %v, want 1.32", seed.Input)
+	}
+	for _, tc := range []struct {
+		name     string
+		set      OrgPriceSet
+		peak     *PeakRates
+		wantPeak bool
+		wantIn   float64
+	}{
+		{"explicit empty peak = flat", OrgPriceSet{Input: true, Output: true, Peak: true}, &PeakRates{}, false, 0.50},
+		{"omitted peak keeps the seed's", OrgPriceSet{Input: true, Output: true}, nil, true, 1.32},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEngine(config.IntelligenceConfig{})
+			e.SetOrgRows([]OrgPrice{{
+				Model: "deepseek-v4-pro", Pricing: Pricing{Input: 0.50, Output: 1.50, Peak: tc.peak}, Set: tc.set,
+			}}, 6, true)
+			flat, _ := e.Lookup("deepseek-v4-pro")
+			if (flat.Peak != nil) != tc.wantPeak {
+				t.Errorf("Peak present = %v, want %v", flat.Peak != nil, tc.wantPeak)
+			}
+			if p, _ := e.LookupAt("deepseek-v4-pro", peakAt); p.Input != tc.wantIn {
+				t.Errorf("input at a peak instant = %v, want %v", p.Input, tc.wantIn)
 			}
 		})
 	}

@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,9 +18,11 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/cursorusage"
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/handoffsvc"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/advisor"
+	"github.com/marmutapp/superbased-observer/internal/intelligence/alignment"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard/webapp"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/discover"
@@ -30,9 +31,13 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/processbridge/setup"
+	"github.com/marmutapp/superbased-observer/internal/requestclass"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
+	"github.com/marmutapp/superbased-observer/internal/sessiongauge"
+	"github.com/marmutapp/superbased-observer/internal/sessionmsg"
 	"github.com/marmutapp/superbased-observer/internal/stash"
 	"github.com/marmutapp/superbased-observer/internal/store"
+	"github.com/marmutapp/superbased-observer/internal/timebucket"
 	"github.com/marmutapp/superbased-observer/internal/tooltax"
 )
 
@@ -86,10 +91,31 @@ type Options struct {
 	ProcessArchive ProcessArchiveReader
 	// CostEngine prices token summaries. Defaults to baked-in pricing.
 	CostEngine *cost.Engine
+	// ReadCaches turns on the production read caches (optimization review
+	// 2026-09-27, docs/audits/optimization-review-2026-09-27.md):
+	//   - N4: the production handler chain (guardedHandler) marks GET
+	//     requests with cost.WithRowCache, so the several spend panels a page
+	//     load fires at once share one read of the window's api_turns /
+	//     token_usage rows (freshness contract in
+	//     internal/intelligence/cost/rowcache.go);
+	//   - N5: /api/health/watcher is served stale-while-revalidate
+	//     (watcher_health_cache.go).
+	//   - the allow-listed heavy analytics GET endpoints (/api/discover,
+	//     /api/analysis/*, /api/cost, ...) are served from a response-level
+	//     stale-while-revalidate cache, cleared by any successful dashboard
+	//     mutation (analytics_cache.go).
+	// False — the zero value, and every test's — computes every response
+	// per request exactly as before.
+	ReadCaches bool
 	// Predict carries the [predict] tunables (Next-Message Cost & Limit
 	// Predictor). Zero value → the handler falls back to built-in
 	// defaults, so tests and read-only callers need not set it.
 	Predict config.PredictConfig
+	// Scoring carries [intelligence.scoring] so the session Quality card can
+	// say whether (and after how long idle) the daemon scores a session on
+	// its own. Zero value reads as "auto-scoring off", which only changes
+	// the card's empty-state copy.
+	Scoring config.IntelligenceScoringConfig
 	// LocEditorToken is the per-install shared secret POST
 	// /api/loc/editor-change verifies X-Observer-Token against. The
 	// daemon resolves it in cmd (generate-on-first-start into
@@ -297,6 +323,14 @@ type Options struct {
 	// ok=false means the tool is unknown / not launchable (400). cmd wires a
 	// closure that runs the resolver and fills the ToolPreflight wire shape.
 	ToolPreflight func(tool string) (ToolPreflight, bool)
+	// ShellWrap, when non-nil, serves the Settings -> Terminal "Command
+	// wrapping" card (GET /api/shell-wrap/status, POST /api/shell-wrap/apply
+	// and /disable). Nil is the honest not-wired state (501).
+	ShellWrap ShellWrapService
+	// Reprice, when non-nil, serves the Settings "Re-price stored costs"
+	// card (GET /api/reprice/status, POST /api/reprice/plan, /apply and
+	// /revert; gap PRICE-REPRICE-1). Nil is the honest not-wired state (501).
+	Reprice RepriceService
 	// AllowToolInstall, when non-nil, reports whether the guided install
 	// endpoint (POST /api/terminal/install) is enabled — a LIVE read of the
 	// [terminal.launch].allow_install kill-switch (default true). Nil is treated
@@ -389,6 +423,15 @@ type Options struct {
 	// remember what the extension said, and a report that cannot be stored is
 	// not worth failing an editor's activation over.
 	UpdateExtensionVersionFunc func(version string)
+	// MCPAccessStatus, when non-nil, backs GET /api/mcp-access/status (Agent
+	// Access P10, mcpaccess.go): the node MCP relay's status, approved
+	// servers, coverage matrix, effective state and org connect target, as
+	// composed by cmd/observer from the SAME derivation `observer mcp status`
+	// prints. A plain func returning a JSON-encodable value, so this package
+	// never imports the relay. verifyChain asks it to walk the relay's
+	// decision-record chain. Nil answers the honest "not available in this
+	// process" body, never a 404.
+	MCPAccessStatus func(ctx context.Context, verifyChain bool) (any, error)
 	// Remote is the injected remote-access security substrate (plan §4).
 	// Nil (the default) means loopback-only: a non-loopback bind is REFUSED
 	// (§4.6 atomic-safety rule). A non-nil controller reporting Ready()
@@ -427,6 +470,33 @@ type Options struct {
 	// credential lane. Nil (the default) omits `sign_in` from /api/cloud/status
 	// and makes the Sign in / Sign out routes answer 503 with honest copy.
 	CloudAccount *CloudAccountSeams
+	// Projects carries the [projects] tunables (Projects-page spend/ROI/
+	// commit-alignment arc, docs/plans/projects-page-roi-and-commit-
+	// alignment-plan-2026-09-21.md). Consumed for CommitLinkWindowDays
+	// (internal/projectroi.Link's window — falls back to
+	// projectroi.DefaultLinkWindow when unset/zero, so tests and
+	// read-only callers need not set it).
+	Projects config.ProjectsConfig
+	// JudgeGrade runs one prompt-to-commit alignment through the §3.6 "J"
+	// tier (the [projects].alignment_judge-configured LLM judge), bound
+	// in cmd/observer/projects_wire.go over alignmentJudgeFor (W5a). Nil
+	// means the tier is unavailable (disabled config, no model
+	// configured, or a no_obs build) — JudgeGradeReason then carries the
+	// honest reason a grade-endpoint response echoes verbatim. The
+	// returned string is the model that produced the grade.
+	JudgeGrade func(ctx context.Context, in alignment.Input) (alignment.Result, string, error)
+	// JudgeGradeReason explains why JudgeGrade is nil. Empty when
+	// JudgeGrade is non-nil.
+	JudgeGradeReason string
+	// CloudGradeAvailability reports whether the Cloud Intelligence
+	// commit-alignment grading job (§3.6 tier C) is available right now,
+	// and the honest reason when it is not — wired from
+	// cmd/observer/cloud_gradecommit.go's CommitAlignmentAvailability,
+	// the SAME function `observer cloud grade-commit` itself calls, so
+	// the dashboard and the CLI never disagree about why grading is
+	// unavailable. Nil is treated as "never available" (a standalone
+	// `observer dashboard` process or a test).
+	CloudGradeAvailability func() (bool, string)
 }
 
 // TerminalSessionLink is the resolved identity of a live terminal launch token
@@ -469,6 +539,10 @@ type EnrolmentService interface {
 // Server wires the /api/* endpoints and static file handler.
 type Server struct {
 	opts Options
+
+	// windows caches the model context-window table the context gauge reads
+	// (sessiongauge.go); refreshed at most once per windowCacheTTL.
+	windows windowCache
 
 	// Backfill job registry — tracks subprocesses spawned by the
 	// Backfill section's Run-Now buttons. Keyed by random hex id;
@@ -604,6 +678,13 @@ type Server struct {
 	// panel queries. See status_cache.go for the full rationale; the cache
 	// lives HERE, on the Server, so the endpoint has exactly one owner.
 	statusSnap statusSnapshotCache
+	// watcherHealth memoizes /api/health/watcher (stale-while-revalidate)
+	// when Options.ReadCaches is set; see watcher_health_cache.go.
+	watcherHealth watcherHealthCache
+	// analytics memoizes the allow-listed heavy analytics GET responses
+	// (stale-while-revalidate) when Options.ReadCaches is set; see
+	// analytics_cache.go.
+	analytics analyticsCache
 
 	// snapshotFn produces the /api/status snapshot. Defaults to
 	// diag.Snapshot (set in New); tests override it to count how many times
@@ -712,7 +793,9 @@ func (s *Server) Handler() http.Handler {
 	// this very function is the proof of, since it discards capMap. With a
 	// nil Governance provider this returns the bare mux, so an ungoverned
 	// build's handler chain is unchanged.
-	return s.governanceGuard(mux, sections, mux)
+	// analyticsInvalidateOnWrite clears the analytics response cache after a
+	// successful mutation (identity when ReadCaches is off).
+	return s.analyticsInvalidateOnWrite(s.governanceGuard(mux, sections, mux))
 }
 
 // sessionSubRouteCapabilities is the DECLARED (documentation + test) suffix→
@@ -746,6 +829,10 @@ var sessionSubRouteCapabilities = map[string]Capability{
 	// is a primary flow, and the content written is user-authored review
 	// metadata — never machine-reaching config.
 	"/tags": CapabilityExecute,
+	// Session quality score (spec §15.2): POST scores the session now and
+	// persists the derived metrics (no content, no config). Execute like
+	// /tags - a paired remote owner re-scoring a session is a review flow.
+	"/quality": CapabilityExecute,
 }
 
 // remotelyExecutableExtraRoutes is the explicit allowlist of mutation-method
@@ -798,7 +885,11 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// drifted entry silently leaks a page an organization believes it hid.
 	sectionMap := map[string]Section{}
 	reg := func(pattern string, cap Capability, section Section, h http.HandlerFunc) {
-		mux.HandleFunc(pattern, h)
+		// The analytics response cache wraps an allow-listed handler HERE,
+		// inside the mux and so inside every guard (analytics_cache.go); it
+		// returns h unchanged when ReadCaches is off or the route is not
+		// allow-listed.
+		mux.HandleFunc(pattern, s.analyticsCacheWrap(pattern, h))
 		capMap[pattern] = cap
 		sectionMap[pattern] = section
 	}
@@ -1089,6 +1180,7 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/guard/approvals/", L, secSecurity, s.handleGuardApprovalDelete)
 	reg("/api/guard/mcp", V, secSecurity, s.handleGuardMCP)
 	reg("/api/guard/mcp/approve", L, secSecurity, s.handleGuardMCPApprove)
+	reg("/api/mcp-access/status", V, secSecurity, s.handleMCPAccessStatus)
 	// guard policy PUT WRITES the guard policy → whole-route Local. policy/backup
 	// writes a backup to disk → Local.
 	reg("/api/guard/policy", L, secPolicies, s.handleGuardPolicy)
@@ -1145,6 +1237,22 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/benchmarks", V, secBenchmarks, s.handleBenchmarks)
 	reg("/api/benchmarks/", V, secBenchmarks, s.handleBenchmarkDetail)
 	reg("/api/projects", V, secNone, s.handleProjects)
+	// Projects-page ROI + commit-alignment detail surfaces (docs/plans/
+	// projects-page-roi-and-commit-alignment-plan-2026-09-21.md §3.4).
+	// Unlike the list above (shared by the terminal project picker), every
+	// detail read is secProjects — it discloses spend/commits/prompt text
+	// for one specific project. The grade endpoint is POST-only but kept
+	// as a bare View route (not method-split): its unsafe method
+	// auto-escalates to Execute, and it never mutates config or reaches
+	// another machine (SavePromptGrade is a local DB write, same class as
+	// e.g. /api/guard/prompt/clear's Local siblings would be if this
+	// route needed to be machine-reaching, which it does not).
+	reg("/api/project/{id}", V, secProjects, s.handleProjectDetail)
+	reg("/api/project/{id}/commits", V, secProjects, s.handleProjectCommits)
+	reg("/api/project/{id}/prompts", V, secProjects, s.handleProjectPrompts)
+	reg("/api/project/{id}/cost", V, secProjects, s.handleProjectCost)
+	reg("/api/project/{id}/skills", V, secProjects, s.handleProjectSkills)
+	reg("/api/project/{id}/prompts/{action_id}/grade", V, secProjects, s.handleProjectGrade)
 	// Agent-guidance inventory (internal/guidance). The inventory + roll-up
 	// are metadata reads over already-persisted rows, classed like
 	// /api/projects itself. The /file endpoint returns a project file's
@@ -1188,6 +1296,20 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/config/profiles/", L, secSettings, s.handleConfigProfile)
 	reg("/api/tools/status", V, secSettings, s.handleToolsStatus)
 	reg("/api/tools/launch", L, secSettings, s.handleToolsLaunch)
+	// Command wrapping (backlog item 7): shims + a marked PATH block in the
+	// operator's shell start-up files. Whole-route Local - it names and
+	// writes files in the operator's home; the writes also need the confirm
+	// token.
+	reg("/api/shell-wrap/status", L, secSettings, s.handleShellWrapStatus)
+	reg("/api/shell-wrap/apply", L, secSettings, s.handleShellWrapApply)
+	reg("/api/shell-wrap/disable", L, secSettings, s.handleShellWrapDisable)
+	// Re-pricing stored costs (gap PRICE-REPRICE-1): dry run, apply, revert.
+	// Whole-route Local - an apply rewrites stored spend rows; the writes
+	// also need the confirm token the status GET mints.
+	reg("/api/reprice/status", L, secSettings, s.handleRepriceStatus)
+	reg("/api/reprice/plan", L, secSettings, s.handleRepricePlan)
+	reg("/api/reprice/apply", L, secSettings, s.handleRepriceApply)
+	reg("/api/reprice/revert", L, secSettings, s.handleRepriceRevert)
 	reg("/api/setup/hooks", L, secSettings, s.handleSetupHooks)
 	reg("/api/setup/mcp", L, secSettings, s.handleSetupMCP)
 	reg("/api/health/doctor", V, secSettings, s.handleHealthDoctor)
@@ -1382,12 +1504,15 @@ func browserGuard(next http.Handler, hostAllowed func(host string) bool) http.Ha
 		// CVE-2018-14732 class), in addition to coder/websocket.Accept's own
 		// cross-origin reject.
 		if isUnsafeMethod(r.Method) || isWebSocketUpgrade(r) {
-			// CSRF / cross-origin: the Origin (or Referer) host, when present,
-			// must be an allowed host (not merely == reqHost) so a rebind can't
-			// smuggle a same-Host cross-origin write. A "null" opaque origin is
-			// treated as cross-origin.
-			if origin := requestOriginHost(r); origin != "" &&
-				!(strings.EqualFold(origin, reqHost) && hostAllowed(origin)) {
+			// CSRF / cross-origin: the Origin (or Referer), when present, must
+			// be the daemon's OWN origin - scheme + host + port - not merely a
+			// same hostname: every other localhost port is a different origin
+			// (a dev server, another local app), and a hostname-only check
+			// would let a page there drive this API. A "null" opaque origin is
+			// treated as cross-origin. No Origin/Referer (curl, the CLI, the
+			// VS Code extension host) passes: a browser always sends Origin on
+			// an unsafe cross-origin request.
+			if raw := requestOrigin(r); raw != "" && !originIsOwn(raw, r, hostAllowed) {
 				http.Error(w, "forbidden: cross-origin request", http.StatusForbidden)
 				return
 			}
@@ -1445,27 +1570,121 @@ func hostIsLoopback(host string) bool {
 	return false
 }
 
-// requestOriginHost returns the hostname of the request's Origin header, or
-// its Referer host as a fallback. Empty when neither is present (a
-// same-origin/non-browser request); "null" opaque origins return a non-empty
-// sentinel so an unsafe method from a sandboxed context is treated as
-// cross-origin.
-func requestOriginHost(r *http.Request) string {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		origin = r.Header.Get("Referer")
+// requestOrigin returns the request's Origin header, or its Referer as a
+// fallback; empty when neither is present (a non-browser client).
+func requestOrigin(r *http.Request) string {
+	if o := r.Header.Get("Origin"); o != "" {
+		return o
 	}
-	if origin == "" {
+	return r.Header.Get("Referer")
+}
+
+// loopbackAliases are the spellings of the local machine a browser may use
+// for the daemon's own listener: the SAME port under another of these names
+// is the same daemon (the SPA, the VS Code webview iframe at 127.0.0.1 and a
+// `localhost` bookmark all reach it). Any other 127/8 address is not an
+// alias: another process may hold that port there.
+var loopbackAliases = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
+
+// originCheck is one row of the same-origin rule table: an Origin is the
+// daemon's own only when every row passes. Rows are walked top-down; the
+// first failing row names why (tests pin one case per row).
+type originCheck struct {
+	name string
+	ok   func(o parsedOrigin) bool
+}
+
+// parsedOrigin is the Origin/Referer and request facts the rows read.
+type parsedOrigin struct {
+	scheme      string // origin scheme (lower-case)
+	host        string // origin hostname (lower-case, no brackets)
+	authority   string // origin host:port with the scheme's default port elided
+	reqHost     string // request Host hostname (lower-case)
+	reqAuth     string // request Host host:port, default port (of scheme) elided
+	reqTLS      bool   // the request arrived over TLS on this listener
+	hostAllowed func(string) bool
+}
+
+var originChecks = []originCheck{
+	{"an http(s) origin (not null, file:, or an extension scheme)", func(o parsedOrigin) bool {
+		return (o.scheme == "http" || o.scheme == "https") && o.host != ""
+	}},
+	// A TLS listener's own origin is https. A plaintext listener may sit
+	// behind a TLS terminator (tailscale serve, a reverse proxy), so its
+	// public origin can be https; the port row below still binds it.
+	{"scheme matches the listener", func(o parsedOrigin) bool {
+		return !o.reqTLS || o.scheme == "https"
+	}},
+	{"origin host is an allowed Host", func(o parsedOrigin) bool {
+		return o.hostAllowed(o.host)
+	}},
+	{"same host, or a loopback alias of the same listener", func(o parsedOrigin) bool {
+		return o.host == o.reqHost || (loopbackAliases[o.host] && loopbackAliases[o.reqHost])
+	}},
+	{"same port", func(o parsedOrigin) bool {
+		return portOf(o.authority) == portOf(o.reqAuth)
+	}},
+}
+
+// originIsOwn reports whether raw (an Origin or Referer value) is the origin
+// the browser used to reach THIS daemon: scheme, host and port, compared
+// against the request's own Host (already vetted by the Host allow-list), so
+// a port forward or a TLS-terminating front end keeps working while any
+// other origin on the same machine - a different localhost port - does not.
+func originIsOwn(raw string, r *http.Request, hostAllowed func(string) bool) bool {
+	return originFailure(raw, r, hostAllowed) == ""
+}
+
+// originFailure is originIsOwn's table walk: "" when raw is the daemon's own
+// origin, else the name of the first rule it fails.
+func originFailure(raw string, r *http.Request, hostAllowed func(string) bool) string {
+	if raw == "null" {
+		return "an opaque (null) origin"
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "an origin without a host (unparseable, file:)"
+	}
+	scheme := strings.ToLower(u.Scheme)
+	o := parsedOrigin{
+		scheme:      scheme,
+		host:        strings.ToLower(u.Hostname()),
+		authority:   withPort(u.Host, scheme),
+		reqHost:     strings.ToLower(hostnameOnly(r.Host)),
+		reqAuth:     withPort(r.Host, scheme),
+		reqTLS:      r.TLS != nil,
+		hostAllowed: hostAllowed,
+	}
+	for _, c := range originChecks {
+		if !c.ok(o) {
+			return c.name
+		}
+	}
+	return ""
+}
+
+// withPort returns hostport with an explicit port, filling the scheme's
+// default (80 for http, 443 for https) when it carries none. The request
+// Host of a same-origin request omits exactly the default port of the
+// scheme the browser used, which is the origin's scheme.
+func withPort(hostport, scheme string) string {
+	if _, _, err := net.SplitHostPort(hostport); err == nil {
+		return hostport
+	}
+	port := "80"
+	if scheme == "https" {
+		port = "443"
+	}
+	return net.JoinHostPort(strings.Trim(hostport, "[]"), port)
+}
+
+// portOf returns the port of a host:port value ("" when it has none).
+func portOf(hostport string) string {
+	_, p, err := net.SplitHostPort(hostport)
+	if err != nil {
 		return ""
 	}
-	if origin == "null" {
-		return "null"
-	}
-	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
-		return "null"
-	}
-	return hostnameOnly(u.Host)
+	return p
 }
 
 // ListenAndServe runs the dashboard on addr until ctx is cancelled.
@@ -1878,10 +2097,15 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	proj := r.URL.Query().Get("project")
 	tool := r.URL.Query().Get("tool")
 
+	// sections=stale computes only the stale-read pass (discover.Options
+	// StaleOnly): the Overview KPI tile reads nothing else, and the full
+	// report's repeated-command / rerun passes dominate the cost.
+	staleOnly := r.URL.Query().Get("sections") == "stale"
+
 	// Cap the per-panel SQL limit at 500 — generous enough for realistic
 	// dashboards while keeping a single discover.Run cheap.
 	report, err := discover.New(s.db()).Run(r.Context(), discover.Options{
-		ProjectRoot: proj, Tool: tool, Days: days, Limit: 500,
+		ProjectRoot: proj, Tool: tool, Days: days, Limit: 500, StaleOnly: staleOnly,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -2051,6 +2275,16 @@ func sessionsSQLOrderClause(sortBy string, desc bool) string {
 		// surfaces the worst-rated sessions (rating 0/unrated sink to the top).
 		expr = "COALESCE((SELECT sa.rating FROM session_annotations sa" +
 			" WHERE sa.session_id = s.id), 0)"
+	}
+	if expr == "s.started_at" {
+		// The default sort IS the tiebreak's first term: repeating it
+		// ("s.started_at DESC, s.started_at DESC, s.id ASC") orders rows
+		// identically but stops SQLite from walking idx_sessions_started,
+		// so every page SCANned all sessions and evaluated each row's
+		// correlated action subqueries before the LIMIT (468 ms warm on the
+		// 4.3k-session node, tens of seconds on a cold page cache; 1 ms
+		// with the index). Plan pinned by TestSessionsDefaultOrderUsesIndex.
+		return expr + " " + dir + ", s.id ASC"
 	}
 	return expr + " " + dir + ", s.started_at DESC, s.id ASC"
 }
@@ -2377,6 +2611,14 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		// and summing the two would let a delete-heavy refactor outscore
 		// a feature.
 		//
+		// SCOPE: it is every AI row stored under THIS session id - main
+		// line AND inline sub-agent (sidechain) edits together - but NOT a
+		// sub-agent child session, which is listed as its own row. The
+		// session card instead splits main from sidechain and folds child
+		// sessions in, so this number equals the card's "AI code lines"
+		// plus "Subagent code lines" only when the session has no child
+		// sessions (it never double-counts across list rows).
+		//
 		// HumanCodeLines is its editor-reported counterpart and is 0
 		// unless an editor is reporting saves. The UI must NOT derive an
 		// "AI share" from these two on their own: with no editor capture
@@ -2387,11 +2629,17 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		// Both carry omitempty so a corpus that has never run
 		// `observer backfill --loc` emits the byte-identical payload it
 		// did before this feature existed (tests/invariant/golden/sessions.json).
-		AICodeLines     int      `json:"ai_code_lines,omitempty"`
-		HumanCodeLines  int      `json:"human_code_lines,omitempty"`
-		QualityScore    *float64 `json:"quality_score,omitempty"`
-		ErrorRate       *float64 `json:"error_rate,omitempty"`
-		RedundancyRatio *float64 `json:"redundancy_ratio,omitempty"`
+		AICodeLines    int `json:"ai_code_lines,omitempty"`
+		HumanCodeLines int `json:"human_code_lines,omitempty"`
+		// AISplit is the code-vs-comment split of the same AI rows
+		// AICodeLines sums (internal/loc.SplitAuthored; code = added +
+		// modified, comment = added comment lines). Nil - and so absent on
+		// the wire - when the session has no AI code or comment lines, so
+		// an uncounted corpus stays byte-identical.
+		AISplit         *authoredSplit `json:"ai_split,omitempty"`
+		QualityScore    *float64       `json:"quality_score,omitempty"`
+		ErrorRate       *float64       `json:"error_rate,omitempty"`
+		RedundancyRatio *float64       `json:"redundancy_ratio,omitempty"`
 		// Spec §14.1 wasteful-subset (nil when the session has
 		// no cache_events).
 		RedundancyRatioWasteful *float64 `json:"redundancy_ratio_wasteful,omitempty"`
@@ -2555,6 +2803,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				lines := locLines[out[i].ID]
 				out[i].AICodeLines = lines.AICodeLines
 				out[i].HumanCodeLines = lines.HumanCodeLines
+				out[i].AISplit = sessionRowAISplit(lines)
 			}
 		} else {
 			s.opts.Logger.Warn("sessions: per-session LOC load failed", "err", lErr)
@@ -2931,49 +3180,60 @@ func (s *Server) handleSessionsCalendar(w http.ResponseWriter, r *http.Request) 
 // id, truncated to maxBytes when > 0. Returns map[action_id] -> excerpt.
 //
 // action_excerpts is an FTS5 virtual table with action_id declared
-// UNINDEXED, so there's no b-tree on action_id and SQLite must fall back
-// to a full virtual-table SCAN for every (action_id = ?) probe. A
-// correlated subquery in the SELECT list or a LEFT JOIN therefore costs
-// O(N rows × M excerpts) — empirically ~22s for 500 rows on an 81k-action
-// DB, and ~136s for the 1772-action session messages view. The batch IN
-// form below pays one ~50ms scan regardless of |ids|, then filters
-// in-memory. The map's "first wins" semantic preserves the
-// `LIMIT 1`/`COALESCE(ae.excerpt, ”)` behavior of the original queries
-// (action_excerpts can hold multiple rows per action_id when the same
-// action was re-indexed).
+// UNINDEXED, so a direct `WHERE action_id IN (...)` is a FULL scan of every
+// excerpt (450k rows / 351 MB on the 2026-09-29 reference node — half the
+// CPU of a session Messages poll). Instead the ids are resolved to FTS
+// rowids through the ordinary shadow table action_excerpts_content, whose
+// c0 column holds action_id and is indexed by agent migration 147
+// (idx_action_excerpts_content_c0), and the virtual table then answers by
+// rowid equality lookups. Without that index the query is still correct,
+// just a scan of the shadow table.
+//
+// "First" means the lowest FTS rowid per action_id — the row the previous
+// full-scan form (which iterated in rowid order) kept — so the map
+// preserves the `LIMIT 1`/`COALESCE(ae.excerpt, ”)` behavior of the
+// original correlated queries (action_excerpts can hold multiple rows per
+// action_id when the same action was re-indexed). The rowid is selected and
+// compared explicitly rather than trusting the rowid-IN iteration order.
+// Ids are chunked (idQueryChunk per statement) so a large session never
+// approaches SQLite's host-parameter limit.
 func loadActionExcerpts(ctx context.Context, db *sql.DB, ids []int64, maxBytes int) (map[int64]string, error) {
 	out := make(map[int64]string, len(ids))
 	if len(ids) == 0 {
 		return out, nil
 	}
-	placeholders := strings.Repeat("?,", len(ids))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
-	var q string
+	col := "excerpt"
 	if maxBytes > 0 {
-		q = fmt.Sprintf("SELECT action_id, substr(excerpt, 1, %d) FROM action_excerpts WHERE action_id IN (%s)", maxBytes, placeholders)
-	} else {
-		q = "SELECT action_id, excerpt FROM action_excerpts WHERE action_id IN (" + placeholders + ")"
+		col = fmt.Sprintf("substr(excerpt, 1, %d)", maxBytes)
 	}
-	rows, err := db.QueryContext(ctx, q, args...)
+	firstRowid := make(map[int64]int64, len(ids))
+	err := forEachIDChunk(uniqueIDs(ids), idQueryChunk, func(chunk []int64) error {
+		placeholders, args := idPlaceholders(chunk)
+		//nolint:gosec // G202: col is one of two code-built expressions (maxBytes is an int) and the IN list is "?" placeholders; every value is bound.
+		q := "SELECT rowid, action_id, " + col + " FROM action_excerpts" +
+			" WHERE rowid IN (SELECT id FROM action_excerpts_content WHERE c0 IN (" + placeholders + "))"
+		rows, err := db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var rowid, id int64
+			var excerpt string
+			if err := rows.Scan(&rowid, &id, &excerpt); err != nil {
+				return err
+			}
+			if prev, ok := firstRowid[id]; !ok || rowid < prev {
+				firstRowid[id] = rowid
+				out[id] = excerpt
+			}
+		}
+		return rows.Err()
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("dashboard.loadActionExcerpts: %w", err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id int64
-		var excerpt string
-		if err := rows.Scan(&id, &excerpt); err != nil {
-			return nil, err
-		}
-		if _, ok := out[id]; !ok {
-			out[id] = excerpt
-		}
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Server) handleActions(w http.ResponseWriter, r *http.Request) {
@@ -3395,6 +3655,16 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionLOC(w, r, id)
 		return
 	}
+	// Sub-route: /api/session/<id>/commits → the git commits this session's
+	// prompts reached, and whether this session OWNS each one
+	// (docs/projects-page.md "Commit ownership", sessioncommits.go). A read
+	// over node-local actions/file_changes/project_commit* rows, classed
+	// exactly like /loc above.
+	if strings.HasSuffix(id, "/commits") {
+		id = strings.TrimSuffix(id, "/commits")
+		s.handleSessionCommits(w, r, id)
+		return
+	}
 	// Sub-route: /api/session/<id>/processes → the Process Observability
 	// session tree (docs/process-observability.md §13.1). Attributed
 	// fork/exec/exit lineage with the spawning command per subtree. Empty
@@ -3439,6 +3709,14 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(id, "/guard") {
 		id = strings.TrimSuffix(id, "/guard")
 		s.handleSessionGuardEvents(w, r, id)
+		return
+	}
+	// Sub-route: /api/session/<id>/mcp-calls → the session's MCP calls the
+	// node relay recorded, each correlated to its action / turn / prompt
+	// with an honest confidence (Agent Access P11(a), sessionmcp.go).
+	if strings.HasSuffix(id, "/mcp-calls") {
+		id = strings.TrimSuffix(id, "/mcp-calls")
+		s.handleSessionMCPCalls(w, r, id)
 		return
 	}
 	// Sub-route: /api/session/<id>/raw-events → on-demand source JSONL row
@@ -3526,6 +3804,14 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionTags(w, r, id)
 		return
 	}
+	// Sub-route: /api/session/<id>/quality → the persisted spec §15.2
+	// quality score (GET) or score-now (POST) for the Quality card
+	// (sessionquality.go).
+	if strings.HasSuffix(id, "/quality") {
+		id = strings.TrimSuffix(id, "/quality")
+		s.handleSessionQuality(w, r, id)
+		return
+	}
 	if strings.HasSuffix(id, "/verbosity") {
 		id = strings.TrimSuffix(id, "/verbosity")
 		s.handleSessionVerbosity(w, r, id)
@@ -3607,6 +3893,14 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		Tokens                  map[string]int64 `json:"tokens"`
 		// TokenUsageAvailable distinguishes captured zero usage from no usage rows.
 		TokenUsageAvailable bool `json:"token_usage_available"`
+		// TurnCount / ProxyTurnCount are sessionmsg.SumContributions' turn
+		// counts behind the tokens map: every usage row that survived the
+		// proxy/transcript twin fold, and the proxy-observed subset. The
+		// org drawer reports the same two numbers from the same rule, so the
+		// Tokens tile on both dashboards can name its sources identically
+		// (MCP audit #4b, 2026-09-27).
+		TurnCount      int64 `json:"turn_count"`
+		ProxyTurnCount int64 `json:"proxy_turn_count"`
 		// ContextBudgetTokens + TokensNote are the honest fallback for a
 		// session with NO captured token usage. Hooks and native files can
 		// omit usage even when an agent did real work. ContextBudgetTokens is the carried context
@@ -3616,6 +3910,20 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		// Both omitted when the session has real billed usage.
 		ContextBudgetTokens int64  `json:"context_budget_tokens,omitempty"`
 		TokensNote          string `json:"tokens_note,omitempty"`
+		// ContextGauge is the context-window gauge (used = the running cache
+		// prefix over the counted turns; ceiling = the session's reported
+		// budget, else the model's catalog context window), derived by the
+		// shared pure internal/sessiongauge.Context so the org session drawer
+		// reports the same numbers (lane F-WIRE). A nil ratio is unknown.
+		ContextGauge sessiongauge.ContextGauge `json:"context_gauge"`
+		// RequestClassSplit splits the session's counted proxy turns by the
+		// client-declared request class (api_turns.request_class, agent
+		// migration 144: main | subagent | workflow | compaction |
+		// auxiliary) through the shared pure internal/requestclass.Summarize,
+		// so the org session drawer reports the same split (lane G-WIRE2).
+		// Omitted when the session has no counted proxy turn; Classified
+		// false when none of them carried a class.
+		RequestClassSplit *requestclass.Split `json:"request_class_split,omitempty"`
 		// PerModel breaks the deduped tokens + cost out by model so the
 		// session detail modal shows haiku and opus separately when a
 		// session uses both (Claude Code's main vs sub-agent split, etc.).
@@ -3794,243 +4102,132 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		d.CacheSummary = summary
 	}
 
-	// Token totals + per-model breakdown — both come from the same
-	// per-turn-deduped CTE. Pre-2026-04-29 this endpoint had the same
-	// bug as the cost engine: "if api_turns has ANY row for this
-	// session, drop ALL token_usage rows" — so a session where the
-	// proxy intercepted only some turns would show pure-proxy totals
-	// even though most of the work went direct (b9bd459d had 3% of
-	// input tokens captured by the proxy; the rest came from JSONL
-	// and was silently dropped). The fix mirrors the cost engine's
-	// per-turn dedup (api_turns.request_id ↔ token_usage.source_event_id):
-	// proxy wins for turns it intercepted, JSONL fills the gaps.
+	// Token totals + per-model breakdown come from the SAME shared
+	// pipeline the Messages tab and the org's per-session rollup use:
+	// the three thin ordered loaders (loadMessageProxyRows /
+	// loadMessageTokenRows) feeding sessionmsg.Derive's one claim-once
+	// twin-fold + Copilot-family shadow-row pairing (finding #1, 2026-09-22
+	// review round 4). This endpoint used to run its OWN second SQL-side
+	// dedup engine here (a blanket "drop every JSONL row matching ANY
+	// proxy shape" NOT EXISTS, vs. Derive's one-to-one closest-match
+	// claim-once assignment) — one proxy row plus two equal-shape JSONL
+	// rows collapsed to one row here but stayed two in Messages/org, and
+	// this endpoint's Copilot shadow-row exclusion ignored ids/distance/
+	// 1h-cache/reasoning/web-search entirely (PairShadowRows applies all
+	// of them). Reusing the SAME loaders + Derive here — rather than a
+	// fourth ad hoc query — makes Detail's totals structurally unable to
+	// diverge from what Messages/org show for the identical session.
 	//
-	// Single SQL CTE keeps the rollup atomic and avoids two passes
-	// over the same dataset. cost.Options doesn't expose a session_id
-	// filter so we can't reuse cost.Engine.Summary directly here.
-	//
-	// Per-row pricing (no SQL GROUP BY): the cost engine's long-context
-	// dispatch reprices entire turns whose prompt window exceeds a
-	// threshold (Sonnet 4 / 4.5 at 200K, gpt-5.4 / 5.5 at 272K, Gemini
-	// Pro at 200K). LC is a per-request property — aggregating tokens
-	// across many turns first would false-positive the threshold check
-	// whenever a session's summed prompt exceeded it even if no single
-	// turn did. So we pull individual rows and bucket per-model in Go.
-	// Per-session token aggregation has TWO dedup gates against the
-	// proxy api_turns rows:
-	//
-	//   1. source_event_id NOT IN (api_turns.request_id) — when the
-	//      JSONL adapter mirrors the upstream message id verbatim
-	//      (Claude Code stores Anthropic's msg_xxx; the proxy's
-	//      request_id captures the same). Per-turn exact match.
-	//
-	//   2. NOT EXISTS (api_turn with same model + token shape) —
-	//      fallback for adapters whose source_event_id format does
-	//      NOT mirror the proxy's request_id. Codex's JSONL adapter
-	//      writes a synthetic "tk:<file>:L<line>" id while the proxy
-	//      stores OpenAI's "resp_<hex>" id; the shape match is the
-	//      only way to recognise them as the same turn. Deliberately
-	//      NO minute bucket: codex's rollout flush lands ~10s after
-	//      the proxy logs the request, so ~15% of turns near a minute
-	//      boundary would escape a minute-bucketed match and
-	//      double-count (audit F1). False-positive risk: two distinct
-	//      same-session calls with byte-identical token shapes
-	//      collapse — effectively impossible since cache_read grows
-	//      monotonically across a session; same trade
-	//      Engine.loadRows::sessionShapeKey accepts in cost/summary.go.
-	const dedupedRowsCTE = `WITH proxy_turn_ids AS (
-		SELECT request_id FROM api_turns
-		 WHERE session_id = ? AND request_id IS NOT NULL AND request_id != ''
-	),
-	combined AS (
-		-- api_turns has no reasoning_tokens column (proxy folds it into
-		-- output_tokens at capture); pad with 0 so the UNION schema
-		-- matches and cost.Compute applies its reasoning × output_rate
-		-- multiplier as 0 for proxy rows. fast = the proxy row's own tier;
-		-- inherited_fast = a fast JSONL twin exists for this turn (codex,
-		-- where the priority flag lives only on the JSONL/config path) —
-		-- audit F1.
-		SELECT at.model, at.input_tokens, at.output_tokens, at.cache_read_tokens,
-		       at.cache_creation_tokens, at.cache_creation_1h_tokens,
-		       0 AS reasoning_tokens,
-		       at.web_search_requests, at.cost_usd,
-		       COALESCE(at.fast, 0) AS fast,
-		       CASE WHEN EXISTS (
-		           SELECT 1 FROM token_usage tw
-		           WHERE tw.session_id = at.session_id AND COALESCE(tw.fast, 0) = 1
-		             AND COALESCE(tw.model, '') = COALESCE(at.model, '')
-		             AND COALESCE(tw.input_tokens, 0) = COALESCE(at.input_tokens, 0)
-		             -- Reasoning fold: proxy output is gross (visible +
-		             -- reasoning); codex's JSONL twin nets reasoning out.
-		             AND COALESCE(tw.output_tokens, 0) + COALESCE(tw.reasoning_tokens, 0) = COALESCE(at.output_tokens, 0)
-		             AND COALESCE(tw.cache_read_tokens, 0) = COALESCE(at.cache_read_tokens, 0)
-		             AND COALESCE(tw.cache_creation_tokens, 0) = COALESCE(at.cache_creation_tokens, 0)
-		       ) THEN 1 ELSE 0 END AS inherited_fast,
-		       -- Row timestamp: feeds DATE-EFFECTIVE pricing (proxyAwareCost).
-		       at.timestamp AS timestamp
-		FROM api_turns at WHERE at.session_id = ?
-		UNION ALL
-		SELECT tu.model, tu.input_tokens, tu.output_tokens, tu.cache_read_tokens,
-		       tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-		       tu.reasoning_tokens,
-		       tu.web_search_requests, tu.estimated_cost_usd,
-		       COALESCE(tu.fast, 0) AS fast,
-		       0 AS inherited_fast,
-		       tu.timestamp AS timestamp
-		FROM token_usage tu
-		WHERE tu.session_id = ?
-		  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-		       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-		  -- F1: also drop a JSONL row that duplicates a proxy turn by
-		  -- token-bundle shape when the ids don't match (codex: tk:… vs
-		  -- resp_…). COALESCE because codex leaves cache_creation NULL on
-		  -- one side, 0 on the other. The output comparison FOLDS the
-		  -- JSONL row's reasoning back in: the proxy stores gross output
-		  -- (visible + reasoning), while codex's adapter nets reasoning
-		  -- out at emit time — an exact-output match missed every
-		  -- reasoning turn, so both captures of the same call survived
-		  -- and the timeline showed each turn twice (tk:… and resp_…).
-		  -- Anthropic adapters store reasoning 0 (thinking already folded
-		  -- into output on both sides), so the sum is a no-op for them.
-		  AND NOT EXISTS (
-		      SELECT 1 FROM api_turns ap
-		      WHERE ap.session_id = tu.session_id
-		        AND COALESCE(ap.model, '') = COALESCE(tu.model, '')
-		        AND COALESCE(ap.input_tokens, 0) = COALESCE(tu.input_tokens, 0)
-		        AND COALESCE(ap.output_tokens, 0) = COALESCE(tu.output_tokens, 0) + COALESCE(tu.reasoning_tokens, 0)
-		        AND COALESCE(ap.cache_read_tokens, 0) = COALESCE(tu.cache_read_tokens, 0)
-		        AND COALESCE(ap.cache_creation_tokens, 0) = COALESCE(tu.cache_creation_tokens, 0)
-		  )
-		  -- Copilot family (copilot, copilot-cli) emits TWO token_usage rows per
-		  -- turn: a full-usage row (Tier-1 process-log [DEBUG] usage block / the
-		  -- request row) and an output-only "shadow" row (Tier-3 events.jsonl
-		  -- assistant.message). The adapter set MessageID on both intending a
-		  -- (session_id, message_id) merge, but the store upserts on
-		  -- (source_file, source_event_id), so they never merge and the output
-		  -- double-counts. Drop the output-only shadow when a full-usage sibling
-		  -- carries the same output in this session. Scoped to the copilot tools
-		  -- (the only adapters that emit >1 token row per turn) so nothing else
-		  -- is affected.
-		  AND NOT (
-		      tu.tool IN ('copilot', 'copilot-cli')
-		      AND COALESCE(tu.input_tokens, 0) = 0
-		      AND COALESCE(tu.cache_read_tokens, 0) = 0
-		      AND COALESCE(tu.cache_creation_tokens, 0) = 0
-		      AND COALESCE(tu.output_tokens, 0) > 0
-		      AND EXISTS (
-		          SELECT 1 FROM token_usage tsh
-		          WHERE tsh.session_id = tu.session_id
-		            AND tsh.rowid != tu.rowid
-		            AND COALESCE(tsh.output_tokens, 0) = COALESCE(tu.output_tokens, 0)
-		            AND (COALESCE(tsh.input_tokens, 0) > 0
-		                 OR COALESCE(tsh.cache_read_tokens, 0) > 0
-		                 OR COALESCE(tsh.cache_creation_tokens, 0) > 0)
-		      )
-		  )
-	)`
-
+	// Per-contribution pricing (no SQL GROUP BY): a Row's Contributions
+	// are the individual raw proxy/token rows Derive folded into it,
+	// still separately priceable — pricing the merged Bundle once would
+	// falsely apply the cost engine's long-context threshold to a message
+	// whose individual underlying turns never crossed it. See
+	// sessionmsg.Row.Contributions' doc comment and
+	// TestAPISessionMessages_LongContextPerTurn (the Messages handler's
+	// existing regression test for this exact rule).
 	sessionModel := d.Model
-	rows, err := s.db().QueryContext(r.Context(),
-		dedupedRowsCTE+`
-		SELECT COALESCE(NULLIF(model, ''), ?),
-		       COALESCE(input_tokens, 0),
-		       COALESCE(output_tokens, 0),
-		       COALESCE(cache_read_tokens, 0),
-		       COALESCE(cache_creation_tokens, 0),
-		       COALESCE(cache_creation_1h_tokens, 0),
-		       COALESCE(reasoning_tokens, 0),
-		       COALESCE(web_search_requests, 0),
-		       COALESCE(cost_usd, 0),
-		       COALESCE(fast, 0),
-		       COALESCE(inherited_fast, 0),
-		       COALESCE(timestamp, '')
-		FROM combined`,
-		id, id, id, sessionModel)
+	d.ContextGauge = s.sessionContextGauge(r.Context(), id, sessionModel)
+	// A load error degrades to no split (omitted), never a failed detail
+	// page - the split is a breakdown of figures the page already carries.
+	if split, err := store.New(s.db()).LoadSessionRequestClassSplit(r.Context(), id); err == nil {
+		d.RequestClassSplit = split
+	}
+	proxyRows, err := loadMessageProxyRows(r.Context(), s.db(), id, sessionModel)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer rows.Close()
-
-	bucketByModel := map[string]*modelBucket{}
-	bucketOrder := []string{}
-	var totalIn, totalOut, totalCR, totalCC, totalCC1h, totalReasoning int64
-	for rows.Next() {
-		var modelKey string
-		var bundle cost.TokenBundle
-		var recorded float64
-		var fastInt, inheritedFastInt int
-		var tsStr string
-		if err := rows.Scan(&modelKey,
-			&bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning,
-			&bundle.WebSearchRequests,
-			&recorded, &fastInt, &inheritedFastInt, &tsStr); err != nil {
-			writeErr(w, err)
-			return
-		}
-		// Row timestamp feeds date-effective pricing (see proxyAwareCost).
-		// Unparseable/absent stamps stay zero → current rates.
-		rowAt, _ := time.Parse(time.RFC3339Nano, tsStr)
-		// Per-row cost: prefer recorded estimated_cost_usd / cost_usd
-		// when non-zero (only OpenCode + Pi adapters set it today; api_turns
-		// carries it for proxy rows). proxyAwareCost applies the F1 "keep
-		// proxy, OR-in fast" rule — a codex proxy turn that inherited a fast
-		// JSONL twin re-prices with the FastMultiplier premium (its recorded
-		// cost was the standard wire tier). ComputeBreakdown returns the AI
-		// vs tool split so we can show "API cost vs tool cost vs total"
-		// separately; recorded costs land in AICost only (those adapters
-		// don't model web_search billing). Recorded-cost rows leave the
-		// per-bucket components zero so the frontend's "$ mode" stacked bar
-		// renders as a single undifferentiated AI block.
-		var rowCost, rowAICost, rowToolCost float64
-		var rowInputCost, rowOutputCost, rowCacheReadCost, rowCacheCreationCost float64
-		if cb, ok := proxyAwareCost(s.opts.CostEngine, modelKey, bundle, recorded, fastInt != 0, inheritedFastInt != 0, rowAt); ok {
-			rowCost = cb.Total
-			rowAICost = cb.AICost
-			rowToolCost = cb.ToolCost
-			rowInputCost = cb.InputCost
-			rowOutputCost = cb.OutputCost
-			rowCacheReadCost = cb.CacheReadCost
-			rowCacheCreationCost = cb.CacheCreationCost
-		}
-
-		mb, ok := bucketByModel[modelKey]
-		if !ok {
-			mb = &modelBucket{Model: modelKey}
-			bucketByModel[modelKey] = mb
-			bucketOrder = append(bucketOrder, modelKey)
-		}
-		mb.Input += bundle.Input
-		mb.Output += bundle.Output
-		mb.CacheRead += bundle.CacheRead
-		mb.CacheCreation += bundle.CacheCreation
-		mb.Reasoning += bundle.Reasoning
-		mb.WebSearchRequests += bundle.WebSearchRequests
-		mb.TurnCount++
-		mb.CostUSD += rowCost
-		mb.AICostUSD += rowAICost
-		mb.ToolCostUSD += rowToolCost
-		mb.InputCostUSD += rowInputCost
-		mb.OutputCostUSD += rowOutputCost
-		mb.CacheReadCostUSD += rowCacheReadCost
-		mb.CacheCreationCostUSD += rowCacheCreationCost
-
-		d.CostUSD += rowCost
-		d.AICostUSD += rowAICost
-		d.ToolCostUSD += rowToolCost
-		totalIn += bundle.Input
-		totalOut += bundle.Output
-		totalCR += bundle.CacheRead
-		totalCC += bundle.CacheCreation
-		totalCC1h += bundle.CacheCreation1h
-		totalReasoning += bundle.Reasoning
-	}
-	if err := rows.Err(); err != nil {
+	tokenRows, err := loadMessageTokenRows(r.Context(), s.db(), id, sessionModel, d.Tool)
+	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	// A legacy pre-fallback row carrying none of request_id/message_id/
+	// source_event_id/turn_id is no longer this endpoint's own problem to
+	// solve: sessionmsg.Derive itself now synthesizes a collision-safe
+	// internal key for such a row (Row.Keyless=true) instead of dropping
+	// it, so it contributes to the totals below exactly like every other
+	// row — and, critically, the SAME way in the Messages tab and the
+	// org's SessionMessageMetrics, which call the identical Derive
+	// function. Review round 5 finding #7: this endpoint used to patch
+	// proxyRows/tokenRows with a LOCAL "legacy-…-turn:N" id right here
+	// before calling Derive — invisible to every other caller, so Detail
+	// alone counted the row while Messages/org silently dropped it. See
+	// sessionmsg.Derive's doc comment for the shared fix.
+	detailCaps := store.NodeSessionCaps(d.Tool)
+	detailRows := sessionmsg.Derive(sessionmsg.DeriveInput{
+		ProxyRows:         proxyRows,
+		TokenRows:         tokenRows,
+		Mode:              sessionmsg.RollupTurn,
+		ShadowCapable:     detailCaps.ShadowCapable,
+		ReasoningDisjoint: detailCaps.ReasoningDisjoint,
+		SessionCumulative: detailCaps.SessionCumulative,
+		DefaultModel:      sessionModel,
+	})
+
+	bucketByModel := map[string]*modelBucket{}
+	bucketOrder := []string{}
+	for _, drow := range detailRows {
+		for _, c := range drow.Contributions {
+			modelKey := c.Model
+			if modelKey == "" {
+				modelKey = sessionModel
+			}
+			bundle := sessionMsgCostBundle(c.Bundle)
+			// Contribution timestamp feeds date-effective pricing (see
+			// proxyAwareCost); fall back to the row's own timestamp, then
+			// leave zero (→ current rates) exactly like the prior CTE's
+			// unparseable-timestamp handling.
+			cAt, perr := time.Parse(time.RFC3339Nano, c.Timestamp)
+			if perr != nil {
+				cAt, _ = time.Parse(time.RFC3339Nano, drow.Timestamp)
+			}
+			var rowCost, rowAICost, rowToolCost float64
+			var rowInputCost, rowOutputCost, rowCacheReadCost, rowCacheCreationCost float64
+			if cb, ok := proxyAwareCost(s.opts.CostEngine, modelKey, bundle, c.RecordedCostUSD, c.OwnFast, c.InheritedFast, cAt); ok {
+				rowCost = cb.Total
+				rowAICost = cb.AICost
+				rowToolCost = cb.ToolCost
+				rowInputCost = cb.InputCost
+				rowOutputCost = cb.OutputCost
+				rowCacheReadCost = cb.CacheReadCost
+				rowCacheCreationCost = cb.CacheCreationCost
+			}
+
+			mb, ok := bucketByModel[modelKey]
+			if !ok {
+				mb = &modelBucket{Model: modelKey}
+				bucketByModel[modelKey] = mb
+				bucketOrder = append(bucketOrder, modelKey)
+			}
+			mb.Input += bundle.Input
+			mb.Output += bundle.Output
+			mb.CacheRead += bundle.CacheRead
+			mb.CacheCreation += bundle.CacheCreation
+			mb.Reasoning += bundle.Reasoning
+			mb.WebSearchRequests += bundle.WebSearchRequests
+			mb.TurnCount++
+			mb.CostUSD += rowCost
+			mb.AICostUSD += rowAICost
+			mb.ToolCostUSD += rowToolCost
+			mb.InputCostUSD += rowInputCost
+			mb.OutputCostUSD += rowOutputCost
+			mb.CacheReadCostUSD += rowCacheReadCost
+			mb.CacheCreationCostUSD += rowCacheCreationCost
+
+			d.CostUSD += rowCost
+			d.AICostUSD += rowAICost
+			d.ToolCostUSD += rowToolCost
+		}
+	}
+	// Headline token totals: sessionmsg.SumContributions, the ONE owner of
+	// "what does this session add up to" that the org drawer
+	// (rollup.SessionDetail) also calls over the same Derive output — so the
+	// node header and the org header can only differ when the rows they were
+	// handed differ (MCP audit #4b, 2026-09-27). Only the PRICING above stays
+	// per-contribution here: the org has no pricing engine.
+	totals := sessionmsg.SumContributions(detailRows, sessionModel)
 	// Order buckets by token volume DESC (matches the prior SQL ORDER BY).
 	sort.SliceStable(bucketOrder, func(i, j int) bool {
 		bi, bj := bucketByModel[bucketOrder[i]], bucketByModel[bucketOrder[j]]
@@ -4043,23 +4240,39 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		perModel = append(perModel, *bucketByModel[key])
 	}
 	d.Tokens = map[string]int64{
-		"input": totalIn, "output": totalOut, "cache_read": totalCR, "cache_creation": totalCC,
+		"input": totals.Bundle.Input, "output": totals.Bundle.Output,
+		"cache_read": totals.Bundle.CacheRead, "cache_creation": totals.Bundle.CacheCreation,
 		// cache_creation_1h is the 1h-ephemeral-tier subset of cache_creation
 		// (the rest is 5m-tier). Surfaced separately so the session-detail
 		// Token Buckets panel can split "Cache Write" into "Cache Write (5m)"
 		// and "Cache Write (1h)" — different bill rates.
-		"cache_creation_1h": totalCC1h,
-		"reasoning":         totalReasoning,
+		"cache_creation_1h": totals.Bundle.CacheCreation1h,
+		"reasoning":         totals.Bundle.Reasoning,
 	}
 	d.PerModel = perModel
 	d.TokenUsageAvailable = len(perModel) > 0
+	d.TurnCount = totals.Turns
+	d.ProxyTurnCount = totals.ProxyTurns
 
 	// Context occupancy cannot replace missing usage. A captured row with
 	// zero counts is distinct from an absent row. Never infer cost from budget.
 	if !d.TokenUsageAvailable {
 		d.ContextBudgetTokens = s.sessionContextBudget(r.Context(), id)
-		d.TokensNote = tokensUnbilledNote(d.Tool, d.ContextBudgetTokens)
-	} else if d.Tool == "cursor" {
+		var ev *cursorusage.Evidence
+		if cursorusage.AppliesTo(d.Tool) {
+			if e, err := store.New(s.db()).CursorUsageEvidence(r.Context(), id); err == nil {
+				if e.Prompts > 0 {
+					// Registration state of the finish hooks, from the
+					// same hooks.json walk `observer doctor cursor`
+					// reports, so the note never tells the user to
+					// re-register hooks that are wired (D4).
+					e.FinishHooks = cursorFinishHooksWiring()
+				}
+				ev = &e
+			}
+		}
+		d.TokensNote = tokensUnbilledNote(d.Tool, d.ContextBudgetTokens, ev)
+	} else if cursorusage.AppliesTo(d.Tool) {
 		d.TokensNote, _ = store.New(s.db()).CursorUsageNote(r.Context(), id)
 	}
 
@@ -4102,13 +4315,16 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		d.ThreadSource = lin.ThreadSource
 		d.ParentInDB = lin.ParentInDB
 		for _, c := range lin.Children {
+			// A child's cost is priced the way its own header prices it
+			// (priceSpendTurns over the same one-rule rows), so the spawned
+			// sessions list and the child's detail view show one number.
 			d.Children = append(d.Children, lineageChild{
 				ID:           c.ID,
 				ThreadSource: c.ThreadSource,
 				StartedAt:    c.StartedAt,
 				InputTokens:  c.InputTokens,
 				OutputTokens: c.OutputTokens,
-				CostUSD:      c.CostUSD,
+				CostUSD:      s.priceSpendTurns(c.Turns),
 				ActionCount:  c.ActionCount,
 			})
 		}
@@ -4146,13 +4362,9 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, d)
 }
 
-// contextTokensRe extracts the token count from a cursor prompt_context
-// action's target ("Rules — 15580 tokens, 61924 chars"). The format is
-// adapter-controlled (cursor.promptSectionEvent) and stable.
-var contextTokensRe = regexp.MustCompile(`(\d+)\s+tokens`)
-
 // sessionContextBudget sums the carried context budget from a session's
-// prompt_context actions (cursor's per-section prompt-token counts). These
+// prompt_context actions (cursor's per-section prompt-token counts) through
+// the shared sessiongauge.ReportedBudget parser. These
 // tokens are part of a turn's input but never billed on their own, so this is
 // only ever surfaced as an estimate for a session with no billed usage — it
 // must NOT feed cost. Returns 0 on any error or when no sections exist.
@@ -4164,30 +4376,36 @@ func (s *Server) sessionContextBudget(ctx context.Context, sessionID string) int
 		return 0
 	}
 	defer rows.Close()
-	var total int64
+	var targets []string
 	for rows.Next() {
 		var target string
 		if err := rows.Scan(&target); err != nil {
-			return total
+			break
 		}
-		if m := contextTokensRe.FindStringSubmatch(target); m != nil {
-			if v, perr := strconv.ParseInt(m[1], 10, 64); perr == nil {
-				total += v
-			}
-		}
+		targets = append(targets, target)
 	}
-	return total
+	return sessiongauge.ReportedBudget(targets)
+}
+
+// cursorFinishHooksWiring resolves whether this node's Cursor finish hooks
+// (stop, afterAgentResponse) are registered. A var so tests can pin it
+// without a real $HOME; production reads the doctor's own hooks.json walk.
+var cursorFinishHooksWiring = func() cursorusage.HookWiring {
+	return diag.CursorFinishHooksWiring(setupWizardHome)
 }
 
 // tokensUnbilledNote describes missing capture without attributing it to an
 // unobserved failure. The budget clause never implies billed token counts.
-func tokensUnbilledNote(tool string, budget int64) string {
-	if tool == "cursor" {
-		n := "Token usage was not captured for this Cursor session. Cursor's stop and afterAgentResponse hooks can omit usage, and an interrupted CLI run may end before reporting totals. Input, output, cache counts and cost are unknown, not zero."
-		if budget > 0 {
-			n += " The context budget is an estimate of prompt size, not billed usage."
+// For a Cursor session, ev is the store's evidence of which Cursor events
+// fired (nil when it could not be loaded); internal/cursorusage turns it
+// into the one reason that applies.
+func tokensUnbilledNote(tool string, budget int64, ev *cursorusage.Evidence) string {
+	if cursorusage.AppliesTo(tool) {
+		var e cursorusage.Evidence
+		if ev != nil {
+			e = *ev
 		}
-		return n
+		return cursorusage.Explain(e, budget)
 	}
 	return "Token usage was not captured for this session. Token counts and cost are unknown, not zero."
 }
@@ -4229,59 +4447,66 @@ func proxyAwareCost(engine *cost.Engine, model string, bundle cost.TokenBundle, 
 	return engine.ComputeBreakdownAt(model, bundle, at)
 }
 
-// handleSessionMessages serves /api/session/<id>/messages — one row
-// per upstream Anthropic message id. Each row carries the message's
-// own token usage and cost (per-turn deduped via the same
-// proxy-preferred / JSONL-fallback logic as the session detail
-// endpoint), plus the contained tool_calls grouped by message_id.
-//
-// Includes user-prompt rows synthesized from action_type='user_prompt'
-// so the timeline shows "user said X → assistant did Y" together.
-// inferenceBucketIndex picks which of a turn's chronologically-ordered token
-// buckets owns a transcript action stamped actionTS (all stamps RFC3339).
-//
-// Boundary semantics differ by capture source: a proxy bucket (api_turns) is
-// stamped at request START, so it owns actions from its own timestamp until
-// the next bucket begins; a transcript bucket (codex token_count) is stamped
-// at inference END, so it owns actions since the PREVIOUS bucket's end (the
-// first transcript bucket is unbounded below). Both reduce to one walk: each
-// bucket i has a lower bound — its own stamp when isProxy[i], otherwise
-// bucket i-1's stamp — and the action belongs to the LAST bucket whose lower
-// bound is strictly before the action stamp, defaulting to the first bucket.
-// Strictly-before keeps an action stamped exactly at a transcript bucket's
-// end (same-instant fixture data) on that bucket rather than sliding to its
-// successor. Returns -1 only for an empty bucket list; an unparseable
-// actionTS falls back to the first bucket.
-func inferenceBucketIndex(stamps []string, isProxy []bool, actionTS string) int {
-	if len(stamps) == 0 || len(stamps) != len(isProxy) {
-		return -1
-	}
-	at, err := time.Parse(time.RFC3339Nano, actionTS)
-	if err != nil {
-		return 0
-	}
-	pick := 0
-	for i := range stamps {
-		var boundStamp string
-		switch {
-		case isProxy[i]:
-			boundStamp = stamps[i]
-		case i == 0:
-			continue // unbounded below — the default pick already covers it
-		default:
-			boundStamp = stamps[i-1]
+// priceSpendTurns prices a session's one-rule spend rows (store.SpendTurn)
+// exactly as the session header prices its Derive contributions - recorded
+// cost when positive, else the pricing table at the row's own timestamp and
+// served tier (proxyAwareCost; a proxy row lifted to its twin's fast tier
+// arrives with its recorded cost already cleared and Fast set) - so a
+// drill-down row and the header of the session it summarizes agree on cost
+// as well as tokens. An unpriced row adds $0, as in the header.
+func (s *Server) priceSpendTurns(turns []store.SpendTurn) float64 {
+	var total float64
+	for _, t := range turns {
+		b := cost.TokenBundle{
+			Input: t.InputTokens, Output: t.OutputTokens, CacheRead: t.CacheReadTokens,
+			CacheCreation: t.CacheWriteTokens, CacheCreation1h: t.CacheWrite1hTokens,
+			Reasoning: t.ReasoningTokens, WebSearchRequests: t.WebSearchRequests,
 		}
-		bound, err := time.Parse(time.RFC3339Nano, boundStamp)
-		if err != nil {
-			continue
-		}
-		if bound.Before(at) {
-			pick = i
+		if cb, ok := proxyAwareCost(s.opts.CostEngine, t.Model, b, t.RecordedCostUSD, t.Fast, false, t.Ts); ok {
+			total += cb.Total
 		}
 	}
-	return pick
+	return total
 }
 
+// handleSessionMessages serves /api/session/<id>/messages — one row per
+// upstream Anthropic message id. Each row carries the message's own token
+// usage and cost (per-turn deduped via the same proxy-preferred / JSONL-
+// fallback logic as the session detail endpoint), plus the contained
+// tool_calls grouped by message_id.
+//
+// Includes user-prompt rows synthesized from action_type='user_prompt' so
+// the timeline shows "user said X → assistant did Y" together.
+//
+// S1 (2026-09-22 review round 3, VERIFIED-TRUE at dashboard.go:4604/4664 of
+// the prior tree): this handler used to run its OWN SQL-side twin-fold CTE
+// (a set-based NOT EXISTS exclusion) which diverged from the org's
+// claim-once sessionmsg.Derive — a proxy row with two identical-shape
+// token-row candidates would keep only one here while the org kept both;
+// the reverse shape (two proxies, one twin) could also disagree. The fix:
+// this handler is now TWO THIN LOADERS (loadMessageProxyRows /
+// loadMessageTokenRows / loadMessageActionRows, each a plain ordered SQL
+// query with no dedup logic of its own) feeding the ONE shared
+// sessionmsg.Derive the org's rollup.SessionMessageMetrics also calls —
+// same twin-fold, same Copilot-family shadow-row pairing (S4), same final
+// ordering (finding #6), same AliasKeys-indexed account resolution (S7).
+// The SQL-side dedupedRowsCTE is gone.
+//
+// The node still owns two things Derive intentionally leaves to the
+// caller: per-contribution cost pricing (Row.Contributions — pricing the
+// already-merged Bundle once would falsely long-context-reprice a message
+// whose individual underlying turns never crossed the threshold, see
+// TestAPISessionMessages_LongContextPerTurn) and the rich content-bearing
+// display fields on each tool call (FullText/FullTextElided/HasFullOutput/
+// Excerpt). Those are HYDRATED only for the tool calls of the response
+// window (the page after sort/locate/offset/limit, or the ?tail window) by
+// hydrateMessageActions: Derive, the sort keys, the orphan-stub logic and
+// the account matching never read them, so loadMessageActionRows loads a
+// light row per action and the heavy columns + excerpts are read for a few
+// dozen rows instead of the whole session on every poll (node dashboard
+// performance audit 2026-09-29). The response is byte-identical to the
+// pre-hydration handler (pinned by session_messages_hydrate_test.go against
+// a verbatim oracle).
 func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if sessionID == "" {
 		http.Error(w, "missing session id", http.StatusBadRequest)
@@ -4369,6 +4594,11 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		Granularity       string `json:"granularity,omitempty"`
 		PromptTokensEst   int64  `json:"prompt_tokens_est,omitempty"`
 		ResponseTokensEst int64  `json:"response_tokens_est,omitempty"`
+		// fromAction marks a tool call projected from a real actions row
+		// (as opposed to a synthetic orphan-token stub), i.e. one whose
+		// heavy display fields and excerpt are hydrated when it lands in
+		// the response window. Never serialized.
+		fromAction bool
 	}
 	type messageRow struct {
 		Account models.MessageAccount `json:"account"`
@@ -4396,14 +4626,6 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		CostUSD     float64 `json:"cost_usd"`
 		AICostUSD   float64 `json:"ai_cost_usd"`
 		ToolCostUSD float64 `json:"tool_cost_usd"`
-		// ElapsedMs is the wall-clock gap between this message's
-		// timestamp and the next message's. For user rows it
-		// approximates "time the assistant took to respond"; for
-		// assistant rows it approximates "time the user took before
-		// sending the next prompt". null on the last message in the
-		// session (no successor to subtract from). Computed
-		// post-sort, after pagination boundaries are decided.
-		ElapsedMs *int64 `json:"elapsed_ms,omitempty"`
 		// ToolDurationMs is the sum of contained tool_calls'
 		// duration_ms — the assistant's tool-execution time for
 		// this turn. Differs from ElapsedMs (which spans the entire
@@ -4419,17 +4641,19 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		// (codex collaboration_mode.settings.reasoning_effort is
 		// per-turn, antigravity's effort is encoded in the SKU
 		// itself — gemini-pro-agent, gemini-3.1-pro-low/medium/high
-		// per [[project_antigravity_skus]]). First non-empty wins.
+		// per [[project_antigravity_skus]]). First non-empty wins —
+		// resolved by sessionmsg.Derive (the SAME rule the org uses),
+		// copied verbatim below rather than re-derived here.
 		// Empty when the adapter didn't emit it (Anthropic via
 		// claude-code/cowork, copilot, etc. — Anthropic doesn't
 		// expose a reasoning-effort knob).
 		EffortLevel string `json:"effort_level,omitempty"`
 		// StopReason is the assistant turn's terminal reason (end_turn /
-		// max_tokens / tool_use / stop_sequence / refusal) and ServiceTier
-		// the served capacity tier (standard / priority / batch), both from
-		// the transcript (claude-code / cowork). Aggregated per message —
-		// first non-empty among the turn's actions wins. Empty when the
-		// adapter didn't emit them or the rows pre-date capture.
+		// max_tokens / tool_use / refusal) and ServiceTier the served
+		// capacity tier (standard / priority / batch) — both resolved by
+		// Derive from the row's proxy contribution (api_turns.stop_reason)
+		// first, else the first non-empty among the turn's actions.
+		// Empty when neither source carried them.
 		StopReason  string `json:"stop_reason,omitempty"`
 		ServiceTier string `json:"service_tier,omitempty"`
 		// Fast is true when any token/turn row in this message bucket was
@@ -4447,556 +4671,207 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		// "Att" badge in the Messages table.
 		Attachments []messageAttachment `json:"attachments,omitempty"`
 		ToolCalls   []toolCallRow       `json:"tool_calls"`
-		// TpsMs is the denominator the Tok/s column divides Output by, in
-		// milliseconds — picked from the best available timing source per a
-		// layered priority (see the post-merge block): (1) the proxy's
-		// MEASURED total_response_ms when this bucket carries a proxy turn;
-		// (2) the intra-turn generation span (MAX−MIN of a codex user-turn's
-		// per-inference timestamps) when the bucket rolled up ≥2 timestamped
-		// rows; (3) ElapsedMs (gap-to-next-message) for a single non-proxied
-		// API call (claude-code). null when none applies (e.g. a
-		// single-inference non-proxied codex turn, where gap-to-next would be
-		// the meaningless inter-turn idle gap). TpsBasis names which source
-		// was used, for the column's tooltip.
-		TpsMs    *int64 `json:"tps_ms,omitempty"`
-		TpsBasis string `json:"tps_basis,omitempty"`
-		// respMs/firstT/lastT/tsCount/turnRollup are unexported per-bucket
-		// accumulators feeding the TpsMs decision (set during merge,
-		// resolved post-sort). Never serialized. respMs sums the proxy
-		// total_response_ms of any api_turns sub-rows; firstT/lastT/tsCount
-		// bound the intra-turn span; turnRollup marks a whole-turn bucket
-		// (key from token_usage.turn_id — codex) so a single-inference codex
-		// turn shows "—" rather than a gap-to-next rate.
-		respMs     int64
-		firstT     time.Time
-		lastT      time.Time
-		tsCount    int
-		turnRollup bool
-		// isProxy marks a bucket created from an api_turns row. Proxy
-		// rows are stamped at request START while transcript token rows
-		// are stamped at inference END — pickTurnBucket needs to know
-		// which boundary semantics a bucket's Timestamp carries when
-		// assigning a turn's tool calls to per-inference buckets.
-		isProxy bool
+		// TimingWire carries elapsed_ms (gap to the next row), response_ms
+		// and every tps_* field, projected by sessionmsg.Row.Timing() - the
+		// SAME projection the org drawer embeds, so the two cannot drift.
+		sessionmsg.TimingWire
+		// StatusWire carries the status readings (a rate_limit snapshot)
+		// folded onto this message instead of rendering as rows of their
+		// own - only the CHANGED ones travel - projected by
+		// sessionmsg.Row.Status(), the SAME projection the org drawer
+		// embeds.
+		sessionmsg.StatusWire
+		// speed is the row's sessionmsg accumulator, kept for the server
+		// sort. Never serialized.
+		speed sessionmsg.Speed
 	}
 
-	// 1. Token rows joined into per-message buckets. Two modes:
-	//
-	//   - Default (turn rollup): bucket by
-	//     COALESCE(turn_id, message_id, source_event_id). For codex
-	//     (v1.7.24+) turn_id groups multiple per-inference rows back
-	//     into the user-turn; for claudecode and other Anthropic
-	//     adapters turn_id is NULL and message_id (= the upstream
-	//     msg_xxx) is the natural per-API-call grouping.
-	//
-	//   - ?detail=inference: bucket by
-	//     COALESCE(message_id, source_event_id). For codex this
-	//     produces one row per token_count event (per model inference);
-	//     for claudecode it's identical to the default mode because
-	//     turn_id is NULL.
-	//
-	// api_turns is per-HTTP-request (proxy emits one row per upstream
-	// call). Its request_id alone is NOT a usable grouping key for
-	// transcript-backed adapters whose id scheme is disjoint from the
-	// wire's (codex: actions + token rows key by turn_id / tk:…, the
-	// proxy stores resp_…) — bucketing proxy rows by request_id strands
-	// them with no tool calls and the timeline degrades into
-	// "API call (no recovered text)" placeholder stubs. So each proxy
-	// row first resolves its JSONL TWIN (the same turn captured from the
-	// transcript — see the twin join below) and adopts the key the twin
-	// would have used; request_id remains the fallback when no twin
-	// exists (claude-code, where the ids already agree; or the JSONL
-	// side not yet ingested).
-	//nolint:gosec // G101: code-constant SQL grouping expression switched by query param. No credentials involved; gosec false-positives on the `_id` substring.
-	tokenGroupExpr := `COALESCE(NULLIF(turn_id, ''), NULLIF(message_id, ''), source_event_id, '')`
-	proxyKeyExpr := `COALESCE(NULLIF(tw.turn_id, ''), NULLIF(tw.message_id, ''), NULLIF(at.request_id, ''), '')` //nolint:gosec // G101: same false-positive; code-constant SQL fragment.
+	// Group-key precedence: default (turn rollup) vs ?detail=inference —
+	// see sessionmsg.GroupMode's doc comment for the exact semantics both
+	// engines share.
+	mode := sessionmsg.RollupTurn
 	if r.URL.Query().Get("detail") == "inference" {
-		tokenGroupExpr = `COALESCE(NULLIF(message_id, ''), source_event_id, '')`                                            //nolint:gosec // G101: same false-positive as above; code-constant SQL fragment.
-		proxyKeyExpr = `COALESCE(NULLIF(tw.message_id, ''), NULLIF(tw.source_event_id, ''), NULLIF(at.request_id, ''), '')` //nolint:gosec // G101: same false-positive; code-constant SQL fragment.
+		mode = sessionmsg.RollupInference
 	}
-	dedupedRowsCTE := `WITH proxy_turn_ids AS (
-		SELECT request_id FROM api_turns
-		 WHERE session_id = ? AND request_id IS NOT NULL AND request_id != ''
-	),
-	combined AS (
-		-- api_turns has no reasoning_tokens column (proxy folds reasoning
-		-- into output_tokens at capture — the cross-provider proxy
-		-- convention, see parseGeminiResponse). tw is the row's JSONL
-		-- TWIN: the same turn captured by the file adapter, matched by
-		-- token-bundle shape WITH the reasoning fold applied (proxy
-		-- output = JSONL output + reasoning; Anthropic adapters store
-		-- reasoning 0 with the fold already baked into output, so the
-		-- sum is a no-op there). The twin supplies what the wire capture
-		-- can't know: the transcript's turn_id / per-inference
-		-- message_id (so the proxy row lands in the SAME bucket the
-		-- transcript's action rows key to), the reasoning split for
-		-- display, and the codex priority flag (inherited_fast — audit
-		-- F1; the flag lives only on the JSONL/config path). closest-
-		-- timestamp LIMIT 1 disambiguates the (effectively impossible —
-		-- cache_read grows monotonically) case of two same-shape turns.
-		SELECT ` + proxyKeyExpr + ` AS msg_key,
-		       at.model, at.timestamp,
-		       at.input_tokens,
-		       CASE WHEN tw.rowid IS NOT NULL
-		                 AND COALESCE(at.output_tokens, 0) >= COALESCE(tw.reasoning_tokens, 0)
-		            THEN COALESCE(at.output_tokens, 0) - COALESCE(tw.reasoning_tokens, 0)
-		            ELSE at.output_tokens END AS output_tokens,
-		       at.cache_read_tokens,
-		       at.cache_creation_tokens, at.cache_creation_1h_tokens,
-		       CASE WHEN tw.rowid IS NOT NULL
-		                 AND COALESCE(at.output_tokens, 0) >= COALESCE(tw.reasoning_tokens, 0)
-		            THEN COALESCE(tw.reasoning_tokens, 0)
-		            ELSE 0 END AS reasoning_tokens,
-		       at.web_search_requests, at.cost_usd,
-		       COALESCE(at.fast, 0) AS fast,
-		       CASE WHEN COALESCE(tw.fast, 0) = 1 THEN 1 ELSE 0 END AS inherited_fast,
-		       COALESCE(tw.turn_id, '') AS turn_id,
-		       COALESCE(at.total_response_ms, 0) AS total_response_ms,
-		       1 AS is_proxy
-		FROM api_turns at
-		LEFT JOIN token_usage tw ON tw.rowid = (
-		    SELECT tu.rowid FROM token_usage tu
-		    WHERE tu.session_id = at.session_id
-		      AND COALESCE(tu.model, '') = COALESCE(at.model, '')
-		      AND COALESCE(tu.input_tokens, 0) = COALESCE(at.input_tokens, 0)
-		      AND COALESCE(tu.output_tokens, 0) + COALESCE(tu.reasoning_tokens, 0) = COALESCE(at.output_tokens, 0)
-		      AND COALESCE(tu.cache_read_tokens, 0) = COALESCE(at.cache_read_tokens, 0)
-		      AND COALESCE(tu.cache_creation_tokens, 0) = COALESCE(at.cache_creation_tokens, 0)
-		      -- SQLite (both the C library and modernc.org/sqlite) cannot
-		      -- resolve a correlated outer-table reference (at.timestamp)
-		      -- placed in a subquery's ORDER BY clause — only WHERE — so
-		      -- "ORDER BY ABS(julianday(tu.timestamp) -
-		      -- julianday(at.timestamp)) LIMIT 1" throws "no such column:
-		      -- at.timestamp" at prepare time and 500s this endpoint for
-		      -- EVERY session that has any api_turns row. Pick the
-		      -- closest-timestamp twin via an equality against a MIN(...)
-		      -- computed the same way instead — both references stay in
-		      -- WHERE, where correlation works.
-		      AND ABS(julianday(tu.timestamp) - julianday(at.timestamp)) = (
-		          SELECT MIN(ABS(julianday(tu2.timestamp) - julianday(at.timestamp)))
-		          FROM token_usage tu2
-		          WHERE tu2.session_id = at.session_id
-		            AND COALESCE(tu2.model, '') = COALESCE(at.model, '')
-		            AND COALESCE(tu2.input_tokens, 0) = COALESCE(at.input_tokens, 0)
-		            AND COALESCE(tu2.output_tokens, 0) + COALESCE(tu2.reasoning_tokens, 0) = COALESCE(at.output_tokens, 0)
-		            AND COALESCE(tu2.cache_read_tokens, 0) = COALESCE(at.cache_read_tokens, 0)
-		            AND COALESCE(tu2.cache_creation_tokens, 0) = COALESCE(at.cache_creation_tokens, 0)
-		      )
-		    LIMIT 1
-		)
-		WHERE at.session_id = ?
-		UNION ALL
-		SELECT ` + tokenGroupExpr + ` AS msg_key,
-		       tu.model, tu.timestamp,
-		       tu.input_tokens, tu.output_tokens, tu.cache_read_tokens,
-		       tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-		       tu.reasoning_tokens,
-		       tu.web_search_requests, tu.estimated_cost_usd,
-		       COALESCE(tu.fast, 0) AS fast,
-		       0 AS inherited_fast,
-		       COALESCE(tu.turn_id, '') AS turn_id,
-		       0 AS total_response_ms,
-		       0 AS is_proxy
-		FROM token_usage tu
-		WHERE tu.session_id = ?
-		  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-		       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-		  -- F1: also drop a JSONL row that duplicates a proxy turn by
-		  -- token-bundle shape when the ids don't match (codex: tk:… vs
-		  -- resp_…). COALESCE because codex leaves cache_creation NULL on
-		  -- one side, 0 on the other. The output comparison FOLDS the
-		  -- JSONL row's reasoning back in: the proxy stores gross output
-		  -- (visible + reasoning), while codex's adapter nets reasoning
-		  -- out at emit time — an exact-output match missed every
-		  -- reasoning turn, so both captures of the same call survived
-		  -- and the timeline showed each turn twice (tk:… and resp_…).
-		  -- Anthropic adapters store reasoning 0 (thinking already folded
-		  -- into output on both sides), so the sum is a no-op for them.
-		  AND NOT EXISTS (
-		      SELECT 1 FROM api_turns ap
-		      WHERE ap.session_id = tu.session_id
-		        AND COALESCE(ap.model, '') = COALESCE(tu.model, '')
-		        AND COALESCE(ap.input_tokens, 0) = COALESCE(tu.input_tokens, 0)
-		        AND COALESCE(ap.output_tokens, 0) = COALESCE(tu.output_tokens, 0) + COALESCE(tu.reasoning_tokens, 0)
-		        AND COALESCE(ap.cache_read_tokens, 0) = COALESCE(tu.cache_read_tokens, 0)
-		        AND COALESCE(ap.cache_creation_tokens, 0) = COALESCE(tu.cache_creation_tokens, 0)
-		  )
-		  -- Copilot family (copilot, copilot-cli) emits TWO token_usage rows per
-		  -- turn: a full-usage row (Tier-1 process-log [DEBUG] usage block / the
-		  -- request row) and an output-only "shadow" row (Tier-3 events.jsonl
-		  -- assistant.message). The adapter set MessageID on both intending a
-		  -- (session_id, message_id) merge, but the store upserts on
-		  -- (source_file, source_event_id), so they never merge and the output
-		  -- double-counts. Drop the output-only shadow when a full-usage sibling
-		  -- carries the same output in this session. Scoped to the copilot tools
-		  -- (the only adapters that emit >1 token row per turn) so nothing else
-		  -- is affected.
-		  AND NOT (
-		      tu.tool IN ('copilot', 'copilot-cli')
-		      AND COALESCE(tu.input_tokens, 0) = 0
-		      AND COALESCE(tu.cache_read_tokens, 0) = 0
-		      AND COALESCE(tu.cache_creation_tokens, 0) = 0
-		      AND COALESCE(tu.output_tokens, 0) > 0
-		      AND EXISTS (
-		          SELECT 1 FROM token_usage tsh
-		          WHERE tsh.session_id = tu.session_id
-		            AND tsh.rowid != tu.rowid
-		            AND COALESCE(tsh.output_tokens, 0) = COALESCE(tu.output_tokens, 0)
-		            AND (COALESCE(tsh.input_tokens, 0) > 0
-		                 OR COALESCE(tsh.cache_read_tokens, 0) > 0
-		                 OR COALESCE(tsh.cache_creation_tokens, 0) > 0)
-		      )
-		  )
-	)`
-	rows, err := s.db().QueryContext(r.Context(),
-		dedupedRowsCTE+`
-		SELECT msg_key,
-		       timestamp,
-		       COALESCE(NULLIF(model, ''), ?),
-		       COALESCE(input_tokens, 0),
-		       COALESCE(output_tokens, 0),
-		       COALESCE(cache_read_tokens, 0),
-		       COALESCE(cache_creation_tokens, 0),
-		       COALESCE(cache_creation_1h_tokens, 0),
-		       COALESCE(reasoning_tokens, 0),
-		       COALESCE(web_search_requests, 0),
-		       COALESCE(cost_usd, 0),
-		       COALESCE(fast, 0),
-		       COALESCE(inherited_fast, 0),
-		       COALESCE(turn_id, ''),
-		       COALESCE(total_response_ms, 0),
-		       COALESCE(is_proxy, 0)
-		FROM combined
-		WHERE msg_key IS NOT NULL AND msg_key != ''
-		ORDER BY timestamp ASC`,
-		sessionID, sessionID, sessionID, sessionModel)
+
+	caps := store.NodeSessionCaps(sessionTool)
+
+	// S1: plain ordered SQL, no dedup/fold logic of its own — see this
+	// function's doc comment.
+	proxyRows, err := loadMessageProxyRows(r.Context(), s.db(), sessionID, sessionModel)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer rows.Close()
-
-	byKey := map[string]*messageRow{}
-	out := []*messageRow{}
-	// turnBuckets groups the token buckets of one transcript turn, in
-	// chronological order, keyed by the turn id the ADAPTER stamps on
-	// its action rows (codex actions carry message_id = the turn UUID).
-	// In default (turn-rollup) mode the bucket key IS the turn id so
-	// actions match byKey directly and this map is never consulted; in
-	// ?detail=inference mode the buckets are per-inference (tk:… /
-	// resp_… keys) and this map is the join that lets each tool call
-	// land on the inference that emitted it (see pickTurnBucket) instead
-	// of stranding every inference row with a synthetic
-	// "API call (no recovered text)" stub.
-	turnBuckets := map[string][]*messageRow{}
-	for rows.Next() {
-		var key, ts, model, turnID string
-		var bundle cost.TokenBundle
-		var recorded float64
-		var fastInt, inheritedFastInt, isProxyInt int
-		var respMs int64
-		if err := rows.Scan(&key, &ts, &model,
-			&bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning,
-			&bundle.WebSearchRequests,
-			&recorded, &fastInt, &inheritedFastInt, &turnID, &respMs, &isProxyInt); err != nil {
-			writeErr(w, err)
-			return
-		}
-		// F1 "keep proxy, OR-in fast": effective tier is the row's own fast
-		// OR a fast JSONL twin's. proxyAwareCost re-prices a codex proxy turn
-		// that inherited fast (its recorded cost was the standard wire tier).
-		bundle.Fast = fastInt != 0 || inheritedFastInt != 0
-		var costUSD, aiCostUSD, toolCostUSD float64
-		msgAt, _ := time.Parse(time.RFC3339Nano, ts)
-		if cb, ok := proxyAwareCost(s.opts.CostEngine, model, bundle, recorded, fastInt != 0, inheritedFastInt != 0, msgAt); ok {
-			costUSD = cb.Total
-			aiCostUSD = cb.AICost
-			toolCostUSD = cb.ToolCost
-		}
-		mr, ok := byKey[key]
-		if !ok {
-			mr = &messageRow{
-				MessageID: key,
-				Timestamp: ts,
-				Role:      "assistant",
-				Model:     model,
-				ToolCalls: []toolCallRow{},
-				isProxy:   isProxyInt != 0,
-			}
-			byKey[key] = mr
-			out = append(out, mr)
-			if turnID != "" {
-				turnBuckets[turnID] = append(turnBuckets[turnID], mr)
-			}
-		}
-		if mr.Model == "" && model != "" {
-			mr.Model = model
-		}
-		// A turn shows the ⚡ premium badge only when it was served fast AND
-		// the model actually carries a fast-mode premium
-		// (Pricing.FastMultiplier > 0). Codex sends service_tier:"priority"
-		// globally, but only gpt-5.5 / gpt-5.4 have a documented Fast
-		// premium — so mini/codex priority turns keep the service_tier pill
-		// (captured separately on the action row) without an ⚡ that implies
-		// a price bump they don't incur. Anthropic Opus 4.8 (FastMultiplier
-		// 2) still lights up exactly as before.
-		if bundle.Fast {
-			if p, ok := s.opts.CostEngine.LookupAt(model, msgAt); ok && p.FastMultiplier > 0 {
-				mr.Fast = true
-			}
-		}
-		mr.Input += bundle.Input
-		mr.Output += bundle.Output
-		mr.CacheRead += bundle.CacheRead
-		mr.CacheCreation += bundle.CacheCreation
-		mr.CacheCw1h += bundle.CacheCreation1h
-		mr.Reasoning += bundle.Reasoning
-		mr.WebSearchRequests += bundle.WebSearchRequests
-		mr.CostUSD += costUSD
-		mr.AICostUSD += aiCostUSD
-		mr.ToolCostUSD += toolCostUSD
-		// Per-bucket timing accumulators feeding the TpsMs decision below.
-		// respMs sums any proxy total_response_ms (the measured per-call
-		// wall-clock — preferred source). turnRollup marks a whole-turn
-		// bucket (key from turn_id — codex). firstT/lastT/tsCount bound the
-		// intra-turn generation span for a codex user-turn (many token_count
-		// inference rows rolled into one bucket).
-		mr.respMs += respMs
-		if turnID != "" {
-			mr.turnRollup = true
-		}
-		if t, perr := time.Parse(time.RFC3339Nano, ts); perr == nil {
-			if mr.tsCount == 0 || t.Before(mr.firstT) {
-				mr.firstT = t
-			}
-			if mr.tsCount == 0 || t.After(mr.lastT) {
-				mr.lastT = t
-			}
-			mr.tsCount++
-		}
+	tokenRows, err := loadMessageTokenRows(r.Context(), s.db(), sessionID, sessionModel, sessionTool)
+	if err != nil {
+		writeErr(w, err)
+		return
 	}
-	if err := rows.Err(); err != nil {
+	actionRows, err := loadMessageActionRows(r.Context(), s.db(), sessionID)
+	if err != nil {
 		writeErr(w, err)
 		return
 	}
 
-	// 2. Tool calls — grouped by message_id (or source_event_id as
-	// fallback for pre-backfill rows). Append into each message's
-	// ToolCalls; create synthetic message rows for actions whose
-	// message_id doesn't have a token row (typically user_prompt).
-	//
-	// Excerpts are loaded in a second batch query — see
-	// loadActionExcerpts for why an inline LEFT JOIN on
-	// action_excerpts is O(N×M) on FTS5 (~136s for a 1772-action
-	// session before this change).
-	actRows, err := s.db().QueryContext(r.Context(),
-		`SELECT a.id, COALESCE(message_id, source_event_id) AS msg_key,
-		        a.action_type, COALESCE(a.raw_tool_name, ''),
-		        COALESCE(a.target, ''), COALESCE(a.raw_tool_input, ''),
-		        LENGTH(COALESCE(a.raw_tool_output, '')) AS raw_output_len,
-		        CASE WHEN a.action_type = 'assistant_message'
-		             THEN substr(COALESCE(a.raw_tool_output, ''), 1, ?)
-		             ELSE '' END AS asst_body,
-		        COALESCE(a.success, 1),
-		        COALESCE(a.error_message, ''), a.timestamp,
-		        COALESCE(a.duration_ms, 0),
-		        COALESCE(json_extract(a.metadata, '$.permission_mode'), '') AS permission_mode,
-		        COALESCE(json_extract(a.metadata, '$.effort_level'), '') AS effort_level,
-		        COALESCE(json_extract(a.metadata, '$.is_interrupt'), 0) AS is_interrupt,
-		        COALESCE(json_extract(a.metadata, '$.stop_reason'), '') AS stop_reason,
-		        COALESCE(json_extract(a.metadata, '$.service_tier'), '') AS service_tier,
-		        COALESCE(json_extract(a.metadata, '$.request_url'), '') AS request_url,
-		        COALESCE(json_extract(a.metadata, '$.id_source'), '') AS id_source,
-		        COALESCE(json_extract(a.metadata, '$.granularity'), '') AS granularity,
-		        COALESCE(json_extract(a.metadata, '$.prompt_tokens_est'), 0) AS prompt_tokens_est,
-		        COALESCE(json_extract(a.metadata, '$.response_tokens_est'), 0) AS response_tokens_est,
-		        COALESCE(a.user_attachments, '') AS user_attachments
-		 FROM actions a
-		 WHERE a.session_id = ?
-		   AND a.action_type <> 'post_tool_batch'
-		 ORDER BY a.timestamp ASC`, fullTextInlineMax, sessionID)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	defer actRows.Close()
-	// pendingExcerpt records each tool-call's location so we can fill
-	// its Excerpt field after the batch FTS5 lookup below. Indices into
-	// mr.ToolCalls are stable once the scan loop ends.
-	type pendingExcerpt struct {
-		actionID int64
-		mr       *messageRow
-		idx      int
-	}
-	var pendings []pendingExcerpt
-	var actionIDs []int64
-	for actRows.Next() {
-		var actionID int64
-		var key, actionType, rawTool, target, rawInput, asstBody, errMsg, ts string
-		var permMode, effortLevel, stopReason, serviceTier string
-		var requestURL, idSource, granularity string
-		var promptTokensEst, responseTokensEst int64
-		var success, isInterrupt int
-		var durationMs, rawOutputLen int64
-		var userAttachmentsJSON string
-		if err := actRows.Scan(&actionID, &key, &actionType, &rawTool, &target, &rawInput, &rawOutputLen, &asstBody, &success, &errMsg, &ts, &durationMs, &permMode, &effortLevel, &isInterrupt, &stopReason, &serviceTier, &requestURL, &idSource, &granularity, &promptTokensEst, &responseTokensEst, &userAttachmentsJSON); err != nil {
-			writeErr(w, err)
-			return
+	derived := sessionmsg.Derive(sessionmsg.DeriveInput{
+		ProxyRows:         proxyRows,
+		TokenRows:         tokenRows,
+		ActionRows:        actionRows,
+		Mode:              mode,
+		ShadowCapable:     caps.ShadowCapable,
+		ReasoningDisjoint: caps.ReasoningDisjoint,
+		SessionCumulative: caps.SessionCumulative,
+		DefaultModel:      sessionModel,
+	})
+
+	out := make([]*messageRow, len(derived))
+	for i, row := range derived {
+		mr := &messageRow{
+			Seq:               row.Seq,
+			MessageID:         row.Key,
+			Timestamp:         row.Timestamp,
+			Role:              row.Role,
+			Model:             row.Model,
+			Input:             row.Bundle.Input,
+			Output:            row.Bundle.Output,
+			CacheRead:         row.Bundle.CacheRead,
+			CacheCreation:     row.Bundle.CacheCreation,
+			CacheCw1h:         row.Bundle.CacheCreation1h,
+			Reasoning:         row.Bundle.Reasoning,
+			WebSearchRequests: row.Bundle.WebSearchRequests,
+			StopReason:        row.StopReason,
+			EffortLevel:       row.EffortLevel,
+			ServiceTier:       row.ServiceTier,
+			ToolCalls:         []toolCallRow{},
+			TimingWire:        row.Timing(),
+			StatusWire:        row.Status(),
+			speed:             row.Speed,
 		}
-		fullText := target
-		switch actionType {
-		case "user_prompt", "system_prompt", "ask_user", "run_command":
-			if rawInput != "" {
-				fullText = rawInput
+
+		// Cost: price EACH raw contribution separately, then sum —
+		// pricing the already-merged Bundle once would falsely apply a
+		// long-context-threshold rate to a message whose individual
+		// underlying turns never crossed it
+		// (TestAPISessionMessages_LongContextPerTurn's regression case:
+		// two 150K-token turns summing to 300K must NOT be priced as one
+		// 300K-token long-context call). See Row.Contributions' doc
+		// comment.
+		for _, c := range row.Contributions {
+			cAt, perr := time.Parse(time.RFC3339Nano, c.Timestamp)
+			if perr != nil {
+				cAt, _ = time.Parse(time.RFC3339Nano, row.Timestamp)
 			}
-		}
-		if actionType == "run_command" {
-			fullText = decodeCommandInput(fullText)
-		}
-		// Browser chat: the assistant's on-screen answer is stored in
-		// raw_tool_output (target is only a one-line preview). Surface
-		// the (SQL-capped) response body as the row's inline FullText so
-		// the timeline shows the actual reply; the untruncated body
-		// stays available via /api/action/<id>/full_text. Gated on
-		// browserSession so coding-agent assistant_message rows (model
-		// narration) render exactly as before.
-		if browserSession && actionType == "assistant_message" && asstBody != "" {
-			fullText = asstBody
-		}
-		fullTextElided := false
-		if len(fullText) > fullTextInlineMax {
-			fullText = fullText[:fullTextInlineMax]
-			fullTextElided = true
-		}
-		// A capped assistant body whose source was longer than the inline
-		// cap is elided too (the substr already trimmed it in SQL, so the
-		// len check above can't see the original length — use raw_output_len).
-		if browserSession && actionType == "assistant_message" && rawOutputLen > fullTextInlineMax {
-			fullTextElided = true
-		}
-		tc := toolCallRow{
-			ActionID:          actionID,
-			ActionType:        actionType,
-			RawToolName:       rawTool,
-			Target:            target,
-			FullText:          fullText,
-			FullTextElided:    fullTextElided,
-			HasFullOutput:     rawOutputLen > 0,
-			Success:           success != 0,
-			ErrorMessage:      errMsg,
-			Timestamp:         ts,
-			DurationMs:        durationMs,
-			PermissionMode:    permMode,
-			EffortLevel:       effortLevel,
-			IsInterrupt:       isInterrupt != 0,
-			StopReason:        stopReason,
-			ServiceTier:       serviceTier,
-			RequestURL:        requestURL,
-			IDSource:          idSource,
-			Granularity:       granularity,
-			PromptTokensEst:   promptTokensEst,
-			ResponseTokensEst: responseTokensEst,
-		}
-		mr, ok := byKey[key]
-		if !ok && actionType != "user_prompt" {
-			// The action's message key is a transcript TURN id with no
-			// same-key token bucket — the ?detail=inference case, where
-			// the token buckets are per-inference (tk:… / resp_… keys)
-			// while codex stamps every action with the turn UUID. The
-			// content exists; only the join key differs in grain. Assign
-			// the tool call to the inference that emitted it by
-			// timestamp (inferenceBucketIndex) instead of stranding the
-			// per-inference rows as "API call (no recovered text)"
-			// stubs. user_prompt stays excluded: it deliberately
-			// synthesizes its own role=user row below.
-			if list := turnBuckets[key]; len(list) > 0 {
-				stamps := make([]string, len(list))
-				proxies := make([]bool, len(list))
-				for i, b := range list {
-					stamps[i] = b.Timestamp
-					proxies[i] = b.isProxy
-				}
-				if idx := inferenceBucketIndex(stamps, proxies, ts); idx >= 0 {
-					mr, ok = list[idx], true
+			bundle := sessionMsgCostBundle(c.Bundle)
+			if cb, ok := proxyAwareCost(s.opts.CostEngine, c.Model, bundle, c.RecordedCostUSD, c.OwnFast, c.InheritedFast, cAt); ok {
+				mr.CostUSD += cb.Total
+				mr.AICostUSD += cb.AICost
+				mr.ToolCostUSD += cb.ToolCost
+			}
+			// A turn shows the ⚡ premium badge only when it was served fast
+			// AND the model actually carries a fast-mode premium
+			// (Pricing.FastMultiplier > 0). Codex sends service_tier:
+			// "priority" globally, but only gpt-5.5 / gpt-5.4 have a
+			// documented Fast premium — so mini/codex priority turns keep
+			// the service_tier pill without an ⚡ that implies a price bump
+			// they don't incur.
+			if bundle.Fast {
+				if p, ok := s.opts.CostEngine.LookupAt(c.Model, cAt); ok && p.FastMultiplier > 0 {
+					mr.Fast = true
 				}
 			}
 		}
-		if !ok {
-			// No matching token row — this is a user_prompt or
-			// other action whose parent message doesn't carry token
-			// usage (user messages don't bill). Synthesize a row
-			// so the timeline still shows it.
-			role := "user"
-			if actionType != "user_prompt" {
-				role = "assistant"
-			}
-			// Per-turn model resolution for synthesized rows. A user
-			// prompt and its assistant turn share a request_id, so the
-			// assistant's token row carries the canonical per-turn
-			// model (e.g. claude-haiku-4-5-20251001). Falling back to
-			// sessions.model would always show the FIRST turn's model
-			// for every later turn — wrong whenever a session crosses
-			// upstream models (Copilot Auto routing routinely picks
-			// different models per turn).
-			model := sessionModel
-			if role == "user" && strings.HasPrefix(key, "user:") {
-				peerKey := "assistant:" + strings.TrimPrefix(key, "user:")
-				if peer, ok := byKey[peerKey]; ok && peer.Model != "" {
-					model = peer.Model
+
+		// Tool calls: project each bucketed (light) action into a
+		// toolCallRow and decode attachments. The heavy display fields and
+		// the excerpt are filled later by hydrateWindow, for the response
+		// window's tool calls only.
+		for _, a := range row.Actions {
+			var actionID int64
+			if a.ActionID != "" {
+				if n, perr := strconv.ParseInt(a.ActionID, 10, 64); perr == nil {
+					actionID = n
 				}
 			}
-			mr = &messageRow{
-				MessageID: key,
-				Timestamp: ts,
-				Role:      role,
-				Model:     model,
-				ToolCalls: []toolCallRow{},
+			var durationMs int64
+			if a.DurationMs != nil {
+				durationMs = *a.DurationMs
 			}
-			byKey[key] = mr
-			out = append(out, mr)
-		}
-		mr.ToolCalls = append(mr.ToolCalls, tc)
-		// Decode this turn's user-attachment metadata (Issue 1) onto the
-		// message row. Metadata only (kind + optional media_type); a
-		// malformed blob is ignored rather than failing the endpoint.
-		if userAttachmentsJSON != "" {
-			var atts []messageAttachment
-			if err := json.Unmarshal([]byte(userAttachmentsJSON), &atts); err == nil && len(atts) > 0 {
-				mr.Attachments = append(mr.Attachments, atts...)
+			success := true
+			if a.Success != nil {
+				success = *a.Success
+			}
+			tc := toolCallRow{
+				ActionID:          actionID,
+				ActionType:        a.ActionType,
+				RawToolName:       a.Tool,
+				Target:            a.Target,
+				Success:           success,
+				ErrorMessage:      a.ErrorMessage,
+				Timestamp:         a.Timestamp,
+				DurationMs:        durationMs,
+				PermissionMode:    a.PermissionMode,
+				EffortLevel:       a.EffortLevel,
+				IsInterrupt:       a.IsInterrupt,
+				StopReason:        a.StopReason,
+				ServiceTier:       a.ServiceTier,
+				RequestURL:        a.RequestURL,
+				IDSource:          a.IDSource,
+				Granularity:       a.Granularity,
+				PromptTokensEst:   a.PromptTokensEst,
+				ResponseTokensEst: a.ResponseTokensEst,
+				fromAction:        true,
+			}
+			mr.ToolCalls = append(mr.ToolCalls, tc)
+			mr.ToolCallCount++
+			mr.ToolDurationMs += tc.DurationMs
+			// Decode this turn's user-attachment metadata (Issue 1) onto
+			// the message row. Metadata only (kind + optional media_type);
+			// a malformed blob is ignored rather than failing the
+			// endpoint.
+			if a.UserAttachmentsJSON != "" {
+				var atts []messageAttachment
+				if err := json.Unmarshal([]byte(a.UserAttachmentsJSON), &atts); err == nil && len(atts) > 0 {
+					mr.Attachments = append(mr.Attachments, atts...)
+				}
 			}
 		}
-		pendings = append(pendings, pendingExcerpt{actionID: actionID, mr: mr, idx: len(mr.ToolCalls) - 1})
-		actionIDs = append(actionIDs, actionID)
-		mr.ToolCallCount++
-		mr.ToolDurationMs += tc.DurationMs
-		if mr.EffortLevel == "" && tc.EffortLevel != "" {
-			mr.EffortLevel = tc.EffortLevel
-		}
-		if mr.StopReason == "" && tc.StopReason != "" {
-			mr.StopReason = tc.StopReason
-		}
-		if mr.ServiceTier == "" && tc.ServiceTier != "" {
-			mr.ServiceTier = tc.ServiceTier
-		}
+		out[i] = mr
 	}
-	if err := actRows.Err(); err != nil {
-		writeErr(w, err)
-		return
-	}
-	// Batch-fetch excerpts for every tool call (single FTS5 scan instead
-	// of N×M); see loadActionExcerpts. maxBytes=0 preserves the original
-	// full-text semantics for the messages view.
-	excerptByID, err := loadActionExcerpts(r.Context(), s.db(), actionIDs, 0)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	for _, p := range pendings {
-		if ex := excerptByID[p.actionID]; ex != "" {
-			p.mr.ToolCalls[p.idx].Excerpt = ex
+
+	// hydrateWindow fills the heavy display fields (full_text,
+	// full_text_elided, has_full_output) and the excerpt of every
+	// action-backed tool call in rows — the response window only, see this
+	// function's doc comment. Synthetic orphan stubs (fromAction false)
+	// carry neither, exactly as before. maxBytes=0 on the excerpt lookup
+	// preserves the full-text semantics of the messages view.
+	hydrateWindow := func(rows []*messageRow) error {
+		var ids []int64
+		for _, mr := range rows {
+			for _, tc := range mr.ToolCalls {
+				if tc.fromAction {
+					ids = append(ids, tc.ActionID)
+				}
+			}
 		}
+		heavy, err := hydrateMessageActions(r.Context(), s.db(), ids)
+		if err != nil {
+			return err
+		}
+		for _, mr := range rows {
+			for i := range mr.ToolCalls {
+				tc := &mr.ToolCalls[i]
+				if !tc.fromAction {
+					continue
+				}
+				h := heavy[tc.ActionID]
+				tc.FullText, tc.FullTextElided, tc.HasFullOutput = resolveMessageActionFullText(tc.ActionType, tc.Target, h, browserSession)
+				if h.excerpt != "" {
+					tc.Excerpt = h.excerpt
+				}
+			}
+		}
+		return nil
 	}
 
 	// Orphan-token stub injection — for agentic sessions (gemini /
@@ -5035,80 +4910,6 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		}
 	}
 
-	// Sort the merged list chronologically — token-row pass appended
-	// in time order but the actions pass may have appended synthetic
-	// rows out of order. On equal timestamps, prefer the user message:
-	// the proxy or adapter often stamps a synthesized user_prompt with
-	// the same wall-clock as the assistant turn it triggers, and the
-	// timeline reads more naturally with "user said X → assistant did Y".
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Timestamp != out[j].Timestamp {
-			return out[i].Timestamp < out[j].Timestamp
-		}
-		return out[i].Role == "user" && out[j].Role != "user"
-	})
-
-	// Stable chronological ordinal, assigned ONCE here — before the
-	// ?sort_by reorder and before pagination — so the "#" column means the
-	// same thing on every page and under every sort, and so every sort has
-	// a deterministic final tie-break (see messageSortOrder).
-	for i := range out {
-		out[i].Seq = i + 1
-	}
-
-	// Per-message wall-clock duration: gap from this message's
-	// timestamp to the NEXT message's. Computed across the full sorted
-	// timeline (not the paginated slice) so a row near a page boundary
-	// still gets the correct successor. Null on the final message —
-	// no follower to subtract from. Adapter-captured DurationMs (codex
-	// task_complete, copilot elapsedMs, …) lives on the contained
-	// actions/tool_calls; this field is the orthogonal "wall-clock
-	// between user and assistant turns" view.
-	for i := 0; i < len(out)-1; i++ {
-		t1, err1 := time.Parse(time.RFC3339Nano, out[i].Timestamp)
-		t2, err2 := time.Parse(time.RFC3339Nano, out[i+1].Timestamp)
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		ms := t2.Sub(t1).Milliseconds()
-		if ms < 0 {
-			continue
-		}
-		out[i].ElapsedMs = &ms
-	}
-
-	// Tok/s denominator (TpsMs) — layered, best-source-first. Runs after
-	// the ElapsedMs loop because the "elapsed" tier consumes it.
-	//   1. "measured"   — the proxy's total_response_ms (summed across the
-	//                     bucket's api_turns sub-rows): the real per-call
-	//                     wall-clock. Best when the session routed through
-	//                     the proxy (claude-code AND codex).
-	//   2. "intra-turn" — MAX−MIN of a codex user-turn's per-inference
-	//                     timestamps (≥2 rows): a real generation+tool span
-	//                     for non-proxied codex. Anchored to inference
-	//                     completion timestamps, so it slightly excludes the
-	//                     first inference's own window (negligible on long
-	//                     turns).
-	//   3. "elapsed"    — ElapsedMs (gap-to-next-message): valid only for a
-	//                     single non-proxied API call (claude-code), where
-	//                     it approximates response time. Skipped for a
-	//                     turn-rollup bucket (codex), where gap-to-next is
-	//                     the meaningless inter-turn idle gap.
-	// Synthesized action rows (user_prompt, etc.) match no tier → "—".
-	for _, mr := range out {
-		switch {
-		case mr.respMs > 0:
-			ms := mr.respMs
-			mr.TpsMs, mr.TpsBasis = &ms, "measured"
-		case mr.tsCount >= 2 && mr.lastT.Sub(mr.firstT).Milliseconds() > 0:
-			ms := mr.lastT.Sub(mr.firstT).Milliseconds()
-			mr.TpsMs, mr.TpsBasis = &ms, "intra-turn"
-		case !mr.turnRollup && mr.ElapsedMs != nil && *mr.ElapsedMs > 0:
-			ms := *mr.ElapsedMs
-			mr.TpsMs, mr.TpsBasis = &ms, "elapsed"
-		}
-	}
-
 	accounts, accountErr := store.New(s.db()).LoadMessageAccounts(r.Context(), sessionID, sessionTool)
 	if accountErr != nil {
 		http.Error(w, "account evidence unavailable", http.StatusInternalServerError)
@@ -5120,11 +4921,24 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		Unknown   int                          `json:"unknown"`
 		Conflicts int                          `json:"conflicts"`
 	}{Accounts: []models.ToolAccountEvidence{}}
+	// S7 (2026-09-22 review round 3): index every alias a row answers to —
+	// not just its own final MessageID — via the SAME sessionmsg.AliasIndex
+	// helper the org's rollup.SessionMessageMetrics now calls, so a
+	// turn-bound observation (binding_id = a contributing token row's
+	// turn_id, or any other id that folded into a merged row) that only
+	// the org used to resolve now resolves here too. `out` is index-aligned
+	// with `derived` (built by direct one-pass projection above), so
+	// AliasIndex's row indices apply unchanged.
+	aliasIdx := sessionmsg.AliasIndex(derived)
+	rowKeys := sessionmsg.RowKeysByIndex(aliasIdx, len(derived))
 	seenAccounts := map[string]bool{}
-	for _, mr := range out {
-		mr.Account = accounts[mr.Role+":"+mr.MessageID]
-		if mr.Account.Status == "" {
-			mr.Account = models.MessageAccount{Status: "unknown", Label: "Unknown", Evidence: []models.ToolAccountEvidence{}}
+	for i, mr := range out {
+		mr.Account = models.MessageAccount{Status: "unknown", Label: "Unknown", Evidence: []models.ToolAccountEvidence{}}
+		for _, k := range rowKeys[i] {
+			if a, ok := accounts[mr.Role+":"+k]; ok {
+				mr.Account = a
+				break
+			}
 		}
 		switch mr.Account.Status {
 		case "observed":
@@ -5170,17 +4984,17 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 				CacheWrite:     mr.CacheCreation,
 				Output:         mr.Output,
 				ElapsedMs:      mr.ElapsedMs,
+				ResponseMs:     mr.ResponseMs,
 				ToolCalls:      mr.ToolCallCount,
 				Attachments:    len(mr.Attachments),
 				AICostUSD:      mr.AICostUSD,
 				ToolCostUSD:    mr.ToolCostUSD,
 				CostUSD:        mr.CostUSD,
 			}
-			// Tok/s: same arithmetic as the client's tokensPerSec() helper
-			// (output ÷ tps_ms/1000, absent when either is missing) so the
-			// server sorts on exactly the number the operator sees.
-			if mr.Output > 0 && mr.TpsMs != nil && *mr.TpsMs > 0 {
-				tps := float64(mr.Output) / (float64(*mr.TpsMs) / 1000)
+			// Tok/s: sessionmsg.Speed.Rate() - the ONE owner the client's
+			// shared/lib/speed.ts renders from - so the server sorts on
+			// exactly the number the operator sees (absent when suppressed).
+			if tps, _, ok := mr.speed.Rate(); ok {
 				f.TokensPerSec = &tps
 			}
 			// Content: mirrors the Content cell, which is derived from the
@@ -5225,6 +5039,10 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 			offset := 0
 			if total > n {
 				offset = total - n
+			}
+			if err := hydrateWindow(out[offset:]); err != nil {
+				writeErr(w, err)
+				return
 			}
 			// tail keeps its frozen meaning — the last N rows
 			// CHRONOLOGICALLY — and the sort then reorders just those N
@@ -5282,6 +5100,10 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 	if limit > 0 && len(page) > limit {
 		page = page[:limit]
 	}
+	if err := hydrateWindow(page); err != nil {
+		writeErr(w, err)
+		return
+	}
 	writeJSON(w, map[string]any{
 		"session_id":      sessionID,
 		"messages":        page,
@@ -5290,6 +5112,210 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request, s
 		"limit":           limit,
 		"offset":          offset,
 	})
+}
+
+// sessionMsgCostBundle converts a sessionmsg.TokenBundle (the shared
+// derivation's token accumulator) into a cost.TokenBundle (the pricing
+// engine's own shape). Both packages carry the identical field set
+// (Input/Output/CacheRead/CacheCreation/CacheCreation1h/Reasoning/
+// WebSearchRequests/Fast) by design — sessionmsg's doc comment notes it
+// deliberately mirrors cost.TokenBundle's contract — this is a pure
+// field-for-field copy, never a unit conversion.
+func sessionMsgCostBundle(b sessionmsg.TokenBundle) cost.TokenBundle {
+	return cost.TokenBundle{
+		Input:             b.Input,
+		Output:            b.Output,
+		CacheRead:         b.CacheRead,
+		CacheCreation:     b.CacheCreation,
+		CacheCreation1h:   b.CacheCreation1h,
+		Reasoning:         b.Reasoning,
+		WebSearchRequests: b.WebSearchRequests,
+		Fast:              b.Fast,
+	}
+}
+
+// loadMessageProxyRows loads this session's api_turns rows for
+// handleSessionMessages, ordered explicitly (timestamp, then request_id)
+// so sessionmsg.Derive's own defensive re-sort is redundant-but-safe
+// rather than load-bearing — the same discipline
+// internal/orgserver/rollup.SessionMessageMetrics uses (finding #6 of the
+// 2026-09-22 review). A row's own model falls back to the session's model
+// exactly like the old combined-CTE's outer
+// COALESCE(NULLIF(model,”), ?) did, so sessionmsg.Row.Model resolves
+// identically to before.
+func loadMessageProxyRows(ctx context.Context, db *sql.DB, sessionID, sessionModel string) ([]sessionmsg.ProxyRow, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT COALESCE(request_id,''), timestamp, COALESCE(NULLIF(model,''), ?),
+		       COALESCE(input_tokens,0), COALESCE(output_tokens,0),
+		       COALESCE(cache_read_tokens,0), COALESCE(cache_creation_tokens,0),
+		       COALESCE(cache_creation_1h_tokens,0), COALESCE(web_search_requests,0),
+		       COALESCE(cost_usd,0), COALESCE(fast,0),
+		       COALESCE(time_to_first_token_ms,0), COALESCE(total_response_ms,0),
+		       COALESCE(stop_reason,'')
+		  FROM api_turns
+		 WHERE session_id = ?
+		 ORDER BY timestamp ASC, COALESCE(request_id,'') ASC`, sessionModel, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []sessionmsg.ProxyRow
+	for rows.Next() {
+		var p sessionmsg.ProxyRow
+		var fastInt int
+		if err := rows.Scan(&p.RequestID, &p.Timestamp, &p.Model, &p.Input, &p.Output,
+			&p.CacheRead, &p.CacheCreation, &p.CacheCreation1h, &p.WebSearchRequests,
+			&p.CostUSD, &fastInt, &p.TTFBMs, &p.TotalMs, &p.StopReason); err != nil {
+			return nil, err
+		}
+		p.Fast = fastInt != 0
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// loadMessageTokenRows loads this session's token_usage rows for
+// handleSessionMessages, ordered explicitly (timestamp, then
+// source_event_id) — see loadMessageProxyRows' doc comment for why. Tool
+// is stamped for parity with the org's identical loader even though
+// sessionmsg.Derive never branches on it (the caller resolves
+// ShadowCapable from it BEFORE calling Derive — see this handler's own
+// shadowCapable resolution above).
+func loadMessageTokenRows(ctx context.Context, db *sql.DB, sessionID, sessionModel, sessionTool string) ([]sessionmsg.TokenRow, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT COALESCE(source_event_id,''), COALESCE(message_id,''), COALESCE(turn_id,''),
+		       timestamp, COALESCE(NULLIF(model,''), ?),
+		       COALESCE(input_tokens,0), COALESCE(output_tokens,0),
+		       COALESCE(cache_read_tokens,0), COALESCE(cache_creation_tokens,0),
+		       COALESCE(cache_creation_1h_tokens,0), COALESCE(reasoning_tokens,0),
+		       COALESCE(web_search_requests,0), COALESCE(estimated_cost_usd,0),
+		       COALESCE(fast,0), COALESCE(source_file_hash,''),
+		       COALESCE(gen_ms,0), COALESCE(gen_basis,'')
+		  FROM token_usage
+		 WHERE session_id = ?
+		 ORDER BY timestamp ASC, COALESCE(source_event_id,'') ASC`, sessionModel, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []sessionmsg.TokenRow
+	for rows.Next() {
+		var t sessionmsg.TokenRow
+		var fastInt int
+		if err := rows.Scan(&t.SourceEventID, &t.MessageID, &t.TurnID, &t.Timestamp, &t.Model,
+			&t.Input, &t.Output, &t.CacheRead, &t.CacheCreation, &t.CacheCreation1h, &t.Reasoning,
+			&t.WebSearchRequests, &t.CostUSD, &fastInt, &t.SourceFileHash, &t.GenMs, &t.GenBasis); err != nil {
+			return nil, err
+		}
+		t.Fast = fastInt != 0
+		t.Tool = sessionTool
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// loadMessageActionRows loads this session's actions rows for
+// handleSessionMessages (excluding the claude-code post_tool_batch
+// wrapper envelope), ordered by timestamp then source_event_id — the SAME
+// secondary key internal/orgserver/rollup's own action query uses (S7 of
+// the 2026-09-22 review: this handler previously ordered by timestamp
+// alone, so an equal-timestamp set could come out in a different tool
+// order than the org's).
+//
+// The rows are LIGHT: every identity/metadata field Derive, the sort keys,
+// the orphan-stub logic, the account matching and the attachment decode
+// need, but NOT the content-bearing FullText/FullTextElided/HasFullOutput
+// (left at their zero value). Those need raw_tool_input and
+// raw_tool_output, the bulk of a large session's bytes, and are hydrated by
+// hydrateMessageActions for the response window only (node dashboard
+// performance audit 2026-09-29). sessionmsg.Derive never reads them — it
+// only round-trips them on sessionmsg.ActionRow.
+func loadMessageActionRows(ctx context.Context, db *sql.DB, sessionID string) ([]sessionmsg.ActionRow, error) {
+	// The reading body (raw_tool_input) is loaded ONLY for sessionmsg's
+	// status kinds (a rate_limit snapshot, a few hundred bytes), so Derive
+	// can tell a changed reading from a repeat; every other action's body
+	// stays unloaded (hydrate-only, performance audit 2026-09-29).
+	statusKinds := sessionmsg.StatusActionTypes()
+	statusIn := strings.TrimSuffix(strings.Repeat("?,", len(statusKinds)), ",")
+	args := make([]any, 0, len(statusKinds)+1)
+	for _, k := range statusKinds {
+		args = append(args, k)
+	}
+	args = append(args, sessionID)
+	//nolint:gosec // G202: statusIn is only "?" placeholders; values bind as args.
+	rows, err := db.QueryContext(ctx,
+		`SELECT a.id, COALESCE(a.source_event_id, ''), COALESCE(a.message_id, ''),
+		        a.action_type, COALESCE(a.raw_tool_name, ''),
+		        COALESCE(a.target, ''),
+		        COALESCE(a.success, 1),
+		        COALESCE(a.error_message, ''), a.timestamp,
+		        COALESCE(a.duration_ms, 0),
+		        COALESCE(json_extract(a.metadata, '$.permission_mode'), '') AS permission_mode,
+		        COALESCE(json_extract(a.metadata, '$.effort_level'), '') AS effort_level,
+		        COALESCE(json_extract(a.metadata, '$.is_interrupt'), 0) AS is_interrupt,
+		        COALESCE(json_extract(a.metadata, '$.stop_reason'), '') AS stop_reason,
+		        COALESCE(json_extract(a.metadata, '$.service_tier'), '') AS service_tier,
+		        COALESCE(json_extract(a.metadata, '$.request_url'), '') AS request_url,
+		        COALESCE(json_extract(a.metadata, '$.id_source'), '') AS id_source,
+		        COALESCE(json_extract(a.metadata, '$.granularity'), '') AS granularity,
+		        COALESCE(json_extract(a.metadata, '$.prompt_tokens_est'), 0) AS prompt_tokens_est,
+		        COALESCE(json_extract(a.metadata, '$.response_tokens_est'), 0) AS response_tokens_est,
+		        COALESCE(a.user_attachments, '') AS user_attachments,
+		        CASE WHEN a.action_type IN (`+statusIn+`) THEN COALESCE(a.raw_tool_input, '') ELSE '' END AS status_raw
+		 FROM actions a
+		 WHERE a.session_id = ?
+		   AND a.action_type <> 'post_tool_batch'
+		 ORDER BY a.timestamp ASC, COALESCE(a.source_event_id, '') ASC`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard.loadMessageActionRows: %w", err)
+	}
+	defer rows.Close()
+	var out []sessionmsg.ActionRow
+	for rows.Next() {
+		var actionID int64
+		var srcEventID, msgID, actionType, rawTool, target, errMsg, ts string
+		var permMode, effortLevel, stopReason, serviceTier string
+		var requestURL, idSource, granularity string
+		var promptTokensEst, responseTokensEst int64
+		var successInt, isInterrupt int
+		var durationMs int64
+		var userAttachmentsJSON, statusRaw string
+		if err := rows.Scan(&actionID, &srcEventID, &msgID, &actionType, &rawTool, &target,
+			&successInt, &errMsg, &ts, &durationMs, &permMode, &effortLevel, &isInterrupt, &stopReason, &serviceTier,
+			&requestURL, &idSource, &granularity, &promptTokensEst, &responseTokensEst, &userAttachmentsJSON, &statusRaw); err != nil {
+			return nil, fmt.Errorf("dashboard.loadMessageActionRows: %w", err)
+		}
+		success := successInt != 0
+		out = append(out, sessionmsg.ActionRow{
+			ActionID:            strconv.FormatInt(actionID, 10),
+			SourceEventID:       srcEventID,
+			MessageID:           msgID,
+			ActionType:          actionType,
+			Timestamp:           ts,
+			EffortLevel:         effortLevel,
+			StopReason:          stopReason,
+			ServiceTier:         serviceTier,
+			Tool:                rawTool,
+			Target:              target,
+			Success:             &success,
+			DurationMs:          &durationMs,
+			ErrorMessage:        errMsg,
+			PermissionMode:      permMode,
+			IsInterrupt:         isInterrupt != 0,
+			RequestURL:          requestURL,
+			IDSource:            idSource,
+			Granularity:         granularity,
+			PromptTokensEst:     promptTokensEst,
+			ResponseTokensEst:   responseTokensEst,
+			UserAttachmentsJSON: userAttachmentsJSON,
+			StatusRaw:           statusRaw,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("dashboard.loadMessageActionRows: %w", err)
+	}
+	return out, nil
 }
 
 func decodeCommandInput(raw string) string {
@@ -5381,10 +5407,12 @@ func (s *Server) handlePatterns(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handlePatternsTimeseries serves /api/patterns/timeseries?days=N — one
-// bucket per calendar day in the window with the number of patterns
-// reinforced that day, split by pattern_type. Drives the "Pattern
-// discovery over time" chart on the Patterns tab.
+// handlePatternsTimeseries serves /api/patterns/timeseries?days=N|hours=|
+// since=&until=&gran=&tz= — one bucket per granularity step (zero-filled)
+// in the global window with the number of patterns reinforced in it, split
+// by pattern_type. Drives the "Pattern discovery over time" chart on the
+// Patterns tab. `day` keeps its historical field name and holds the bucket
+// key (a UTC day key is byte-identical to before); `t` is the bucket start.
 //
 // Aggregation uses last_reinforced_at (the column the patterns engine
 // touches on every observation). Patterns whose last_reinforced_at is
@@ -5394,6 +5422,12 @@ func (s *Server) handlePatternsTimeseries(w http.ResponseWriter, r *http.Request
 	project := r.URL.Query().Get("project")
 	tool := r.URL.Query().Get("tool")
 	since, until := windowRange(r, 30, 1, 36500)
+	spec, err := bucketSpec(r, since, until)
+	if err != nil {
+		writeBucketErr(w, err)
+		return
+	}
+	slot := spec.Slot()
 
 	args := []any{since.Format(time.RFC3339Nano)}
 	projClause := ""
@@ -5410,12 +5444,11 @@ func (s *Server) handlePatternsTimeseries(w http.ResponseWriter, r *http.Request
 		args = append(args, tool)
 	}
 	rows, err := s.db().QueryContext(r.Context(),
-		//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
-		`SELECT substr(last_reinforced_at, 1, 10) AS day, pattern_type, COUNT(*) AS c
+		//nolint:gosec // G202: SQL structure (the timebucket-rendered bucket expression, WHERE/scope fragments) is built from code constants; all values are bound via ? args.
+		`SELECT `+slot.SQLiteExpr("last_reinforced_at")+` AS bucket, pattern_type, COUNT(*) AS c
 		 FROM project_patterns
 		 WHERE last_reinforced_at IS NOT NULL AND last_reinforced_at >= ?`+projClause+`
-		 GROUP BY day, pattern_type
-		 ORDER BY day ASC, pattern_type ASC`,
+		 GROUP BY bucket, pattern_type`,
 		args...)
 	if err != nil {
 		writeErr(w, err)
@@ -5425,21 +5458,30 @@ func (s *Server) handlePatternsTimeseries(w http.ResponseWriter, r *http.Request
 
 	type point struct {
 		Day    string         `json:"day"`
+		T      int64          `json:"t"`
 		Total  int            `json:"total"`
 		ByType map[string]int `json:"by_type"`
 	}
-	byDay := make(map[string]*point)
+	byKey := make(map[string]*point)
+	starts := map[string]time.Time{}
 	for rows.Next() {
-		var day, pt string
+		var label sql.NullInt64
+		var pt string
 		var c int
-		if err := rows.Scan(&day, &pt, &c); err != nil {
+		if err := rows.Scan(&label, &pt, &c); err != nil {
 			writeErr(w, err)
 			return
 		}
-		p, ok := byDay[day]
+		b, ok := slot.IndexBucket(label.Int64, label.Valid)
 		if !ok {
-			p = &point{Day: day, ByType: map[string]int{}}
-			byDay[day] = p
+			continue
+		}
+		key := spec.Key(b)
+		p, ok := byKey[key]
+		if !ok {
+			p = &point{Day: key, ByType: map[string]int{}}
+			byKey[key] = p
+			starts[key] = b
 		}
 		p.ByType[pt] += c
 		p.Total += c
@@ -5449,20 +5491,20 @@ func (s *Server) handlePatternsTimeseries(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Order by day ascending; emit a stable JSON shape.
-	keys := make([]string, 0, len(byDay))
-	for k := range byDay {
-		keys = append(keys, k)
+	slots := bucketSlots(spec, starts)
+	out := make([]*point, 0, len(slots))
+	for _, sl := range slots {
+		p := byKey[sl.Key]
+		if p == nil {
+			p = &point{Day: sl.Key, ByType: map[string]int{}}
+		}
+		p.T = millis(sl.T)
+		out = append(out, p)
 	}
-	sort.Strings(keys)
-	out := make([]*point, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, byDay[k])
-	}
-	writeJSON(w, map[string]any{
+	writeJSON(w, withBucketMeta(spec, map[string]any{
 		"days":   days,
 		"points": out,
-	})
+	}))
 }
 
 // handleSuggestPreview serves POST /api/suggest — given a project root
@@ -5597,11 +5639,7 @@ func (s *Server) handleSuggestWrite(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleTimeseriesCost serves /api/timeseries/cost?days=N&bucket=day|hour.
-// Reuses the cost engine's GroupByDay aggregation; returns one point per
-// bucket with token totals + cost. Bucket=hour walks api_turns directly
-// since the engine doesn't support hour granularity.
-// lossyEvictedBytesByDay sums, per day bucket, the original_bytes that
+// lossyEvictedBytesByBucket sums, per spec bucket, the original_bytes that
 // lossy-eviction mechanisms (drop; see lossyEvictionMechanismList — the
 // ONE owner) removed. Those bytes shrink a turn's
 // compression_compressed_bytes and therefore inflate the turn-level
@@ -5609,14 +5647,17 @@ func (s *Server) handleSuggestWrite(w http.ResponseWriter, r *http.Request) {
 // the search_past_outputs / stash markers), not a compression saving.
 // The since/until + tool/project filters mirror the cost-engine window
 // so the subtraction only nets bytes attributable to the same rows.
-func (s *Server) lossyEvictedBytesByDay(ctx context.Context, since, until time.Time, tool, project string) (map[string]int64, error) {
+// Keys are spec.Key bucket keys (the same keys the cost engine's
+// BucketKey produces).
+func (s *Server) lossyEvictedBytesByBucket(ctx context.Context, spec timebucket.Spec, since, until time.Time, tool, project string) (map[string]int64, error) {
 	lossy := lossyEvictionMechanismList()
 	if len(lossy) == 0 {
 		return map[string]int64{}, nil
 	}
+	slot := spec.Slot()
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(lossy)), ",")
 	where := []string{"ce.mechanism IN (" + placeholders + ")", "ce.timestamp >= ?"}
-	args := []any{"%Y-%m-%d"}
+	args := []any{}
 	for _, m := range lossy {
 		args = append(args, m)
 	}
@@ -5634,8 +5675,8 @@ func (s *Server) lossyEvictedBytesByDay(ctx context.Context, since, until time.T
 		args = append(args, tool)
 	}
 	rows, err := s.db().QueryContext(ctx,
-		//nolint:gosec // G202: SQL structure (WHERE fragments + the IN placeholder list) is built from code constants; all values are bound via ? args.
-		`SELECT strftime(?, ce.timestamp) AS bucket, COALESCE(SUM(ce.original_bytes), 0)
+		//nolint:gosec // G202: SQL structure (the bucket expression is rendered by internal/timebucket from code constants; WHERE fragments + the IN placeholder list likewise); all values are bound via ? args.
+		`SELECT `+slot.SQLiteExpr("ce.timestamp")+` AS bucket, COALESCE(SUM(ce.original_bytes), 0)
 		 FROM compression_events ce
 		 LEFT JOIN api_turns at ON at.id = ce.api_turn_id
 		 WHERE `+strings.Join(where, " AND ")+`
@@ -5647,28 +5688,39 @@ func (s *Server) lossyEvictedBytesByDay(ctx context.Context, since, until time.T
 	defer rows.Close()
 	out := map[string]int64{}
 	for rows.Next() {
-		var bucket string
+		var label sql.NullInt64
 		var evicted int64
-		if err := rows.Scan(&bucket, &evicted); err != nil {
+		if err := rows.Scan(&label, &evicted); err != nil {
 			return nil, err
 		}
-		out[bucket] = evicted
+		if b, ok := slot.IndexBucket(label.Int64, label.Valid); ok {
+			out[spec.Key(b)] += evicted
+		}
 	}
 	return out, rows.Err()
 }
 
+// handleTimeseriesCost serves /api/timeseries/cost — one point per bucket
+// (gran=auto|5m|1h|1d|1w, tz=<IANA>; legacy bucket=day|hour) with token
+// totals, cost and the compression-savings estimates. EVERY granularity
+// comes from the cost engine (GroupByDay + a timebucket BucketKey), so hour
+// and day views of one window read the same substrate (proxy ∪ JSONL,
+// deduped) and the same per-row pricing and their totals agree. The grid is
+// zero-filled; each point carries `t` (bucket start, epoch ms).
 func (s *Server) handleTimeseriesCost(w http.ResponseWriter, r *http.Request) {
 	days := intArg(r, "days", 30, 1, 36500)
-	bucket := r.URL.Query().Get("bucket")
-	if bucket == "" {
-		bucket = "day"
-	}
 	tool := r.URL.Query().Get("tool")
 	project := r.URL.Query().Get("project")
 	since, until := windowRange(r, 30, 1, 36500)
+	spec, err := bucketSpec(r, since, until)
+	if err != nil {
+		writeBucketErr(w, err)
+		return
+	}
 
 	type point struct {
 		Bucket                        string  `json:"bucket"`
+		T                             int64   `json:"t"`
 		Input                         int64   `json:"input"`
 		Output                        int64   `json:"output"`
 		CacheRead                     int64   `json:"cache_read"`
@@ -5681,7 +5733,7 @@ func (s *Server) handleTimeseriesCost(w http.ResponseWriter, r *http.Request) {
 		CompCostUSDSavedInputTier     float64 `json:"compression_cost_saved_usd_est_input_tier"`
 		CompCostUSDSavedCacheReadTier float64 `json:"compression_cost_saved_usd_est_cache_read_tier"`
 		CompTurns                     int     `json:"compression_turns"`
-		// CompEvictedBytes is the per-day byte volume that lossy-eviction
+		// CompEvictedBytes is the per-bucket byte volume that lossy-eviction
 		// mechanisms removed. It has ALREADY been subtracted out of
 		// CompBytesSaved / CompTokensSaved / the CompCostUSD* fields (so
 		// those report genuine, retrievable compression only) and is
@@ -5690,160 +5742,97 @@ func (s *Server) handleTimeseriesCost(w http.ResponseWriter, r *http.Request) {
 		CompEvictedBytes int64 `json:"compression_evicted_bytes"`
 	}
 
-	if bucket == "day" {
-		// Day-bucket: lean on the cost engine so pricing stays consistent
-		// with /api/cost.
-		summary, err := s.opts.CostEngine.Summary(r.Context(), s.db(), cost.Options{
-			Days: days, Since: since, Until: until, GroupBy: cost.GroupByDay, Source: cost.SourceAuto, Limit: 365,
-			Tool: tool, ProjectRoot: project,
-		})
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		// Lossy-eviction bytes (drops) shrink a turn's compressed_bytes and
-		// so inflate SavedBytesSigned; subtract them per-day so the cost
-		// timeseries reports genuine, retrievable compression only. Same
-		// window/tool/project filters as the cost summary above.
-		evictedByDay, err := s.lossyEvictedBytesByDay(r.Context(), since, until, tool, project)
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		series := make([]point, 0, len(summary.Rows))
-		for _, row := range summary.Rows {
-			gross := row.Compression.SavedBytesSigned()
-			evicted := evictedByDay[row.Key]
-			bytesSaved := gross
-			tokensSaved := row.Compression.TokensSavedEst
-			usdSaved := row.Compression.CostSavedUSDEst
-			usdInputTier := row.Compression.CostSavedUSDEstInputTier
-			usdCacheTier := row.Compression.CostSavedUSDEstCacheReadTier
-			if gross > 0 && evicted > 0 {
-				net := gross - evicted
-				if net < 0 {
-					net = 0
-				}
-				// Tokens/USD are linear in saved bytes, so scale the
-				// cost-engine estimates by the net/gross ratio rather than
-				// re-deriving pricing here (keeps the cost engine the one
-				// owner of the byte→token→USD conversion).
-				factor := float64(net) / float64(gross)
-				bytesSaved = net
-				tokensSaved = int64(float64(tokensSaved) * factor)
-				usdSaved *= factor
-				usdInputTier *= factor
-				usdCacheTier *= factor
-			}
-			series = append(series, point{
-				Bucket:                        row.Key,
-				Input:                         row.Tokens.Input,
-				Output:                        row.Tokens.Output,
-				CacheRead:                     row.Tokens.CacheRead,
-				CacheCreation:                 row.Tokens.CacheCreation,
-				CostUSD:                       row.CostUSD,
-				TurnCount:                     row.TurnCount,
-				CompBytesSaved:                bytesSaved,
-				CompTokensSaved:               tokensSaved,
-				CompCostUSDSaved:              usdSaved,
-				CompCostUSDSavedInputTier:     usdInputTier,
-				CompCostUSDSavedCacheReadTier: usdCacheTier,
-				CompTurns:                     row.Compression.Turns,
-				CompEvictedBytes:              evicted,
-			})
-		}
-		// cost.Engine.Summary sorts rows by cost_usd DESC for the
-		// /api/cost top-N use case; re-sort here so the timeseries reads
-		// chronologically (oldest left, newest right) on the chart axis.
-		// ISO date strings sort correctly as strings.
-		sort.SliceStable(series, func(i, j int) bool {
-			return series[i].Bucket < series[j].Bucket
-		})
-		sinceStr, untilStr := windowMeta(since, until)
-		writeJSON(w, map[string]any{
-			"metric": "cost",
-			"bucket": "day",
-			"days":   days,
-			"since":  sinceStr,
-			"until":  untilStr,
-			"series": series,
-		})
-		return
-	}
-
-	// Hour-bucket fallback — query api_turns directly. JSONL token_usage
-	// rows are intentionally excluded from the hour view because their
-	// timestamps aren't always when the API call happened (the JSONL
-	// adapter parses files on disk; rows can land minutes after the
-	// originating turn). Hour resolution only makes sense for the
-	// proxy-sourced stream.
-	hourArgs := []any{since.Format(time.RFC3339Nano)}
-	hourWhere := []string{"at.timestamp >= ?"}
-	if !until.IsZero() {
-		hourWhere = append(hourWhere, "at.timestamp < ?")
-		hourArgs = append(hourArgs, until.Format(time.RFC3339Nano))
-	}
-	if project != "" {
-		hourWhere = append(hourWhere, "p.root_path = ?")
-		hourArgs = append(hourArgs, project)
-	}
-	if tool != "" {
-		hourWhere = append(hourWhere, "s.tool = ?")
-		hourArgs = append(hourArgs, tool)
-	}
-	//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
-	// cost_usd is selected + scanned so the hour view matches the day
-	// path field-for-field for what the cost chart consumes — without
-	// it sub-day windows (bucket=hour, now requested by the SPA) render
-	// $0 for every bucket. Compression-savings estimates stay zero in
-	// the hour view (they require per-model pricing the day path gets
-	// from the cost engine; api_turns carries raw bytes only).
-	hourQ := `SELECT strftime('%Y-%m-%dT%H:00:00Z', at.timestamp) AS bucket,
-	                 COALESCE(SUM(at.input_tokens), 0),
-	                 COALESCE(SUM(at.output_tokens), 0),
-	                 COALESCE(SUM(at.cache_read_tokens), 0),
-	                 COALESCE(SUM(at.cache_creation_tokens), 0),
-	                 COALESCE(SUM(at.cost_usd), 0),
-	                 COUNT(*)
-	          FROM api_turns at
-	          LEFT JOIN projects p ON p.id = at.project_id
-	          LEFT JOIN sessions s ON s.id = at.session_id
-	          WHERE ` + strings.Join(hourWhere, " AND ") + `
-	          GROUP BY bucket
-	          ORDER BY bucket`
-	rows, err := s.db().QueryContext(r.Context(), hourQ, hourArgs...)
+	// Lean on the cost engine so pricing stays consistent with /api/cost.
+	summary, err := s.opts.CostEngine.Summary(r.Context(), s.db(), cost.Options{
+		Days: days, Since: since, Until: until, GroupBy: cost.GroupByDay, Source: cost.SourceAuto,
+		// One row per bucket; the grid is capped (sub-day) or data-bounded
+		// (day/week), so this never truncates a real window.
+		Limit:     1 << 20,
+		BucketKey: tsBucketKeyer(spec),
+		Tool:      tool, ProjectRoot: project,
+	})
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer rows.Close()
-	series := make([]point, 0)
-	for rows.Next() {
-		var p point
-		if err := rows.Scan(&p.Bucket, &p.Input, &p.Output, &p.CacheRead, &p.CacheCreation, &p.CostUSD, &p.TurnCount); err != nil {
-			writeErr(w, err)
-			return
+	// Lossy-eviction bytes (drops) shrink a turn's compressed_bytes and
+	// so inflate SavedBytesSigned; subtract them per bucket so the cost
+	// timeseries reports genuine, retrievable compression only. Same
+	// window/tool/project filters as the cost summary above.
+	evictedByBucket, err := s.lossyEvictedBytesByBucket(r.Context(), spec, since, until, tool, project)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	byKey := make(map[string]point, len(summary.Rows))
+	starts := make(map[string]time.Time, len(summary.Rows))
+	for _, row := range summary.Rows {
+		gross := row.Compression.SavedBytesSigned()
+		evicted := evictedByBucket[row.Key]
+		bytesSaved := gross
+		tokensSaved := row.Compression.TokensSavedEst
+		usdSaved := row.Compression.CostSavedUSDEst
+		usdInputTier := row.Compression.CostSavedUSDEstInputTier
+		usdCacheTier := row.Compression.CostSavedUSDEstCacheReadTier
+		if gross > 0 && evicted > 0 {
+			net := gross - evicted
+			if net < 0 {
+				net = 0
+			}
+			// Tokens/USD are linear in saved bytes, so scale the
+			// cost-engine estimates by the net/gross ratio rather than
+			// re-deriving pricing here (keeps the cost engine the one
+			// owner of the byte→token→USD conversion).
+			factor := float64(net) / float64(gross)
+			bytesSaved = net
+			tokensSaved = int64(float64(tokensSaved) * factor)
+			usdSaved *= factor
+			usdInputTier *= factor
+			usdCacheTier *= factor
 		}
+		starts[row.Key] = keyStart(spec, row.Key)
+		byKey[row.Key] = point{
+			Bucket:                        row.Key,
+			Input:                         row.Tokens.Input,
+			Output:                        row.Tokens.Output,
+			CacheRead:                     row.Tokens.CacheRead,
+			CacheCreation:                 row.Tokens.CacheCreation,
+			CostUSD:                       row.CostUSD,
+			TurnCount:                     row.TurnCount,
+			CompBytesSaved:                bytesSaved,
+			CompTokensSaved:               tokensSaved,
+			CompCostUSDSaved:              usdSaved,
+			CompCostUSDSavedInputTier:     usdInputTier,
+			CompCostUSDSavedCacheReadTier: usdCacheTier,
+			CompTurns:                     row.Compression.Turns,
+			CompEvictedBytes:              evicted,
+		}
+	}
+	slots := bucketSlots(spec, starts)
+	series := make([]point, 0, len(slots))
+	for _, sl := range slots {
+		p, ok := byKey[sl.Key]
+		if !ok {
+			p = point{Bucket: sl.Key}
+		}
+		p.T = millis(sl.T)
 		series = append(series, p)
 	}
-	sinceStr, untilStr := windowMeta(since, until)
-	writeJSON(w, map[string]any{
+	writeJSON(w, withBucketMeta(spec, map[string]any{
 		"metric": "cost",
-		"bucket": "hour",
 		"days":   days,
-		"since":  sinceStr,
-		"until":  untilStr,
 		"series": series,
-	})
+	}))
 }
 
 // handleTimeseriesTokensByModel serves /api/timeseries/tokens-by-model
-// ?days=N&project=PATH. Returns one point per (day, model) pair so the
-// Cost tab can render a stacked-bar chart of tokens per day with each
-// model as its own series. Tokens, cost, and turn counts come from the
-// cost engine in SourceAuto mode (proxy preferred, JSONL fallback) so
-// the dedup/reliability semantics match /api/cost and
-// /api/timeseries/cost exactly.
+// ?days=N&project=PATH&gran=&tz=. Returns one point per (bucket, model)
+// pair so the Cost tab can render a stacked-bar chart of tokens per bucket
+// with each model as its own series, plus `grid` (every bucket of the
+// window, zero-fill order) so an empty bucket still takes its slot on the
+// axis. Tokens, cost, and turn counts come from the cost engine in
+// SourceAuto mode (proxy preferred, JSONL fallback) so the dedup/
+// reliability semantics match /api/cost and /api/timeseries/cost exactly.
 func (s *Server) handleTimeseriesTokensByModel(w http.ResponseWriter, r *http.Request) {
 	days := intArg(r, "days", 30, 1, 36500)
 	projectFilter := r.URL.Query().Get("project")
@@ -5851,6 +5840,7 @@ func (s *Server) handleTimeseriesTokensByModel(w http.ResponseWriter, r *http.Re
 
 	type point struct {
 		Bucket        string  `json:"bucket"`
+		T             int64   `json:"t"`
 		Model         string  `json:"model"`
 		Input         int64   `json:"input"`
 		Output        int64   `json:"output"`
@@ -5862,18 +5852,23 @@ func (s *Server) handleTimeseriesTokensByModel(w http.ResponseWriter, r *http.Re
 	}
 
 	since, until := windowRange(r, 30, 1, 36500)
+	spec, err := bucketSpec(r, since, until)
+	if err != nil {
+		writeBucketErr(w, err)
+		return
+	}
 	summary, err := s.opts.CostEngine.Summary(r.Context(), s.db(), cost.Options{
 		Days:        days,
 		Since:       since,
 		Until:       until,
 		GroupBy:     cost.GroupByDayModel,
+		BucketKey:   tsBucketKeyer(spec),
 		Source:      cost.SourceAuto,
 		ProjectRoot: projectFilter,
 		Tool:        toolFilter,
-		// Limit large enough to cover realistic windows: 365d × ~6 models
-		// per day = 2190 buckets. Keep some headroom for pathological
-		// many-model accounts.
-		Limit: 5000,
+		// One row per (bucket, model); the bucket count is capped
+		// (sub-day) or data-bounded (day/week), so this never truncates.
+		Limit: 1 << 20,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -5881,10 +5876,17 @@ func (s *Server) handleTimeseriesTokensByModel(w http.ResponseWriter, r *http.Re
 	}
 
 	series := make([]point, 0, len(summary.Rows))
+	starts := map[string]time.Time{}
 	for _, row := range summary.Rows {
-		day, model := cost.SplitDayModelKey(row.Key)
+		bucket, model := cost.SplitDayModelKey(row.Key)
+		st, ok := starts[bucket]
+		if !ok {
+			st = keyStart(spec, bucket)
+			starts[bucket] = st
+		}
 		series = append(series, point{
-			Bucket:        day,
+			Bucket:        bucket,
+			T:             millis(st),
 			Model:         model,
 			Input:         row.Tokens.Input,
 			Output:        row.Tokens.Output,
@@ -5896,46 +5898,60 @@ func (s *Server) handleTimeseriesTokensByModel(w http.ResponseWriter, r *http.Re
 		})
 	}
 	// Engine returns rows sorted by cost_usd DESC. Re-sort chronologically
-	// (then by model for a stable stacking order within a day) so the
+	// (then by model for a stable stacking order within a bucket) so the
 	// chart axis reads left-to-right.
 	sort.SliceStable(series, func(i, j int) bool {
+		if series[i].T != series[j].T {
+			return series[i].T < series[j].T
+		}
 		if series[i].Bucket != series[j].Bucket {
 			return series[i].Bucket < series[j].Bucket
 		}
 		return series[i].Model < series[j].Model
 	})
-	sinceStr, untilStr := windowMeta(since, until)
-	writeJSON(w, map[string]any{
+	writeJSON(w, withBucketMeta(spec, map[string]any{
 		"metric": "tokens_by_model",
-		"bucket": "day",
 		"days":   days,
-		"since":  sinceStr,
-		"until":  untilStr,
 		"series": series,
-	})
+		"grid":   gridJSON(bucketSlots(spec, starts)),
+	}))
 }
 
-// handleTimeseriesActions serves /api/timeseries/actions?days=N&bucket=day|hour.
-// Returns one point per bucket with action counts (total, successful,
-// failed) and a per-tool breakdown so charts can stack by tool.
+// gridPoint is one entry of a multi-key response's `grid` (the zero-fill
+// order a stacked chart seeds its rows from).
+type gridPoint struct {
+	Bucket string `json:"bucket"`
+	T      int64  `json:"t"`
+}
+
+func gridJSON(slots []bucketSlot) []gridPoint {
+	out := make([]gridPoint, 0, len(slots))
+	for _, sl := range slots {
+		out = append(out, gridPoint{Bucket: sl.Key, T: millis(sl.T)})
+	}
+	return out
+}
+
+// handleTimeseriesActions serves /api/timeseries/actions?days=N&gran=&tz=
+// (legacy bucket=day|hour). Returns one point per bucket (zero-filled) with
+// action counts (total, failed) and a per-tool breakdown so charts can
+// stack by tool.
 //
 // Honors ?project=<root_path> to scope to a single project (mirrors the
 // filter applied to /api/sessions and /api/actions). Without the
 // filter, cross-project actions are summed.
 func (s *Server) handleTimeseriesActions(w http.ResponseWriter, r *http.Request) {
 	days := intArg(r, "days", 30, 1, 36500)
-	bucket := r.URL.Query().Get("bucket")
-	if bucket == "" {
-		bucket = "day"
-	}
-	fmtSpec := "%Y-%m-%d"
-	if bucket == "hour" {
-		fmtSpec = "%Y-%m-%dT%H:00:00Z"
-	}
 	since, until := windowRange(r, 30, 1, 36500)
+	spec, err := bucketSpec(r, since, until)
+	if err != nil {
+		writeBucketErr(w, err)
+		return
+	}
+	slot := spec.Slot()
 	project := r.URL.Query().Get("project")
 	tool := r.URL.Query().Get("tool")
-	args := []any{fmtSpec, since.Format(time.RFC3339Nano)}
+	args := []any{since.Format(time.RFC3339Nano)}
 	extra := ""
 	if !until.IsZero() {
 		extra += " AND timestamp < ?"
@@ -5950,14 +5966,13 @@ func (s *Server) handleTimeseriesActions(w http.ResponseWriter, r *http.Request)
 		args = append(args, tool)
 	}
 	rows, err := s.db().QueryContext(r.Context(),
-		//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
-		`SELECT strftime(?, timestamp) AS bucket, tool,
+		//nolint:gosec // G202: SQL structure (the timebucket-rendered bucket expression and WHERE fragments) is built from code constants; all values are bound via ? args.
+		`SELECT `+slot.SQLiteExpr("timestamp")+` AS bucket, tool,
 		        COUNT(*),
 		        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END)
 		 FROM actions
 		 WHERE timestamp >= ?`+extra+`
-		 GROUP BY bucket, tool
-		 ORDER BY bucket, tool`,
+		 GROUP BY bucket, tool`,
 		args...)
 	if err != nil {
 		writeErr(w, err)
@@ -5967,48 +5982,55 @@ func (s *Server) handleTimeseriesActions(w http.ResponseWriter, r *http.Request)
 
 	type point struct {
 		Bucket   string         `json:"bucket"`
+		T        int64          `json:"t"`
 		Total    int            `json:"total"`
 		Failures int            `json:"failures"`
 		ByTool   map[string]int `json:"by_tool"`
 	}
 	byBucket := map[string]*point{}
-	order := []string{}
+	starts := map[string]time.Time{}
 	for rows.Next() {
-		var b, tool string
+		var label sql.NullInt64
+		var tool string
 		var n, fails int
-		if err := rows.Scan(&b, &tool, &n, &fails); err != nil {
+		if err := rows.Scan(&label, &tool, &n, &fails); err != nil {
 			writeErr(w, err)
 			return
 		}
-		p, ok := byBucket[b]
+		b, ok := slot.IndexBucket(label.Int64, label.Valid)
 		if !ok {
-			p = &point{Bucket: b, ByTool: map[string]int{}}
-			byBucket[b] = p
-			order = append(order, b)
+			continue
+		}
+		key := spec.Key(b)
+		p, ok := byBucket[key]
+		if !ok {
+			p = &point{Bucket: key, ByTool: map[string]int{}}
+			byBucket[key] = p
+			starts[key] = b
 		}
 		p.Total += n
 		p.Failures += fails
-		p.ByTool[tool] = n
+		p.ByTool[tool] += n
 	}
-	series := make([]point, 0, len(order))
-	for _, b := range order {
-		series = append(series, *byBucket[b])
+	if err := rows.Err(); err != nil {
+		writeErr(w, err)
+		return
 	}
-	// Pin the contract: timeseries reads chronologically. The SQL
-	// already orders by bucket ASC, but sort defensively so any future
-	// upstream change can't silently flip chart axes.
-	sort.SliceStable(series, func(i, j int) bool {
-		return series[i].Bucket < series[j].Bucket
-	})
-	sinceStr, untilStr := windowMeta(since, until)
-	writeJSON(w, map[string]any{
+	slots := bucketSlots(spec, starts)
+	series := make([]point, 0, len(slots))
+	for _, sl := range slots {
+		p := byBucket[sl.Key]
+		if p == nil {
+			p = &point{Bucket: sl.Key, ByTool: map[string]int{}}
+		}
+		p.T = millis(sl.T)
+		series = append(series, *p)
+	}
+	writeJSON(w, withBucketMeta(spec, map[string]any{
 		"metric": "actions",
-		"bucket": bucket,
 		"days":   days,
-		"since":  sinceStr,
-		"until":  untilStr,
 		"series": series,
-	})
+	}))
 }
 
 // handleModels serves /api/models?days=N — per-model breakdown over the
@@ -6488,8 +6510,8 @@ func (s *Server) handleCompressionByModel(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// handleCompressionTimeseries serves /api/compression/timeseries?bucket=day&days=N
-// — per-day savings split by mechanism for the "Savings by mechanism"
+// handleCompressionTimeseries serves /api/compression/timeseries?days=N&gran=&tz=
+// (legacy bucket=day|hour) — per-bucket (zero-filled) savings split by mechanism for the "Savings by mechanism"
 // chart. Returns one point per day with by_mechanism map of
 // {mechanism: {count, original_bytes, compressed_bytes, saved_bytes,
 // saved_usd_est}}.
@@ -6503,23 +6525,15 @@ func (s *Server) handleCompressionTimeseries(w http.ResponseWriter, r *http.Requ
 	days := intArg(r, "days", 30, 1, 36500)
 	project := r.URL.Query().Get("project")
 	tool := r.URL.Query().Get("tool")
-	// bucket=day|hour allow-list (mirrors handleTimeseriesCost /
-	// handleTimeseriesActions). The SPA now sends bucket=hour for sub-day
-	// windows; without this the strftime was hard-wired to daily and the
-	// hour axis collapsed to one point per day.
-	bucket := r.URL.Query().Get("bucket")
-	if bucket == "" {
-		bucket = "day"
-	}
-	fmtSpec := "%Y-%m-%d"
-	if bucket == "hour" {
-		fmtSpec = "%Y-%m-%dT%H:00:00Z"
-	} else {
-		bucket = "day"
-	}
 	since, until := windowRange(r, 30, 1, 36500)
+	spec, err := bucketSpec(r, since, until)
+	if err != nil {
+		writeBucketErr(w, err)
+		return
+	}
+	slot := spec.Slot()
 	where := []string{"ce.timestamp >= ?"}
-	args := []any{fmtSpec, since.Format(time.RFC3339Nano)}
+	args := []any{since.Format(time.RFC3339Nano)}
 	if !until.IsZero() {
 		where = append(where, "ce.timestamp < ?")
 		args = append(args, until.Format(time.RFC3339Nano))
@@ -6533,8 +6547,8 @@ func (s *Server) handleCompressionTimeseries(w http.ResponseWriter, r *http.Requ
 		args = append(args, tool)
 	}
 	rows, err := s.db().QueryContext(r.Context(),
-		//nolint:gosec // G202: SQL structure (WHERE/JOIN/scope fragments and any IN placeholder list) is built from code constants; all values are bound via ? args.
-		`SELECT strftime(?, ce.timestamp) AS bucket,
+		//nolint:gosec // G202: SQL structure (the timebucket-rendered bucket expression, WHERE/JOIN/scope fragments) is built from code constants; all values are bound via ? args.
+		`SELECT `+slot.SQLiteExpr("ce.timestamp")+` AS bucket,
 		        ce.mechanism,
 		        COALESCE(at.model, '') AS model,
 		        COUNT(*),
@@ -6543,8 +6557,7 @@ func (s *Server) handleCompressionTimeseries(w http.ResponseWriter, r *http.Requ
 		 FROM compression_events ce
 		 LEFT JOIN api_turns at ON at.id = ce.api_turn_id
 		 WHERE `+strings.Join(where, " AND ")+`
-		 GROUP BY bucket, ce.mechanism, model
-		 ORDER BY bucket, ce.mechanism`,
+		 GROUP BY bucket, ce.mechanism, model`,
 		args...)
 	if err != nil {
 		writeErr(w, err)
@@ -6566,6 +6579,7 @@ func (s *Server) handleCompressionTimeseries(w http.ResponseWriter, r *http.Requ
 	}
 	type point struct {
 		Bucket      string                `json:"bucket"`
+		T           int64                 `json:"t"`
 		ByMechanism map[string]*mechStats `json:"by_mechanism"`
 		TotalSaved  int64                 `json:"total_saved_bytes"`
 		TotalUSD    float64               `json:"total_saved_usd_est"`
@@ -6576,20 +6590,26 @@ func (s *Server) handleCompressionTimeseries(w http.ResponseWriter, r *http.Requ
 		TotalEvicted int64 `json:"total_evicted_bytes"`
 	}
 	idx := map[string]*point{}
-	order := []string{}
+	starts := map[string]time.Time{}
 	for rows.Next() {
-		var b, mech, model string
+		var label sql.NullInt64
+		var mech, model string
 		var n int
 		var orig, comp int64
-		if err := rows.Scan(&b, &mech, &model, &n, &orig, &comp); err != nil {
+		if err := rows.Scan(&label, &mech, &model, &n, &orig, &comp); err != nil {
 			writeErr(w, err)
 			return
 		}
+		bt, ok := slot.IndexBucket(label.Int64, label.Valid)
+		if !ok {
+			continue
+		}
+		b := spec.Key(bt)
 		p, ok := idx[b]
 		if !ok {
 			p = &point{Bucket: b, ByMechanism: map[string]*mechStats{}}
 			idx[b] = p
-			order = append(order, b)
+			starts[b] = bt
 		}
 		ms, exists := p.ByMechanism[mech]
 		if !exists {
@@ -6626,27 +6646,30 @@ func (s *Server) handleCompressionTimeseries(w http.ResponseWriter, r *http.Requ
 		p.TotalSaved += saved
 		p.TotalUSD += savedUSD
 	}
-	series := make([]point, 0, len(order))
-	for _, b := range order {
-		series = append(series, *idx[b])
+	if err := rows.Err(); err != nil {
+		writeErr(w, err)
+		return
 	}
-	sort.SliceStable(series, func(i, j int) bool {
-		return series[i].Bucket < series[j].Bucket
-	})
-	sinceStr, untilStr := windowMeta(since, until)
-	writeJSON(w, map[string]any{
+	slots := bucketSlots(spec, starts)
+	series := make([]point, 0, len(slots))
+	for _, sl := range slots {
+		p := idx[sl.Key]
+		if p == nil {
+			p = &point{Bucket: sl.Key, ByMechanism: map[string]*mechStats{}}
+		}
+		p.T = millis(sl.T)
+		series = append(series, *p)
+	}
+	writeJSON(w, withBucketMeta(spec, map[string]any{
 		"metric": "compression_events",
-		"bucket": bucket,
 		"days":   days,
-		"since":  sinceStr,
-		"until":  untilStr,
 		"series": series,
-	})
+	}))
 }
 
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db().QueryContext(r.Context(),
-		`SELECT p.root_path,
+		`SELECT p.id, p.root_path,
 		        (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id) AS session_count,
 		        (SELECT COUNT(*) FROM actions  a WHERE a.project_id = p.id) AS action_count,
 		        (SELECT MAX(a.timestamp) FROM actions a WHERE a.project_id = p.id) AS last_seen
@@ -6657,17 +6680,48 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
+	// projectRow's additive fields (id/spend_usd_30d/ai_code_lines_30d/
+	// commits_30d/last_commit_at/capture) are the Projects-page ROI +
+	// commit-alignment arc's R7 extension (docs/plans/projects-page-roi-
+	// and-commit-alignment-plan-2026-09-21.md §3.4): omitempty scalars
+	// (a project with no cost/loc/commit data in the window simply omits
+	// them, never a fabricated zero — see TestAPIProjectsEmptyCorpusByteIdentical)
+	// and a POINTER composite for `capture` (F17: omitempty never elides
+	// a non-pointer struct).
 	type projectRow struct {
+		ID           int64  `json:"id"`
 		RootPath     string `json:"root_path"`
 		SessionCount int    `json:"session_count"`
 		ActionCount  int    `json:"action_count"`
 		LastSeen     string `json:"last_seen,omitempty"`
+		// SpendUSD30d is a POINTER (2026-09-22 rework finding #13): a nil
+		// pointer means "no priced-turn activity for this project in the
+		// window at all" (omitted from the JSON — the web renders "-"),
+		// while a non-nil pointer to 0.0 means "we priced every turn and
+		// the total genuinely came to $0.00" (a known-free model) — the
+		// web renders "$0.00". A plain float64 with `omitempty` could not
+		// tell those two cases apart: Go's encoding/json omits a zero
+		// VALUE regardless of whether the field was ever set.
+		SpendUSD30d *float64 `json:"spend_usd_30d,omitempty"`
+		// SpendUnpricedTurns30d counts the window's turns with no recorded
+		// cost and no pricing entry for their model (excluded from
+		// SpendUSD30d); omitted when zero.
+		SpendUnpricedTurns30d int `json:"spend_unpriced_turns_30d,omitempty"`
+		// AICodeLines30d is AI-authored CODE lines (added + modified,
+		// code-category files only since 2026-09-28 - docs/config lines
+		// used to be counted) and AISplit30d its code-vs-comment split
+		// (internal/loc.SplitAuthored); both omitted with no AI lines.
+		AICodeLines30d int                    `json:"ai_code_lines_30d,omitempty"`
+		AISplit30d     *projectAuthoredSplit  `json:"ai_split_30d,omitempty"`
+		Commits30d     int                    `json:"commits_30d,omitempty"`
+		LastCommitAt   string                 `json:"last_commit_at,omitempty"`
+		Capture        *apiProjectCaptureInfo `json:"capture,omitempty"`
 	}
 	out := []projectRow{}
 	for rows.Next() {
 		var pr projectRow
 		var lastSeen sql.NullString
-		if err := rows.Scan(&pr.RootPath, &pr.SessionCount, &pr.ActionCount, &lastSeen); err != nil {
+		if err := rows.Scan(&pr.ID, &pr.RootPath, &pr.SessionCount, &pr.ActionCount, &lastSeen); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -6680,6 +6734,93 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+
+	// R11: one small set of grouped queries over every project's last 30
+	// days, not one query per project. A project absent from the
+	// returned map (never touched by the commit scanner, or an
+	// installation predating this feature) simply omits every additive
+	// field below — see LoadProjectListExtras's own doc comment.
+	//
+	// ONE captured UTC `until` (2026-09-22 rework finding #12) threaded
+	// through every windowed loader below as a real [since30, until)
+	// half-open window — until now the list only ever bound the LOWER
+	// edge (`since30`), so a future-dated or corrupted row's timestamp
+	// had no upper bound at all, and the commits loader additionally
+	// used `<=` where the rest of this file uses `<` (a commit landing
+	// at exactly `until` could double up against the next window's
+	// query). This matches ComposeProjectDetail's own [since,until)
+	// contract (internal/intelligence/dashboard/projectdetail.go).
+	until := time.Now().UTC()
+	since30 := until.AddDate(0, 0, -30)
+	extras, err := store.New(s.db()).LoadProjectListExtras(r.Context(), since30, until)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	// Spend is priced through the SAME per-turn pipeline the detail
+	// panel's loadProjectSpend uses (cost.Engine.TurnRows -> loadRows ->
+	// priceRow), grouped per project via cost.Engine.Summary's
+	// GroupByProject rather than a separate day-bucket loader — one
+	// owner, so the list and the detail panel can never disagree about a
+	// project's 30-day spend (F6 of the 2026-09-22 arc review: the old
+	// day-bucket loader priced SUMMED buckets, which could cross a
+	// long-context pricing tier threshold a per-turn price never would).
+	// GroupByProject keys rows by projects.root_path, not id, so the
+	// result is joined back onto `out` by RootPath below. Until is now
+	// bound too (finding #12), matching every other loader in this
+	// handler.
+	spendSummary, err := s.opts.CostEngine.Summary(r.Context(), s.db(), cost.Options{
+		GroupBy: cost.GroupByProject, Since: since30, Until: until, Limit: 1_000_000,
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	spendByRoot := make(map[string]cost.Row, len(spendSummary.Rows))
+	for _, row := range spendSummary.Rows {
+		spendByRoot[row.Key] = row
+	}
+	for i := range out {
+		if row, ok := spendByRoot[out[i].RootPath]; ok {
+			// finding #13: a project with priced-turn activity in the
+			// window gets a real pointer even when the total is exactly
+			// $0.00 (every turn priced to a known-free model) — see the
+			// projectRow.SpendUSD30d doc comment above. A project absent
+			// from spendByRoot (no turns at all in the window) leaves the
+			// pointer nil, rendering "-" on the web rather than a
+			// misleading "$0.00".
+			//
+			// 2026-09-22 rework finding S5: those are NOT the only two
+			// cases. A project can also have activity in the window that
+			// is entirely UNPRICED (no pricing-table entry for any of
+			// its models) — row.CostUSD is then a real float64 zero
+			// value, structurally indistinguishable from "every turn
+			// priced to a genuinely free model" unless PricedTurnCount
+			// is consulted too. Leaving SpendUSD30d nil whenever
+			// PricedTurnCount==0 keeps the pointer's honesty contract:
+			// non-nil means "we actually priced at least one turn",
+			// never "we have no idea and are showing zero anyway".
+			out[i].SpendUnpricedTurns30d = row.UnpricedTurnCount
+			if row.PricedTurnCount > 0 {
+				spendUSD := row.CostUSD
+				out[i].SpendUSD30d = &spendUSD
+			}
+		}
+		e, ok := extras[out[i].ID]
+		if !ok {
+			continue
+		}
+		out[i].AICodeLines30d = e.AILines30d
+		out[i].AISplit30d = optionalAuthoredSplit(e.AILines30d, e.AIComment30d)
+		out[i].Commits30d = e.Commits30d
+		if !e.LastCommitAt.IsZero() {
+			out[i].LastCommitAt = e.LastCommitAt.UTC().Format(time.RFC3339Nano)
+		}
+		if e.CommitsScanned {
+			out[i].Capture = &apiProjectCaptureInfo{Commits: e.CommitCapture, HumanLOC: e.HumanLOC}
+		}
+	}
+
 	writeJSON(w, map[string]any{"rows": out})
 }
 

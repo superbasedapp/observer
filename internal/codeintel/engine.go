@@ -10,9 +10,7 @@ import (
 )
 
 // engine is the NATIVE [Provider] implementation: it answers from
-// codeintel's own store (codeintel_files / codeintel_nodes / …) instead
-// of the external codegraph DB. It is the strangler-fig target — the
-// codegraph wrapper is validated against it and then deleted.
+// codeintel's own store (codeintel_files / codeintel_nodes / …).
 //
 // Phase 1 surfaces symbols, spans, find, and staleness from
 // files+nodes. Edge-traversal methods (callers/callees/reachable),
@@ -40,7 +38,7 @@ func Unavailable() Provider {
 	return &engine{}
 }
 
-// engineStaleSlack mirrors the codegraph wrapper's tolerance: file-
+// engineStaleSlack is the staleness tolerance: file-
 // system mtime jitter + index latency shouldn't flap Stale().
 const engineStaleSlack = 5 * time.Second
 

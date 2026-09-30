@@ -97,8 +97,10 @@ const SESSION_DETAIL = {
   resume: { kind: "native", subcommand: "claude" },
 };
 
-// Two turns; the assistant turn generated 900 output tokens over 3000ms of
-// measured timing ⇒ 300 tok/s in the Now strip and Recent turns.
+// Two turns; the assistant turn generated 900 tokens over 3000ms of
+// measured request duration (sessionmsg TimingWire: tps_tokens / tps_ms) ⇒
+// 300 tok/s in the Now strip and Recent turns. The client divides tps_tokens
+// by tps_ms, never output by a gap (S10-SPEED).
 const MESSAGES = {
   session_id: SESSION_ID,
   total: 2,
@@ -131,8 +133,12 @@ const MESSAGES = {
       cost_usd: 0.12,
       ai_cost_usd: 0.12,
       tool_cost_usd: 0,
+      response_ms: 3000,
+      tps_tokens: 900,
       tps_ms: 3000,
       tps_basis: "measured",
+      tps_timed_calls: 1,
+      tps_calls: 1,
       tool_call_count: 0,
       tool_calls: [],
     },
@@ -294,8 +300,8 @@ async function restoreTerminal(page: import("@playwright/test").Page, tool = "cl
   await pill.click();
 }
 
-// The ⊙ Session header button. When enabled its accessible name is the
-// visible glyph+word ("⊙ Session"); when disabled it carries an aria-label
+// The Session header button (a CircleDot icon + the word). When enabled its
+// accessible name is the visible word ("Session"); when disabled it carries an aria-label
 // with the honest reason (which replaces the name), so match on the stable
 // visible text content instead of the accessible name.
 function sessionButton(page: import("@playwright/test").Page) {

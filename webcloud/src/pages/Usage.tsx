@@ -1,13 +1,31 @@
-import { useEffect, useId, useMemo, useState } from "react";
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import { Link } from "react-router-dom";
+import { Stagger } from "@shared/primitives/Motion";
+import { usePortalQuery } from "../lib/query";
+import { DashboardSkeleton, ErrorPanel } from "../components/LoadState";
 import { getUsage } from "../api";
-import type { MixEntry, UsageView, UsageWarning } from "../api";
+import type { UsageView, UsageWarning } from "../api";
 import { DefinitionList, DefinitionRow } from "@shared/primitives/DefinitionList";
 import { StatCard } from "@shared/primitives/StatCard";
 import { ChartShell } from "@shared/primitives/ChartShell";
 import { Pill } from "@shared/primitives/Pill";
-import { fmtCompact, fmtDateTime, fmtInt, fmtPct } from "@shared/lib/format";
-import { FEATURE_LABELS, JOB_STATE_LABELS, PLAN_LABELS, labelFor } from "../lib/labels";
+import { EmptyState } from "@shared/primitives/EmptyState";
+import { fmtDateTime, fmtInt, fmtPct } from "@shared/lib/format";
+import { FEATURE_LABELS, PLAN_LABELS, labelFor } from "../lib/labels";
+import { TriangleAlert, Workflow, type LucideIcon } from "lucide-react";
+import { PageHeader } from "@shared/primitives/PageHeader";
+import { CardHeader } from "@shared/primitives/CardHeader";
+import { PortalMetricIcon, type PortalMetricKey } from "../lib/metricIcons";
+import { routeIcon } from "../lib/nav";
+import { RawIdHint } from "../components/RawIdHint";
+import { Meter } from "@shared/primitives/Meter";
+import type { Tone } from "@shared/lib/tone";
+import { MixDonut, jobMixSlices } from "../components/MixDonut";
+
+// SECTION_ICONS: one glyph per Usage section title.
+const SECTION_ICONS = {
+  warnings: TriangleAlert,
+  jobs: Workflow,
+} as const satisfies Record<string, LucideIcon>;
 
 // Usage (D20), rebuilt onto the shared design-system primitives so the cloud
 // portal renders the same visual grammar as the local dashboard. Data loading
@@ -15,140 +33,45 @@ import { FEATURE_LABELS, JOB_STATE_LABELS, PLAN_LABELS, labelFor } from "../lib/
 // come from, the per-window warnings the server already computes, the job
 // states the allowance was actually spent on, and when each window restarts.
 
-// MIX_COLORS mirrors Overview's categorical palette (webcloud/src/styles.css
-// --mix-1..6) so the jobs-by-state donut here reads consistently with the
-// rest of the portal.
-const MIX_COLORS = [
-  "var(--mix-1)",
-  "var(--mix-2)",
-  "var(--mix-3)",
-  "var(--mix-4)",
-  "var(--mix-5)",
-  "var(--mix-6)",
+// METER_TONE_RULES mirrors the thresholds the server's warning levels
+// already imply, walked top-down: danger at "critical"/"exhausted" (or a
+// full/overfull bar even without an attached warning row), warn at "warn"
+// (or 70%+), accent below that.
+const METER_TONE_RULES: readonly { tone: Tone; levels: readonly string[]; minPct: number }[] = [
+  { tone: "danger", levels: ["critical", "exhausted"], minPct: 90 },
+  { tone: "warn", levels: ["warn"], minPct: 70 },
 ];
-
-// MixDonut is the same small donut + legend idiom Overview uses for its
-// jobs-by-state and tool/model mix cards, copied locally (generic over the
-// portal's {key,count} MixEntry shape) rather than reached for across pages.
-function MixDonut({
-  entries,
-  totalLabel,
-}: {
-  entries: MixEntry[];
-  totalLabel: string;
-}) {
-  const id = useId();
-  const top = useMemo(
-    () => entries.slice().sort((a, b) => b.count - a.count).slice(0, 6),
-    [entries],
-  );
-  const total = useMemo(() => top.reduce((a, e) => a + e.count, 0), [top]);
-
-  if (total === 0) {
-    return (
-      <div className="grid h-[160px] place-items-center text-[12px] text-fg-3">
-        No data yet
-      </div>
-    );
-  }
-
-  const data = top.map((e, i) => ({
-    key: e.key,
-    value: e.count,
-    color: MIX_COLORS[i % MIX_COLORS.length],
-  }));
-
+function meterTone(pct: number, level?: string): Tone {
   return (
-    <div className="grid grid-cols-[140px_1fr] items-center gap-4">
-      <div className="relative h-[140px]">
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={data}
-              dataKey="value"
-              nameKey="key"
-              innerRadius="65%"
-              outerRadius="92%"
-              paddingAngle={1.5}
-              stroke="var(--bg-2)"
-              strokeWidth={2}
-              isAnimationActive={false}
-            >
-              {data.map((d, i) => (
-                <Cell key={`${id}-${i}`} fill={d.color} />
-              ))}
-            </Pie>
-            <Tooltip
-              content={({ active, payload }) => {
-                if (!active || !payload?.length) return null;
-                const p = payload[0].payload as (typeof data)[number];
-                return (
-                  <div className="rounded-2 border border-line-3 bg-bg-3/95 px-3 py-2 text-[11px] shadow-2 backdrop-blur">
-                    <div className="font-mono text-fg-1">{p.key}</div>
-                    <div className="mt-0.5 text-fg-3">
-                      {fmtCompact(p.value)} · {fmtPct(p.value / total)} of shown
-                    </div>
-                  </div>
-                );
-              }}
-            />
-          </PieChart>
-        </ResponsiveContainer>
-        <div className="pointer-events-none absolute inset-0 grid place-items-center">
-          <div className="text-center">
-            <div className="text-[16px] font-semibold leading-none tracking-tight text-fg-0">
-              {fmtCompact(total)}
-            </div>
-            <div className="mt-1 text-[9px] uppercase tracking-[0.06em] text-fg-3">
-              {totalLabel}
-            </div>
-          </div>
-        </div>
-      </div>
-      <ul className="space-y-1">
-        {data.map((d) => {
-          const share = d.value / total;
-          return (
-            <li
-              key={d.key}
-              className="grid grid-cols-[8px_1fr_auto] items-baseline gap-2 text-[11.5px]"
-            >
-              <span
-                className="block h-2 w-2 self-center rounded-pill"
-                style={{ background: d.color }}
-              />
-              <span className="truncate text-fg-1">{d.key}</span>
-              <span className="shrink-0 tabular-nums text-fg-3">
-                {fmtCompact(d.value)} · {fmtPct(share)}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
+    METER_TONE_RULES.find((r) => (level !== undefined && r.levels.includes(level)) || pct >= r.minPct)
+      ?.tone ?? "accent"
   );
 }
 
-// meterFillClass mirrors the thresholds the server's warning levels already
-// imply: danger at "critical"/"exhausted" (or a full/overfull bar even
-// without an attached warning row), warn at "warn" (or 70%+), accent below
-// that.
-function meterFillClass(pct: number, level?: string): string {
-  if (level === "critical" || level === "exhausted" || pct >= 90) {
-    return "bg-danger";
-  }
-  if (level === "warn" || pct >= 70) {
-    return "bg-warn";
-  }
-  return "bg-accent";
+// LEVEL_PILL: the pill tone for each server warning level (no row, no pill).
+const LEVEL_PILL: Readonly<Record<string, "warn" | "danger">> = {
+  warn: "warn",
+  critical: "danger",
+  exhausted: "danger",
+};
+function levelPillVariant(level?: string): "warn" | "danger" | undefined {
+  return level === undefined ? undefined : LEVEL_PILL[level];
 }
 
-function levelPillVariant(
-  level?: string,
-): "warn" | "danger" | undefined {
-  if (level === "critical" || level === "exhausted") return "danger";
-  if (level === "warn") return "warn";
-  return undefined;
+// Human wording for the server's warning enums (the pill used to print the
+// raw "daily: critical").
+const WINDOW_WORDS: Record<string, string> = {
+  daily: "Daily",
+  monthly: "Monthly",
+  concurrency: "Concurrency",
+};
+const LEVEL_WORDS: Record<UsageWarning["level"], string> = {
+  warn: "nearing the cap",
+  critical: "almost used up",
+  exhausted: "used up",
+};
+function warningText(w: UsageWarning): string {
+  return `${WINDOW_WORDS[w.window] ?? w.window}: ${LEVEL_WORDS[w.level] ?? w.level}`;
 }
 
 function warningFor(
@@ -162,12 +85,14 @@ function warningFor(
 // bar (StatCard's `children` slot), used for the three allowance windows.
 function UsageMeterCard({
   label,
+  metric,
   used,
   cap,
   level,
   sub,
 }: {
   label: string;
+  metric: PortalMetricKey;
   used: number;
   cap: number;
   level?: string;
@@ -178,67 +103,56 @@ function UsageMeterCard({
   return (
     <StatCard
       label={label}
+      icon={<PortalMetricIcon metric={metric} />}
       value={`${fmtInt(used)} / ${fmtInt(cap)}`}
       sub={sub}
-      cornerPill={variant && <Pill variant={variant}>{level}</Pill>}
+      cornerPill={
+        variant && (
+          <Pill variant={variant}>
+            {LEVEL_WORDS[level as UsageWarning["level"]] ?? level}
+          </Pill>
+        )
+      }
       warn={pct >= 70}
     >
-      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-pill bg-bg-4">
-        <div
-          className={`h-full rounded-pill ${meterFillClass(pct, level)}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      <Meter
+        className="mt-2 w-full"
+        ratio={pct / 100}
+        tone={meterTone(pct, level)}
+        label={`${label} allowance used`}
+      />
     </StatCard>
   );
 }
 
 export function Usage() {
-  const [data, setData] = useState<UsageView | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    getUsage()
-      .then((d) => {
-        if (live) setData(d);
-      })
-      .catch((err: unknown) => {
-        if (live)
-          setError(err instanceof Error ? err.message : "failed to load");
-      });
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  if (error) {
-    return (
-      <div className="rounded-3 border border-danger/30 bg-bg-2 px-4 py-3 text-[13px] text-danger">
-        Could not load usage: {error}
-      </div>
-    );
+  // Same "usage" key the Overview reads: one shared, cached request.
+  const q = usePortalQuery<UsageView>("usage", getUsage);
+  const data = q.data;
+  if (q.error && !data) {
+    return <ErrorPanel variant="page" what="usage" error={q.error} onRetry={q.reload} />;
   }
   if (!data) {
-    return <div className="text-[13px] text-fg-3">Loading usage...</div>;
+    return <DashboardSkeleton stats={3} />;
   }
 
-  const jobEntries: MixEntry[] = Object.entries(data.jobs_by_state).map(
-    ([key, count]) => ({ key: labelFor(JOB_STATE_LABELS, key), count }),
-  );
+  const jobSlices = jobMixSlices(data.jobs_by_state);
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-[20px] font-semibold text-fg-0">Usage</h1>
-        <p className="mt-1 text-[11px] text-fg-3" title={data.feature}>
-          Feature: {labelFor(FEATURE_LABELS, data.feature)}
-        </p>
-      </div>
+    <Stagger className="flex flex-col gap-6">
+      <PageHeader
+        title="Usage"
+        icon={routeIcon("/usage")}
+        sub={
+          <RawIdHint id={data.feature}>
+            Feature: {labelFor(FEATURE_LABELS, data.feature)}
+          </RawIdHint>
+        }
+      />
 
       {data.warnings.length > 0 && (
         <div className="flex flex-col gap-2 rounded-3 border border-warn/30 bg-bg-2 p-4">
-          <h3 className="text-[13px] font-semibold text-fg-0">Warnings</h3>
+          <CardHeader icon={SECTION_ICONS.warnings} title="Warnings" className="mb-0" />
           <ul className="flex flex-wrap gap-2">
             {data.warnings.map((w) => (
               <li key={w.window}>
@@ -246,7 +160,7 @@ export function Usage() {
                   variant={levelPillVariant(w.level) ?? "neutral"}
                   title={`${fmtInt(w.used)} of ${fmtInt(w.cap)} used (${fmtPct(w.used_fraction)})`}
                 >
-                  {w.window}: {w.level}
+                  {warningText(w)}
                 </Pill>
               </li>
             ))}
@@ -255,9 +169,10 @@ export function Usage() {
       )}
 
       {/* Allowance meters */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <Stagger className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <UsageMeterCard
           label="Daily"
+          metric="dailyAllowance"
           used={data.daily_used}
           cap={data.daily_cap}
           level={warningFor(data.warnings, "daily")}
@@ -265,6 +180,7 @@ export function Usage() {
         />
         <UsageMeterCard
           label="Monthly"
+          metric="monthlyAllowance"
           used={data.monthly_used}
           cap={data.monthly_cap}
           level={warningFor(data.warnings, "monthly")}
@@ -272,17 +188,19 @@ export function Usage() {
         />
         <UsageMeterCard
           label="Concurrency"
+          metric="concurrency"
           used={data.concurrency_used}
           cap={data.concurrency_cap}
           level={warningFor(data.warnings, "concurrency")}
           sub={data.concurrency_note}
         />
-      </div>
+      </Stagger>
 
       {/* Plan + jobs breakdown */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <StatCard
           label="Plan"
+          icon={<PortalMetricIcon metric="plan" />}
           value={data.plan_label}
           sub={`v${data.plan_version} · ${labelFor(PLAN_LABELS, data.budget_pool)} pool`}
         >
@@ -296,7 +214,7 @@ export function Usage() {
             <DefinitionRow label="Weekly project digest" value={data.digest_weekly ? (
               <>Included{typeof data.digests_this_week === "number" ? ` (${fmtInt(data.digests_this_week)} this week)` : ""}</>
             ) : (
-              <>Not in your plan — <a href="/portal/billing" className="text-accent">Plus</a></>
+              <>Not in your plan - <Link to="/billing" className="text-accent">Plus</Link></>
             )} />
             <DefinitionRow label="Results kept" value={data.results_retention_days ? `${fmtInt(data.results_retention_days)} days` : "Unknown"} />
           </DefinitionList>
@@ -304,6 +222,7 @@ export function Usage() {
 
         <ChartShell
           title="Jobs by state"
+          icon={SECTION_ICONS.jobs}
           sub={
             data.jobs_total > 0
               ? `${fmtInt(data.jobs_total)} jobs drew on this allowance`
@@ -311,14 +230,18 @@ export function Usage() {
           }
         >
           {data.jobs_total === 0 ? (
-            <p className="text-[12px] text-fg-3">
-              No enrichment jobs yet, so nothing has drawn on this allowance.
-            </p>
+            <EmptyState
+              variant="inline"
+              illustration="enrich"
+              illustrationSize={96}
+              title="No enrichment jobs yet"
+              body="Nothing has drawn on this allowance."
+            />
           ) : (
-            <MixDonut entries={jobEntries} totalLabel="jobs" />
+            <MixDonut slices={jobSlices} totalLabel="jobs" />
           )}
         </ChartShell>
       </div>
-    </div>
+    </Stagger>
   );
 }

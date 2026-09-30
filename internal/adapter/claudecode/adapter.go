@@ -224,6 +224,10 @@ type rawLine struct {
 	// test fixtures strip it; it is proven present by the qoder adapter,
 	// which decodes the same field from the identical Claude-Code JSONL.
 	Version string `json:"version"`
+	// Attachment is set on `type:"attachment"` records; only its type is
+	// decoded (gentiming.go classifies the kinds written with the
+	// response, which are never a request start).
+	Attachment *rawAttachment `json:"attachment"`
 }
 
 type rawMessage struct {
@@ -388,6 +392,9 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	// TokenEvent rather than emitting N rows that the cost engine would
 	// then sum up.
 	msgIDToIdx := map[string]int{}
+	// timingLines is every record of this window projected for the
+	// generation-timing span rule (gentiming.go), in file order.
+	var timingLines []ccTimingLine
 	// Cache of project root per cwd.
 	rootCache := map[string]projectGitInfo{}
 	reasoningByTurn := []string{}
@@ -509,6 +516,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			if fileAgent != "" && line.AgentID != "" && fileAgent != line.AgentID {
 				agentIdentityValid = false
 			}
+			timingLines = append(timingLines, classifyRecord(line, true))
 			// NewOffset already committed for the underlying physical line
 			// above; the inner loop processes recovered sub-records that
 			// share that same line.
@@ -742,55 +750,8 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 				if msg.Model == "<synthetic>" {
 					continue
 				}
-				// Prefer message.id as the dedup key — one API call shares it
-				// across N content-block records — and fall back to the
-				// per-record UUID when the JSONL line predates the id field
-				// or is a non-API-call assistant entry.
-				eventID := msg.ID
-				if eventID == "" {
-					eventID = line.UUID
-				}
-				cacheCreation := msg.Usage.CacheCreationInputTokens
-				if cacheCreation == 0 {
-					cacheCreation = msg.Usage.CacheCreation.Ephemeral5mInputTokens +
-						msg.Usage.CacheCreation.Ephemeral1hInputTokens
-				}
-				ev := models.TokenEvent{
-					SourceFile:            path,
-					SourceEventID:         eventID,
-					SessionID:             line.SessionID,
-					ProjectRoot:           projectRoot,
-					GitBranch:             line.GitBranch,
-					GitRemote:             projectRemote,
-					Timestamp:             ts,
-					Tool:                  models.ToolClaudeCode,
-					Model:                 msg.Model,
-					InputTokens:           msg.Usage.InputTokens,
-					OutputTokens:          msg.Usage.OutputTokens,
-					CacheReadTokens:       msg.Usage.CacheReadInputTokens,
-					CacheCreationTokens:   cacheCreation,
-					CacheCreation1hTokens: msg.Usage.CacheCreation.Ephemeral1hInputTokens,
-					// Server-side tool fees (audit B3, v1.6.10): per-message
-					// count of Anthropic web_search invocations billed at
-					// $0.01/call. web_fetch_requests is captured too but
-					// currently not column-mapped (no column on token_usage
-					// and unclear pricing — see audit doc §B3 / X-followup).
-					WebSearchRequests: msg.Usage.ServerToolUse.WebSearchRequests,
-					// Fast-tier capture (Opus 4.8 `/fast`): the usage block
-					// echoes back the request's speed selector. Stamping it
-					// here lets the cost engine apply Pricing.FastMultiplier
-					// on the JSONL path, matching the proxy's api_turns path.
-					Fast:        msg.Usage.Speed == "fast",
-					Source:      models.TokenSourceJSONL,
-					Reliability: models.ReliabilityUnreliable,
-					MessageID:   msg.ID,
-					// Sub-agent usage attribution (migration 087): the
-					// same line-level isSidechain bit the tool events
-					// carry. Without it a sub-agent's turns are counted
-					// in the session totals but can't be bucketed into
-					// its window by the dashboard's sub-agents view.
-					IsSidechain: line.IsSidechain,
-				}
+				ev := tokenEventFromLine(path, line, msg, ts, projectRoot, projectRemote)
+				cacheCreation := ev.CacheCreationTokens
 				if msg.ID != "" {
 					if idx, ok := msgIDToIdx[msg.ID]; ok {
 						// Streaming usage progresses monotonically — keep the
@@ -1032,6 +993,13 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	// just-inserted action row in the same transaction as the sidecar
 	// upsert. Either path lands the same final state.
 	a.stampEffortFromSidecar(ctx, &res)
+	// Generation timing (S10-SPEED): stamp each PROVEN request span onto its
+	// message's TokenEvent - see gentiming.go. Runs before subagent
+	// attribution so a re-emitted look-back row is attributed like the rest.
+	res.TokenEvents = applyGenTiming(path, fromOffset, timingLines, res.TokenEvents, msgIDToIdx,
+		func(cwd string) (string, string) {
+			return a.resolveProjectRoot(cwd, rootCache), a.resolveProjectRemote(cwd, rootCache)
+		})
 	if agentIdentityValid {
 		a.attributeSubagent(path, &res)
 	}

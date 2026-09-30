@@ -459,3 +459,32 @@ func TestEvaluateActions(t *testing.T) {
 		t.Errorf("bookkeeping action evaluated: %+v", v)
 	}
 }
+
+// TestNew_EmptyUserPolicyIsNoPolicy pins the sandbox placeholder contract
+// (docs/sandboxed-terminals.md "Protected state", SR27-SBX-2): a missing
+// guard-policy.toml is replaced inside a sandbox by an EMPTY read-only file,
+// and an empty user policy must mean exactly "no user policy" - no load
+// issue, the built-ins unchanged - never an error that degrades or breaks
+// the hook.
+func TestNew_EmptyUserPolicyIsNoPolicy(t *testing.T) {
+	t.Parallel()
+	absent := newTestGuard(t, guardCfg(), nil)
+	for _, body := range []string{"", "\n", "   \n\n"} {
+		g := newTestGuard(t, guardCfg(), map[string]string{
+			"/home/u/.observer/guard-policy.toml": body,
+		})
+		if issues := g.LoadIssues(); len(issues) != 0 {
+			t.Fatalf("body %q: load issues %v, want none", body, issues)
+		}
+		if g.RuleCount() != absent.RuleCount() {
+			t.Fatalf("body %q: %d rules, want %d (the built-ins only)", body, g.RuleCount(), absent.RuleCount())
+		}
+		v, gerr := g.Evaluate(policy.Event{
+			Kind: policy.KindShellExec, ActionType: "run_command",
+			Target: "rm -rf ~/projects", ProjectRoot: "/home/u/proj",
+		})
+		if gerr != nil || v.RuleID != "R-101" {
+			t.Fatalf("body %q: verdict %+v err %v, want the built-in R-101", body, v, gerr)
+		}
+	}
+}

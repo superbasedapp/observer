@@ -29,12 +29,12 @@ func TestComputeBreakdown_GPT56CacheWrite(t *testing.T) {
 	}
 	got := ComputeBreakdown(p, b)
 
-	wantCreation := 300 * 6.25 / 1_000_000 // billed once at base CacheCreation rate
+	wantCreation := 300 * 5.00 / 1_000_000 // billed once at base CacheCreation rate (1.25 x the repriced $4 input)
 	if math.Abs(got.CacheCreationCost-wantCreation) > eps {
 		t.Errorf("CacheCreationCost = %v, want %v (write x CacheCreation rate, once)", got.CacheCreationCost, wantCreation)
 	}
 
-	wantAI := 1000*5.0/1e6 + 200*30.0/1e6 + 500*0.50/1e6 + wantCreation
+	wantAI := 1000*4.0/1e6 + 200*20.0/1e6 + 500*0.40/1e6 + wantCreation
 	if math.Abs(got.AICost-wantAI) > eps {
 		t.Errorf("AICost = %v, want %v", got.AICost, wantAI)
 	}

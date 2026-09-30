@@ -1,0 +1,52 @@
+{
+  "available": true,
+  "status": {
+    "enabled": false,
+    "mode": "stdio_wrapper",
+    "audit_mode": "async",
+    "table_loaded": false,
+    "cache_path": "/home/dev/.observer/mcp-node-table.json",
+    "point_status": "ineffective",
+    "missing_capabilities": [
+      "table.loaded",
+      "record.store",
+      "stdio.wrapper",
+      "projection.applied"
+    ],
+    "chain_head": 0,
+    "pending_loss": 0,
+    "launch_specs": 0,
+    "remote_forwarding": {
+      "wired": false,
+      "reason": "relay disabled ([mcp_relay].enabled = false)"
+    },
+    "coverage": {}
+  },
+  "daemon_relay": false,
+  "remote_source": "disabled",
+  "enrolled": true,
+  "managed": true,
+  "chain_verified": false,
+  "coverage_rows": [],
+  "vservers": [],
+  "effective_state": {
+    "status": "none",
+    "reason": "no_policy",
+    "mode": "off",
+    "running_version": 0,
+    "restart_required": false
+  },
+  "connect": {
+    "url": "https://org.acme:9443/agent-access/connections",
+    "dashboard_origin": "https://org.acme:9443",
+    "origin_source": "enrolment",
+    "connectable_servers": [
+      {
+        "server_id": "gh",
+        "vservers": [
+          "vs-gh"
+        ]
+      }
+    ]
+  }
+}

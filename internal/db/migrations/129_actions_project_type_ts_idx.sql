@@ -1,0 +1,32 @@
+-- 129_actions_project_type_ts_idx.sql — covering index for the Projects-
+-- page prompt loaders (docs/plans/projects-page-roi-and-commit-alignment-
+-- plan-2026-09-21.md; 2026-09-22 rework, Sol adversarial review
+-- SOL-F18(a)).
+--
+-- internal/store/projectroi.go::LoadProjectPrompts (line ~50) and
+-- LoadProjectPromptCounts (line ~943) both filter `actions` by
+-- (project_id, action_type, timestamp); LoadProjectPrompts additionally
+-- orders by timestamp DESC and selects session_id. Only independent
+-- single-column indexes existed on project_id / action_type / timestamp
+-- (001_initial.sql: idx_actions_project, idx_actions_type,
+-- idx_actions_timestamp) — SQLite can use at most one of them per scan,
+-- then filters and sorts the rest row-by-row. Measured on this box's live
+-- corpus (~140k actions / ~7k prompts in a 30-day window): EXPLAIN QUERY
+-- PLAN on the un-indexed schema picks idx_actions_project and reports a
+-- separate "USE TEMP B-TREE FOR ORDER BY" — the two prompt queries
+-- contributed roughly 1.4s each to the Projects detail endpoint's
+-- measured 5.6s cold read (see docs/audits, Sol review SOL-F18).
+--
+-- session_id rides along as a covering column so LoadProjectPrompts'
+-- SELECT (id, session_id, timestamp, target, tool) can resolve session_id
+-- straight from the index without a row lookup; target/tool still need
+-- one (they carry no filter/order role here, so widening the index
+-- further isn't worth the extra page writes).
+--
+-- Index-only: no column, no table, no wire shape change. NODE-LOCAL by
+-- construction (actions was already node-local, migration 001); no
+-- paired server migration, no privacy-sentinel change (no new table
+-- name).
+
+CREATE INDEX IF NOT EXISTS idx_actions_project_type_ts
+    ON actions(project_id, action_type, timestamp, session_id);

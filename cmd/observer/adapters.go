@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/controlcoverage"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -508,4 +509,78 @@ func enforcementCell(ch integration.EnforcementChannel) string {
 	default:
 		return string(ch)
 	}
+}
+
+// budgetChannelCell renders integration.BudgetAdmissionChannel — the
+// separate question EnforcementChannel deliberately does not answer: can an
+// Observer-managed spend cap be enforced pre-request for this tool? Shares
+// the ENFORCE column's dash-for-zero-value convention.
+func budgetChannelCell(b integration.BudgetAdmissionChannel) string {
+	switch b {
+	case integration.BudgetAdmissionObserverProxy:
+		return "observer-proxy"
+	default:
+		return "—"
+	}
+}
+
+// routeProofCell renders controlcoverage.RouteProofState — whether THIS
+// invocation's route proves it reached the budget channel above, or an
+// ambient selector (an env var, a stored auth choice, a per-model backend
+// switch) could silently override it. Only meaningful when a budget channel
+// exists at all (RouteProofStateNone otherwise); callers gate on that.
+func routeProofCell(r controlcoverage.RouteProofState) string {
+	switch r {
+	case controlcoverage.RouteProofStateProven:
+		return "proven"
+	case controlcoverage.RouteProofStateUnproven:
+		return "unproven"
+	default:
+		return "—"
+	}
+}
+
+// promptSubmitCell renders controlcoverage.PromptSubmitChannel — the
+// prompt-submit lever, independent of the tool-CALL-blocking ENFORCE
+// column (ISSUE.md §1: several sandbox_enforce/recorded_acceptance tools
+// carry a real prompt-submit block/ask channel that ENFORCE structurally
+// cannot credit; poolside is the sharpest example, recorded_acceptance on
+// ENFORCE but block+ask here).
+func promptSubmitCell(p controlcoverage.PromptSubmitChannel) string {
+	switch p {
+	case controlcoverage.PromptSubmitBlockAsk:
+		return "block+ask"
+	case controlcoverage.PromptSubmitBlockOnly:
+		return "block-only"
+	case controlcoverage.PromptSubmitProbeRequired:
+		return "probe"
+	case controlcoverage.PromptSubmitProxyOnly:
+		return "proxy-only"
+	default:
+		return "—"
+	}
+}
+
+// controlCoverageLine renders the combined "what actually controls this
+// developer's use of this tool" answer for `observer doctor <tool>`:
+// internal/controlcoverage's join of the tool-call, prompt-submit, and
+// budget channels plus the budget route-proof read. Reuses exactly the
+// same cell vocabulary as the ENFORCE/PROMPT columns above (enforcementCell/
+// promptSubmitCell/budgetChannelCell/routeProofCell) — never a second
+// vocabulary for the same underlying registry+conformance data. ok=false
+// for an unregistered tool.
+func controlCoverageLine(tool string) (string, bool) {
+	row, ok := controlcoverage.For(tool)
+	if !ok {
+		return "", false
+	}
+	line := fmt.Sprintf("tool-call=%s, prompt-submit=%s, budget=%s",
+		enforcementCell(row.ToolCallChannel), promptSubmitCell(row.PromptSubmit), budgetChannelCell(row.BudgetChannel))
+	if row.BudgetChannel == integration.BudgetAdmissionObserverProxy {
+		line += " (route " + routeProofCell(row.RouteProof) + ")"
+	}
+	if row.Note != "" {
+		line += " — " + row.Note
+	}
+	return line, true
 }

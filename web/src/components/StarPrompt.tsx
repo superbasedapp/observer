@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useApi } from "@/lib/useApi";
 import { hasOneWeekOfUsage } from "@/lib/usageAnchor";
+import { Icon } from "@/components/primitives";
+import { Star, X } from "lucide-react";
 
 // StarPrompt — lazygit-pattern once-only star nudge (docs/plans/
 // growth-virality-product-review-2026-07-30.md §5 Tier 2, mechanic 5:
@@ -70,9 +72,7 @@ export function StarPrompt({ sessions }: { sessions: number | null }) {
 
   return (
     <section className="flex items-center gap-3 rounded-3 border border-line-2 bg-bg-2 px-4 py-2.5">
-      <span aria-hidden className="shrink-0 text-[13px] text-accent">
-        ★
-      </span>
+      <Icon icon={Star} size="sm" fill="currentColor" className="shrink-0 text-accent" />
       <span className="min-w-0 flex-1 text-[12px] text-fg-2">
         Enjoying SuperBased? A GitHub star helps a lot.
       </span>
@@ -89,7 +89,7 @@ export function StarPrompt({ sessions }: { sessions: number | null }) {
         className="shrink-0 text-[11px] text-fg-4 hover:text-fg-2"
         aria-label="Dismiss"
       >
-        ✕
+        <Icon icon={X} size="xs" />
       </button>
     </section>
   );

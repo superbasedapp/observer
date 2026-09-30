@@ -174,6 +174,7 @@ var expectedClassification = map[string]string{
 	"/api/loc/summary":            "V",
 	"/api/loc/editor-change":      "L",
 	"/api/mcp/value":              "V",
+	"/api/mcp-access/status":      "V", // Agent Access P10: node MCP relay status read (no network, no write), like /api/guard/mcp
 	"/api/models":                 "V",
 	"/api/patterns":               "V",
 	"/api/patterns/timeseries":    "V",
@@ -191,6 +192,17 @@ var expectedClassification = map[string]string{
 	"/api/process/findings":     "V",
 	"/api/process/network/":     "V",
 	"/api/projects":             "V",
+	// Projects page (docs/projects-page.md): per-project detail, commit
+	// ledger, prompt chains and spend views are reads over node-local
+	// tables; the grade route runs the local heuristic (or the configured
+	// judge) over already-persisted rows and stores the result - no
+	// device-local physical act, so view-tier like the rest.
+	"/api/project/{id}":                           "V",
+	"/api/project/{id}/commits":                   "V",
+	"/api/project/{id}/skills":                    "V",
+	"/api/project/{id}/prompts":                   "V",
+	"/api/project/{id}/cost":                      "V",
+	"/api/project/{id}/prompts/{action_id}/grade": "V",
 	// Agent-guidance inventory: metadata reads over already-persisted rows.
 	"/api/projects/guidance":         "V",
 	"/api/projects/guidance/summary": "V",
@@ -236,6 +248,10 @@ var expectedClassification = map[string]string{
 	"/api/routing/simulate":                   "V",
 	"/api/routing/status":                     "V",
 	"/api/routing/tiers":                      "V",
+	"/api/reprice/apply":                      "L",
+	"/api/reprice/plan":                       "L",
+	"/api/reprice/revert":                     "L",
+	"/api/reprice/status":                     "L",
 	"/api/scan/run":                           "L",
 	"/api/search":                             "V",
 	"/api/session/":                           "V",
@@ -255,6 +271,9 @@ var expectedClassification = map[string]string{
 	"/api/setup/codex-hooks":              "V",
 	"/api/setup/hooks":                    "L",
 	"/api/setup/mcp":                      "L",
+	"/api/shell-wrap/apply":               "L",
+	"/api/shell-wrap/disable":             "L",
+	"/api/shell-wrap/status":              "L",
 	"/api/status":                         "V",
 	"/api/status/scoped":                  "V",
 	"/api/statusline":                     "V",
@@ -385,6 +404,9 @@ var mutationRoutes = []string{
 	"/api/remote/tailscale/operator-grant",
 	"/api/remote/tailscale/login",
 	"/api/remote/tailscale/install",
+	// An apply / revert rewrites stored spend rows.
+	"/api/reprice/apply",
+	"/api/reprice/revert",
 	"/api/routing/apply",
 	"/api/routing/apply/revert",
 	"/api/scan/run",
@@ -395,6 +417,10 @@ var mutationRoutes = []string{
 	"/api/setup/codex",
 	"/api/setup/hooks",
 	"/api/setup/mcp",
+	// Command wrapping writes shims + marked blocks into the operator's
+	// shell start-up files: machine-reaching, never a remote viewer's call.
+	"/api/shell-wrap/apply",
+	"/api/shell-wrap/disable",
 	"/api/storage/backup",
 	"/api/storage/vacuum",
 	"/api/suggest/write",
@@ -559,6 +585,7 @@ func TestSessionSubRouteCapabilities(t *testing.T) {
 		"/launch":  {},
 		"/resume":  {},
 		"/tags":    {},
+		"/quality": {},
 	}
 	for suffix := range wantSuffixes {
 		if _, ok := sessionSubRouteCapabilities[suffix]; !ok {

@@ -1,0 +1,264 @@
+{
+  "name": "snapshot drift (R9.8): the registry view pins gh's approved snapshot; a previously approved tool keeps flowing under ALERT drift, a newly-named one default-denies on all four targets, an unpinned member enforces nothing",
+  "spec": {
+    "registry": {
+      "issuer": "https://auth.acme.superbased.app",
+      "org": "acme",
+      "gateway_base_uri": "https://mcp-gw.acme.superbased.app",
+      "policy_gen": 43,
+      "vservers": [
+        {
+          "id": "vs-gh",
+          "slug": "gh",
+          "sender_constraint": "bearer",
+          "servers": [
+            {
+              "id": "gh",
+              "target": "gh",
+              "credential_mode": "service",
+              "snapshot": {
+                "id": "snap-gh-1",
+                "tools": [
+                  "create_issue",
+                  "delete_repo",
+                  "merge_pr"
+                ]
+              }
+            },
+            {
+              "id": "gh-ent",
+              "target": "gh-ent",
+              "credential_mode": "service"
+            }
+          ]
+        },
+        {
+          "id": "vs-jira",
+          "slug": "jira",
+          "sender_constraint": "dpop",
+          "servers": [
+            {
+              "id": "jira",
+              "target": "jira",
+              "credential_mode": "vault_user",
+              "snapshot": {
+                "id": "snap-jira-1",
+                "tools": [
+                  "create_ticket"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "grants": [
+      {
+        "id": "g-any-gh",
+        "ord": 1,
+        "subject": {
+          "kind": "product",
+          "value": "claude-code"
+        },
+        "resource": {
+          "vserver": "vs-gh"
+        },
+        "action": "call",
+        "effect": "allow",
+        "enabled": true
+      },
+      {
+        "id": "g-deny-dr",
+        "ord": 2,
+        "subject": {
+          "kind": "any"
+        },
+        "resource": {
+          "vserver": "vs-gh",
+          "name": "delete_repo"
+        },
+        "action": "call",
+        "effect": "deny",
+        "enabled": true
+      },
+      {
+        "id": "g-named-unadopted",
+        "ord": 3,
+        "subject": {
+          "kind": "any"
+        },
+        "resource": {
+          "vserver": "vs-gh",
+          "server": "gh",
+          "name": "exfiltrate_repo"
+        },
+        "action": "call",
+        "effect": "allow",
+        "enabled": true
+      },
+      {
+        "id": "g-jira-any",
+        "ord": 4,
+        "subject": {
+          "kind": "env",
+          "value": "prod"
+        },
+        "resource": {
+          "vserver": "vs-jira"
+        },
+        "action": "call",
+        "effect": "allow",
+        "enabled": true
+      },
+      {
+        "id": "g-list-all",
+        "ord": 5,
+        "subject": {
+          "kind": "any"
+        },
+        "resource": {
+          "vserver": "vs-gh"
+        },
+        "action": "list",
+        "effect": "allow",
+        "enabled": true
+      }
+    ]
+  },
+  "principal_defaults": {
+    "issuer": "https://auth.acme.superbased.app",
+    "org": "acme",
+    "audience": [
+      "https://mcp-gw.acme.superbased.app/mcp/gh"
+    ],
+    "policy_gen": 43,
+    "subject": "agent:acme:claude-code:u1",
+    "client_id": "agent:claude-code",
+    "product": "claude-code",
+    "agent_kind": "coding_agent",
+    "env": "dev",
+    "cred_assurance": "node_enrolled",
+    "client_attestation": "process_attested"
+  },
+  "rows": [
+    {
+      "name": "allow: previously approved create_issue keeps flowing under ALERT drift",
+      "input": {
+        "vserver": "vs-gh",
+        "action": "call",
+        "name": "create_issue",
+        "server": "gh"
+      },
+      "want": "allow",
+      "want_grant": "g-any-gh"
+    },
+    {
+      "name": "allow: previously approved merge_pr keeps flowing",
+      "input": {
+        "vserver": "vs-gh",
+        "action": "call",
+        "name": "merge_pr",
+        "server": "gh"
+      },
+      "want": "allow",
+      "want_grant": "g-any-gh"
+    },
+    {
+      "name": "deny: the typed deny still attributes on an approved name",
+      "input": {
+        "vserver": "vs-gh",
+        "action": "call",
+        "name": "delete_repo",
+        "server": "gh"
+      },
+      "want": "deny",
+      "want_grant": "g-deny-dr"
+    },
+    {
+      "name": "deny: newly-named exfiltrate_repo is not in gh's approved snapshot (any-tool grant does not match)",
+      "input": {
+        "vserver": "vs-gh",
+        "action": "call",
+        "name": "exfiltrate_repo",
+        "server": "gh"
+      },
+      "want": "deny"
+    },
+    {
+      "name": "deny: a named grant on the unadopted tool cannot match either",
+      "principal": {
+        "product": "cursor"
+      },
+      "input": {
+        "vserver": "vs-gh",
+        "action": "call",
+        "name": "exfiltrate_repo",
+        "server": "gh"
+      },
+      "want": "deny"
+    },
+    {
+      "name": "allow: the unpinned gh-ent member enforces no snapshot",
+      "input": {
+        "vserver": "vs-gh",
+        "action": "call",
+        "name": "anything",
+        "server": "gh-ent"
+      },
+      "want": "allow",
+      "want_grant": "g-any-gh"
+    },
+    {
+      "name": "allow: jira's approved create_ticket",
+      "principal": {
+        "env": "prod",
+        "audience": [
+          "https://mcp-gw.acme.superbased.app/mcp/jira"
+        ]
+      },
+      "input": {
+        "vserver": "vs-jira",
+        "action": "call",
+        "name": "create_ticket",
+        "server": "jira"
+      },
+      "want": "allow",
+      "want_grant": "g-jira-any"
+    },
+    {
+      "name": "deny: jira's newly-named tool",
+      "principal": {
+        "env": "prod",
+        "audience": [
+          "https://mcp-gw.acme.superbased.app/mcp/jira"
+        ]
+      },
+      "input": {
+        "vserver": "vs-jira",
+        "action": "call",
+        "name": "drop_project",
+        "server": "jira"
+      },
+      "want": "deny"
+    },
+    {
+      "name": "allow: tools/list is PDP-owned; visibility is filtered per name by the call verdicts",
+      "input": {
+        "vserver": "vs-gh",
+        "action": "list"
+      },
+      "want": "allow",
+      "want_grant": "g-list-all"
+    },
+    {
+      "name": "deny: tasks/get has no grant (task grants are feature_unavailable)",
+      "input": {
+        "vserver": "vs-gh",
+        "action": "tasks/get",
+        "name": "task-1",
+        "server": "gh"
+      },
+      "want": "deny"
+    }
+  ]
+}

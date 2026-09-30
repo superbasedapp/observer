@@ -43,6 +43,18 @@ const (
 	// MCPFindingBinaryChanged fires R-305: a pinned server's
 	// command/binary/URL changed under the same name.
 	MCPFindingBinaryChanged = "binary_changed"
+	// MCPFindingUnapprovedServer fires R-306 (Agent Access P4, doc3
+	// §12.6): an MCP tool call addressed to a server the compiled node
+	// decision table does not approve for this node/principal. Stamped by
+	// the guard layer's MCP-access seam on a KindMCPCall event (hook
+	// PreToolUse, watcher ingest, proxy response inspection alike); this
+	// package only matches on it.
+	MCPFindingUnapprovedServer = "unapproved_server"
+	// MCPFindingOrgGrantDenied fires R-307 (doc3 §12.6): an MCP tool call
+	// the org's signed `tools.mcp_access` grant explicitly DENIES (a deny
+	// row matched, or an ask row on a channel that cannot ask) — as
+	// opposed to a server the table simply does not know.
+	MCPFindingOrgGrantDenied = "org_grant_denied"
 )
 
 // MCPFinding is one MCP config-layer finding stamped onto an Event by
@@ -111,6 +123,7 @@ func mcpRules() []Rule {
 	faCfg := []EventKind{KindFileAccess, KindConfigChange}
 	shell := []EventKind{KindShellExec}
 	cfgScan := []EventKind{KindConfigChange}
+	mcpCall := []EventKind{KindMCPCall}
 	return []Rule{
 		{
 			ID: "R-301", Category: CategoryMCP, Severity: SeverityWarn,
@@ -153,6 +166,27 @@ func mcpRules() []Rule {
 			Observe: DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "pinned MCP server's command/binary or URL changed under the same name",
 			Advice: "A same-name binary swap is the classic supply-chain shape; verify the new command is yours, then `observer guard mcp approve <server>`.",
+		},
+		// Agent Access P4 (doc3 §12.6): the two node-side enforcement rows
+		// over the compiled tools.mcp_access decision table. Both apply
+		// to the MCP CALL itself (KindMCPCall: hook PreToolUse — the one
+		// pre-execution channel — plus the post-hoc watcher/proxy
+		// paths), deny in enforce, flag in observe. The proxy's tools[]
+		// strip (R-306) and hosted-connector refusal (R-307) cite the
+		// same ids from their own seam; the ids are the audit vocabulary.
+		{
+			ID: "R-306", Category: CategoryMCP, Severity: SeverityHigh,
+			AppliesTo: mcpCall, Match: matchMCPFinding(MCPFindingUnapprovedServer),
+			Observe: DecisionFlag, Enforce: DecisionDeny,
+			Doc:    "MCP tool call to a server not approved by the node's compiled tools.mcp_access table",
+			Advice: "Route the server through the org MCP gateway (observer mcp-relay status lists the approved servers) or ask your admin to add a grant for it.",
+		},
+		{
+			ID: "R-307", Category: CategoryMCP, Severity: SeverityCritical,
+			AppliesTo: mcpCall, Match: matchMCPFinding(MCPFindingOrgGrantDenied),
+			Observe: DecisionFlag, Enforce: DecisionDeny,
+			Doc:    "MCP tool call denied by the organization's tools.mcp_access grant",
+			Advice: "The org policy explicitly denies this tool for your principal; the relay's decision record names the grant. Ask your admin if the call is legitimate.",
 		},
 	}
 }

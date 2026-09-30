@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { actionMeta } from "../lib/actions";
 import { fmtCompact, fmtInt } from "../lib/format";
 
@@ -9,7 +10,7 @@ export type ActionBreakdownRow = {
 // ActionBreakdownDonut renders the canonical session action mix. It accepts a
 // structural row shared by the node and org APIs and deliberately ignores any
 // app-specific failure/provenance fields.
-export function ActionBreakdownDonut({
+export const ActionBreakdownDonut = memo(function ActionBreakdownDonut({
   rows,
   total,
 }: {
@@ -102,4 +103,4 @@ export function ActionBreakdownDonut({
       </div>
     </section>
   );
-}
+});

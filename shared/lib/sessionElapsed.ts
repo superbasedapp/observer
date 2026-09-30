@@ -7,6 +7,8 @@
 // re-exports these; sessionRecentlyActive stays node-side because it is typed
 // against the node's SessionDetail.
 
+import { localeString } from "./format.ts";
+
 // elapsedMillis measures start→end. `end` is ended_at when the session was
 // cleanly closed, else last_activity_at (COALESCE'd server-side to the last
 // action's timestamp); Date.now() is only the last resort for a session with
@@ -46,7 +48,7 @@ export function elapsedSub(d: ElapsedLike): string {
 export function fmtDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("en-US", {
+  return localeString(d, "en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",

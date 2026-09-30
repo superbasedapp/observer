@@ -312,6 +312,17 @@ func TestInspectProxyResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("goose developer__shell classifies as a shell exec", func(t *testing.T) {
+		t.Parallel()
+		g := newTestGuard(t, proxyCfg("observe", "mask"), nil)
+		out := g.InspectProxyResponse("resp-goose", []ProxyToolUse{
+			{Name: "developer__shell", Input: []byte(`{"command":"rm -rf ~"}`)},
+		}, now)
+		if len(out) != 1 || out[0].Verdict.RuleID != "R-101" {
+			t.Fatalf("verdicts = %+v, want one R-101 record for goose's shell tool", out)
+		}
+	})
+
 	t.Run("benign and unknown tools stay quiet", func(t *testing.T) {
 		t.Parallel()
 		g := newTestGuard(t, proxyCfg("observe", "mask"), nil)

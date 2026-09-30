@@ -239,6 +239,23 @@ func BuildTokenEvent(eventName string, body []byte) (models.TokenEvent, bool, er
 	if raw.APICallCount == 0 {
 		ev.SourceEventID = fmt.Sprintf("%s:api:t%d", raw.SessionID, int64(raw.Timestamp*1000))
 	}
+	// api_duration is FLOAT SECONDS (testdata/hermes/plugin-api-source.txt
+	// ~L373 "api_duration": 1.234) covering exactly the single API call
+	// this post_api_request event reports on — its usage block ({input,
+	// output}_tokens) is that same one call's tokens, not a session
+	// cumulative. api_call_count is an ORDINAL (the running "this is call
+	// #N in the session" counter also seen on pre_api_request BEFORE the
+	// call fires; docs/hermes-adapter-plan.md §3.1 describes the SQLite
+	// sessions.api_call_count column with the same name as a session
+	// total) — it is not a batch size the duration spans, so it doesn't
+	// gate the stamp. post_api_request fires once per completed LLM API
+	// call by construction (hermes_cli/hooks.py), so api_duration always
+	// covers one call's generation.
+	if raw.APIDuration > 0 {
+		ev.GenMs = int64(raw.APIDuration*1000 + 0.5)
+		ev.GenBasis = models.GenBasisNative
+		ev.GenTimingV = 1
+	}
 	return ev, true, nil
 }
 

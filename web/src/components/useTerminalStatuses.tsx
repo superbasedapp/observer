@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { vocabView, type VocabTable } from "@shared/lib/vocabEntry";
+import { VocabPill } from "@shared/lib/vocabPill";
+import { Icon, Pill } from "@/components/primitives";
+import { agentStatusMotion } from "@/lib/liveSignals";
 
 // useTerminalStatuses subscribes ONCE to the multiplexed agent-status stream
 // (GET /ws/terminal/status, F4) and returns a map of PTY handle → fused status.
@@ -76,32 +80,50 @@ export function useTerminalStatuses(): Record<string, AgentStatusInfo> {
   return statuses;
 }
 
+// AGENT_STATUS - the ONE presentation row per fused agent status (tone +
+// label); working is in flight (spins). Glyph from
+// VOCAB_ICONS.terminalAgentStatus.
+const AGENT_STATUS: VocabTable = {
+  working: { tone: "success", spin: true },
+  "waiting-for-input": { tone: "warn", label: "waiting" },
+  blocked: { tone: "danger" },
+  idle: { tone: "neutral" },
+  exited: { tone: "neutral" },
+  unknown: { tone: "neutral" },
+};
+
 // AgentStatusBadge renders one fused status compactly. Low-confidence and
 // "unknown" states are visually muted so a hint never reads as a fact.
-export function AgentStatusBadge({ info }: { info?: AgentStatusInfo }) {
+// `inControl` drops the badge's own focusable tooltip when it sits inside a
+// button (the dock tab), whose own tooltip already describes the terminal.
+//
+// Motion comes from AGENT_STATUS_MOTION (lib/liveSignals): working spins its
+// LoaderCircle (the table's spin flag), waiting-for-input blinks its Keyboard
+// glyph like a caret, blocked is a static OctagonAlert.
+export function AgentStatusBadge({ info, inControl }: { info?: AgentStatusInfo; inControl?: boolean }) {
   if (!info || info.status === "exited") return null;
-  const map: Record<
-    AgentStatusInfo["status"],
-    { label: string; cls: string }
-  > = {
-    working: { label: "working", cls: "bg-ok/20 text-ok" },
-    "waiting-for-input": { label: "waiting", cls: "bg-warn/20 text-warn" },
-    blocked: { label: "blocked", cls: "bg-danger/20 text-danger" },
-    idle: { label: "idle", cls: "bg-white/10 text-fg-3" },
-    exited: { label: "exited", cls: "bg-white/10 text-fg-3" },
-    unknown: { label: "unknown", cls: "bg-white/5 text-fg-3" },
-  };
-  const { label, cls } = map[info.status];
-  const muted = info.confidence !== "trusted" ? " opacity-80" : "";
   const title =
     info.evidence +
     (info.confidence !== "trusted" ? ` (${info.confidence})` : "");
+  const className = info.confidence !== "trusted" ? "opacity-80" : undefined;
+  if (agentStatusMotion(info.status) === "blink") {
+    // The pill's own icon slot only spins, so a blinking glyph rides in the
+    // children (same 11px size and gap as the icon slot).
+    const v = vocabView("terminalAgentStatus", AGENT_STATUS, info.status);
+    return (
+      <Pill variant={v.tone} title={inControl ? undefined : title} className={className}>
+        <Icon icon={v.icon} size={11} className="sb-caret shrink-0" />
+        {v.label}
+      </Pill>
+    );
+  }
   return (
-    <span
-      title={title}
-      className={`rounded-full px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.04em] ${cls}${muted}`}
-    >
-      {label}
-    </span>
+    <VocabPill
+      vocab="terminalAgentStatus"
+      table={AGENT_STATUS}
+      value={info.status}
+      title={inControl ? undefined : title}
+      className={className}
+    />
   );
 }

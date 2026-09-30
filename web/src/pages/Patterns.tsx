@@ -1,29 +1,40 @@
+import { hasNonZero } from "@shared/lib/seriesEmpty";
 import { Fragment, useMemo, useState } from "react";
 import {
   ChartShell,
+  ConfirmButton,
   PageHeader,
+  Icon,
+  InlineLoading,
   Pill,
   SegmentedControl,
   Tooltip,
   TruncatedPath,
+  SuccessCheck,
 } from "@/components/primitives";
 import { Pagination } from "@/components/DataTable";
+import { Summary } from "@/components/Summary";
 import { ChartState } from "@/components/ChartState";
 import { useApi } from "@/lib/useApi";
-import { useFilters } from "@/lib/filters";
+import { useFilters, useGranularity, windowLabel, windowParams } from "@/lib/filters";
+import { GranControl } from "@/components/GranControl";
+import { asGranularity, fmtBucket, perBucketTitle } from "@shared/lib/granularity";
 import { fmtInt } from "@/lib/format";
+import { vocabIcon } from "@shared/lib/vocabIcons";
 import type {
   PatternRow,
+  PatternType,
   PatternsResponse,
   PatternsTimeseries,
 } from "@/lib/types";
+import { navIcon } from "@/lib/nav";
 
 const PAGE_LIMIT = 30;
 
-// Backend keys verified against project_patterns.pattern_type live
-// data: hot_file, co_change, common_command, edit_test_pair,
-// knowledge_snippet. The brief's `cs_change`/`command` aliases
-// don't match the live schema.
+// Backend keys: PatternType (@/lib/types), the closed set in
+// internal/intelligence/patterns/patterns.go. The filter offers the five
+// types the page has colours for; onboarding_sequence / cross_tool_file
+// rows still render (labelled, glyphed, neutral colour).
 type Filter =
   | "all"
   | "hot_file"
@@ -32,21 +43,22 @@ type Filter =
   | "edit_test_pair"
   | "knowledge_snippet";
 
-const PATTERN_TOKEN: Record<string, string> = {
-  hot_file: "var(--pat-hot)",
-  co_change: "var(--pat-cochange)",
-  edit_test_pair: "var(--pat-edittest)",
-  knowledge_snippet: "var(--pat-knowledge)",
-  common_command: "var(--pat-command)",
+// PATTERN_TYPE - the ONE presentation row per pattern type: its --pat-*
+// colour and label (glyph: VOCAB_ICONS.patternType).
+const PATTERN_TYPE: Readonly<Record<PatternType, { color: string; label: string }>> = {
+  hot_file: { color: "var(--pat-hot)", label: "Hot file" },
+  co_change: { color: "var(--pat-cochange)", label: "Co-change" },
+  edit_test_pair: { color: "var(--pat-edittest)", label: "Edit ↔ test" },
+  knowledge_snippet: { color: "var(--pat-knowledge)", label: "Knowledge" },
+  common_command: { color: "var(--pat-command)", label: "Command" },
+  onboarding_sequence: { color: "var(--fg-3)", label: "Onboarding" },
+  cross_tool_file: { color: "var(--fg-3)", label: "Cross-tool file" },
 };
 
-const PATTERN_LABEL: Record<string, string> = {
-  hot_file: "Hot file",
-  co_change: "Co-change",
-  edit_test_pair: "Edit ↔ test",
-  knowledge_snippet: "Knowledge",
-  common_command: "Command",
-};
+// patternRow reads a (possibly unknown) wire value's PATTERN_TYPE row.
+function patternRow(t: string): { color: string; label: string } | undefined {
+  return (PATTERN_TYPE as Readonly<Record<string, { color: string; label: string }>>)[t];
+}
 
 export function PatternsPage() {
   const { project, tool } = useFilters();
@@ -76,8 +88,9 @@ export function PatternsPage() {
   }, [patterns.data]);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6 p-4 sm:p-6">
       <PageHeader
+        icon={navIcon("patterns")}
         title="Patterns"
         sub={`Repeatable behaviours the observer noticed across your sessions - for example, "after running \`go test\`, you almost always run \`go vet\`." These get fed into observer-suggest which writes them into CLAUDE.md / AGENTS.md / .cursorrules, so new sessions inherit the habit without you re-typing instructions.`}
         helpId="tab.patterns"
@@ -87,7 +100,7 @@ export function PatternsPage() {
         sub={
           patterns.data
             ? `${fmtInt(patterns.data.total)} total · derived by \`observer patterns\` via decay-weighted analysis. \`observer suggest\` composes these into CLAUDE.md / AGENTS.md / .cursorrules.`
-            : "Loading…"
+            : <InlineLoading label="Loading patterns" />
         }
         right={
           <div className="flex items-center gap-2">
@@ -143,11 +156,13 @@ export function PatternsPage() {
         <ChartState
           loading={patterns.loading && !patterns.data}
           error={patterns.error}
+          denied={patterns.denied}
+          deniedPermission={patterns.deniedPermission}
           empty={!patterns.loading && !filtered.length}
           emptyHint={
             filter === "all"
               ? "No patterns mined yet. Run `observer patterns` to derive hot files, co-change pairs, and command sequences from session activity."
-              : `No "${PATTERN_LABEL[filter] ?? filter}" patterns in this page. Try another filter or pagination.`
+              : `No "${patternRow(filter)?.label ?? filter}" patterns in this page. Try another filter or pagination.`
           }
           height={220}
         >
@@ -185,10 +200,11 @@ export function PatternsPage() {
   );
 }
 
-// PatternDistributionChart — real per-day timeseries powered by
-// `/api/patterns/timeseries`. Stacked vertical bars: one bar per day,
-// segments colored by pattern_type. Falls back to a per-type rollup
-// when the timeseries call errors so the panel never goes blank.
+// PatternDistributionChart — real timeseries powered by
+// `/api/patterns/timeseries` over the GLOBAL window (it used to hard-code
+// 30 days). Stacked vertical bars: one bar per bucket (the shared
+// granularity rule + `gran=`, zero-filled server-side), segments colored
+// by pattern_type.
 function PatternDistributionChart({
   rows,
   loading,
@@ -196,15 +212,19 @@ function PatternDistributionChart({
   rows: PatternRow[];
   loading: boolean;
 }) {
-  const { project, tool } = useFilters();
+  const { project, tool, win, customRange } = useFilters();
+  const gran = useGranularity();
   const projectParam = project === "all" ? undefined : project;
   const toolParam = tool === "all" ? undefined : tool;
   const ts = useApi<PatternsTimeseries>(
     "/api/patterns/timeseries",
-    { days: 30, project: projectParam, tool: toolParam },
-    [project, tool],
+    { ...windowParams(win, customRange), ...gran.params, project: projectParam, tool: toolParam },
+    [project, tool, win, customRange, gran.params],
   );
   const days = ts.data?.points ?? [];
+  const g = asGranularity(ts.data?.bucket ?? gran.expected);
+  // Narrow bars once the grid is dense (an hour grid over 7 days is 169).
+  const barMinWidth = days.length > 60 ? 4 : 14;
   const types = useMemo(() => {
     const set = new Set<string>();
     for (const p of days) for (const t of Object.keys(p.by_type)) set.add(t);
@@ -219,12 +239,15 @@ function PatternDistributionChart({
   return (
     <ChartShell
       title="Pattern discovery over time"
-      sub={`Patterns reinforced per day over the last ${ts.data?.days ?? 30} days, stacked by type.`}
+      sub={`${perBucketTitle("Patterns reinforced", g)} · ${windowLabel(win, customRange)}, stacked by type.`}
+      right={<GranControl served={ts.data} />}
     >
       <ChartState
         loading={loading || ts.loading}
         error={ts.error}
-        empty={days.length === 0}
+        denied={ts.denied}
+        deniedPermission={ts.deniedPermission}
+        empty={!hasNonZero(days, ["total"])}
         emptyHint="No pattern reinforcements in window. Run `observer patterns` to mine more, or widen the window when more endpoints accept ?days."
         height={220}
       >
@@ -234,11 +257,12 @@ function PatternDistributionChart({
               return (
                 <Tooltip
                   key={p.day}
-                  content={`${p.day} · ${fmtInt(p.total)} reinforcements`}
+                  content={`${fmtBucket(p.t || p.day, g)} · ${fmtInt(p.total)} reinforcements`}
                 >
                   <div
                     tabIndex={0}
-                    className="flex h-full min-w-[14px] cursor-help flex-col items-stretch justify-end focus:outline-none"
+                    style={{ minWidth: barMinWidth }}
+                    className="flex h-full cursor-help flex-col items-stretch justify-end focus:outline-none"
                   >
                     <div className="flex w-full flex-col-reverse overflow-hidden rounded-1 bg-bg-3">
                       {types.map((t) => {
@@ -248,13 +272,13 @@ function PatternDistributionChart({
                         return (
                           <Tooltip
                             key={t}
-                            content={`${PATTERN_LABEL[t] ?? humanize(t)}: ${n}`}
+                            content={`${patternRow(t)?.label ?? humanize(t)}: ${n}`}
                           >
                             <span
                               className="block"
                               style={{
                                 height: `${h}px`,
-                                background: PATTERN_TOKEN[t] ?? "var(--fg-3)",
+                                background: patternRow(t)?.color ?? "var(--fg-3)",
                               }}
                             />
                           </Tooltip>
@@ -271,10 +295,10 @@ function PatternDistributionChart({
               <li key={t} className="inline-flex items-center gap-1.5">
                 <span
                   className="h-2 w-2 rounded-pill"
-                  style={{ background: PATTERN_TOKEN[t] ?? "var(--fg-3)" }}
+                  style={{ background: patternRow(t)?.color ?? "var(--fg-3)" }}
                 />
                 <span className="text-fg-2">
-                  {PATTERN_LABEL[t] ?? humanize(t)}
+                  {patternRow(t)?.label ?? humanize(t)}
                 </span>
               </li>
             ))}
@@ -397,13 +421,6 @@ function FileCard({
 
   async function write() {
     if (!projectRoot) return;
-    if (
-      !window.confirm(
-        `Write ${file.name} into ${projectRoot}? Existing observer-managed sections will be overwritten in place; other content is preserved.`,
-      )
-    ) {
-      return;
-    }
     setBusy("write");
     setErr(null);
     try {
@@ -458,24 +475,32 @@ function FileCard({
         >
           {busy === "preview" ? "…" : "Preview"}
         </button>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={write}
-          className="flex-1 rounded-2 border border-accent/40 bg-accent-soft px-2 py-1 text-[11px] font-medium text-accent transition-opacity disabled:opacity-40"
-        >
-          {busy === "write" ? "…" : "Write"}
-        </button>
+        {/* Two-step confirm in place of window.confirm; the armed note says
+            exactly what the write does. The arbitrary variants keep the
+            button filling its half of the row. */}
+        <div className="min-w-0 flex-1 [&>span>button]:flex-1 [&>span]:w-full">
+          <ConfirmButton
+            onConfirm={write}
+            disabled={disabled}
+            size="sm"
+            variant="soft"
+            armedVariant="primary"
+            confirmLabel="Confirm write"
+            armedNote={`Writes ${file.name} into ${projectRoot}. Existing observer-managed sections are overwritten in place; other content is preserved.`}
+          >
+            {busy === "write" ? "…" : "Write"}
+          </ConfirmButton>
+        </div>
       </div>
       {writeMsg && (
-        <p className="mt-2 text-[10.5px] text-success">{writeMsg}</p>
+        <SuccessCheck label={writeMsg} className="mt-2 !text-[10.5px]" />
       )}
       {err && <p className="mt-2 text-[10.5px] text-danger">{err}</p>}
       {body && (
-        <details className="mt-3 rounded-2 border border-line-1 bg-bg-1">
-          <summary className="cursor-pointer px-2 py-1 text-[11px] text-fg-2 hover:text-fg-1">
+        <details className="mt-3 rounded-2 border border-line-2 bg-bg-3">
+          <Summary className="px-2 py-1 text-caption text-fg-2 hover:text-fg-1">
             Preview body ({body.length.toLocaleString()} chars)
-          </summary>
+          </Summary>
           <pre className="m-0 max-h-[280px] overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-[10.5px] text-fg-2">
             {body}
           </pre>
@@ -486,12 +511,12 @@ function FileCard({
 }
 
 function PatternCard({ row }: { row: PatternRow }) {
-  const color = PATTERN_TOKEN[row.pattern_type] ?? "var(--fg-3)";
-  const label = PATTERN_LABEL[row.pattern_type] ?? humanize(row.pattern_type);
+  const color = patternRow(row.pattern_type)?.color ?? "var(--fg-3)";
+  const label = patternRow(row.pattern_type)?.label ?? humanize(row.pattern_type);
   const kvs = parseDataKv(row.data);
   return (
     <li
-      className="flex flex-col gap-2 rounded-3 border border-line-2 bg-bg-2 p-3"
+      className="sb-lift flex flex-col gap-2 rounded-3 border border-line-2 bg-bg-2 p-3"
       style={{ borderLeft: `3px solid ${color}` }}
     >
       <header className="flex items-baseline justify-between gap-2">
@@ -504,10 +529,7 @@ function PatternCard({ row }: { row: PatternRow }) {
               color,
             }}
           >
-            <span
-              className="h-1 w-1 rounded-full"
-              style={{ background: color }}
-            />
+            <Icon icon={vocabIcon("patternType", row.pattern_type)} size={11} className="shrink-0" />
             {label}
           </span>
           {row.project ? (
@@ -532,7 +554,7 @@ function PatternCard({ row }: { row: PatternRow }) {
       {row.pattern_type === "edit_test_pair" ? (
         <EditTestPairFlow kvs={kvs} color={color} />
       ) : kvs.length > 0 ? (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 rounded-2 bg-bg-1 px-2 py-1.5 font-mono text-[11px]">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 rounded-2 bg-bg-3 px-2 py-1.5 font-mono text-[11px]">
           {kvs.map(([k, v]) => (
             <Fragment key={k}>
               <dt className="text-fg-3">{k}:</dt>
@@ -551,7 +573,7 @@ function PatternCard({ row }: { row: PatternRow }) {
           ))}
         </dl>
       ) : (
-        <pre className="m-0 max-h-[140px] overflow-auto whitespace-pre-wrap break-words rounded-2 bg-bg-1 px-2 py-1.5 font-mono text-[11px] text-fg-1">
+        <pre className="m-0 max-h-[140px] overflow-auto whitespace-pre-wrap break-words rounded-2 bg-bg-3 px-2 py-1.5 font-mono text-[11px] text-fg-1">
           {row.data || "(no data)"}
         </pre>
       )}
@@ -593,7 +615,7 @@ function EditTestPairFlow({
     // Pattern didn't carry the expected triple — fall back to generic
     // kv rendering so we don't show empty boxes.
     return (
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 rounded-2 bg-bg-1 px-2 py-1.5 font-mono text-[11px]">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 rounded-2 bg-bg-3 px-2 py-1.5 font-mono text-[11px]">
         {kvs.map(([k, v]) => (
           <Fragment key={k}>
             <dt className="text-fg-3">{k}:</dt>
@@ -614,7 +636,7 @@ function EditTestPairFlow({
     );
   }
   return (
-    <div className="flex items-stretch gap-2 rounded-2 bg-bg-1 px-2.5 py-2 font-mono text-[11px]">
+    <div className="flex items-stretch gap-2 rounded-2 bg-bg-3 px-2.5 py-2 font-mono text-[11px]">
       <FlowNode label="file" value={file} color={color} />
       <FlowArrow color={color} />
       <FlowNode label="test" value={test} color={color} />

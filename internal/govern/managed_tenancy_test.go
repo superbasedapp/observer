@@ -9,7 +9,8 @@ import "testing"
 func TestManagedAuthorityVocabulary(t *testing.T) {
 	managed := []string{
 		AuthorityEnforceRouting, AuthorityEnforceAdmission,
-		AuthorityEnforceEgress, AuthorityExtractManaged,
+		AuthorityEnforceEgress, AuthorityEnforceBudget,
+		AuthorityEnforceMCPAccess, AuthorityExtractManaged,
 		AuthorityExtractCodeintel, AuthorityExtractProcess,
 		AuthorityExtractTerminal,
 		AuthorityExtractToolBodies, AuthorityExtractFolders,
@@ -366,6 +367,19 @@ func TestGrantsEnforcementPerFamily(t *testing.T) {
 		{AuthorityEnforceRouting, Effective.GrantsRoutingEnforcement},
 		{AuthorityEnforceAdmission, Effective.GrantsAdmissionEnforcement},
 		{AuthorityEnforceEgress, Effective.GrantsEgressEnforcement},
+		{AuthorityEnforceBudget, Effective.GrantsBudgetEnforcement},
+		{AuthorityEnforceMCPAccess, Effective.GrantsMCPAccessEnforcement},
+	}
+	// The predicate table above must cover the closed enforce.* family
+	// exactly — a sibling added to EnforcementAuthorities without its own
+	// predicate row here is the half-wired state this test exists to catch.
+	if want := EnforcementAuthorities(); len(preds) != len(want) {
+		t.Fatalf("preds covers %d enforce.* tokens, EnforcementAuthorities() has %d: %v", len(preds), len(want), want)
+	}
+	for _, p := range preds {
+		if !EnforcementAuthority(p.token) {
+			t.Fatalf("%q has a predicate row but EnforcementAuthority() does not classify it", p.token)
+		}
 	}
 	for i, self := range preds {
 		t.Run(self.token, func(t *testing.T) {

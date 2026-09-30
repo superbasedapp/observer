@@ -38,6 +38,15 @@ type File struct {
 	// thing derived from the body that is retained (plus a capped
 	// description); the body itself is never kept.
 	ContentHash string
+	// GitBlobOID / GitBlobOIDLF are the git blob ids of the bytes (and of
+	// their LF-normalised form, CRLF bodies only), computed ONLY when
+	// [Options.GitBlobIDs] is set and the body was actually read (a
+	// [Options.Known] cache hit leaves them empty). Additive (S10-SKILLS):
+	// the skills-history hook snapshot uses them to match an observed
+	// SKILL.md to the commit that introduced it; nothing persists them
+	// into project_guidance_files.
+	GitBlobOID   string
+	GitBlobOIDLF string
 
 	// Frontmatter holds the allow-listed, flattened front-matter keys.
 	// nil when the file has none.
@@ -102,6 +111,41 @@ type Options struct {
 	// unchanged project then costs one Stat per file. Nil (the zero
 	// value) simply means "read everything", which is always correct.
 	Known func(absPath string) (KnownFile, bool)
+	// Kinds, when non-empty, restricts the pass to discovery rows of
+	// these kinds (and Tools, when non-empty, to rows of these tools).
+	// The zero value walks the whole table, exactly as before. Additive
+	// (S10-SKILLS): the Claude Code hook snapshots only the skill rows,
+	// so it never pays for the depth-capped "**/CLAUDE.md" walk.
+	Kinds []Kind
+	Tools []string
+	// GitBlobIDs computes [File.GitBlobOID] / [File.GitBlobOIDLF] for
+	// every body the scan reads. Off by default: the daemon's inventory
+	// pass has no use for them.
+	GitBlobIDs bool
+}
+
+// wantsRule reports whether the Kinds/Tools filters admit a rule.
+func (o Options) wantsRule(r Rule) bool {
+	if len(o.Kinds) > 0 {
+		ok := false
+		for _, k := range o.Kinds {
+			if r.Kind == k {
+				ok = true
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	if len(o.Tools) > 0 {
+		for _, t := range o.Tools {
+			if r.Tool == t {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // KnownFile is everything a previous scan retained about one file. It is
@@ -251,6 +295,9 @@ func Scan(ctx context.Context, projectRoot string, fsys FS, opts Options) (Resul
 			res.Incomplete = true
 			return res, err
 		}
+		if !opts.wantsRule(rule) {
+			continue
+		}
 		root := projectRoot
 		if rule.Scope == ScopeUser {
 			if !opts.IncludeUserScope || userHome == "" {
@@ -370,6 +417,9 @@ func collect(fsys FS, rule Rule, root, abs string, opts Options) (f File, skippe
 	}
 	sum := sha256.Sum256(body)
 	f.ContentHash = hex.EncodeToString(sum[:])
+	if opts.GitBlobIDs {
+		f.GitBlobOID, f.GitBlobOIDLF = GitBlobOID(body)
+	}
 
 	var prose string
 	switch rule.Frontmatter {

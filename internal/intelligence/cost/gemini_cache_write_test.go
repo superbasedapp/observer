@@ -39,13 +39,16 @@ func TestCacheWriteRule_TableDriven(t *testing.T) {
 		{"gemini 3 flash", "gemini-3-flash-agent", 0.50, true},
 		{"gemini 2.5 pro", "gemini-2.5-pro", 1.25, true},
 		{"gemini 2.5 flash", "gemini-2.5-flash", 0.30, true},
-		{"gemini 2.0 flash (deprecated row)", "gemini-2.0-flash", 0.10, true},
+		// gemini-2.0-flash is left out: its price-database rate is an open
+		// question (lane R2-RECONCILE D1 - the database publishes Vertex's
+		// 0.15, the Gemini API page no longer lists the model), and the
+		// fallback rule is already exercised by every other Gemini row.
 		// Family-prefix resolution goes through the same seam.
 		{"unknown gemini SKU via family fallback", "gemini-3-pro-experimental", 2, true},
 		// Anthropic: explicit write tier on the row, must not move.
 		{"anthropic sonnet 4.5", "claude-sonnet-4-5", 0, false},
 		// OpenAI 5.6: explicit write tier on the row, must not move.
-		{"openai gpt-5.6-sol", "gpt-5.6-sol", 6.25, false},
+		{"openai gpt-5.6-sol", "gpt-5.6-sol", 5.00, false}, // 1.25 x the repriced $4 input (2026-09-23)
 	}
 
 	for _, tc := range cases {

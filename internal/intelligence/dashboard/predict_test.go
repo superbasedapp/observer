@@ -313,6 +313,66 @@ func TestHandleSessionPredict_CodexTranscriptGauge(t *testing.T) {
 
 // TestHandleSessionPredict_NoModel asserts the honest empty response for
 // a hook-only session with no model/tokens (the §3 operator finding).
+// TestHandleSessionPredict_NoSourceTool pins the fix for cursor/grokbot:
+// internal/integration's registry carries an AUDITED negative finding for
+// both (no local signal can ever exist — cursor's usage lives only in its
+// own hosted dashboard, grokbot's agent runs in a remote sandbox), so the
+// gauge must short-circuit straight to NoSource with a real reason,
+// rather than falling into the ladder's NeedsProxy branch and telling the
+// operator to do something that structurally cannot work for either tool.
+//
+// Also pins the mutual-exclusivity invariant the whole exercise exists to
+// enforce: NoSource and NeedsProxy must never both be true (that would be
+// the exact bug class — "wrong number/wrong hint shown together" — this
+// fix was written to kill), and Available must be false since there is
+// nothing to render.
+func TestHandleSessionPredict_NoSourceTool(t *testing.T) {
+	t.Parallel()
+	database, cleanup := openForecastTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	for _, tool := range []string{"cursor", "grokbot"} {
+		var projectID int64
+		if err := database.QueryRowContext(ctx,
+			`INSERT INTO projects (root_path, created_at) VALUES (?, '2026-06-09T00:00:00Z') RETURNING id`,
+			"/tmp/pred-nosource-"+tool).Scan(&projectID); err != nil {
+			t.Fatal(err)
+		}
+		sessionID := "sNoSource-" + tool
+		if _, err := database.ExecContext(ctx,
+			`INSERT INTO sessions (id, tool, project_id, started_at) VALUES (?, ?, ?, '2026-06-09T00:00:00Z')`,
+			sessionID, tool, projectID); err != nil {
+			t.Fatal(err)
+		}
+
+		srv := &Server{opts: Options{DB: database, CostEngine: newForecastTestEngine(t)}}
+		req := httptest.NewRequest(http.MethodGet, "/api/session/"+sessionID+"/predict", nil)
+		rec := httptest.NewRecorder()
+		srv.handleSessionDetail(rec, req)
+
+		var resp PredictResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("%s: decode: %v — body %s", tool, err, rec.Body.String())
+		}
+		if !resp.Limit.NoSource {
+			t.Errorf("%s: NoSource = false, want true", tool)
+		}
+		if resp.Limit.SourceNote == "" {
+			t.Errorf("%s: SourceNote is empty", tool)
+		}
+		if resp.Limit.Available {
+			t.Errorf("%s: Available = true, want false (nothing to render)", tool)
+		}
+		if resp.Limit.NeedsProxy {
+			t.Errorf("%s: NeedsProxy = true at the same time as NoSource — must never both be true (the exact bug class this fix kills)", tool)
+		}
+		if resp.Limit.NoWindow {
+			t.Errorf("%s: NoWindow = true at the same time as NoSource — must never both be true", tool)
+		}
+	}
+}
+
 func TestHandleSessionPredict_NoModel(t *testing.T) {
 	t.Parallel()
 	database, cleanup := openForecastTestDB(t)
@@ -352,8 +412,10 @@ func TestHandleSessionPredict_NoModel(t *testing.T) {
 
 // TestHandleSessionPredict_NoPricingKeepsTokenFacts pins the fix for the
 // predictor's facts/pricing coupling, reproduced from a real remote node:
-// an opencode session on the alias model "big-pickle" (no pricing entry)
-// with three observed turns carrying cache_read 8320/8320/8448.
+// an opencode session on the alias model "big-pickle" (no pricing entry
+// then; the price feed has published OpenCode Zen's free big-pickle since
+// v5, so the fixture now uses an id no feed will ever carry) with three
+// observed turns carrying cache_read 8320/8320/8448.
 //
 // Before the fix the handler short-circuited on the pricing miss and
 // returned a zeroed estimate carrying a false no_session_history, so the
@@ -375,7 +437,7 @@ func TestHandleSessionPredict_NoPricingKeepsTokenFacts(t *testing.T) {
 	}
 	if _, err := database.ExecContext(ctx,
 		`INSERT INTO sessions (id, tool, project_id, model, started_at)
-		 VALUES ('sUnpriced', 'opencode', ?, 'big-pickle', '2026-06-09T00:00:00Z')`, projectID); err != nil {
+		 VALUES ('sUnpriced', 'opencode', ?, 'zz-no-such-model-9000', '2026-06-09T00:00:00Z')`, projectID); err != nil {
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 6, 9, 0, 0, 0, 0, time.UTC)
@@ -392,7 +454,7 @@ func TestHandleSessionPredict_NoPricingKeepsTokenFacts(t *testing.T) {
 			`INSERT INTO token_usage
 			   (session_id, timestamp, tool, model, input_tokens, output_tokens, cache_read_tokens,
 			    source, reliability, source_file, source_event_id)
-			 VALUES (?, ?, 'opencode', 'big-pickle', ?, ?, ?, 'jsonl', 'medium', 'f', ?)`,
+			 VALUES (?, ?, 'opencode', 'zz-no-such-model-9000', ?, ?, ?, 'jsonl', 'medium', 'f', ?)`,
 			"sUnpriced", base.Add(time.Duration(tr.minute)*time.Minute).Format(time.RFC3339Nano),
 			tr.input, tr.output, tr.cacheRead, "tu-unpriced-"+itoa(i)); err != nil {
 			t.Fatal(err)
@@ -454,7 +516,7 @@ func TestHandleSessionPredict_NoPricingKeepsTokenFacts(t *testing.T) {
 	if !sawNoPricing {
 		t.Errorf("want no_pricing warning, got %v", resp.Estimate.Warnings)
 	}
-	if resp.Model != "big-pickle" {
+	if resp.Model != "zz-no-such-model-9000" {
 		t.Errorf("model = %q", resp.Model)
 	}
 }

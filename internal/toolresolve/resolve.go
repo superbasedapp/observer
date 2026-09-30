@@ -135,6 +135,48 @@ type Env struct {
 	Getenv       func(string) string
 	NpmPrefix    func() (string, error)
 	ReadHead     func(path string, n int) ([]byte, error)
+	// ExcludeDirs are directories the resolver never takes a candidate from
+	// and never merges into the PATH it reports (LoginOnlyDirs): the
+	// command-wrapping shim directory (internal/shellwrap). A shim named
+	// `claude` runs `observer claude`, so resolving the vendor binary to it
+	// would recurse. Compared after filepath.Clean.
+	ExcludeDirs []string
+	// ExcludeMarker, when non-empty and ReadHead is set, rejects any
+	// candidate whose first excludeMarkerHeadBytes bytes contain it - the
+	// shim marker, so a shim is skipped wherever it lives (a moved or custom
+	// shim directory included). Empty disables the check.
+	ExcludeMarker string
+}
+
+// excludeMarkerHeadBytes bounds the ExcludeMarker sniff. A shim carries its
+// marker on its second line, well inside this window.
+const excludeMarkerHeadBytes = 512
+
+// excludedDir reports whether dir is one of env.ExcludeDirs.
+func excludedDir(env Env, dir string) bool {
+	if len(env.ExcludeDirs) == 0 {
+		return false
+	}
+	c := filepath.Clean(dir)
+	for _, d := range env.ExcludeDirs {
+		if d != "" && filepath.Clean(d) == c {
+			return true
+		}
+	}
+	return false
+}
+
+// excludedByMarker reports whether the file at path carries env.ExcludeMarker
+// in its head.
+func excludedByMarker(env Env, path string) bool {
+	if env.ExcludeMarker == "" || env.ReadHead == nil {
+		return false
+	}
+	head, err := env.ReadHead(path, excludeMarkerHeadBytes)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(head), env.ExcludeMarker)
 }
 
 // pathEntry is one merged-PATH dir plus which list it came from.
@@ -548,6 +590,9 @@ func mergePath(env Env, notes *[]string) []pathEntry {
 		if !filepath.IsAbs(c) {
 			return
 		}
+		if excludedDir(env, c) {
+			return
+		}
 		if seen[c] {
 			return
 		}
@@ -585,6 +630,9 @@ func statCandidate(env Env, path string, origin Origin) (Candidate, bool) {
 	if env.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0 {
 		return Candidate{}, false
 	}
+	if excludedDir(env, filepath.Dir(path)) || excludedByMarker(env, path) {
+		return Candidate{}, false
+	}
 	real := evalReal(env, path)
 	// Classify by the RESOLVED location, not the entry dir: a candidate is
 	// foreign iff where it ACTUALLY lives is under /mnt. Use Real when the
@@ -613,6 +661,9 @@ func statForeignCandidate(env Env, path string) (Candidate, bool) {
 	}
 	fi, err := env.Stat(path)
 	if err != nil || !fi.Mode().IsRegular() {
+		return Candidate{}, false
+	}
+	if excludedDir(env, filepath.Dir(path)) || excludedByMarker(env, path) {
 		return Candidate{}, false
 	}
 	return Candidate{

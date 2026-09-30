@@ -10,9 +10,13 @@
 
 import type { ReactNode } from "react";
 import type { MessageColumnPreset, MessageSortKey } from "./messagesModel";
+import type { TpsBasis, TpsSuppressed } from "./speed";
+import type { StatusEventLike } from "./statusEvents";
 
 export type CostPoint = {
   bucket: string;
+  /** Bucket start, epoch ms (every time-series endpoint returns it). */
+  t?: number;
   input: number;
   output: number;
   cache_read: number;
@@ -27,6 +31,8 @@ export type CostPoint = {
 
 export type ActionsPoint = {
   bucket: string;
+  /** Bucket start, epoch ms (every time-series endpoint returns it). */
+  t?: number;
   total: number;
   failures: number;
   by_tool: Record<string, number>;
@@ -57,6 +63,8 @@ export type Reliability =
 
 export type TokensByModelPoint = {
   bucket: string;
+  /** Bucket start, epoch ms (every time-series endpoint returns it). */
+  t?: number;
   model: string;
   input: number;
   output: number;
@@ -69,6 +77,8 @@ export type TokensByModelPoint = {
 
 export type AnalysisTrendPoint = {
   bucket: string;
+  /** Bucket start, epoch ms (every time-series endpoint returns it). */
+  t?: number;
   key: string;
   total_tokens: number;
   cost_usd: number;
@@ -102,12 +112,16 @@ export type AnalysisCostByDowHour = {
 
 export type CacheSavingsPoint = {
   day: string;
+  /** Bucket start, epoch ms. */
+  t?: number;
   savings_usd: number;
   cache_read_tokens: number;
 };
 
 export type CacheTimeseriesPoint = {
   bucket: string;
+  /** Bucket start, epoch ms (every time-series endpoint returns it). */
+  t?: number;
   read_tokens: number;
   written_tokens: number;
   event_count: number;
@@ -128,6 +142,8 @@ export type CompressionMechStats = {
 
 export type CompressionTimeseriesPoint = {
   bucket: string;
+  /** Bucket start, epoch ms (every time-series endpoint returns it). */
+  t?: number;
   by_mechanism: Record<string, CompressionMechStats>;
   total_saved_bytes: number;
   total_saved_usd_est: number;
@@ -235,9 +251,18 @@ export type MessageRowLike = {
   cost_usd: number;
   ai_cost_usd: number;
   tool_cost_usd: number;
+  // elapsed_ms: wall-clock gap to the NEXT row (a timeline figure, never a
+  // Tok/s denominator). response_ms: the row's capture-recorded request
+  // duration (proxy / OTel). tps_*: sessionmsg.TimingWire, rendered ONLY
+  // through shared/lib/speed.ts.
   elapsed_ms?: number;
+  response_ms?: number;
+  tps_tokens?: number;
   tps_ms?: number;
-  tps_basis?: "measured" | "intra-turn" | "elapsed";
+  tps_basis?: TpsBasis;
+  tps_timed_calls?: number;
+  tps_calls?: number;
+  tps_suppressed?: TpsSuppressed;
   tool_duration_ms?: number;
   // tool_call_count is the projected count of tool calls on this message. Kept
   // REQUIRED: the node and the org both ship it (the org via a projection), and
@@ -260,6 +285,13 @@ export type MessageRowLike = {
   // that don't capture attachments, and on the org (no org data yet); the
   // Att cell renders "-" in that case.
   attachments?: MessageAttachmentLike[];
+  // status_events / status_event_count: status readings (a rate_limit
+  // snapshot) folded onto this message by the server instead of rendering as
+  // rows of their own - sessionmsg.StatusWire, identical on the node and the
+  // org. Only CHANGED readings travel; the count covers every folded reading.
+  // Rendered through shared/lib/statusEvents.ts.
+  status_events?: StatusEventLike[];
+  status_event_count?: number;
 };
 
 // MessageAttachmentLike is one user-attachment's metadata: a coarse kind

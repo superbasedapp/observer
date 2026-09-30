@@ -1,5 +1,7 @@
 import { useState } from "react";
 import clsx from "clsx";
+import { ChevronDown, GitFork } from "lucide-react";
+import { Icon, Pill, Tooltip } from "@/components/primitives";
 import type { SessionDetail } from "@/lib/types";
 import { fmtCompact, fmtUSD } from "@/lib/format";
 
@@ -48,12 +50,12 @@ export function LineageBanner({
   const canOpenParent = hasParent && d.parent_in_db && !!onOpenSession;
   const parentLabel = isSubagent
     ? `Subagent of ${shortSid(parentId)}`
-    : `⑂ Forked from ${shortSid(parentId)}`;
+    : `Forked from ${shortSid(parentId)}`;
 
   return (
     <div className="mb-3 flex flex-col gap-2">
       {sidechainCount > 0 && !hasParent && children.length === 0 && (
-        <div className="rounded-md border border-accent/30 bg-accent-soft px-3 py-2 text-[11px] text-fg-2">
+        <div className="rounded-2 border border-accent/30 bg-accent-soft px-3 py-2 text-caption text-fg-2">
           Contains{" "}
           <span className="font-semibold text-fg-1">{sidechainCount}</span>{" "}
           sidechain action{sidechainCount === 1 ? "" : "s"} from inline
@@ -62,6 +64,9 @@ export function LineageBanner({
       )}
       {hasParent && (
         <div>
+          {/* Enabled: a themed Tooltip. Disabled: the reason stays a native
+              title (a disabled button fires no hover for the Tooltip). */}
+          <Tooltip content={canOpenParent ? `Open parent session ${parentId}` : undefined}>
           <button
             type="button"
             disabled={!canOpenParent}
@@ -69,11 +74,11 @@ export function LineageBanner({
               canOpenParent ? () => onOpenSession!(parentId) : undefined
             }
             title={
-              !d.parent_in_db
-                ? "Parent session not in this database"
-                : !onOpenSession
-                  ? "Session navigation unavailable here"
-                  : `Open parent session ${parentId}`
+              canOpenParent
+                ? undefined
+                : !d.parent_in_db
+                  ? "Parent session not in this database"
+                  : "Session navigation unavailable here"
             }
             className={clsx(
               lineagePillCls,
@@ -85,16 +90,19 @@ export function LineageBanner({
                 : "cursor-not-allowed opacity-55",
             )}
           >
+            {!isSubagent && <Icon icon={GitFork} size={10} className="shrink-0" />}
             {parentLabel}
           </button>
+          </Tooltip>
         </div>
       )}
       {children.length > 0 && (
-        <div className="rounded-md border border-line-2 bg-bg-2 px-3 py-2">
+        <div className="rounded-2 border border-line-2 bg-bg-2 px-3 py-2">
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="flex w-full items-center justify-between text-left text-[11px] font-medium text-fg-2 hover:text-fg-1 focus:outline-none"
+            aria-expanded={expanded}
+            className="flex w-full items-center justify-between text-left text-caption font-medium text-fg-2 hover:text-fg-1 focus:outline-none"
           >
             <span>
               Spawned {children.length}{" "}
@@ -105,7 +113,11 @@ export function LineageBanner({
                   : "fork"}{" "}
               {children.length === 1 ? "session" : "sessions"}
             </span>
-            <span className="font-mono text-fg-3">{expanded ? "−" : "+"}</span>
+            <Icon
+              icon={ChevronDown}
+              size="xs"
+              className={clsx("shrink-0 text-fg-3 transition-transform", expanded && "rotate-180")}
+            />
           </button>
           {expanded && (
             <ul className="mt-2 flex flex-col gap-1">
@@ -113,34 +125,24 @@ export function LineageBanner({
                 const openable = !!onOpenSession;
                 return (
                   <li key={c.id}>
+                    <Tooltip content={openable ? `Open session ${c.id}` : undefined}>
                     <button
                       type="button"
                       disabled={!openable}
                       onClick={
                         openable ? () => onOpenSession!(c.id) : undefined
                       }
-                      title={
-                        openable
-                          ? `Open session ${c.id}`
-                          : "Session navigation unavailable here"
-                      }
+                      title={openable ? undefined : "Session navigation unavailable here"}
                       className={clsx(
-                        "flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[11px] transition-colors",
+                        "flex w-full items-center gap-2 rounded-1 px-2 py-1 text-left text-caption transition-colors",
                         openable
                           ? "cursor-pointer hover:bg-bg-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]"
                           : "cursor-default",
                       )}
                     >
-                      <span
-                        className={clsx(
-                          lineagePillCls,
-                          c.thread_source === "subagent"
-                            ? "border-accent/30 bg-accent-soft text-accent"
-                            : "border-info/30 bg-info-soft text-info",
-                        )}
-                      >
+                      <Pill variant={c.thread_source === "subagent" ? "accent" : "info"}>
                         {c.thread_source === "subagent" ? "subagent" : "fork"}
-                      </span>
+                      </Pill>
                       <span className="font-mono text-fg-2">
                         {shortSid(c.id)}…
                       </span>
@@ -155,6 +157,7 @@ export function LineageBanner({
                         </span>
                       ) : null}
                     </button>
+                    </Tooltip>
                   </li>
                 );
               })}

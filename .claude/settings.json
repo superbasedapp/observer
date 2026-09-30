@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(*approve.sh*)",
+      "Bash(*revert.sh*)",
+      "Bash(*snapshot-prod.sh*)",
+      "Bash(*tokcron/install.sh*)",
+      "Bash(*install-cron.sh --install*)",
+      "Bash(*refresh.sh --revalidate*)",
+      "Bash(*tokcron/lib.sh*)",
+      "Bash(*tk_run_vm*)",
+      "Bash(*vm-apply*)",
+      "Bash(*vm-revert*)",
+      "Bash(*vm-clone-rehearse*)",
+      "Bash(*az vm run-command*)",
+      "Bash(*az vm extension*)",
+      "Bash(*az rest*)",
+      "Bash(*az acr login*)",
+      "Bash(*az acr repository update*)",
+      "Bash(script *)",
+      "Bash(*unbuffer*)",
+      "Bash(*expect *)",
+      "Read(~/.observer-org-demo/pricing-feed-signing-key*)",
+      "Edit(~/.observer-org-demo/pricing-feed-signing-key*)",
+      "Write(~/.observer-org-demo/pricing-feed-signing-key*)",
+      "Bash(*pricing-feed-signing-key*)"
+    ]
+  }
+}

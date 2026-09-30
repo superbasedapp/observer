@@ -65,6 +65,9 @@ func getStatus(t *testing.T, s *Server) map[string]any {
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode /api/status: %v", err)
 	}
+	// A request that hit a stale entry triggered a background refresh
+	// (stale-while-revalidate); wait for it so scan counts are deterministic.
+	s.statusSnap.bg.Wait()
 	return got
 }
 
@@ -541,5 +544,84 @@ func TestStatusSnapshotCache_DemoABA(t *testing.T) {
 	if got := calls.Load(); got != 2 {
 		t.Errorf("scans after a demo start/stop round trip = %d, want 2 — the pre-demo "+
 			"snapshot was served back as if it were current", got)
+	}
+}
+
+// TestStatusSnapshotCache_StaleWhileRevalidate pins the 2026-09-27 change
+// (optimization review finding N3): once warmed, NO poller waits for a scan.
+// A request just past the TTL gets the previous snapshot immediately while one
+// background scan refreshes it; a burst of such requests still causes exactly
+// one refresh; and an entry older than statusStaleServeMax is not presented as
+// current — that request takes the blocking path.
+func TestStatusSnapshotCache_StaleWhileRevalidate(t *testing.T) {
+	s, _ := newTestServer(t)
+	const scanCost = 400 * time.Millisecond
+	calls := countingSnapshot(t, s, scanCost)
+	advance := pinClock(s)
+
+	getStatus(t, s) // warm: one blocking scan
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("scans after warm-up = %d, want 1", got)
+	}
+
+	advance(statusSnapshotTTL + time.Second)
+	// A burst of stale hits: each must be served well inside the scan cost,
+	// and together they must trigger ONE refresh.
+	for i := 0; i < 5; i++ {
+		start := time.Now()
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("stale hit %d: /api/status = %d", i, rr.Code)
+		}
+		if el := time.Since(start); el >= scanCost {
+			t.Errorf("stale hit %d took %v — it waited for the scan instead of serving the stale entry", i, el)
+		}
+	}
+	s.statusSnap.bg.Wait()
+	if got := calls.Load(); got != 2 {
+		t.Errorf("scans after a stale burst = %d, want 2 (one background refresh)", got)
+	}
+	// The refresh stored a FRESH entry: the next request is a plain hit.
+	if _, ok := s.statusSnap.load(s.db(), s.now()); !ok {
+		t.Fatal("background refresh did not store a fresh entry")
+	}
+
+	// Too old to serve: blocking path, synchronous scan.
+	advance(statusStaleServeMax + time.Second)
+	start := time.Now()
+	getStatus(t, s)
+	if el := time.Since(start); el < scanCost {
+		t.Errorf("request past statusStaleServeMax returned in %v — it served an entry too old to present as current", el)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Errorf("scans = %d, want 3", got)
+	}
+}
+
+// TestStatusSnapshotCache_RefreshLosesToInvalidate pins the generation guard:
+// a background refresh that is mid-scan when the cache is invalidated (demo
+// start/stop) must not store its result over the invalidation.
+func TestStatusSnapshotCache_RefreshLosesToInvalidate(t *testing.T) {
+	s, _ := newTestServer(t)
+	advance := pinClock(s)
+	release := make(chan struct{})
+	var calls atomic.Int64
+	real := diag.Snapshot
+	s.snapshotFn = func(ctx context.Context, database *sql.DB, dbPath string) (diag.StatusSnapshot, error) {
+		if calls.Add(1) > 1 {
+			<-release
+		}
+		return real(ctx, database, dbPath)
+	}
+	getStatus(t, s)
+	advance(statusSnapshotTTL + time.Second)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/status", nil)) // stale hit, refresh blocks
+	s.statusSnap.invalidate()
+	close(release)
+	s.statusSnap.bg.Wait()
+	if _, ok := s.statusSnap.load(s.db(), s.now()); ok {
+		t.Error("a refresh that straddled invalidate() stored its entry anyway")
 	}
 }

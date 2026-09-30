@@ -194,6 +194,14 @@ func mapToolName(name string) string {
 		return models.ActionTodoUpdate
 	case "savememory", "memorize":
 		return models.ActionMCPCall // closest existing semantic; no dedicated type
+	case "advisor":
+		// ToolNames.ADVISOR = 'advisor' (QwenLM/qwen-code
+		// packages/core/src/tools/tool-names.ts; tools/advisor.ts,
+		// Kind.Think): a one-shot, TOOL-LESS consultation of a separately
+		// configured Advisor model whose free-text advice returns to the
+		// executor. Not a sub-agent spawn (no tools, no autonomous run) —
+		// a host-harness builtin, so harness_call.
+		return models.ActionHarnessCall
 	default:
 		if strings.HasPrefix(key, "mcp") || strings.Contains(name, "__") {
 			return models.ActionMCPCall

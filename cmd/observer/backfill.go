@@ -18,10 +18,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/adapter/antigravity"
 	"github.com/marmutapp/superbased-observer/internal/adapter/claudecode"
 	"github.com/marmutapp/superbased-observer/internal/adapter/codex"
 	"github.com/marmutapp/superbased-observer/internal/adapter/cowork"
+	"github.com/marmutapp/superbased-observer/internal/adapter/crush"
 	"github.com/marmutapp/superbased-observer/internal/adapter/cursor"
 	"github.com/marmutapp/superbased-observer/internal/adapter/opencode"
 	"github.com/marmutapp/superbased-observer/internal/compression/indexing"
@@ -101,6 +103,7 @@ func newBackfillCmd() *cobra.Command {
 		claudecodeUserPrompts  bool
 		claudecodeAPIErrors    bool
 		cursorUserPrompts      bool
+		cursorHookUsage        bool
 		cursorSubagents        bool
 		coworkRescan           bool
 		coworkProjectRoot      bool
@@ -114,6 +117,7 @@ func newBackfillCmd() *cobra.Command {
 		cacheRescan            bool
 		content                bool
 		zedRescan              bool
+		crushRescan            bool
 		tasksRescan            bool
 		codexForkDedup         bool
 
@@ -128,6 +132,10 @@ func newBackfillCmd() *cobra.Command {
 		locDryRun   bool
 		locLimit    int
 		locSessions []string
+
+		commitsBackfill bool
+		commitsSince    string
+		commitsProject  int64
 
 		apply   bool
 		all     bool
@@ -215,6 +223,9 @@ classification.
                             that predates the daemon first seeing its
                             file is never re-read until its next turn;
                             this forces every thread to re-emit)
+    --crush-rescan         (re-walk crush.db, then CORRECT stored crush
+                            token rows to the fixed parser's values —
+                            the upsert alone never lowers a count)
 
   ┌─ Historical adapter-parity passes ─────────────────────────────┐
   │  One-shot fixes for specific corpus gaps. Likely 0 rows on any │
@@ -312,6 +323,7 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				claudecodeUserPrompts = true
 				claudecodeAPIErrors = true
 				cursorUserPrompts = true
+				cursorHookUsage = true
 				cursorSubagents = true
 				codexRescan = true
 				antigravityRescan = true
@@ -322,6 +334,7 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				clinecliRescan = true
 				cacheRescan = true
 				zedRescan = true
+				crushRescan = true
 				tasksRescan = true
 			}
 			if !isSidechain && !cacheTier && !messageID &&
@@ -330,10 +343,10 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				!codexReasoning && !codexProjectRoot && !claudecodeProjectRoot && !antigravityProjectRoot && !cursorModel && !sessionModels &&
 				!copilotMessageID && !piMessageID &&
 				!claudecodeUserPrompts && !claudecodeAPIErrors &&
-				!cursorUserPrompts && !cursorSubagents && !coworkRescan && !coworkProjectRoot && !codexRescan &&
-				!antigravityRescan && !antigravityCliRescan && !geminiCliRescan && !copilotCliRescan && !hermesRescan && !clinecliRescan && !cacheRescan && !zedRescan &&
+				!cursorUserPrompts && !cursorSubagents && !cursorHookUsage && !coworkRescan && !coworkProjectRoot && !codexRescan &&
+				!antigravityRescan && !antigravityCliRescan && !geminiCliRescan && !copilotCliRescan && !hermesRescan && !clinecliRescan && !cacheRescan && !zedRescan && !crushRescan &&
 				!content && !tasksRescan &&
-				!codexForkDedup && !reasoningConverge && !codexToolInput && !locBackfill {
+				!codexForkDedup && !reasoningConverge && !codexToolInput && !locBackfill && !commitsBackfill {
 				return fmt.Errorf("nothing to backfill — pass one of the dimension flags or --all")
 			}
 
@@ -391,12 +404,15 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				ClaudeCodeAPIErrors    *ClaudeCodeAPIErrorsBackfill    `json:"claudecode_api_errors,omitempty"`
 				CursorUserPrompts      *CursorUserPromptsBackfill      `json:"cursor_user_prompts,omitempty"`
 				CursorSubagents        *CursorSubagentsBackfill        `json:"cursor_subagents,omitempty"`
+				CursorHookUsage        *CursorHookUsageBackfill        `json:"cursor_hook_usage,omitempty"`
 				CodexForkDedup         *CodexForkDedupBackfill         `json:"codex_fork_dedup,omitempty"`
 				ReasoningConverge      *ReasoningConvergeBackfill      `json:"reasoning_converge,omitempty"`
 				CodexToolInput         *ToolInputBackfill              `json:"codex_tool_input,omitempty"`
 				Content                *ContentRescanBackfill          `json:"content,omitempty"`
 				LOC                    *LOCBackfillReport              `json:"loc,omitempty"`
 				Tasks                  *store.TaskBackfillResult       `json:"tasks,omitempty"`
+				CrushTokens            *CrushTokenCorrectionReport     `json:"crush_tokens,omitempty"`
+				Commits                *CommitsBackfillReport          `json:"commits,omitempty"`
 			}{}
 
 			// --all kicks a full rescan from offset 0 BEFORE the surgical
@@ -442,7 +458,7 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 			rescanPasses := buildRescanPasses(
 				&coworkRescan, &codexRescan, &antigravityRescan, &antigravityCliRescan,
 				&geminiCliRescan, &copilotCliRescan, &hermesRescan, &clinecliRescan,
-				&cacheRescan, &zedRescan,
+				&cacheRescan, &zedRescan, &crushRescan,
 			)
 			for _, p := range rescanPasses {
 				if !*p.enabled {
@@ -479,6 +495,30 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 			// operator explicitly asked for this pass. Idempotent:
 			// re-running applies the same upserts and INSERT OR IGNORE
 			// transitions, so a repeat run writes zero new rows.
+			// --crush-rescan, correcting half: the rescan row above
+			// inserted anything new; this makes already-stored crush
+			// token rows equal to the fixed parser's output (the store's
+			// MAX-monotone upsert can never lower them on its own). See
+			// backfill_crush.go.
+			if crushRescan {
+				ca := crush.New()
+				rep, err := runCrushTokenCorrection(cmd.Context(), store.New(database),
+					func(ctx context.Context, path string) (adapter.ParseResult, error) {
+						return ca.ParseSessionFile(ctx, path, 0)
+					})
+				if err != nil {
+					return fmt.Errorf("--crush-rescan: %w", err)
+				}
+				summary.CrushTokens = &rep
+				if !jsonOut {
+					fmt.Fprintf(
+						cmd.OutOrStdout(),
+						"crush token correction complete: files_checked=%d files_missing=%d errors=%d rows_examined=%d updated=%d deleted=%d (stored rows made equal to the fixed parse; idempotent)\n",
+						rep.FilesChecked, rep.FilesMissing, rep.Errors, rep.Examined, rep.Updated, rep.Deleted,
+					)
+				}
+			}
+
 			if tasksRescan {
 				res, err := store.New(database).BackfillTaskItems(cmd.Context(), limit)
 				if err != nil {
@@ -595,7 +635,7 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				if err != nil {
 					return err
 				}
-				cursorUsageRes, err := backfillCursorHookUsage(cmd.Context(), database, cursorLogsDir(), limit)
+				cursorUsageRes, err := backfillCursorHookUsage(cmd.Context(), database, cursorHookLogRoots(), limit)
 				if err != nil {
 					return err
 				}
@@ -605,8 +645,8 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				res.TokenUsageUpdated += codexRes.TokenUsageUpdated
 				res.ActionsUpdated += cursorRes.ActionsUpdated
 				res.FilesScanned += cursorUsageRes.FilesScanned
-				res.LinesExamined += cursorUsageRes.LinesExamined
-				res.TokenUsageUpdated += cursorUsageRes.TokenUsageUpdated
+				res.LinesExamined += cursorUsageRes.EventsReplayed
+				res.TokenUsageUpdated += cursorUsageRes.TokenRowsWritten
 				cursorTranscriptRes, err := backfillCursorTranscriptActions(cmd.Context(), database, cursorProjectsDir(), limit)
 				if err != nil {
 					return err
@@ -914,6 +954,26 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 					)
 				}
 			}
+			if cursorHookUsage {
+				res, err := backfillCursorHookUsage(cmd.Context(), database, cursorHookLogRoots(), limit)
+				if err != nil {
+					return err
+				}
+				summary.CursorHookUsage = &res
+				if !jsonOut {
+					fmt.Fprintf(
+						cmd.OutOrStdout(),
+						"cursor hook-usage backfill complete: scanned %d hooks logs, replayed %d events; upserted %d token_usage rows (re-runs re-touch the same keys), inserted %d new action rows, applied %d outcome updates; removed %d proven mislabelled-stop restatement token rows\n",
+						res.FilesScanned, res.EventsReplayed, res.TokenRowsWritten, res.ActionsInserted, res.OutcomesApplied, res.DuplicatesRemoved,
+					)
+					if res.ReplayWarnings > 0 || res.FilesFailed > 0 {
+						fmt.Fprintf(cmd.OutOrStdout(), "  %d replay warnings (skipped payloads / failed lookups), %d logs failed; first problems:\n", res.ReplayWarnings, res.FilesFailed)
+						for _, p := range res.Problems {
+							fmt.Fprintf(cmd.OutOrStdout(), "    - %s\n", p)
+						}
+					}
+				}
+			}
 			if cursorSubagents {
 				res, err := backfillCursorSubagents(cmd.Context(), database, cursorProjectsDir(), limit)
 				if err != nil {
@@ -1014,6 +1074,21 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				summary.LOC = &res
 			}
 
+			if commitsBackfill {
+				var commitsOut io.Writer
+				if !jsonOut {
+					commitsOut = cmd.OutOrStdout()
+				}
+				res, err := backfillCommits(cmd.Context(), database, commitsBackfillArgs{
+					Since:     commitsSince,
+					ProjectID: commitsProject,
+				}, commitsOut)
+				if err != nil {
+					return err
+				}
+				summary.Commits = &res
+			}
+
 			if jsonOut {
 				body, _ := json.MarshalIndent(summary, "", "  ")
 				fmt.Fprintln(cmd.OutOrStdout(), string(body))
@@ -1028,6 +1103,9 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 	cmd.Flags().BoolVar(&locDryRun, "loc-dry-run", false, "With --loc, compute everything and write nothing. Distinct from the global --dry-run, which snapshots the whole database — impractical on a large one.")
 	cmd.Flags().IntVar(&locLimit, "loc-limit", 0, "With --loc, stop after this many actions (0 = no limit)")
 	cmd.Flags().StringSliceVar(&locSessions, "loc-session", nil, "With --loc, also print the per-session totals for these session ids (repeatable, or comma-separated)")
+	cmd.Flags().BoolVar(&commitsBackfill, "commits", false, "Full-history read-only `git log` scan of every known project (or just --commits-project), populating the Projects page's commit ledger (project_commits / project_commit_files, migration 127) immediately rather than waiting for the daemon-lifetime scanner's ticks. Idempotent: re-running re-parses and upserts, never duplicates. NOT part of --all.")
+	cmd.Flags().StringVar(&commitsSince, "commits-since", "", "Restrict --commits to commits at or after this point: a relative \"<N>d\" (e.g. 90d), an RFC3339 timestamp, or YYYY-MM-DD. Empty scans full history.")
+	cmd.Flags().Int64Var(&commitsProject, "commits-project", 0, "With --commits, scan only this project id (from `observer project list` / the projects.id column) instead of every known project.")
 	cmd.Flags().BoolVar(&isSidechain, "is-sidechain", false, "Backfill actions.is_sidechain from JSONL")
 	cmd.Flags().BoolVar(&cacheTier, "cache-tier", false, "Backfill cache_creation_1h_tokens from JSONL")
 	cmd.Flags().BoolVar(&messageID, "message-id", false, "Backfill message_id columns from JSONL (umbrella covering claudecode + codex + cursor + opencode)")
@@ -1049,6 +1127,7 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 	cmd.Flags().BoolVar(&piMessageID, "pi-message-id", false, "Backfill message_id on pi rows by walking session JSONL")
 	cmd.Flags().BoolVar(&claudecodeUserPrompts, "claudecode-user-prompts", false, "Insert missing user_prompt action rows for Claude Code sessions ingested before the adapter started emitting them")
 	cmd.Flags().BoolVar(&claudecodeAPIErrors, "claudecode-api-errors", false, "Insert api_error action rows for Claude Code system/api_error JSONL records (content-policy blocks, rate limits, etc.) ingested before v1.4.20 added capture")
+	cmd.Flags().BoolVar(&cursorHookUsage, "cursor-hook-usage", false, "Replay Cursor's IDE hooks output-channel logs (<Cursor userData>/logs/*/window*/output_*/cursor.hooks*.log, every cross-mount home — so a WSL observer reads the Windows logs) through the live cursor hook's own builders: recovers per-request token usage (stop / afterAgentResponse) and every hook row the live receiver failed to persist (e.g. `insert deadline exceeded`, or a window whose hook registration pointed at a dead receiver). Rows share the live hook's (source_file, source_event_id) identity, so re-running is a no-op; timestamps come from the log. A mislabelled-stop restatement (a stop naming the NEXT request's generation with the previous request's exact usage) is removed only where the replayed log itself proves the pair - the previous generation's afterAgentResponse precedes it with byte-identical usage and its own generation's afterAgentResponse does not - or where that generation's own afterAgentResponse shows the stored row to be such a copy; counter equality alone never removes a row, and a squatter whose log has rotated out is left in place. Cursor keeps only its last ~10 IDE launches of logs — run promptly. Picked up by --all and --message-id.")
 	cmd.Flags().BoolVar(&cursorUserPrompts, "cursor-user-prompts", false, "Insert user_prompt action rows for Cursor sessions by walking agent-transcripts JSONL — fills the gap for sessions before the beforeSubmitPrompt hook was installed, with the <user_query> wrapper stripped")
 	cmd.Flags().BoolVar(&cursorSubagents, "cursor-subagents", false, "Walk Cursor agent-transcripts/<session>/subagents/<sub>.jsonl files and ingest as sidechain rows under the parent session (IsSidechain=true)")
 	cmd.Flags().BoolVar(&coworkRescan, "cowork-rescan", false, "Fast rescan of the Cowork audit.jsonl tree only — same effect as `observer scan --force --adapter cowork` but discoverable via the dashboard Backfill UI. Use when adding cowork to enabled_adapters mid-flight without rescanning every other adapter's tree.")
@@ -1063,6 +1142,7 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 	cmd.Flags().BoolVar(&cacheRescan, "cache-rescan", false, "Re-walk claude-code transcripts through the Tier-2 cache observation engine to populate historical cache_segments / cache_entries / cache_events rows. Order-sensitive within each file (chain dependency); files in mtime order. Idempotent via CacheEventExistsForMessage — a turn already captured by the Tier-1 proxy path skips Tier-2 emission, so re-runs are no-ops and proxy-already-observed turns don't double-write. Use after enabling [cachetrack].enabled on a daemon that has historical claude-code traffic, or after upgrading to a build that closes a cachetrack bug (Fix B deep canonicalize / x-anthropic-billing-header exclusion / etc.) to retrofit corrected attribution onto past sessions. Picked up by --all.")
 	cmd.Flags().BoolVar(&content, "content", false, "Re-walk EVERY adapter's transcripts through the adapter-side message-content producer (store.captureMessageContent) to populate historical otel_content rows — the data the org admin's Messages panel reads — for sessions ingested before the producer shipped (263a3cadc) or before this node turned content sharing on. Gated exactly like live capture: [org_client.share] full_content / admin_managed AND [ingest.otel] content_capture; a no-op with an honest message naming the blocking key when either is off. Idempotent via otel_content's (content_hash, kind, request_id, tool_use_id) UNIQUE key. NOT picked up by --all — --all's own top-level rescan already re-derives content as a side effect of wireContentCapture being unconditional, so run --content standalone after turning content sharing on, rather than re-running everything --all does.")
 	cmd.Flags().BoolVar(&zedRescan, "zed-rescan", false, "Fast rescan of the Zed native-agent tree only — re-walks every threads.db under the configured Zed watch roots from watermark 0, forcing every thread to re-emit regardless of its stored updated_at cursor. threads.db is a watermark store (migration 107-era surface capture): a thread that predates the daemon first observing its file is never re-read until its NEXT turn advances updated_at, so this is the only retroactive path for pre-existing Zed conversations. Idempotent via the (source_file, source_event_id) UNIQUE index — deterministic per-block SourceEventIDs make re-emitting an already-seen row a store-level no-op. Picked up by --all.")
+	cmd.Flags().BoolVar(&crushRescan, "crush-rescan", false, "Re-walk every Crush crush.db (the crush adapter only) from watermark 0, then CORRECT the token_usage rows already stored for it: each crush.db that holds token rows is re-parsed and the rows of the sessions it observed are made equal to the fixed parser's output - changed rows are updated in place (re-sent to the org), reliability included, and rows the parser no longer emits are deleted as a correction (org tombstone, not retention). Needed because the token upsert is MAX-monotone and never lowers a count or rewrites reliability: a multi-step session stored before 2026-09-27 keeps its last-step context snapshot (e.g. 8975/5) until this runs, when it becomes 0/0 counts marked reliability unknown with its model and Crush's own cost (zero included) kept. Crush rows only; idempotent. Picked up by --all.")
 	cmd.Flags().BoolVar(&tasksRescan, "tasks", false, "Re-derive task_items / task_transitions (docs/task-tracking.md) from todo_update / task_complete / post_tool_batch action rows already in the DB. No adapter re-parse, no source-file walk — a pure re-read of raw_tool_input / raw_tool_output. Ignores [tasks].enabled. Idempotent. Use after enabling [tasks].enabled on a daemon with historical task-tool traffic, or after upgrading to a build with wider decoder coverage (e.g. the gemini-cli write_todos fix). Picked up by --all.")
 	cmd.Flags().BoolVar(&codexForkDedup, "codex-fork-dedup", false, "Purge historical duplicate codex token_usage rows created when a fork / subagent spawn replayed its parent rollout's token_count telemetry into the child's rollout (~65% of codex input tokens in a pre-fix DB are these duplicates). Enumerates codex token_usage source_files, re-runs the fork-replay detector, and matches the replayed tk:<basename>:L<line> rows. DRY-RUN BY DEFAULT — reports matched rows / summed tokens (input/output/cache_read/reasoning/web_search/est_cost) / sessions touched and deletes nothing; pass --apply to delete. Uses a 2s safety margin (vs the strict-boundary ingest suppression) so a second-boundary or clock-regression edge case is never auto-deleted. Also backfills session lineage (forked_from_id / parent_thread_id / thread_source) onto pre-fix sessions. NOT part of --all (destructive). Idempotent — deletes by (source_file, source_event_id) key. CAVEATS: duplicate rows already pushed to an org server are NOT retracted (server ingest is INSERT OR IGNORE) — this cleans the local DB only; and any cache_events / cache_segments the replayed rows produced are NOT cascade-deleted (node-local cache tables are left as-is).")
 	cmd.Flags().BoolVar(&reasoningConverge, "reasoning-converge", false, "Converge the B3 reasoning residue (docs/plans/b3-reasoning-convergence-plan-2026-07-31.md): the content-bearing `*.reasoning` / `cursor.thinking` task_complete rows migration 079 deliberately kept because deleting them would be lossy. Carries each row's full text onto its successor's preceding_reasoning under B3's own semantics (consumed-once / last-wins / turn-boundary-discarded / never crossing a session id / never overwriting a populated successor), then deletes the row through migration 079's dependency protocol (action_excerpts + failure_context deleted, file_state / retrieval_signals / guard_events / process_runs / process_events references NULLed). DB-only — the text already lives in the rows (target = the 200-char preview, raw_tool_output = the full body), so no source file is re-parsed. DRY-RUN BY DEFAULT; pass --apply to mutate. One transaction, so a mid-run failure can never leave a row deleted with its text uncarried. NOT part of --all (destructive). Idempotent. A row is deleted only when its bytes provably survive — see --reasoning-converge-discard-unresolved.")
@@ -1125,7 +1205,7 @@ func (p rescanPass) summaryLine(res watcher.ScanResult) string {
 func buildRescanPasses(
 	coworkRescan, codexRescan, antigravityRescan, antigravityCliRescan,
 	geminiCliRescan, copilotCliRescan, hermesRescan, clinecliRescan,
-	cacheRescan, zedRescan *bool,
+	cacheRescan, zedRescan, crushRescan *bool,
 ) []rescanPass {
 	return []rescanPass{
 		{coworkRescan, "--cowork-rescan", "cowork", "cowork", "cowork audit.jsonl only"},
@@ -1138,6 +1218,7 @@ func buildRescanPasses(
 		{clinecliRescan, "--clinecli-rescan", "cline-cli", "cline-cli", "~/.cline/data/db/sessions.db only"},
 		{cacheRescan, "--cache-rescan", "claude-code", "cache", "claude-code transcripts through the Tier-2 cache engine; idempotent via CacheEventExistsForMessage"},
 		{zedRescan, "--zed-rescan", "zed", "zed", "threads.db only; watermark reset (fromOffset=0) re-reads every thread regardless of updated_at"},
+		{crushRescan, "--crush-rescan", "crush", "crush", "crush.db only; followed by the token-row correction pass"},
 	}
 }
 
@@ -2149,54 +2230,141 @@ func backfillCursorMessageID(ctx context.Context, db *sql.DB) (MessageIDBackfill
 	return res, nil
 }
 
-func backfillCursorHookUsage(ctx context.Context, db *sql.DB, logsDir string, fileLimit int) (MessageIDBackfill, error) {
-	res := MessageIDBackfill{}
-	st := store.New(db)
+// CursorHookUsageBackfill summarises the --cursor-hook-usage pass.
+type CursorHookUsageBackfill struct {
+	FilesScanned     int `json:"files_scanned"`
+	EventsReplayed   int `json:"events_replayed"`
+	ActionsInserted  int `json:"actions_inserted"`
+	TokenRowsWritten int `json:"token_rows_written"`
+	OutcomesApplied  int `json:"outcomes_applied"`
+	// DuplicatesRemoved counts stored token rows removed as PROVEN
+	// mislabelled-stop restatements (store.IngestResult.
+	// TokenRestatementsRemoved); never a counter-equality sweep.
+	DuplicatesRemoved int64 `json:"duplicates_removed"`
+	// ReplayWarnings counts content-safe replay warnings: hook payloads
+	// the replay could not use (undecodable, over the block cap,
+	// rejected by a builder) and failed cross-path lookups. The first
+	// few are kept in Problems.
+	ReplayWarnings int `json:"replay_warnings"`
+	// FilesFailed counts logs that could not be walked, opened or parsed.
+	FilesFailed int `json:"files_failed"`
+	// Problems holds up to cursorHookProblemSample content-safe
+	// warnings/errors so a skip is never silent.
+	Problems []string `json:"problems,omitempty"`
+}
 
-	walkErr := filepath.WalkDir(logsDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
+// cursorHookProblemSample bounds CursorHookUsageBackfill.Problems.
+const cursorHookProblemSample = 10
+
+func (r *CursorHookUsageBackfill) problem(msg string) {
+	if len(r.Problems) < cursorHookProblemSample {
+		r.Problems = append(r.Problems, msg)
+	}
+}
+
+// cursorHookLogRoots is every Cursor IDE log root the hooks-log replay
+// walks: one per cross-mount home (cursor.HooksLogRoots), plus the
+// legacy $APPDATA-derived location for a native Windows install, de-duped.
+func cursorHookLogRoots() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range append(cursor.HooksLogRoots(), cursorLogsDir()) {
+		if r == "" || seen[r] {
+			continue
 		}
-		if !strings.HasPrefix(filepath.Base(path), "cursor.hooks.") || filepath.Ext(path) != ".log" {
+		seen[r] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+// backfillCursorHookUsage replays every Cursor IDE hooks output log
+// under roots through the cursor adapter's hooks-log reader (the same
+// builders the live hook uses, so identities match and a re-run is a
+// no-op) and ingests the result; a mislabelled-stop squatter is removed
+// only where the replayed log proves it (see the comment in the body). A
+// missing root is skipped silently; an unreadable file is skipped and not
+// counted.
+func backfillCursorHookUsage(ctx context.Context, db *sql.DB, roots []string, fileLimit int) (CursorHookUsageBackfill, error) {
+	res := CursorHookUsageBackfill{}
+	st := store.New(db)
+	a := cursor.New()
+	wireCursorReplaySeams(a, st)
+	// Mislabelled-stop squatters are removed only as PROVEN pairs, inside
+	// the ingest of each replayed log (review finding F3, 2026-09-26): a
+	// stop the log itself shows restating the preceding afterAgentResponse
+	// (TokenEvent.Restates) removes a row still carrying exactly that usage,
+	// and a replayed afterAgentResponse evicts a squatter under its own key
+	// before its real usage lands, so nothing is MAX-blended. There is no
+	// counter-equality sweep any more: a historical squatter whose log has
+	// rotated out cannot be proven and is left in place.
+	for _, root := range roots {
+		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				// A missing root is normal (no Cursor on that home);
+				// anything else is reported, never silently skipped.
+				if !errors.Is(err, fs.ErrNotExist) {
+					res.FilesFailed++
+					res.problem(fmt.Sprintf("walk %s: %v", path, err))
+				}
+				return nil
+			}
+			if d.IsDir() || !cursor.IsHooksLog(path) {
+				return nil
+			}
+			if fileLimit > 0 && res.FilesScanned >= fileLimit {
+				return fs.SkipAll
+			}
+			pr, perr := a.ParseHooksLog(ctx, path)
+			if perr != nil {
+				res.FilesFailed++
+				res.problem(perr.Error())
+				return nil
+			}
+			res.ReplayWarnings += len(pr.Warnings)
+			for _, w := range pr.Warnings {
+				res.problem(path + ": " + w)
+			}
+			res.FilesScanned++
+			res.EventsReplayed += len(pr.ToolEvents) + len(pr.TokenEvents) + len(pr.OutcomeUpdates)
+			if len(pr.ToolEvents) == 0 && len(pr.TokenEvents) == 0 && len(pr.OutcomeUpdates) == 0 {
+				return nil
+			}
+			ir, ierr := st.Ingest(ctx, pr.ToolEvents, pr.TokenEvents, store.IngestOptions{
+				RecordFailures: true,
+				OutcomeUpdates: pr.OutcomeUpdates,
+			})
+			if ierr != nil {
+				return fmt.Errorf("%s: %w", path, ierr)
+			}
+			res.ActionsInserted += ir.ActionsInserted
+			res.TokenRowsWritten += ir.TokensInserted
+			res.DuplicatesRemoved += int64(ir.TokenRestatementsRemoved)
+			res.OutcomesApplied += len(pr.OutcomeUpdates)
 			return nil
+		})
+		if walkErr != nil && !errors.Is(walkErr, fs.SkipAll) {
+			return res, fmt.Errorf("backfill cursor hook usage: walk: %w", walkErr)
 		}
 		if fileLimit > 0 && res.FilesScanned >= fileLimit {
-			return fs.SkipAll
+			break
 		}
-		res.FilesScanned++
-
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		for _, block := range extractCursorHookInputs(string(body)) {
-			res.LinesExamined++
-			tk, ok, err := cursor.BuildStopTokenEvent([]byte(block))
-			if err != nil || !ok {
-				continue
-			}
-			if tk.ProjectRoot == "" || tk.SessionID == "" {
-				continue
-			}
-			n, err := st.InsertTokenEvents(ctx, []models.TokenEvent{tk})
-			if err != nil {
-				return err
-			}
-			res.TokenUsageUpdated += n
-			if tk.Model != "" {
-				if _, err := db.ExecContext(ctx,
-					`UPDATE sessions SET model = COALESCE(NULLIF(model, ''), ?) WHERE id = ?`,
-					tk.Model, tk.SessionID); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
-	if walkErr != nil && !errors.Is(walkErr, fs.SkipAll) {
-		return res, fmt.Errorf("backfill cursor hook usage: walk: %w", walkErr)
 	}
 	return res, nil
+}
+
+// wireCursorReplaySeams injects the two store-backed seams the Cursor
+// hooks-log replay (and state.vscdb reader) consult: whether a
+// conversation's activity was already captured by a NON-hook source
+// (so the replay adds only usage + outcomes), and a session's stored
+// project root (so a root-less payload never moves a folder session
+// onto the "[cursor]" placeholder). One wiring for the daemon and the
+// backfill, so the two paths cannot drift.
+func wireCursorReplaySeams(a *cursor.Adapter, st *store.Store) {
+	a.WithSessionTranscriptChecker(func(ctx context.Context, sessionID string) (bool, error) {
+		return st.SessionHasActionsOutside(ctx, sessionID, "cursor:hook",
+			models.ActionSystemPrompt, models.ActionPromptContext)
+	}).WithSessionRootLookup(st.ProjectRootForSession)
 }
 
 // OpenCodePartsBackfill summarises the --opencode-parts pass.
@@ -4879,29 +5047,6 @@ func backfillPiMessageID(ctx context.Context, db *sql.DB) (MessageIDBackfill, er
 		f.Close()
 	}
 	return res, nil
-}
-
-func extractCursorHookInputs(body string) []string {
-	lines := strings.Split(body, "\n")
-	var blocks []string
-	var cur []string
-	inInput := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case trimmed == "INPUT:":
-			inInput = true
-			cur = cur[:0]
-		case trimmed == "OUTPUT:":
-			if inInput && len(cur) > 0 {
-				blocks = append(blocks, strings.Join(cur, "\n"))
-			}
-			inInput = false
-		case inInput:
-			cur = append(cur, line)
-		}
-	}
-	return blocks
 }
 
 // CursorUserPromptsBackfill summarises the --cursor-user-prompts pass.

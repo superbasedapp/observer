@@ -2,10 +2,20 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
+	"path/filepath"
+	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	sqlitepkg "modernc.org/sqlite"
+
+	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/taskflow"
 )
@@ -688,5 +698,253 @@ func TestSessionsWithTasksInWindow(t *testing.T) {
 	}
 	if len(byOtherTool) != 0 {
 		t.Fatalf("tool-scoped (codex, none seeded) = %+v, want none", byOtherTool)
+	}
+}
+
+// --- SOL-F18(b) regression coverage (2026-09-22 Projects-page rework):
+// the N-session *Batch loaders below must (1) return exactly what the
+// per-session loaders would, and (2) cost the query planner ONE round
+// trip regardless of how many session ids are asked for — not one per
+// session. (1) is checked by direct comparison; (2) needs to observe how
+// many SQL queries actually ran, which requires a small counting driver
+// wrapper (below) since database/sql exposes no query-count hook itself.
+
+// queryCounter is incremented once per QueryContext call observed by a
+// countingConn — see openCountingTestStore.
+type queryCounter struct{ n int64 }
+
+func (c *queryCounter) add(delta int64) { atomic.AddInt64(&c.n, delta) }
+func (c *queryCounter) load() int64     { return atomic.LoadInt64(&c.n) }
+
+// countingConn wraps one modernc.org/sqlite driver.Conn, counting every
+// QueryContext call and otherwise forwarding untouched. This is the
+// entry point database/sql uses for a plain (non-prepared,
+// non-transactional) query when the underlying conn implements
+// driver.QueryerContext — which modernc.org/sqlite's Conn does — so every
+// *Batch loader's `s.db.QueryContext(...)` call is observed here exactly
+// once per actual round trip, with no double-count via a Prepare/Stmt
+// fallback path.
+type countingConn struct {
+	driver.Conn
+	counter *queryCounter
+}
+
+func (c *countingConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	c.counter.add(1)
+	qc, ok := c.Conn.(driver.QueryerContext)
+	if !ok {
+		return nil, errors.New("countingConn: underlying conn does not implement driver.QueryerContext")
+	}
+	return qc.QueryContext(ctx, query, args)
+}
+
+// countingDriver is a driver.Driver that hands out countingConn-wrapped
+// connections from a plain modernc.org/sqlite Driver.
+type countingDriver struct {
+	base    driver.Driver
+	counter *queryCounter
+}
+
+func (d *countingDriver) Open(name string) (driver.Conn, error) {
+	c, err := d.base.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return &countingConn{Conn: c, counter: d.counter}, nil
+}
+
+// countingDriverSeq gives each openCountingTestStore call its own
+// sql.Register name — sql.Register panics on a duplicate name, and
+// t.Parallel tests in this package would otherwise race registering the
+// same one.
+var countingDriverSeq int64
+
+// openCountingTestStore migrates a fresh database the normal way
+// (dbtemplate.Open, so it pays the same fast-seed path as every other
+// fixture in this package via newTestStore), then closes it and reopens
+// the SAME file through a countingDriver so every subsequent query
+// against the returned *Store is observable via the returned
+// *queryCounter.
+func openCountingTestStore(t *testing.T) (*Store, *queryCounter) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "counting.db")
+	seed, err := dbtemplate.Open(context.Background(), db.Options{Path: path})
+	if err != nil {
+		t.Fatalf("seed migrate: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close seed: %v", err)
+	}
+
+	counter := &queryCounter{}
+	name := fmt.Sprintf("sqlite-counting-%d", atomic.AddInt64(&countingDriverSeq, 1))
+	sql.Register(name, &countingDriver{base: &sqlitepkg.Driver{}, counter: counter})
+	database, err := sql.Open(name, "file:"+path+"?_pragma=busy_timeout(30000)&_pragma=foreign_keys(1)&_pragma=synchronous(1)")
+	if err != nil {
+		t.Fatalf("sql.Open (counting driver): %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	return New(database), counter
+}
+
+// seedOneTaskSession creates one project+session and gives it exactly
+// one task_items row via the normal InsertActions -> applyTaskEvents
+// path (SetTasksEnabled must already be true on s).
+func seedOneTaskSession(t *testing.T, s *Store, ctx context.Context, sessionID string, ts time.Time) {
+	t.Helper()
+	pid := seedTaskflowSession(t, s, ctx, sessionID)
+	batch := []models.Action{{
+		SessionID: sessionID, ProjectID: pid, Timestamp: ts, ActionType: models.ActionTodoUpdate,
+		Tool: models.ToolClaudeCode, RawToolName: "TaskCreate",
+		RawToolInput:  `{"subject":"batch task","activeForm":"doing"}`,
+		RawToolOutput: "Task #1 created successfully: batch task",
+		SourceFile:    "f.jsonl", SourceEventID: sessionID + "-create",
+	}}
+	if _, err := s.InsertActions(ctx, batch); err != nil {
+		t.Fatalf("InsertActions(%s): %v", sessionID, err)
+	}
+	if _, err := s.applyTaskEvents(ctx, batch); err != nil {
+		t.Fatalf("applyTaskEvents(%s): %v", sessionID, err)
+	}
+}
+
+// TestTaskBatchLoadersMatchPerSessionLoaders pins correctness: every
+// *Batch loader must return, for each session id, exactly what its
+// per-session sibling would — and a session with no rows must be simply
+// ABSENT from the map, never a present-but-empty entry.
+func TestTaskBatchLoadersMatchPerSessionLoaders(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	s.SetTasksEnabled(true)
+	ctx := context.Background()
+
+	base := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+	sessionIDs := []string{"batch-s1", "batch-s2", "batch-s3"}
+	for i, sid := range sessionIDs {
+		seedOneTaskSession(t, s, ctx, sid, base.Add(time.Duration(i)*time.Hour))
+	}
+
+	itemsBatch, err := s.LoadTaskItemsBatch(ctx, sessionIDs)
+	if err != nil {
+		t.Fatalf("LoadTaskItemsBatch: %v", err)
+	}
+	transitionsBatch, err := s.LoadTaskTransitionsBatch(ctx, sessionIDs)
+	if err != nil {
+		t.Fatalf("LoadTaskTransitionsBatch: %v", err)
+	}
+	tokensBatch, err := s.LoadTaskTokenRowsBatch(ctx, sessionIDs, false)
+	if err != nil {
+		t.Fatalf("LoadTaskTokenRowsBatch: %v", err)
+	}
+	actionTsBatch, err := s.LoadTaskActionTimestampsBatch(ctx, sessionIDs, false)
+	if err != nil {
+		t.Fatalf("LoadTaskActionTimestampsBatch: %v", err)
+	}
+	unmatchedBatch, err := s.LoadTaskUnmatchedCountBatch(ctx, sessionIDs)
+	if err != nil {
+		t.Fatalf("LoadTaskUnmatchedCountBatch: %v", err)
+	}
+
+	for _, sid := range sessionIDs {
+		items, err := s.LoadTaskItems(ctx, sid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(itemsBatch[sid], items) {
+			t.Errorf("session %s: LoadTaskItemsBatch = %+v, want %+v", sid, itemsBatch[sid], items)
+		}
+
+		transitions, err := s.LoadTaskTransitions(ctx, sid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(transitionsBatch[sid], transitions) {
+			t.Errorf("session %s: LoadTaskTransitionsBatch = %+v, want %+v", sid, transitionsBatch[sid], transitions)
+		}
+
+		tokens, err := s.LoadTaskTokenRows(ctx, sid, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(tokensBatch[sid], tokens) {
+			t.Errorf("session %s: LoadTaskTokenRowsBatch = %+v, want %+v", sid, tokensBatch[sid], tokens)
+		}
+
+		actionTs, err := s.LoadTaskActionTimestamps(ctx, sid, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(actionTsBatch[sid], actionTs) {
+			t.Errorf("session %s: LoadTaskActionTimestampsBatch = %+v, want %+v", sid, actionTsBatch[sid], actionTs)
+		}
+
+		unmatched, err := s.LoadTaskUnmatchedCount(ctx, sid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unmatchedBatch[sid] != unmatched {
+			t.Errorf("session %s: LoadTaskUnmatchedCountBatch = %d, want %d", sid, unmatchedBatch[sid], unmatched)
+		}
+	}
+
+	// A session nothing was ever seeded for must be entirely absent, not
+	// a zero-value entry.
+	if _, ok := itemsBatch["no-such-session"]; ok {
+		t.Errorf("LoadTaskItemsBatch has a key for a session with no rows")
+	}
+}
+
+// TestTaskBatchLoadersIssueOneQueryRegardlessOfSessionCount is the
+// SOL-F18(b) fix's direct proof: asking a *Batch loader for N session ids
+// must cost the SAME one query a single session id would — not N. Before
+// this fix, the caller this batching replaced (a per-session
+// LoadSessionTaskReport loop, see internal/taskreport/report.go) issued
+// one query per table PER SESSION.
+func TestTaskBatchLoadersIssueOneQueryRegardlessOfSessionCount(t *testing.T) {
+	s, counter := openCountingTestStore(t)
+	s.SetTasksEnabled(true)
+	ctx := context.Background()
+
+	const n = 12
+	base := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+	sessionIDs := make([]string, n)
+	for i := 0; i < n; i++ {
+		sid := fmt.Sprintf("qc-s%d", i)
+		sessionIDs[i] = sid
+		seedOneTaskSession(t, s, ctx, sid, base.Add(time.Duration(i)*time.Hour))
+	}
+
+	loaders := []struct {
+		name string
+		run  func([]string) error
+	}{
+		{"LoadTaskItemsBatch", func(ids []string) error { _, err := s.LoadTaskItemsBatch(ctx, ids); return err }},
+		{"LoadTaskTransitionsBatch", func(ids []string) error { _, err := s.LoadTaskTransitionsBatch(ctx, ids); return err }},
+		{"LoadTaskTokenRowsBatch", func(ids []string) error { _, err := s.LoadTaskTokenRowsBatch(ctx, ids, false); return err }},
+		{"LoadTaskActionTimestampsBatch", func(ids []string) error { _, err := s.LoadTaskActionTimestampsBatch(ctx, ids, false); return err }},
+		{"LoadTaskUnmatchedCountBatch", func(ids []string) error { _, err := s.LoadTaskUnmatchedCountBatch(ctx, ids); return err }},
+		{"LoadSidechainOnlyTaskTokenRowsBatch", func(ids []string) error { _, err := s.LoadSidechainOnlyTaskTokenRowsBatch(ctx, ids); return err }},
+	}
+
+	for _, ld := range loaders {
+		before := counter.load()
+		if err := ld.run(sessionIDs[:1]); err != nil {
+			t.Fatalf("%s(1 session): %v", ld.name, err)
+		}
+		oneSession := counter.load() - before
+
+		before = counter.load()
+		if err := ld.run(sessionIDs); err != nil {
+			t.Fatalf("%s(%d sessions): %v", ld.name, n, err)
+		}
+		allSessions := counter.load() - before
+
+		if oneSession == 0 {
+			t.Fatalf("%s: observed 0 queries for a single session — instrumentation is broken", ld.name)
+		}
+		if oneSession != allSessions {
+			t.Errorf("%s: 1 session cost %d queries, %d sessions cost %d — want equal (one chunked IN(...) sweep, SOL-F18(b))",
+				ld.name, oneSession, n, allSessions)
+		}
 	}
 }

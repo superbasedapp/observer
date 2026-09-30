@@ -18,7 +18,7 @@ type Compressor interface {
 }
 
 // HintedCompressor is an OPTIONAL interface compressors can implement to
-// receive contextual hints (filename, codegraph-derived symbols) the
+// receive contextual hints (filename, code-index symbols) the
 // caller has at hand but wouldn't normally pass through the bare
 // [Compressor] surface. Registry detects implementations via type
 // assertion at compress-time; compressors that don't implement it
@@ -51,19 +51,20 @@ type CompressHints struct {
 	Filename string
 
 	// Symbols, when non-empty, is the pre-fetched top-N symbol summary
-	// from codegraph for Filename. Caller is responsible for the
-	// staleness check (see codegraph.Client.Stale); compressors trust
-	// the data they receive. nil means "no enrichment data available"
-	// — either codegraph isn't installed, the file isn't indexed, or
+	// from the code index (codeintel) for Filename. Caller is
+	// responsible for the staleness check (see SymbolLookup.Stale);
+	// compressors trust the data they receive. nil means "no enrichment
+	// data available" — either the index is disabled, the file isn't
+	// indexed, or
 	// the index is stale.
 	Symbols []CompressorSymbol
 }
 
 // CompressorSymbol is the pure-data representation of a code symbol
 // the conversation package uses for marker enrichment. Mirrors
-// codegraph.Symbol but lives in this package so we don't import
-// internal/codegraph (avoiding bidirectional coupling — the
-// conversation package never depends on codegraph internals; the
+// codeintel.Symbol but lives in this package so we don't import
+// internal/codeintel (avoiding bidirectional coupling — the
+// conversation package never depends on codeintel internals; the
 // adapter at cmd/observer/proxy.go bridges the two).
 type CompressorSymbol struct {
 	// Name is the symbol's identifier as it appears in the source

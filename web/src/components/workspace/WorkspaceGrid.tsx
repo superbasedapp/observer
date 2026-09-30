@@ -3,6 +3,17 @@ import { useLaunchDock } from "@/components/LaunchDock";
 import { isRemoteView } from "@/lib/remote";
 import { isLiveStatus, type Status } from "@/components/LaunchTerminal";
 import { fmtShortId } from "@/lib/format";
+import {
+  ConfirmButton,
+  EmptyState,
+  Icon,
+  InlineLoading,
+  LiveDot,
+  ReadOnlyBanner,
+  Tooltip,
+} from "@/components/primitives";
+import { TRANSPORT_DOT, liveDotProps, withDotClass } from "@/lib/liveSignals";
+import { FolderTree, GitBranch, Minus, PictureInPicture2, Plus, X } from "lucide-react";
 
 // WorkspaceGrid — the Terminal Workspace dock grid (docs/plans/
 // terminal-dock-grid-design-2026-07-20.md, P0; operator decisions 2026-07-21:
@@ -173,10 +184,9 @@ export function WorkspaceGrid({
   );
 
   const stopAndClose = useCallback(
-    (token: string, tool: string, live: boolean) => {
-      if (live && !window.confirm(`Stop the running ${tool} session? This ends the process.`)) {
-        return;
-      }
+    // A live session is confirmed in place by the tile's ConfirmButton
+    // (requireConfirm={live}), never window.confirm.
+    (token: string) => {
       dock.closeSession(token);
       removeFromGrid(token);
     },
@@ -241,26 +251,26 @@ export function WorkspaceGrid({
           </button>
         )}
         {readOnly && (
-          <span className="text-[11px] text-fg-3">
-            Read-only shared view - arrange the grid from the owner&apos;s dashboard.
-          </span>
+          <ReadOnlyBanner className="w-full">
+            Shared view - arrange the grid from the owner&apos;s dashboard.
+          </ReadOnlyBanner>
         )}
         {traySessions.length > 0 && (
           <span className="text-[11px] text-fg-3">Not on the grid:</span>
         )}
         {!readOnly &&
           traySessions.map((s) => (
-          <button
-            key={s.token}
-            type="button"
-            onClick={() => addToGrid(s.token)}
-            title="Add this running terminal to the grid"
-            className="flex items-center gap-1.5 rounded-full border border-line-2 bg-bg-1 px-2.5 py-1 text-[11px] text-fg-2 hover:text-fg-1"
-          >
-            <StatusDot status={dock.statuses[s.token]} />
-            <span className="font-mono">{s.tool}</span>
-              <span aria-hidden>＋</span>
+          <Tooltip key={s.token} content="Add this running terminal to the grid">
+            <button
+              type="button"
+              onClick={() => addToGrid(s.token)}
+              className="flex items-center gap-1.5 rounded-pill border border-line-2 bg-bg-1 px-2.5 py-1 text-caption text-fg-2 hover:text-fg-1"
+            >
+              <StatusDot status={dock.statuses[s.token]} />
+              <span className="font-mono">{s.tool}</span>
+              <Icon icon={Plus} size={11} />
             </button>
+          </Tooltip>
           ))}
         <span className="ml-auto text-[11px] text-fg-3">
           {dockedLive.length}/{docked.length || 0} tiles · drag headers to arrange · drag edges to resize
@@ -268,25 +278,29 @@ export function WorkspaceGrid({
       </div>
 
       {docked.length === 0 ? (
-        <div className="flex min-h-[280px] flex-col items-center justify-center gap-3 rounded-2 border border-dashed border-line-2 bg-bg-1 p-8 text-center">
-          <div className="text-[13px] font-medium text-fg-2">No terminals on the grid yet.</div>
-          <div className="max-w-[460px] text-[12px] text-fg-3">
-            Launch a fresh agent with “+ New terminal”, or add a running session from the tray above. Tiles
-            drag by their header, resize from their edges, and auto-compact upward.
-          </div>
-          {policyHint && (
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              className="text-[11px] text-warn underline decoration-dotted underline-offset-2"
-            >
-              {policyHint}
-            </button>
-          )}
+        <div className="flex min-h-[280px] flex-col items-center justify-center rounded-2 border border-dashed border-line-2 bg-bg-1 p-6">
+          <EmptyState
+            variant="inline"
+            className="py-0"
+            illustration="sessions"
+            illustrationSize={112}
+            title="No terminals on the grid yet"
+            body="Launch a fresh agent with “+ New terminal”, or add a running session from the tray above. Tiles drag by their header, resize from their edges, and auto-compact upward."
+          >
+            {policyHint && (
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="text-[11px] text-warn underline decoration-dotted underline-offset-2"
+              >
+                {policyHint}
+              </button>
+            )}
+          </EmptyState>
         </div>
       ) : (
         <Suspense
-          fallback={<div className="p-6 text-[12px] text-fg-3">Loading workspace grid…</div>}
+          fallback={<InlineLoading label="Loading workspace grid" className="p-6" />}
         >
           <LazyGrid
             docked={docked}
@@ -326,13 +340,8 @@ export function WorkspaceGrid({
                     dock.restore(token);
                   }}
                   onUndock={() => removeFromGrid(token)}
-                  onClose={() =>
-                    stopAndClose(
-                      token,
-                      meta.tool,
-                      dock.statuses[token] === "open" || dock.statuses[token] === "connecting",
-                    )
-                  }
+                  live={dock.statuses[token] === "open" || dock.statuses[token] === "connecting"}
+                  onClose={() => stopAndClose(token)}
                 />
               );
             }}
@@ -349,16 +358,12 @@ export function WorkspaceGrid({
   );
 }
 
+// StatusDot - the tile's transport state, from the ONE TRANSPORT_DOT table
+// (lib/liveSignals) the dock chip and terminal header also read.
 function StatusDot({ status }: { status: Status | undefined }) {
-  const cls: Record<Status, string> = {
-    connecting: "bg-fg-3 animate-pulse",
-    open: "bg-ok",
-    // Still live server-side — only this browser's transport dropped.
-    reconnecting: "bg-warn animate-pulse",
-    exited: "bg-fg-3",
-    error: "bg-danger",
-  };
-  return <span className={`h-2 w-2 rounded-full ${cls[status ?? "connecting"]}`} />;
+  return (
+    <LiveDot {...withDotClass(liveDotProps(TRANSPORT_DOT, status ?? "connecting"), "h-2 w-2 shrink-0")} />
+  );
 }
 
 // TerminalTile: the grid cell chrome. The header (.ws-tile-drag) is the ONLY
@@ -373,6 +378,7 @@ function TerminalTile({
   readOnly,
   onOpenWindow,
   onUndock,
+  live,
   onClose,
 }: {
   token: string;
@@ -382,6 +388,8 @@ function TerminalTile({
   readOnly: boolean;
   onOpenWindow: () => void;
   onUndock: () => void;
+  /** The session is running: closing it asks for a confirm first. */
+  live: boolean;
   onClose: () => void;
 }) {
   const { registerWorkspaceCell, openProjectPanel } = useLaunchDock();
@@ -412,72 +420,97 @@ function TerminalTile({
             directory (allow-listed project root, else the terminal's working
             directory); disabled with an honest title only when there is nothing
             local to browse, e.g. an SSH terminal. */}
-        <button
-          type="button"
-          disabled={!hasProjectRoot || !isLiveStatus(status)}
-          onClick={() => openProjectPanel(token, "files")}
-          onMouseDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          title={
+        {/* The span carries the tooltip so it still explains a disabled button. */}
+        <Tooltip
+          content={
             !isLiveStatus(status)
               ? "This session is no longer running - its project can no longer be browsed"
               : hasProjectRoot
                 ? "Browse this terminal's files"
                 : "This terminal has no directory on this machine to browse"
           }
-          className="rounded px-1.5 text-[12px] leading-none text-fg-3 hover:bg-white/10 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-3"
         >
-          ▤
-        </button>
-        <button
-          type="button"
-          disabled={!hasProjectRoot || !isLiveStatus(status)}
-          onClick={() => openProjectPanel(token, "git")}
-          onMouseDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          title={
+          <span className="inline-flex">
+            <button
+              type="button"
+              disabled={!hasProjectRoot || !isLiveStatus(status)}
+              onClick={() => openProjectPanel(token, "files")}
+              onMouseDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              aria-label="Browse files"
+              className="inline-flex items-center rounded-1 px-1.5 py-0.5 leading-none text-fg-3 hover:bg-overlay-1 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-3"
+            >
+              <Icon icon={FolderTree} size="xs" />
+            </button>
+          </span>
+        </Tooltip>
+        {/* The span carries the tooltip so it still explains a disabled button. */}
+        <Tooltip
+          content={
             !isLiveStatus(status)
               ? "This session is no longer running - its project can no longer be browsed"
               : hasProjectRoot
                 ? "Show git status, changes, and history for this terminal's directory"
                 : "This terminal has no directory on this machine to browse"
           }
-          className="rounded px-1.5 text-[12px] leading-none text-fg-3 hover:bg-white/10 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-3"
         >
-          ⎇
-        </button>
+          <span className="inline-flex">
+            <button
+              type="button"
+              disabled={!hasProjectRoot || !isLiveStatus(status)}
+              onClick={() => openProjectPanel(token, "git")}
+              onMouseDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              aria-label="Git"
+              className="inline-flex items-center rounded-1 px-1.5 py-0.5 leading-none text-fg-3 hover:bg-overlay-1 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-fg-3"
+            >
+              <Icon icon={GitBranch} size="xs" />
+            </button>
+          </span>
+        </Tooltip>
         {!readOnly && (
           <>
-        <button
-          type="button"
-          onClick={onOpenWindow}
-          onMouseDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          title="Open as window - undock into the resizable floating panel. The session keeps running."
-          className="rounded px-1.5 text-[12px] leading-none text-fg-3 hover:bg-white/10 hover:text-fg-1"
-        >
-          ⬈
-        </button>
-        <button
-          type="button"
-          onClick={onUndock}
-          onMouseDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          title="Remove from grid - the session keeps running; find it in the tray."
-          className="rounded px-1.5 text-[12px] leading-none text-fg-3 hover:bg-white/10 hover:text-fg-1"
-        >
-          ▭
-        </button>
-        <button
-          type="button"
-          onClick={onClose}
-          onMouseDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          title="Stop & close - ends the process."
-          className="rounded px-1.5 text-[12px] leading-none text-fg-3 hover:bg-white/10 hover:text-danger"
-        >
-          ✕
-        </button>
+        <Tooltip content="Open as window - undock into the resizable floating panel. The session keeps running.">
+          <button
+            type="button"
+            onClick={onOpenWindow}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+            aria-label="Open as window"
+            className="inline-flex items-center rounded-1 px-1.5 py-0.5 leading-none text-fg-3 hover:bg-overlay-1 hover:text-fg-1"
+          >
+            <Icon icon={PictureInPicture2} size="xs" />
+          </button>
+        </Tooltip>
+        <Tooltip content="Remove from grid - the session keeps running; find it in the tray.">
+          <button
+            type="button"
+            onClick={onUndock}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+            aria-label="Remove from grid"
+            className="inline-flex items-center rounded-1 px-1.5 py-0.5 leading-none text-fg-3 hover:bg-overlay-1 hover:text-fg-1"
+          >
+            <Icon icon={Minus} size="xs" />
+          </button>
+        </Tooltip>
+        {/* Stop & close: a live session arms first ("Stop?"), a second
+            click ends the process; an exited one closes at once. */}
+        <Tooltip content="Stop & close - ends the process.">
+          <span className="inline-flex">
+            <ConfirmButton
+              variant="ghost"
+              size="sm"
+              requireConfirm={live}
+              onConfirm={onClose}
+              confirmLabel="Stop?"
+              className="!px-1.5 !py-0.5 leading-none hover:!text-danger"
+            >
+              <Icon icon={X} size="xs" />
+              <span className="sr-only">Stop and close</span>
+            </ConfirmButton>
+          </span>
+        </Tooltip>
           </>
         )}
       </div>

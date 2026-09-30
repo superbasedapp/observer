@@ -2142,7 +2142,7 @@ func openCacheSavingsTrend(t *testing.T, server *Server, days int) cacheSavingsT
 	t.Helper()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet,
-		"/api/analysis/cache-savings-trend?days="+itoa(days), nil)
+		"/api/analysis/cache-savings-trend?gran=1d&days="+itoa(days), nil)
 	server.Handler().ServeHTTP(rr, req)
 	if rr.Code != 200 {
 		t.Fatalf("GET /api/analysis/cache-savings-trend: %d body=%s", rr.Code, rr.Body.String())
@@ -2155,7 +2155,7 @@ func openCacheSavingsTrend(t *testing.T, server *Server, days int) cacheSavingsT
 }
 
 // TestAnalysisCacheSavingsTrend_EmptyReturnsNoPoints — empty DB is a
-// zero-length series, not an error.
+// zero-filled all-zero series, not an error.
 func TestAnalysisCacheSavingsTrend_EmptyReturnsNoPoints(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "d.db")
 	database, err := openTestDB(context.Background(), db.Options{Path: path})
@@ -2168,8 +2168,14 @@ func TestAnalysisCacheSavingsTrend_EmptyReturnsNoPoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := openCacheSavingsTrend(t, server, 30)
-	if len(got.Points) != 0 {
-		t.Errorf("empty DB points: got %d want 0", len(got.Points))
+	// The grid is zero-filled (30-31 day buckets), every one of them zero.
+	if n := len(got.Points); n < 30 || n > 31 {
+		t.Errorf("empty DB points: got %d want the 30-31 day zero-filled grid", n)
+	}
+	for _, p := range got.Points {
+		if p.SavingsUSD != 0 || p.CacheReadTokens != 0 {
+			t.Errorf("empty DB point %s is non-zero: %+v", p.Day, p)
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package processobs
 
 import (
+	"sort"
 	"strings"
 	"time"
 )
@@ -88,10 +89,16 @@ func CorrelateActions(runs []ProcRunRef, actions []ActionRef, window time.Durati
 
 	// Parse-derived per-action fields are computed ONCE here, not once per
 	// (process, action) pair: parseInvokedBinaries is a multi-split,
-	// map-allocating parse, and the scoring loop below is O(procs × actions) —
-	// hundreds of millions of pairs on a large session, re-run every background
-	// sweep. Caching collapses the parse to one call per action.
-	prepped := prepActions(actions)
+	// map-allocating parse. Caching collapses the parse to one call per action.
+	//
+	// The prepped actions are then sorted by timestamp ONCE (actionIndex) so
+	// each run scores only the actions that can pass its time gate - a binary
+	// search instead of a scan of every run_command action in the session. The
+	// old per-run full scan was O(runs x actions) and, re-run for every
+	// unlinked run on every background tick, dominated the daemon's CPU on
+	// long sessions. The result is identical: bestAction's outcome does not
+	// depend on the order it visits actions (see bestAction).
+	idx := newActionIndex(prepActions(actions))
 
 	// Anchors: each unlinked run that directly matches an action.
 	anchors := make(map[string]ActionRef)
@@ -100,7 +107,7 @@ func CorrelateActions(runs []ProcRunRef, actions []ActionRef, window time.Durati
 		if r.Linked {
 			continue
 		}
-		if a, ok := bestAction(r, prepped, window); ok {
+		if a, ok := bestAction(r, idx, window); ok {
 			anchors[r.ProcessKey] = a
 		}
 	}
@@ -162,32 +169,79 @@ func prepActions(actions []ActionRef) []preppedAction {
 	return out
 }
 
+// actionIndex is the prepped actions sorted by timestamp, plus the largest
+// recorded Duration, so bestAction can binary-search the only actions whose
+// timestamp can pass the time gate instead of scanning every action.
+type actionIndex struct {
+	sorted []preppedAction // ascending by ref.Timestamp (stable)
+	// maxDur is the largest ref.Duration (floored at 0). The time gate's back
+	// side widens per action by its own Duration, so the candidate range is
+	// bounded by the widest one and each candidate is then re-checked exactly.
+	maxDur time.Duration
+}
+
+// newActionIndex sorts prepped in place (stable, by timestamp) and records the
+// widest per-action Duration.
+func newActionIndex(prepped []preppedAction) *actionIndex {
+	sort.SliceStable(prepped, func(i, j int) bool {
+		return prepped[i].ref.Timestamp.Before(prepped[j].ref.Timestamp)
+	})
+	var maxDur time.Duration
+	for i := range prepped {
+		if d := prepped[i].ref.Duration; d > maxDur {
+			maxDur = d
+		}
+	}
+	return &actionIndex{sorted: prepped, maxDur: maxDur}
+}
+
+// candidates returns the contiguous run of sorted actions whose timestamp T can
+// satisfy bestAction's time gate for a process started at start:
+//
+//	-(correlationBackSkew + Duration) <= start - T <= window
+//	<=> start - window <= T <= start + correlationBackSkew + Duration
+//
+// Duration <= maxDur for every action, so [start-window,
+// start+correlationBackSkew+maxDur] is a superset of the passing actions; the
+// caller still applies the exact per-action gate.
+func (x *actionIndex) candidates(start time.Time, window time.Duration) []preppedAction {
+	minT := start.Add(-window)
+	maxT := start.Add(correlationBackSkew).Add(x.maxDur)
+	s := x.sorted
+	lo := sort.Search(len(s), func(i int) bool { return !s[i].ref.Timestamp.Before(minT) })
+	hi := lo + sort.Search(len(s)-lo, func(i int) bool { return s[lo+i].ref.Timestamp.After(maxT) })
+	return s[lo:hi]
+}
+
 // bestAction picks the action that unambiguously explains a process. It
 // gathers every in-window action with a positive match score, keeps only the
 // actions at the top score, and:
 //   - returns the single top action when there is exactly one (unambiguous);
-//   - when several tie at the top score it does NOT time-tie-break (that was a
-//     coin-flip that systematically mis-linked repeated identical commands like
-//     `go build` run twice in the window). It anchors only if EXACTLY ONE of
-//     the tied actions has its normalized command prefix carried in the
-//     process's normalized argv (a wrapper whose argv names the one specific
-//     command instance); otherwise it returns ok=false and the process stays
-//     unlinked, to be reached later by DFS propagation from an unambiguous
-//     ancestor anchor.
+//   - when several tie at the top score it does NOT tie-break (a time
+//     tie-break was a coin-flip that systematically mis-linked repeated
+//     identical commands like `go build` run twice in the window). It returns
+//     ok=false and the process stays unlinked, to be reached later by DFS
+//     propagation from an unambiguous ancestor anchor.
+//
+// The outcome depends only on the SET of in-window scored actions (the single
+// top action, or "ambiguous"), never on the order they are visited - which is
+// what lets it scan only idx.candidates instead of every action.
 //
 // Returns ok=false when nothing matches inside the window. The process's
 // normalized exe basename and normalized argv are computed once here and
 // threaded into matchScore.
-func bestAction(r *ProcRunRef, actions []preppedAction, window time.Duration) (ActionRef, bool) {
+func bestAction(r *ProcRunRef, idx *actionIndex, window time.Duration) (ActionRef, bool) {
 	ne := normExe(r.ExeBasename)
 	na := stripQuotes(strings.ToLower(r.ArgvPreview))
 	topScore := 0
-	var top []preppedAction
-	for i := range actions {
-		a := &actions[i]
+	topCount := 0
+	var topRef ActionRef
+	cands := idx.candidates(r.StartedAt, window)
+	for i := range cands {
+		a := &cands[i]
 		delta := r.StartedAt.Sub(a.ref.Timestamp)
 		// The action timestamp is the command START for hook-logged sources
-		// (delta ≈ +small) but the command END for codex (logged at
+		// (delta ~ +small) but the command END for codex (logged at
 		// exec_command_end). For the latter the process started ~Duration
 		// before the action, so widen the back-skew by the recorded duration;
 		// the forward window stays put.
@@ -201,29 +255,27 @@ func bestAction(r *ProcRunRef, actions []preppedAction, window time.Duration) (A
 		}
 		if score > topScore {
 			topScore = score
-			top = top[:0]
-			top = append(top, *a)
+			topCount = 1
+			topRef = a.ref
 		} else if score == topScore {
-			top = append(top, *a)
+			topCount++
 		}
 	}
-	if topScore == 0 || len(top) == 0 {
+	if topCount != 1 {
+		// Nothing matched (0), or ambiguous (>1): the process ties at the top
+		// score across several in-window actions (e.g. `go build` run more than
+		// once, or a standalone command that also appears as a clause inside a
+		// compound one). We do NOT guess. An argv substring tie-break
+		// systematically mis-picks a compound parent's child for its standalone
+		// look-alike - the child's short argv (`go build`) matches the
+		// standalone action, not the compound `cd /x && go build` that actually
+		// spawned it - and a time tie-break was the original coin-flip defect.
+		// Leave the process unlinked; the DFS reaches it from its true parent
+		// anchor (the wrapper whose full argv names the one specific command
+		// instance), which is the only reliable signal here.
 		return ActionRef{}, false
 	}
-	if len(top) == 1 {
-		return top[0].ref, true
-	}
-	// Ambiguous: the process ties at the top score across several in-window
-	// actions (e.g. `go build` run more than once, or a standalone command that
-	// also appears as a clause inside a compound one). We do NOT guess. An argv
-	// substring tie-break systematically mis-picks a compound parent's child for
-	// its standalone look-alike — the child's short argv (`go build`) matches the
-	// standalone action, not the compound `cd /x && go build` that actually
-	// spawned it — and a time tie-break was the original coin-flip defect. Leave
-	// the process unlinked; the DFS reaches it from its true parent anchor (the
-	// wrapper whose full argv names the one specific command instance), which is
-	// the only reliable signal here.
-	return ActionRef{}, false
+	return topRef, true
 }
 
 // matchScore rates how well a process matches an action's command: 2 when the

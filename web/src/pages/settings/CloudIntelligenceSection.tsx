@@ -1,9 +1,11 @@
+import { CircleHelp, type LucideIcon } from "lucide-react";
 import CloudEvidenceSettingsEditor, { DEFAULT_EVIDENCE_SETTINGS, effectiveEvidenceSettings, evidenceSettingsError } from "./CloudEvidenceSettingsEditor";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Button,
   ChartShell,
   ConfirmButton,
+  Icon,
   Input,
   JsonPreview,
   Pill,
@@ -11,8 +13,10 @@ import {
   Table,
   Toggle,
   Tooltip,
+  Stagger,
 } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
+import { Summary } from "@/components/Summary";
 import { CloudEnrichmentSummary } from "@/components/CloudEnrichmentSummary";
 import { pushToast } from "@/components/Toast";
 import { useApi } from "@/lib/useApi";
@@ -40,6 +44,7 @@ import type {
   CloudSyncState,
   EnrolmentStatus,
 } from "@/lib/types";
+import { MetricIcon } from "@/components/MetricIcon";
 
 // CloudIntelligenceSection is the Settings → Cloud Intelligence page.
 //
@@ -85,7 +90,8 @@ import type {
 // Nothing on this page talks to the hosted service directly: sign-in presence
 // is a local keychain read the daemon performs through an injected seam, and
 // every outbound action is the `observer cloud` CLI running as a child.
-export function CloudIntelligenceSection() {
+// `icon` is the section glyph from the Settings SECTIONS table.
+export function CloudIntelligenceSection({ icon }: { icon?: LucideIcon }) {
   const status = useApi<CloudStatusWithDigestPlan>("/api/cloud/status", undefined, [], {
     refreshMs: 15000,
   });
@@ -130,9 +136,9 @@ export function CloudIntelligenceSection() {
       <CloudLedgerCard actionsAvailable={actionsAvailable} />
 
       <details className="rounded-3 border border-line-2 bg-bg-2">
-        <summary className="cursor-pointer list-none px-4 py-2.5 text-[12px] font-medium text-fg-2 hover:text-fg-1">
+        <Summary className="px-4 py-2.5 text-small font-medium text-fg-2 hover:text-fg-1">
           Advanced
-        </summary>
+        </Summary>
         <div className="space-y-5 border-t border-line-2 px-4 py-3">
           <CloudConsentGrantsCard actionsAvailable={actionsAvailable} />
           <CloudDeleteAccountCard actionsAvailable={actionsAvailable} onDeleted={status.reload} />
@@ -142,11 +148,14 @@ export function CloudIntelligenceSection() {
 
       <ChartShell
         title="Cloud activity"
+        icon={icon}
         sub="Optional signed-in personal enrichment (Signed-in Free). Every local Observer feature works fully without this. Node-local state only: consent receipts, the send outbox by state, and synced enrichment results. Uploads and result pulls run through `observer cloud sync` (manually, or on the schedule below when auto-sync is on)."
       >
         <ChartState
           loading={status.loading && !data}
           error={status.error}
+          denied={status.denied}
+          deniedPermission={status.deniedPermission}
           empty={false}
           height={120}
         >
@@ -408,24 +417,31 @@ function CloudAccountCard({
             )}
             {phase === "signed_in" && (
               <>
-                <Button
-                  size="sm"
-                  variant="soft"
-                  onClick={() => void startSync()}
-                  disabled={!actionsAvailable || syncRunning || syncBusy || orgEnrolled}
-                  title={orgEnrolled ? signInDisabledTitle : "Drain the outbox and pull enrichment results now (same as `observer cloud sync`)"}
-                >
-                  {syncRunning ? "Syncing…" : syncBusy ? "Starting…" : "Sync now"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => void startLogin()}
-                  disabled={!canSignIn}
-                  title={signInDisabledTitle || "Run the sign-in again (refreshes the stored WorkOS sign-in)"}
-                >
-                  Sign in again
-                </Button>
+                {/* The spans carry the tooltips so they also explain a disabled button. */}
+                <Tooltip content={orgEnrolled ? signInDisabledTitle : "Drain the outbox and pull enrichment results now (same as `observer cloud sync`)"}>
+                  <span className="inline-flex">
+                    <Button
+                      size="sm"
+                      variant="soft"
+                      onClick={() => void startSync()}
+                      disabled={!actionsAvailable || syncRunning || syncBusy || orgEnrolled}
+                    >
+                      {syncRunning ? "Syncing…" : syncBusy ? "Starting…" : "Sync now"}
+                    </Button>
+                  </span>
+                </Tooltip>
+                <Tooltip content={signInDisabledTitle || "Run the sign-in again (refreshes the stored WorkOS sign-in)"}>
+                  <span className="inline-flex">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => void startLogin()}
+                      disabled={!canSignIn}
+                    >
+                      Sign in again
+                    </Button>
+                  </span>
+                </Tooltip>
                 <Button
                   variant="secondary"
                   onClick={() => void logout()}
@@ -543,9 +559,9 @@ function CloudAccountCard({
           </div>
           {sync.tail && (
             <details className="mt-1.5">
-              <summary className="cursor-pointer text-[10.5px] text-fg-3 hover:text-fg-2">
+              <Summary className="w-fit text-[10.5px] text-fg-3 hover:text-fg-2">
                 Output
-              </summary>
+              </Summary>
               <div className="mt-1">
                 <JsonPreview value={sync.tail} maxHeight={160} />
               </div>
@@ -1021,7 +1037,7 @@ function CloudConsentGrantsCard({ actionsAvailable }: { actionsAvailable: boolea
         previewed or uploaded.
       </p>
 
-      <ChartState loading={grants.loading && !grants.data} error={grants.error} empty={false} height={80}>
+      <ChartState loading={grants.loading && !grants.data} error={grants.error} denied={grants.denied} deniedPermission={grants.deniedPermission} empty={false} height={80}>
         {grants.data && (
           <div className="mt-3 space-y-3">
             <Table
@@ -1077,13 +1093,14 @@ function CloudConsentGrantsCard({ actionsAvailable }: { actionsAvailable: boolea
                   const isBusy = busyPurpose === g.purpose;
                   if (!g.ok) {
                     return (
-                      <span
-                        key={g.purpose}
-                        title={g.reason || "Not grantable on this device."}
-                        className="cursor-help rounded-2 border border-line-2 bg-bg-3 px-2.5 py-1 text-[11px] text-fg-4"
-                      >
-                        {label} - locked
-                      </span>
+                      <Tooltip key={g.purpose} content={g.reason || "Not grantable on this device."}>
+                        <span
+                          tabIndex={0}
+                          className="cursor-help rounded-2 border border-line-2 bg-bg-3 px-2.5 py-1 text-caption text-fg-4 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-ring"
+                        >
+                          {label} - locked
+                        </span>
+                      </Tooltip>
                     );
                   }
                   const live = receipts.some(
@@ -1092,13 +1109,12 @@ function CloudConsentGrantsCard({ actionsAvailable }: { actionsAvailable: boolea
                   if (live) {
                     const armed = revokeArmed === g.purpose;
                     return (
+                      <Tooltip key={g.purpose} content={`Revoke standing consent for ${label}`} disabled={armed}>
                       <Button
-                        key={g.purpose}
                         size="sm"
                         variant={armed ? "danger" : "secondary"}
                         onClick={() => onRevokeClick(g.purpose)}
                         disabled={isBusy}
-                        title={armed ? undefined : `Revoke standing consent for ${label}`}
                       >
                         {isBusy
                           ? "Working…"
@@ -1106,6 +1122,7 @@ function CloudConsentGrantsCard({ actionsAvailable }: { actionsAvailable: boolea
                             ? "Revoke - cancels anything queued under it"
                             : `Revoke ${label}`}
                       </Button>
+                      </Tooltip>
                     );
                   }
                   return (
@@ -1217,17 +1234,17 @@ function CloudDeleteAccountCard({
             setLocalOnly(ev.target.checked);
             setArmed(false);
           }}
-          className="h-3.5 w-3.5 rounded-sm border-line-2"
+          className="h-3.5 w-3.5 rounded-1 border-line-2"
         />
         Only clear this device (keep the hosted account)
       </label>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Tooltip content="Click again to confirm - this cannot be undone" disabled={!armed}>
         <Button
           variant="danger"
           onClick={() => void run()}
           disabled={busy}
-          title={armed ? "Click again to confirm - this cannot be undone" : undefined}
         >
           {busy
             ? "Working…"
@@ -1239,6 +1256,7 @@ function CloudDeleteAccountCard({
                 ? "Clear this device"
                 : "Delete cloud account"}
         </Button>
+        </Tooltip>
         {armed && (
           <Button variant="secondary" onClick={() => setArmed(false)}>
             Cancel
@@ -1286,6 +1304,8 @@ type CloudConfigForm = {
   saveError: string | null;
   loading: boolean;
   error: Error | null;
+  denied: boolean;
+  deniedPermission: string | null;
   hasData: boolean;
 };
 
@@ -1366,6 +1386,8 @@ function useCloudConfigForm(): CloudConfigForm {
     saveError,
     loading: cfg.loading && !cfg.data,
     error: cfg.error,
+    denied: cfg.denied,
+    deniedPermission: cfg.deniedPermission,
     hasData: !!cfg.data,
   };
 }
@@ -1446,15 +1468,16 @@ function CloudPreferences({
 // staging/self-host (schema prominence = expert). Editing here dirties the
 // same [cloud] form the preferences footer saves.
 function CloudAdvancedSettings({ settings }: { settings: CloudConfigForm }) {
-  const { form, update, save, dirty, saving, saveError, loading, error } = settings;
+  const { form, update, save, dirty, saving, saveError, loading, error, denied, deniedPermission } =
+    settings;
   return (
     <details className="rounded-3 border border-line-2 bg-bg-2">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-[12px] font-medium text-fg-2 hover:text-fg-1">
+      <Summary className="gap-2 px-4 py-2.5 text-small font-medium text-fg-2 hover:text-fg-1">
         <span>Advanced - connection &amp; sign-in config</span>
         <span className="text-[10.5px] font-normal text-fg-4">
           client id, hosted base URL, callback port
         </span>
-      </summary>
+      </Summary>
       <div className="border-t border-line-2 px-4 py-3">
         <p className="mb-3 max-w-[66ch] text-[11px] leading-relaxed text-fg-3">
           Deployment defaults most people never change - the hosted service normally supplies
@@ -1464,7 +1487,14 @@ function CloudAdvancedSettings({ settings }: { settings: CloudConfigForm }) {
           values when set in the daemon's environment.
         </p>
 
-        <ChartState loading={loading} error={error} empty={false} height={80}>
+        <ChartState
+          loading={loading}
+          error={error}
+          denied={denied}
+          deniedPermission={deniedPermission}
+          empty={false}
+          height={80}
+        >
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <Input
               type="text"
@@ -1552,13 +1582,13 @@ function StatusBody({ data }: { data: CloudStatusWithDigestPlan }) {
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <StatCard label="Consent receipts" value={fmtInt(data.receipts_total)} />
-        <StatCard label="Live receipts" value={fmtInt(data.receipts_live)} />
-        <StatCard label="Outbox items" value={fmtInt(data.outbox_total)} />
-        <StatCard label="Sendable now" value={fmtInt(data.sendable_count)} />
-        <StatCard label="Synced results" value={fmtInt(data.results_total)} />
-      </div>
+      <Stagger className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <StatCard label="Consent receipts" icon={<MetricIcon metric="consentReceipts" />} value={fmtInt(data.receipts_total)} />
+        <StatCard label="Live receipts" icon={<MetricIcon metric="liveReceipts" />} value={fmtInt(data.receipts_live)} />
+        <StatCard label="Outbox items" icon={<MetricIcon metric="outboxItems" />} value={fmtInt(data.outbox_total)} />
+        <StatCard label="Sendable now" icon={<MetricIcon metric="sendableNow" />} value={fmtInt(data.sendable_count)} />
+        <StatCard label="Synced results" icon={<MetricIcon metric="syncedResults" />} value={fmtInt(data.results_total)} />
+      </Stagger>
 
       <div className="grid grid-cols-1 gap-3 text-[11.5px] sm:grid-cols-2">
         <div className="rounded-3 border border-line-2 bg-bg-2 px-3 py-2">
@@ -1631,9 +1661,10 @@ function AllowanceCard({ known }: { known: boolean }) {
         <Tooltip content="The daily/monthly allowance is reported by the server at sync and is not stored on this node. Nothing is shown until then - no fabricated numbers.">
           <span
             tabIndex={0}
-            className="cursor-help rounded-full border border-line-3 px-1 text-[9px] text-fg-3 focus:outline-none"
+            aria-label="About the allowance"
+            className="inline-flex cursor-help text-fg-3 hover:text-fg-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-ring"
           >
-            ?
+            <Icon icon={CircleHelp} size={11} />
           </span>
         </Tooltip>
       </div>

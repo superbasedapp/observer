@@ -21,6 +21,7 @@ var allKnownAuthorityTokens = []string{
 	AuthorityEnforceAdmission,
 	AuthorityEnforceEgress,
 	AuthorityEnforceBudget,
+	AuthorityEnforceMCPAccess,
 	AuthorityExtractManaged,
 	AuthorityExtractCodeintel,
 	AuthorityExtractProcess,
@@ -60,6 +61,16 @@ func TestGovernedFamilies_TableDriven(t *testing.T) {
 			name:      "enforce.routing maps to gateway.providers",
 			authority: []string{AuthorityEnforceRouting},
 			want:      []string{familyGatewayProviders},
+		},
+		{
+			name:      "enforce.budget maps to node.governance (the declared fallback)",
+			authority: []string{AuthorityEnforceBudget},
+			want:      []string{familyNodeGovernance},
+		},
+		{
+			name:      "enforce.mcp_access maps to tools.mcp_access (its own resource family)",
+			authority: []string{AuthorityEnforceMCPAccess},
+			want:      []string{familyToolsMCPAccess},
 		},
 		{
 			name:      "mixed authority set, deduplicated and sorted",

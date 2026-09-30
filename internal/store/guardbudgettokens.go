@@ -4,20 +4,36 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/spendverdict"
 )
 
 // TOKEN-denominated budget windows for the guard's §12.1 budget seam
 // (docs/plans/org-budget-enforcement-and-token-display-plan-2026-09-07.md
-// §3.3c, wave W3b). It is the exact structural sibling of GuardBudgetSpend in
-// guard.go — same windows, same per-session MAX de-dup across the proxy and
-// watcher substrates — in the other unit.
+// §3.3c, wave W3b). It is the exact structural sibling of
+// GuardBudgetSpendPriced in guardbudgetpriced.go — same windows, same rows,
+// same de-duplication — in the other unit.
 //
 // WHAT COUNTS AS A TOKEN, and why it is not negotiable here: input + output,
 // excluding cache reads and cache creation. That is byte-for-byte what the ORG
 // server counts (internal/orgserver/rollup/cost.go's spendCTE, whose `tokens`
-// expression is `input_tokens + output_tokens` on BOTH arms). A node that
-// counted cache tokens too would breach an org cap the org itself considers
-// unbreached, and the developer would have no way to see why.
+// expression is `input_tokens + output` on BOTH arms, the proxy arm's output
+// read through its stored dedup verdict). A node that counted cache tokens
+// too would breach an org cap the org itself considers unbreached, and the
+// developer would have no way to see why.
+//
+// WHICH ROWS COUNT is the ONE session rule, sessionmsg.Derive, through the
+// node's stored verdicts (internal/spendverdict, agent migration 143): a
+// transcript row Derive does not count is not read, a proxy row reads its
+// verdict's output (a twinned row carries its transcript twin's visible
+// output, reasoning excluded like every other token row), and a proxy row
+// the session-cumulative reconciliation dropped is not read. So a session's
+// guard figure is its session header's input + output, and a window's is
+// the sum of its rows' - the same numbers the dashboard and the org show.
+// It replaced a per-session MAX(proxy, transcript) fold (lane R2-ONERULE)
+// that took the LARGER capture of a session wholesale: it counted nothing a
+// proxied session's transcript saw that the proxy missed (or vice versa) and
+// could not see an output-only shadow duplicate within one capture.
 
 // GuardBudgetTokenWindows is the token-usage-so-far bundle the B-621..B-624
 // rows compare against: the current session's total plus the node-wide totals
@@ -35,27 +51,19 @@ type GuardBudgetTokenWindows struct {
 	MonthlyTokens int64
 }
 
-// GuardBudgetTokens returns the token-usage-so-far windows. Structurally
-// identical to GuardBudgetSpend: the session total is the larger of the two
-// substrates in advisory mode, and each window total uses that same merge.
-//
-// A session observed through BOTH the proxy and the native parser is the
-// ordinary shape for any tool the daemon launches through :8820 and also
-// parses from its own store. It is not ambiguity: per-session MAX(proxy,
-// watcher) IS the de-duplication rule, and it is already applied by the folded
-// CTE below. Marking that overlap unavailable contradicted the rule and denied
-// every proxied-and-parsed tool, so the rule is gone here for the same reason
-// and on the same ruling as in the $ sibling (accounting-readiness correction,
-// 2026-09-14 / W10-2). What remains unavailable is what is genuinely
-// unreadable: negative or NULL counters, an unreliable source, and — under a
-// managed read — an invalid captured timestamp.
+// GuardBudgetTokens returns the token-usage-so-far windows: the session's
+// total and the node-wide day / rolling-week / month totals, over the rows
+// the stored dedup verdicts count (see the file header). What is marked
+// unavailable is what is genuinely unreadable: negative or NULL counters, an
+// unreliable source, and — under a managed read — an invalid captured
+// timestamp.
 //
 // WHERE THE PER-SUBJECT TOKEN TOTALS LIVE, and why not here (bundle BUD-N):
 // the organization's per-tool / per-model caps need the same windows in both
 // units, and both units are accumulated in the ONE row loop of
 // GuardBudgetSpendPriced (GuardBudgetSpendResult.ByTool / ByModel), using the
-// token rule this file defines. They are not computed a second time in this
-// CTE — a GROUP BY tool, model here would produce a second set of token totals
+// token rule this file defines. They are not computed a second time here —
+// a GROUP BY tool, model here would produce a second set of token totals
 // over the same rows, and two totals that could drift apart is exactly the
 // defect the single-lookup discipline exists to prevent. This function keeps
 // its one job: the node-wide token windows.
@@ -71,55 +79,46 @@ func (s *Store) GuardBudgetTokens(ctx context.Context, sessionID string, dayStar
 	if monthStart.Before(earliest) {
 		earliest = monthStart
 	}
+	s.refreshSpendVerdictsBounded(ctx)
 	// Validate and sum all windows in ONE SQLite snapshot. A separate validity
 	// probe followed by SUM could race a newly ingested invalid negative row.
 	// Invalid counts contribute no tokens and mark their exact windows unknown;
 	// they never reduce good usage. SQL integer overflow is a read error.
 	var sessionBad, dayBad, weekBad, monthBad int
 	var weeklyFirst string
-	where := guardBudgetUsageWhere(managedBudgetRead(options))
+	managed := managedBudgetRead(options)
+	//nolint:gosec // G202: the WHERE fragments are compile-time constant SQL; every value binds via args.
 	err = s.db.QueryRowContext(
 		ctx, `
 		WITH params AS (SELECT ? managed), raw AS (
-		  SELECT 0 source, COALESCE(session_id,'') sid, timestamp, `+guardBudgetTimestampOrderSQL+` ordered_at,
-		         COALESCE(input_tokens,0) i, COALESCE(output_tokens,0) o,
+		  SELECT COALESCE(session_id,'') sid, timestamp, `+guardBudgetTimestampOrderSQL+` ordered_at,
+		         COALESCE(input_tokens,0) i, `+spendverdict.ProxyOutputOf("api_turns")+` o,
 		         input_tokens IS NULL OR output_tokens IS NULL incomplete
-		  FROM api_turns `+where+`
+		  FROM api_turns `+guardBudgetUsageWhere(managed, spendverdict.CountedProxyRowOf("api_turns"))+`
 		  UNION ALL
-		  SELECT 1 source, session_id sid, timestamp, `+guardBudgetTimestampOrderSQL+` ordered_at,
+		  SELECT session_id sid, timestamp, `+guardBudgetTimestampOrderSQL+` ordered_at,
 		         COALESCE(input_tokens,0) i, COALESCE(output_tokens,0) o,
 		         input_tokens IS NULL OR output_tokens IS NULL OR
 		         COALESCE(reliability,'') NOT IN ('accurate','approximate') OR
 		         source NOT IN ('jsonl','otel','hook','proxy') incomplete
-		  FROM token_usage `+where+`
+		  FROM token_usage `+guardBudgetUsageWhere(managed, spendverdict.CountedTokenRow("token_usage"))+`
 		), normalized AS (
-		  SELECT source,sid,ordered_at,CASE WHEN i < 0 OR o < 0 THEN 0 ELSE i+o END amount,
+		  SELECT sid,ordered_at,CASE WHEN i < 0 OR o < 0 THEN 0 ELSE i+o END amount,
 		         CASE WHEN i < 0 OR o < 0 OR (managed AND (incomplete OR `+guardBudgetInvalidTimestampSQL+`)) THEN 1 ELSE 0 END bad,
 		         managed AND (`+guardBudgetInvalidTimestampSQL+`) bad_time
 		  FROM raw CROSS JOIN params
-		), totals AS (
-		  SELECT source,sid,
-		    SUM(CASE WHEN sid = ? AND ? <> '' THEN amount ELSE 0 END) s,
-		    SUM(CASE WHEN ordered_at >= ? THEN amount ELSE 0 END) d,
-		    SUM(CASE WHEN ordered_at >= ? THEN amount ELSE 0 END) w,
-		    SUM(CASE WHEN ordered_at >= ? THEN amount ELSE 0 END) m,
-		    MAX(CASE WHEN sid = ? AND ? <> '' THEN bad ELSE 0 END) sb,
-		    MAX(CASE WHEN ordered_at >= ? OR bad_time THEN bad ELSE 0 END) db,
-		    MAX(CASE WHEN ordered_at >= ? OR bad_time THEN bad ELSE 0 END) wb,
-		    MAX(CASE WHEN ordered_at >= ? OR bad_time THEN bad ELSE 0 END) mb,
-		    MIN(CASE WHEN ordered_at >= ? AND amount > 0 THEN ordered_at END) weekly_first
-		  FROM normalized GROUP BY source,sid
-		), folded AS (
-		  SELECT sid, MAX(s) s,MAX(d) d,MAX(w) w,MAX(m) m,
-		         MAX(sb) sb, MAX(db) db, MAX(wb) wb, MAX(mb) mb,
-		         MIN(weekly_first) weekly_first
-		  FROM totals GROUP BY sid
 		)
-		SELECT COALESCE(SUM(s),0),COALESCE(SUM(d),0),COALESCE(SUM(w),0),COALESCE(SUM(m),0),
-		       COALESCE(MAX(sb),0),COALESCE(MAX(db),0),COALESCE(MAX(wb),0),COALESCE(MAX(mb),0),
-		       COALESCE(MIN(weekly_first),'')
-		FROM folded`,
-		managedBudgetRead(options),
+		SELECT COALESCE(SUM(CASE WHEN sid = ? AND ? <> '' THEN amount ELSE 0 END),0),
+		       COALESCE(SUM(CASE WHEN ordered_at >= ? THEN amount ELSE 0 END),0),
+		       COALESCE(SUM(CASE WHEN ordered_at >= ? THEN amount ELSE 0 END),0),
+		       COALESCE(SUM(CASE WHEN ordered_at >= ? THEN amount ELSE 0 END),0),
+		       COALESCE(MAX(CASE WHEN sid = ? AND ? <> '' THEN bad ELSE 0 END),0),
+		       COALESCE(MAX(CASE WHEN ordered_at >= ? OR bad_time THEN bad ELSE 0 END),0),
+		       COALESCE(MAX(CASE WHEN ordered_at >= ? OR bad_time THEN bad ELSE 0 END),0),
+		       COALESCE(MAX(CASE WHEN ordered_at >= ? OR bad_time THEN bad ELSE 0 END),0),
+		       COALESCE(MIN(CASE WHEN ordered_at >= ? AND amount > 0 THEN ordered_at END),'')
+		FROM normalized`,
+		managed,
 		sessionID, sessionID, earliest.UTC().Format("2006-01-02T15:04:05"), guardBudgetWindowStamp(earliest),
 		sessionID, sessionID, earliest.UTC().Format("2006-01-02T15:04:05"), guardBudgetWindowStamp(earliest),
 		sessionID, sessionID, guardBudgetWindowStamp(dayStart), guardBudgetWindowStamp(weekStart), guardBudgetWindowStamp(monthStart),

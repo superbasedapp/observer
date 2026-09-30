@@ -96,6 +96,27 @@ assessment:
   most adapters are watcher-channel post-hoc flagging. The §6.5
   coverage matrix in the evidence pack states per-client capability —
   present it alongside any enforcement claim.
+- **Tool-call blocking and prompt-submit blocking are TWO separate
+  levers (2026-09-22 control-coverage investigation).** A tool whose
+  §6.5 bucket is `sandbox_enforce`/`recorded_acceptance` (no blocking
+  hook on an already-decided tool CALL) can still carry a real, wired,
+  vendor-verified prompt-submit block/ask channel
+  (`internal/guard.ConformanceMatrix()`) that stops the developer's
+  PROMPT before it reaches the model at all — Poolside is the sharpest
+  example: `recorded_acceptance` on the call, `block_ask` on the
+  prompt. `internal/controlcoverage` is the ONE join of both
+  classifications plus the budget-admission channel and route proof;
+  it drives `observer adapters`'s PROMPT column, `observer doctor
+  <tool>`'s control-coverage line, and the org dashboard Security
+  page's "Control coverage" table (`GET /api/org/guard/coverage`,
+  AUDITED per-developer, admin/policy_admin/security_viewer/lead-scoped
+  — the same guard-role gate as the rest of this page). Before this,
+  `internal/orgserver/recordedaccept` (Settings) was the ONLY org-side
+  consumer of the tool-call classification, and only for its 16
+  no-lever rows; an admin reading a Cursor-only or goose-only
+  developer's row had no fleet-wide way to see which of the four
+  levers — tool-call / prompt-submit / budget / route-proof — actually
+  apply.
 - **The audit chain proves integrity, not completeness.** An agent
   whose capture channel was disabled produces no rows; posture rules
   (hook-integrity, yolo flags) flag known-degraded states but cannot

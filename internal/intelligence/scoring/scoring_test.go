@@ -1,4 +1,4 @@
-package scoring
+package scoring_test
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/intelligence/scoring"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -92,7 +94,7 @@ func itoa(i int) string {
 
 func TestScoreSession_Empty(t *testing.T) {
 	database := openDB(t)
-	s := New(database)
+	s := scoring.New(database)
 	got, err := s.ScoreSession(context.Background(), "nothing")
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -112,7 +114,7 @@ func TestScoreSession_PerfectRun(t *testing.T) {
 		{action: models.ActionEditFile, target: "a.go", success: true, offsetSec: 10, turnIndex: 2},
 		{action: models.ActionRunCommand, target: "go test", success: true, offsetSec: 20, turnIndex: 3},
 	})
-	got, err := New(database).ScoreSession(context.Background(), "sess-A")
+	got, err := scoring.New(database).ScoreSession(context.Background(), "sess-A")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -144,7 +146,7 @@ func TestScoreSession_StaleReadsPenalizeRedundancy(t *testing.T) {
 		{action: models.ActionReadFile, target: "a.go", success: true, freshness: "fresh", offsetSec: 20, turnIndex: 3},
 		{action: models.ActionRunCommand, target: "go test", success: true, offsetSec: 30, turnIndex: 4},
 	})
-	got, err := New(database).ScoreSession(context.Background(), "sess-B")
+	got, err := scoring.New(database).ScoreSession(context.Background(), "sess-B")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -168,7 +170,7 @@ func TestScoreSession_FailuresIncreaseErrorRate(t *testing.T) {
 		{action: models.ActionEditFile, target: "a.go", success: true, offsetSec: 10, turnIndex: 2},
 		{action: models.ActionRunCommand, target: "go test", success: true, offsetSec: 20, turnIndex: 3},
 	})
-	got, err := New(database).ScoreSession(context.Background(), "sess-C")
+	got, err := scoring.New(database).ScoreSession(context.Background(), "sess-C")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -187,7 +189,7 @@ func TestWrite_PersistsColumns(t *testing.T) {
 		{action: models.ActionReadFile, target: "a.go", success: true, offsetSec: 0, turnIndex: 1},
 		{action: models.ActionEditFile, target: "a.go", success: true, offsetSec: 5, turnIndex: 2},
 	})
-	s := New(database)
+	s := scoring.New(database)
 	scores, err := s.ScoreSession(context.Background(), "sess-D")
 	if err != nil {
 		t.Fatalf("score: %v", err)
@@ -223,7 +225,7 @@ func TestBatchScore_OnlyUnscored(t *testing.T) {
 		`UPDATE sessions SET quality_score = 0.5 WHERE id = 'sess-E'`); err != nil {
 		t.Fatal(err)
 	}
-	res, err := New(database).BatchScore(context.Background(), BatchOptions{OnlyUnscored: true})
+	res, err := scoring.New(database).BatchScore(context.Background(), scoring.BatchOptions{OnlyUnscored: true})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -246,9 +248,9 @@ func TestContinuityFrom(t *testing.T) {
 		{50, 0.918},
 	}
 	for _, tc := range cases {
-		got := continuityFrom(tc.in)
+		got := scoring.ContinuityFrom(tc.in)
 		if diff := got - tc.approx; diff > 0.01 || diff < -0.01 {
-			t.Errorf("continuityFrom(%d) = %v, want ~%v", tc.in, got, tc.approx)
+			t.Errorf("ContinuityFrom(%d) = %v, want ~%v", tc.in, got, tc.approx)
 		}
 	}
 }
@@ -281,7 +283,7 @@ func TestScoreSession_StaleSplitNilWithoutCache(t *testing.T) {
 		{action: models.ActionReadFile, target: "a.go", success: true, freshness: "fresh", offsetSec: 0, turnIndex: 1},
 		{action: models.ActionReadFile, target: "a.go", success: true, freshness: "stale", offsetSec: 10, turnIndex: 2},
 	})
-	got, err := New(database).ScoreSession(context.Background(), "sess-nil")
+	got, err := scoring.New(database).ScoreSession(context.Background(), "sess-nil")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -311,7 +313,7 @@ func TestScoreSession_StaleSplitWasteful(t *testing.T) {
 	// Seed a benign hit event so sessionHasCacheEvents returns true.
 	insertCacheEvent(t, database, "sess-waste", "hit", 5)
 
-	got, err := New(database).ScoreSession(context.Background(), "sess-waste")
+	got, err := scoring.New(database).ScoreSession(context.Background(), "sess-waste")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -340,7 +342,7 @@ func TestScoreSession_StaleSplitCompactionMarksNecessary(t *testing.T) {
 	})
 	insertCacheEvent(t, database, "sess-comp", "compaction_reset", 5)
 
-	got, err := New(database).ScoreSession(context.Background(), "sess-comp")
+	got, err := scoring.New(database).ScoreSession(context.Background(), "sess-comp")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -366,7 +368,7 @@ func TestScoreSession_StaleSplitExpiryAlsoMarksNecessary(t *testing.T) {
 	})
 	insertCacheEvent(t, database, "sess-exp", "expiry_rewrite", 5)
 
-	got, err := New(database).ScoreSession(context.Background(), "sess-exp")
+	got, err := scoring.New(database).ScoreSession(context.Background(), "sess-exp")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -386,7 +388,7 @@ func TestScoreSession_StaleSplitWritePersists(t *testing.T) {
 	})
 	insertCacheEvent(t, database, "sess-rt", "hit", 5)
 
-	s := New(database)
+	s := scoring.New(database)
 	got, err := s.ScoreSession(context.Background(), "sess-rt")
 	if err != nil {
 		t.Fatal(err)
@@ -421,7 +423,7 @@ func TestScoreSession_StaleSplitNilFieldsRoundTrip(t *testing.T) {
 	seed(t, database, "sess-rt-nil", []seedEvent{
 		{action: models.ActionReadFile, target: "a.go", success: true, freshness: "stale", offsetSec: 10, turnIndex: 1},
 	})
-	s := New(database)
+	s := scoring.New(database)
 	got, err := s.ScoreSession(context.Background(), "sess-rt-nil")
 	if err != nil {
 		t.Fatal(err)

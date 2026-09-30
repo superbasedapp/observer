@@ -3,8 +3,6 @@ package dashboard
 import (
 	"net/http"
 	"time"
-
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 )
 
 // Budget guardrails v2 (usability arc P6.3 / review §8.2): month-to-
@@ -116,79 +114,23 @@ func scopeFor(root string, budget, mtd, projection float64) budgetScope {
 }
 
 // monthToDateCostByProject returns the month-to-date spend, total and
-// grouped by project root. Same proxy-dedup discipline as the cost
-// surfaces (api_turns win; token_usage rows matching a proxy
-// request_id are skipped); project attribution joins through sessions
-// for both arms so the two sources bucket identically. Rows without a
-// resolvable project count toward the global total only.
+// grouped by project root, over the node's deduped spend substrate
+// (spendTurns: the one session dedup rule, sessionmsg.DeriveVerdicts, applied
+// by the cost engine), so the budget card agrees with the Cost page and the
+// Sessions list. Rows without a resolvable project count toward the global
+// total only.
 func (s *Server) monthToDateCostByProject(r *http.Request, monthStart time.Time) (float64, map[string]float64, error) {
-	since := monthStart.Format(time.RFC3339Nano)
-	rows, err := s.db().QueryContext(r.Context(),
-		`WITH proxy_turn_ids AS (
-			SELECT request_id FROM api_turns
-			 WHERE request_id IS NOT NULL AND request_id != '' AND timestamp >= ?
-		),
-		combined AS (
-			SELECT at.session_id, at.model, at.input_tokens, at.output_tokens,
-			       at.cache_read_tokens, at.cache_creation_tokens, at.cache_creation_1h_tokens,
-			       0 AS reasoning_tokens, at.web_search_requests, at.cost_usd,
-			       at.timestamp
-			FROM api_turns at
-			WHERE at.timestamp >= ?
-			UNION ALL
-			SELECT tu.session_id, tu.model, tu.input_tokens, tu.output_tokens,
-			       tu.cache_read_tokens, tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-			       tu.reasoning_tokens, tu.web_search_requests, tu.estimated_cost_usd,
-			       tu.timestamp
-			FROM token_usage tu
-			WHERE tu.timestamp >= ?
-			  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-			       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-		)
-		SELECT COALESCE(p.root_path, ''),
-		       COALESCE(c.model, ''),
-		       COALESCE(c.input_tokens, 0), COALESCE(c.output_tokens, 0),
-		       COALESCE(c.cache_read_tokens, 0), COALESCE(c.cache_creation_tokens, 0),
-		       COALESCE(c.cache_creation_1h_tokens, 0), COALESCE(c.reasoning_tokens, 0),
-		       COALESCE(c.web_search_requests, 0), COALESCE(c.cost_usd, 0),
-		       COALESCE(c.timestamp, '')
-		FROM combined c
-		LEFT JOIN sessions s ON s.id = c.session_id
-		LEFT JOIN projects p ON p.id = s.project_id`,
-		since, since, since)
+	turns, err := s.spendTurns(r.Context(), monthStart, time.Time{}, "", "", nil)
 	if err != nil {
 		return 0, nil, err
 	}
-	defer rows.Close()
-
 	var total float64
 	perRoot := map[string]float64{}
-	for rows.Next() {
-		var (
-			root   string
-			model  string
-			bundle cost.TokenBundle
-			rec    float64
-			tsStr  string
-		)
-		if rows.Scan(&root, &model, &bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning, &bundle.WebSearchRequests, &rec, &tsStr) != nil {
-			continue
-		}
-		// Date-effective pricing ladder: recorded cost wins; otherwise
-		// price at the rate in force on the row's own timestamp.
-		rowCost := rec
-		if rowCost <= 0 && s.opts.CostEngine != nil {
-			ts, _ := time.Parse(time.RFC3339Nano, tsStr)
-			if p, ok := s.opts.CostEngine.LookupAt(model, ts); ok {
-				rowCost = cost.Compute(p, bundle)
-			}
-		}
-		total += rowCost
-		if root != "" {
-			perRoot[root] += rowCost
+	for _, t := range turns {
+		total += t.CostUSD
+		if t.ProjectPath != "" {
+			perRoot[t.ProjectPath] += t.CostUSD
 		}
 	}
-	return total, perRoot, rows.Err()
+	return total, perRoot, nil
 }

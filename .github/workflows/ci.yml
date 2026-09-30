@@ -56,15 +56,17 @@ jobs:
         # embedded dir from web/dist and asserts it matches what's
         # committed. If it doesn't, the dev edited web/src/ but
         # forgot to commit the rebuilt bundle — a stale embed would
-        # ship on the next release.
+        # ship on the next release. The copy is scripts/sync-web-embed.sh
+        # (source maps excluded), the same script `make web-build` runs.
+        # `git status --porcelain` rather than `git diff` so a NEW
+        # content-hashed chunk that was never committed also fails.
         run: |
           set -euo pipefail
-          rm -rf internal/intelligence/dashboard/webapp/dist
-          mkdir -p internal/intelligence/dashboard/webapp/dist
-          cp -R web/dist/. internal/intelligence/dashboard/webapp/dist/
-          if ! git diff --quiet --exit-code internal/intelligence/dashboard/webapp/dist; then
+          scripts/sync-web-embed.sh web/dist internal/intelligence/dashboard/webapp/dist
+          drift=$(git status --porcelain -- internal/intelligence/dashboard/webapp/dist)
+          if [ -n "$drift" ]; then
             echo "::error::Committed webapp/dist drifted from web/dist. Run \`make web-build\` and commit the result."
-            git diff --stat internal/intelligence/dashboard/webapp/dist | head -40
+            echo "$drift" | head -40
             exit 1
           fi
           echo "embedded dist matches fresh build ✓"
@@ -104,7 +106,7 @@ jobs:
         # gofumpt + goimports formatting, errorlint, gosec, gocritic, and
         # gocyclo (threshold 30; see .golangci.yml for the documented
         # pre-existing exclusions). Joined CI in v1.7; the tree is clean.
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6.5.2
         with:
           version: v1.64.8
           # Build golangci-lint from source with the runner's Go (1.25 via

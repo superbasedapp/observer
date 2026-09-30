@@ -1,7 +1,8 @@
 import { Link } from "react-router-dom";
 import { useApi } from "@/lib/useApi";
 import { HelpInd } from "@/components/HelpInd";
-import { Pill } from "@/components/primitives";
+import { VocabPill } from "@shared/lib/vocabPill";
+import { PROMPT_GUARD_OUTCOME, promptGuardOutcomeKey } from "@/lib/vocabTones";
 
 // PromptGuardLine — Session Detail Overview's small prompt-submit
 // intervention indicator (PHASE-3b-DASHBOARD task item 3). Renders
@@ -31,19 +32,6 @@ type PromptGuardEventsResponse = {
   count: number;
 };
 
-const OUTCOME_VARIANT: Record<string, "neutral" | "warn" | "danger" | "info" | "accent"> = {
-  blocked: "danger",
-  confirmed: "info",
-  warned: "warn",
-  redacted: "accent",
-  allowed: "neutral",
-};
-
-function outcomeVariant(outcome: string): "neutral" | "warn" | "danger" | "info" | "accent" {
-  if (outcome.startsWith("degraded:")) return "warn";
-  return OUTCOME_VARIANT[outcome] ?? "neutral";
-}
-
 export function PromptGuardLine({ sessionId }: { sessionId: string }) {
   const events = useApi<PromptGuardEventsResponse>(
     "/api/guard/prompt/events",
@@ -69,7 +57,13 @@ export function PromptGuardLine({ sessionId }: { sessionId: string }) {
         {rows.length} prompt-submit event{rows.length === 1 ? "" : "s"} in this session
       </span>
       <span className="text-fg-3">· last:</span>
-      <Pill variant={outcomeVariant(lastOutcome)}>{lastOutcome}</Pill>
+      <VocabPill
+        vocab="promptGuardOutcome"
+        table={PROMPT_GUARD_OUTCOME}
+        value={promptGuardOutcomeKey(lastOutcome)}
+      >
+        {lastOutcome}
+      </VocabPill>
       <Link
         to="/security"
         className="ml-auto text-[11px] text-accent underline decoration-dotted underline-offset-[3px] hover:decoration-accent"

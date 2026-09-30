@@ -4,10 +4,69 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#08090d" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f4f5f9" media="(prefers-color-scheme: light)" />
     <title>SuperBased Cloud</title>
+    <script>
+      // Pre-paint: stamp data-theme on <html> before any CSS evaluates so there is no
+      // flash of the wrong palette. Mirrors src/theme.ts initTheme (key sb_theme,
+      // dark default, ?theme= override), which still runs at boot and persists.
+      (function () {
+        try {
+          var q = new URLSearchParams(window.location.search).get("theme");
+          var t = q === "light" || q === "dark" ? q : localStorage.getItem("sb_theme") === "light" ? "light" : "dark";
+          document.documentElement.setAttribute("data-theme", t);
+        } catch (_) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+      // Pre-paint: stamp the density preference (comfortable / compact) the
+      // same way, so a compact viewer never sees a comfortable first paint.
+      // Mirrors shared/lib/density.ts (key sb_density); anything unknown leaves the
+      // attribute off, which is the comfortable default in tokens.css.
+      (function () {
+        try {
+          var d = localStorage.getItem("sb_density");
+          if (d === "comfortable" || d === "compact") {
+            document.documentElement.setAttribute("data-density", d);
+          }
+        } catch (_) {
+          /* storage unavailable: keep the default */
+        }
+      })();
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Pre-mount boot screen: renders from index.html before any JS or
+         stylesheet loads (inline CSS only) and is replaced the moment React
+         mounts into #root. The SuperBased mark's two squares hop diagonals (the
+         BrandLoader primitive's motion, shared/styles/motion.css), in Blueprint
+         on the real --bg-0. The theme follows the pre-paint data-theme stamp,
+         falling back to prefers-color-scheme. -->
+    <div id="root">
+      <div id="sbo-boot" role="status" aria-label="Loading…">
+        <span class="sbo-mark" aria-hidden="true"><i></i><i></i></span>
+        <div class="sbo-label">Loading…</div>
+      </div>
+    </div>
+    <style>
+      #sbo-boot { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #08090d; color: #848ca2; font-family: Inter, system-ui, -apple-system, sans-serif; }
+      #sbo-boot .sbo-label { font-size: 12px; letter-spacing: .02em; }
+      #sbo-boot .sbo-mark { position: relative; width: 30px; height: 30px; border-radius: 7px; background: #2647e8; box-shadow: 0 8px 28px -10px #2647e8; }
+      #sbo-boot .sbo-mark i { position: absolute; width: 28%; height: 28%; border-radius: 1.5px; background: #fff; animation: sbo-a 1.6s cubic-bezier(.65,0,.35,1) infinite; }
+      #sbo-boot .sbo-mark i:first-child { left: 50%; top: 22%; }
+      #sbo-boot .sbo-mark i:last-child { left: 22%; top: 50%; animation-name: sbo-b; }
+      @keyframes sbo-a { 0%,20% { transform: none; } 35%,70% { transform: translateX(-100%); } 85%,100% { transform: none; } }
+      @keyframes sbo-b { 0%,20% { transform: none; } 35%,70% { transform: translateX(100%); } 85%,100% { transform: none; } }
+      @media (prefers-color-scheme: light) { #sbo-boot { background: #f4f5f9; color: #646d86; } }
+      :root[data-theme="light"] #sbo-boot { background: #f4f5f9; color: #646d86; }
+      :root[data-theme="dark"] #sbo-boot { background: #08090d; color: #848ca2; }
+      @media (prefers-reduced-motion: reduce) { #sbo-boot .sbo-mark i { animation: none; } }
+    </style>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

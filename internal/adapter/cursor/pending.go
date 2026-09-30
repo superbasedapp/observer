@@ -149,12 +149,6 @@ func takeReasoning(conversationID, eventID string) string {
 	return defaultStash.take(conversationID, eventID)
 }
 
-// clearReasoning discards any pending thought — a new user turn ends the
-// previous one, so a thought left unclaimed by it must not leak forward.
-func clearReasoning(conversationID string) {
-	defaultStash.clear(conversationID)
-}
-
 // baseDir resolves this participant's directory.
 func (s *reasoningStash) baseDir() string {
 	if s.dir != "" {

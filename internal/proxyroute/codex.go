@@ -77,6 +77,12 @@ type RegistrationResult struct {
 	PriorBaseURL string
 	UpstreamID   string
 	UpstreamRoot string
+	// GatewayHintsAdded is set by the Claude Code writers when they add
+	// env.CLAUDE_CODE_GATEWAY_HINT_HEADERS=1 beside the route (claude.go).
+	// It can be true alongside AlreadySet: an existing route is topped up
+	// with the hint switch without the route itself changing. On an
+	// unregister it means the switch was (or would be) removed.
+	GatewayHintsAdded bool
 }
 
 // Registrar dispatches proxy-routing config writes per tool.

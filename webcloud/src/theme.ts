@@ -1,7 +1,13 @@
-// Theme toggle, matching the dashboard's contract: the choice persists in
-// localStorage under "sb_theme" (the same key the marketing site + arcade
-// use) and is applied by stamping data-theme on <html>. Dark is the
-// default when nothing is stored or storage is unavailable.
+// Theme toggle: the choice persists in localStorage under "sb_theme" and is
+// applied by stamping data-theme on <html>. Dark is the default when nothing
+// is stored or storage is unavailable. index.html runs the same logic as a
+// pre-paint script so the boot screen and first paint never flash.
+//
+// Why "sb_theme" and not the node dashboard's "superbased.theme": the portal
+// is served from the superbased.app domain family, where the marketing site
+// and arcade already use "sb_theme"; the node dashboard runs on localhost (a
+// different origin), so the two keys never meet. The portal also offers only
+// dark / light, not "system".
 
 export type Theme = "dark" | "light";
 

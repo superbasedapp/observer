@@ -7,7 +7,6 @@ import {
   type ReactNode,
 } from "react";
 import { Route, Routes, useLocation } from "react-router-dom";
-import { AnimatePresence, motion } from "framer-motion";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
 import { RestartPendingBanner } from "@/components/RestartPendingBanner";
@@ -21,13 +20,20 @@ import { FirstCaptureToast } from "@/components/FirstCaptureToast";
 import { ToastViewport } from "@/components/Toast";
 import { KonamiEgg } from "@/components/KonamiEgg";
 import { FilterBar } from "@/components/FilterBar";
-import { CommandPalette } from "@/components/CommandPalette";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { NotFoundPage } from "@/pages/NotFound";
 import { FilterProvider } from "@/lib/filters";
 import { TourProvider } from "@/components/tour/TourProvider";
 import { HelpInd } from "@/components/HelpInd";
 import { HelpSlotProvider } from "@/components/primitives";
+import {
+  ChartSkeleton,
+  PageTransition,
+  Skeleton,
+  StatCardSkeleton,
+  TopProgress,
+} from "@shared/primitives";
+import { useApiActivity } from "@/lib/useApi";
 import { NAV_ITEMS } from "@/lib/nav";
 import { isSectionHidden, useGovernance, type Governance } from "@/lib/governance";
 
@@ -35,6 +41,14 @@ import { isSectionHidden, useGovernance, type Governance } from "@/lib/governanc
 // open so it doesn't bloat the shell chunk.
 const HelpDrawer = lazy(() =>
   import("@/components/HelpDrawer").then((m) => ({ default: m.HelpDrawer })),
+);
+// The command palette (and framer-motion, which only it and the lazy pages
+// use) loads on the first Cmd/Ctrl-K, keeping ~38 KB gzip of animation
+// library off the first paint.
+const CommandPalette = lazy(() =>
+  import("@/components/CommandPalette").then((m) => ({
+    default: m.CommandPalette,
+  })),
 );
 
 // Lazy per-route — keeps recharts/tanstack-table chunks off the
@@ -171,33 +185,42 @@ function RouteErrorBoundary({ children }: { children: ReactNode }) {
   return <ErrorBoundary key={pathname}>{children}</ErrorBoundary>;
 }
 
+// RouteFallback is shaped like a page (header, KPI strip, chart) so a lazy
+// route's chunk load reads as the page arriving, not as a spinner swap.
 function RouteFallback() {
   return (
-    <div className="flex h-full items-center justify-center p-12">
-      <div className="flex items-center gap-3 text-[12px] text-fg-3">
-        <span className="inline-block h-3 w-3 animate-spin rounded-full border border-line-3 border-t-accent" />
-        Loading…
+    <div
+      className="flex flex-col gap-5 p-4 sm:p-6"
+      role="status"
+      aria-label="Loading page"
+    >
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-5 w-48" />
+        <Skeleton className="h-3 w-80 max-w-full" />
+      </div>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <StatCardSkeleton />
+        <StatCardSkeleton />
+        <StatCardSkeleton />
+        <StatCardSkeleton />
+      </div>
+      <div className="rounded-3 border border-line-2 bg-bg-2 p-4">
+        <ChartSkeleton height={220} />
       </div>
     </div>
   );
 }
 
-// AnimatePresence keyed on pathname so a route change crossfades
-// instead of snapping. mode="wait" lets the outgoing page fade
-// out before the incoming page mounts — avoids stacked layouts
-// during the swap.
+// A route change plays the shared CSS page-enter (fade + 6px rise, transform
+// and opacity only). There is no exit phase: the old AnimatePresence
+// mode="wait" held every navigation back ~140 ms while the outgoing page
+// faded. Suspense sits INSIDE the transition so a lazy chunk's skeleton
+// enters the same way the page does.
 function AnimatedRoutes() {
   const location = useLocation();
   return (
-    <AnimatePresence mode="wait" initial={false}>
-      <motion.div
-        key={location.pathname}
-        initial={{ opacity: 0, y: 4 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -2 }}
-        transition={{ duration: 0.14, ease: "easeOut" }}
-        className="h-full"
-      >
+    <PageTransition routeKey={location.pathname} className="h-full">
+      <Suspense fallback={<RouteFallback />}>
         <Routes location={location}>
           <Route index element={<OverviewPage />} />
           <Route path="live" element={<LivePage />} />
@@ -227,9 +250,17 @@ function AnimatedRoutes() {
               silent redirect that reads as a navigation bug. */}
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
-      </motion.div>
-    </AnimatePresence>
+      </Suspense>
+    </PageTransition>
   );
+}
+
+// Leaf reader of the query cache's foreground activity. Keep it a leaf: the
+// shell re-rendering on every busy/idle flip would re-render the whole app.
+// Foreground requests in flight (a filter change, a page's first load)
+// drive the thin gradient bar along the top of the content column.
+function ActivityProgress() {
+  return <TopProgress active={useApiActivity() > 0} className="z-40" />;
 }
 
 // Renderer injected into the shared design-system help slot: DS components
@@ -260,9 +291,14 @@ export default function App() {
   // are instant. First open pays the chunk-fetch cost.
   const [helpEverOpened, setHelpEverOpened] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteEverOpened, setPaletteEverOpened] = useState(false);
   useEffect(() => {
     if (helpOpen && !helpEverOpened) setHelpEverOpened(true);
   }, [helpOpen, helpEverOpened]);
+  useEffect(() => {
+    if (paletteOpen && !paletteEverOpened) setPaletteEverOpened(true);
+  }, [paletteOpen, paletteEverOpened]);
+
 
   // Keyboard shortcuts global to the app shell. `?` toggles help when
   // no input is focused; ⌘K / Ctrl-K toggles the command palette
@@ -321,7 +357,10 @@ export default function App() {
             open={mobileNavOpen}
             onClose={() => setMobileNavOpen(false)}
           />
-          <main className="flex min-w-0 flex-1 flex-col">
+          {/* bg-bg-0 (the shell's own colour) so the column stays opaque while
+              it slides over the rail during the nav-collapse FLIP (Sidebar). */}
+          <main className="relative flex min-w-0 flex-1 flex-col bg-bg-0">
+            <ActivityProgress />
             <TopBar onHelp={openHelp} onMenu={() => setMobileNavOpen(true)} />
             <RestartPendingBanner />
             <IntegrityBanner />
@@ -346,9 +385,7 @@ export default function App() {
                    page can't take the sidebar/topbar with it; keying on
                    pathname resets it when the user navigates away. */
                 <RouteErrorBoundary>
-                  <Suspense fallback={<RouteFallback />}>
-                    <AnimatedRoutes />
-                  </Suspense>
+                  <AnimatedRoutes />
                 </RouteErrorBoundary>
               )}
             </div>
@@ -362,10 +399,14 @@ export default function App() {
               />
             </Suspense>
           )}
-          <CommandPalette
-            open={paletteOpen}
-            onClose={() => setPaletteOpen(false)}
-          />
+          {paletteEverOpened && (
+            <Suspense fallback={null}>
+              <CommandPalette
+                open={paletteOpen}
+                onClose={() => setPaletteOpen(false)}
+              />
+            </Suspense>
+          )}
         </div>
       </FilterProvider>
     </TourProvider>

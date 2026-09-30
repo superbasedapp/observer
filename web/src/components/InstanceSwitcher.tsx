@@ -12,7 +12,9 @@ import type {
   InstancesResponse,
   InstanceTestResult,
 } from "@/lib/types";
-import { Tooltip } from "@/components/primitives";
+import { Icon, LiveDot, Spinner, Tooltip } from "@/components/primitives";
+import { INSTANCE_DOT, liveDotProps, withDotClass } from "@/lib/liveSignals";
+import { Check, ChevronDown, Plug, X } from "lucide-react";
 
 // InstanceSwitcher lets the operator view the dashboard of a REMOTE developer
 // machine that runs its own Observer install, without leaving this one.
@@ -159,7 +161,7 @@ export function InstanceSwitcher() {
         >
           <span
             className={clsx(
-              "h-1.5 w-1.5 rounded-full",
+              "h-1.5 w-1.5 rounded-pill",
               connected.length > 0 ? "bg-accent" : "bg-fg-4",
             )}
           />
@@ -167,7 +169,7 @@ export function InstanceSwitcher() {
           {connected.length > 0 && (
             <span className="text-accent">+{connected.length}</span>
           )}
-          <ChevronIcon />
+          <Icon icon={ChevronDown} size={10} />
         </button>
       </Tooltip>
 
@@ -182,7 +184,7 @@ export function InstanceSwitcher() {
 
           {/* "Local" is a state, not an action: you are already here. */}
           <div className="flex items-center gap-2 rounded-1 bg-bg-3 px-2 py-1.5 text-[11px] text-fg-0">
-            <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+            <span className="h-1.5 w-1.5 rounded-pill bg-accent" />
             <span className="font-medium">Local</span>
             <span className="ml-auto text-[10px] text-fg-3">this machine</span>
           </div>
@@ -278,16 +280,13 @@ function InstanceRow({
   return (
     <div className="rounded-1 px-2 py-1.5 hover:bg-bg-2">
       <div className="flex items-center gap-2">
-        <span
-          className={clsx(
-            "h-1.5 w-1.5 shrink-0 rounded-full",
-            connected
-              ? "bg-success"
-              : connecting
-                ? "bg-warn"
-                : reason
-                  ? "bg-danger"
-                  : "bg-fg-4",
+        <LiveDot
+          {...withDotClass(
+            liveDotProps(
+              INSTANCE_DOT,
+              connected ? "connected" : connecting ? "connecting" : reason ? "error" : "disconnected",
+            ),
+            "h-1.5 w-1.5 shrink-0",
           )}
         />
         <div className="min-w-0 flex-1">
@@ -312,13 +311,15 @@ function InstanceRow({
             )}
           >
             {testBusy ? (
-              <span className="inline-block h-2.5 w-2.5 animate-spin rounded-full border border-line-3 border-t-accent" />
+              <Spinner size={10} label="Testing connection" />
             ) : testPassed === true ? (
-              <CheckIcon className="text-success" />
+              <Icon icon={Check} size={10} className="text-success" />
             ) : testPassed === false ? (
-              <XIcon className="text-danger" />
+              <Icon icon={X} size={10} className="text-danger" />
             ) : (
-              <TestIcon className="text-fg-4" />
+              // Idle "Test connection" affordance: a plug, distinct from the
+              // state dot so it reads as an action, not a status.
+              <Icon icon={Plug} size={10} className="text-fg-4" />
             )}
           </button>
         </Tooltip>
@@ -332,36 +333,43 @@ function InstanceRow({
             >
               Open
             </a>
-            <button
-              type="button"
-              onClick={onDisconnect}
-              disabled={blocked}
-              title={blocked ? disabledReason : "Close the port forward"}
-              className={clsx(
-                "rounded-1 border border-line-2 px-1.5 py-1 text-[10px]",
-                blocked
-                  ? "cursor-not-allowed bg-bg-2 text-fg-4"
-                  : "bg-bg-2 text-fg-2 hover:bg-bg-3 hover:text-fg-0",
-              )}
-            >
-              Disconnect
-            </button>
+            {/* The span carries the tooltip so it also explains a blocked button. */}
+            <Tooltip content={blocked ? disabledReason : "Close the port forward"}>
+              <span className="inline-flex">
+                <button
+                  type="button"
+                  onClick={onDisconnect}
+                  disabled={blocked}
+                  className={clsx(
+                    "rounded-1 border border-line-2 px-1.5 py-1 text-micro",
+                    blocked
+                      ? "cursor-not-allowed bg-bg-2 text-fg-4"
+                      : "bg-bg-2 text-fg-2 hover:bg-bg-3 hover:text-fg-0",
+                  )}
+                >
+                  Disconnect
+                </button>
+              </span>
+            </Tooltip>
           </div>
         ) : (
-          <button
-            type="button"
-            onClick={onConnect}
-            disabled={disabled}
-            title={disabled ? disabledReason : `Open an SSH forward to ${info.target}`}
-            className={clsx(
-              "shrink-0 rounded-1 border border-line-2 px-1.5 py-1 text-[10px]",
-              disabled
-                ? "cursor-not-allowed bg-bg-2 text-fg-4"
-                : "bg-bg-2 text-fg-2 hover:bg-bg-3 hover:text-fg-0",
-            )}
-          >
-            {connecting ? "Connecting…" : "Connect"}
-          </button>
+          <Tooltip content={disabled ? disabledReason : `Open an SSH forward to ${info.target}`}>
+            <span className="inline-flex shrink-0">
+              <button
+                type="button"
+                onClick={onConnect}
+                disabled={disabled}
+                className={clsx(
+                  "shrink-0 rounded-1 border border-line-2 px-1.5 py-1 text-micro",
+                  disabled
+                    ? "cursor-not-allowed bg-bg-2 text-fg-4"
+                    : "bg-bg-2 text-fg-2 hover:bg-bg-3 hover:text-fg-0",
+                )}
+              >
+                {connecting ? "Connecting…" : "Connect"}
+              </button>
+            </span>
+          </Tooltip>
         )}
       </div>
 
@@ -393,82 +401,3 @@ function InstanceRow({
   );
 }
 
-function ChevronIcon() {
-  return (
-    <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden>
-      <path
-        d="M3 4.5 6 8l3-3.5"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-// CheckIcon marks a passed connectivity test.
-function CheckIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      width="10"
-      height="10"
-      viewBox="0 0 12 12"
-      fill="none"
-      aria-hidden
-      className={className}
-    >
-      <path
-        d="M2.5 6.2 5 8.7l4.5-5"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-// XIcon marks a failed connectivity test.
-function XIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      width="10"
-      height="10"
-      viewBox="0 0 12 12"
-      fill="none"
-      aria-hidden
-      className={className}
-    >
-      <path
-        d="M3 3l6 6M9 3l-6 6"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-// TestIcon is the idle "Test connection" affordance: a small plug/pulse
-// glyph, distinct from the state dot so it reads as an action, not a status.
-function TestIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      width="10"
-      height="10"
-      viewBox="0 0 12 12"
-      fill="none"
-      aria-hidden
-      className={className}
-    >
-      <path
-        d="M6 1v3M2 6h2.2M9.8 6H8M6 8v3M4 4l1.4 1.4M8 4 6.6 5.4M4 8l1.4-1.4M8 8 6.6 6.6"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-      />
-      <circle cx="6" cy="6" r="1.3" stroke="currentColor" strokeWidth="1.2" />
-    </svg>
-  );
-}

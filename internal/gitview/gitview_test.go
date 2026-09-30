@@ -3,6 +3,8 @@ package gitview
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -291,5 +293,261 @@ func TestSnapshotIntegration(t *testing.T) {
 	}
 	if !haveUntracked {
 		t.Errorf("status missing untracked.txt: %+v", info.Status)
+	}
+}
+
+// TestIsNoCommitsError_ExitCodeShape pins the structural predicate
+// itself against synthetic *GitError values, independent of real git
+// (2026-09-22 review finding 11): the ONLY accepted shape is exit code
+// 1 with empty stderr. Exit 128 (git's own documented code for a
+// "fatal" startup-level failure — a corrupt repository, a permission
+// error, "not a git repository") must NEVER be read as a quiet-miss,
+// even with empty stderr, because the pre-fix `ExitCode > 0` check let
+// every positive code through.
+func TestIsNoCommitsError_ExitCodeShape(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"exit1_emptyStderr_quietMiss", &GitError{ExitCode: 1, Stderr: ""}, true},
+		{"exit128_emptyStderr_mustNotPassAsNoCommits", &GitError{ExitCode: 128, Stderr: ""}, false},
+		{"exit1_withStderr_realDiagnostic", &GitError{ExitCode: 1, Stderr: "fatal: not a git repository"}, false},
+		{"exit2_emptyStderr_otherPositiveCode", &GitError{ExitCode: 2, Stderr: ""}, false},
+		{"exitNeg1_signalOrDeadline", &GitError{ExitCode: -1, Stderr: ""}, false},
+		{"exit0_success_neverAnErrorButCheckAnyway", &GitError{ExitCode: 0, Stderr: ""}, false},
+		{"notAGitError", errors.New("boom"), false},
+		{"nilErr", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsNoCommitsError(tt.err); got != tt.want {
+				t.Errorf("IsNoCommitsError(%+v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsNoCommitsError_UnbornRepo pins IsNoCommitsError's real-git
+// behaviour end-to-end across the 2026-09-22 review arc (finding #6,
+// then S8's rework): a freshly initialized repository with zero commits
+// fails `rev-parse --verify --quiet HEAD` SILENTLY — exit 1, empty
+// stdout AND stderr, `--quiet`'s own documented contract — which
+// IsNoCommitsError's structural (exit-code + empty-stderr) check must
+// recognize; a repository WITH a commit must resolve cleanly; a
+// genuinely unrelated failure ("not a repository at all") must NOT be
+// misclassified, because it prints a non-empty diagnostic even under
+// --quiet; and a repository whose `.git/HEAD` has been hand-corrupted
+// into a BOGUS symref fails the rev-parse probe the exact SAME silent
+// way an unborn repo does — proving IsNoCommitsError alone cannot tell
+// the two apart, and pinning the independent symbolic-ref ref-state
+// probe (internal/commitscan's resolveHeadSHA second probe) that DOES
+// tell them apart: it succeeds for the healthy unborn branch pointer
+// and fails for the bogus one.
+func TestIsNoCommitsError_UnbornRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	ctx := context.Background()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(cmd.Environ(),
+			"GIT_AUTHOR_NAME=T", "GIT_AUTHOR_EMAIL=t@e.co",
+			"GIT_COMMITTER_NAME=T", "GIT_COMMITTER_EMAIL=t@e.co")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q")
+
+	// Case 1: unborn repo — the ONE healthy no-commit state.
+	_, _, err := RunReadOnly(ctx, dir, 0, "rev-parse", "--verify", "--quiet", "HEAD")
+	if err == nil {
+		t.Fatal("rev-parse --verify --quiet HEAD on an unborn repo: want an error")
+	}
+	if !IsNoCommitsError(err) {
+		t.Errorf("IsNoCommitsError(%v) = false, want true for an unborn repo", err)
+	}
+	var gitErr *GitError
+	if !errors.As(err, &gitErr) || gitErr.Stderr != "" {
+		t.Errorf("unborn-repo error = %+v (%v), want a *GitError with EMPTY Stderr", err, err)
+	}
+	// The independent ref-state probe: HEAD must be a symbolic ref
+	// pointing at a branch that has no commit yet.
+	branchOut, _, symErr := RunReadOnly(ctx, dir, 0, "symbolic-ref", "-q", "HEAD")
+	if symErr != nil {
+		t.Fatalf("symbolic-ref -q HEAD on an unborn repo: %v, want it to succeed (HEAD is a normal branch pointer)", symErr)
+	}
+	branch := strings.TrimSpace(string(branchOut))
+	if branch == "" {
+		t.Fatal("symbolic-ref -q HEAD returned an empty ref")
+	}
+	_, _, refErr := RunReadOnly(ctx, dir, 0, "show-ref", "--verify", "--quiet", branch)
+	if refErr == nil {
+		t.Errorf("show-ref --verify --quiet %q: want it to FAIL — the branch has no commit yet", branch)
+	}
+	// 2026-09-22 review finding 11: show-ref's own --quiet failure
+	// contract is the exact same structural shape (exit 1, empty
+	// stderr) rev-parse's is — internal/commitscan's second probe reuses
+	// IsNoCommitsError for it rather than accepting ANY show-ref error as
+	// "no ref yet", so real git must actually produce that shape here.
+	if !IsNoCommitsError(refErr) {
+		t.Errorf("IsNoCommitsError(%v) = false, want true for show-ref's quiet no-ref miss", refErr)
+	}
+
+	// Case 2: a genuinely unrelated failure class (not a repository at
+	// all) must NOT be misclassified as "no commits yet" — its stderr is
+	// non-empty even under --quiet, since --quiet only silences the
+	// revision-resolution diagnostic, not "fatal: not a git repository".
+	notARepo := t.TempDir()
+	_, _, badErr := RunReadOnly(ctx, notARepo, 0, "rev-parse", "--verify", "--quiet", "HEAD")
+	if badErr == nil {
+		t.Fatal("rev-parse --verify --quiet HEAD outside any repository: want an error")
+	}
+	if IsNoCommitsError(badErr) {
+		t.Errorf("IsNoCommitsError(%v) = true, want false for a not-a-repository error", badErr)
+	}
+
+	// Case 3: a repository whose .git/HEAD has been hand-corrupted into a
+	// BOGUS symref (a "ref: " line git cannot resolve to any ref at
+	// all — verified live: git reports "fatal: No such ref: HEAD" for
+	// this exact shape, as opposed to a well-formed "ref: refs/heads/X"
+	// pointing at a not-yet-existent branch, which IS the healthy case 1
+	// shape). IsNoCommitsError ALONE cannot tell this apart from case 1
+	// — the rev-parse probe fails the exact same silent way (exit 1,
+	// empty output) either way — which is precisely why it is only the
+	// FIRST of two probes a caller must chain (2026-09-22 review finding
+	// S8). The second, independent probe (symbolic-ref) must fail here,
+	// where it succeeded in case 1, so a caller chaining both never
+	// reports "healthy empty" for a broken repository.
+	dangling := t.TempDir()
+	if out, err := exec.CommandContext(ctx, "git", "-C", dangling, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	bogusSymref := "ref: refs/heads/main garbage\n"
+	if err := os.WriteFile(filepath.Join(dangling, ".git", "HEAD"), []byte(bogusSymref), 0o644); err != nil {
+		t.Fatalf("corrupt .git/HEAD: %v", err)
+	}
+	_, _, danglingErr := RunReadOnly(ctx, dangling, 0, "rev-parse", "--verify", "--quiet", "HEAD")
+	if danglingErr == nil {
+		t.Fatal("rev-parse --verify --quiet HEAD on a bogus symref HEAD: want an error")
+	}
+	if !IsNoCommitsError(danglingErr) {
+		t.Fatalf("IsNoCommitsError(%v) = false, want true — this is the ambiguous case the second probe must resolve, not the first", danglingErr)
+	}
+	if _, _, symErr := RunReadOnly(ctx, dangling, 0, "symbolic-ref", "-q", "HEAD"); symErr == nil {
+		t.Error("symbolic-ref -q HEAD on a bogus symref HEAD: want an error — it must NOT be read as a healthy unborn branch pointer")
+	}
+
+	run("commit", "-q", "--allow-empty", "-m", "first")
+	_, _, err = RunReadOnly(ctx, dir, 0, "rev-parse", "--verify", "--quiet", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse --verify --quiet HEAD after a commit: %v", err)
+	}
+}
+
+// TestGitEnvOverridesAreNetworkFreeAndNonInteractive pins the shared
+// envelope's environment: no credential prompt, no askpass helper, stable
+// C-locale output. GIT_NO_LAZY_FETCH=1 is NOT in the shared set - forcing
+// it breaks the commit scanner's line counts on a blobless partial clone -
+// it is added only by RunReadOnlyNoLazyFetch (the skills step, SKILL-2).
+func TestGitEnvOverridesAreNetworkFreeAndNonInteractive(t *testing.T) {
+	want := []string{"LC_ALL=C", "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=/bin/false"}
+	for _, w := range want {
+		found := false
+		for _, e := range gitEnvOverrides {
+			if e == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("gitEnvOverrides missing %q: %v", w, gitEnvOverrides)
+		}
+	}
+	for _, e := range gitEnvOverrides {
+		if e == noLazyFetchEnv {
+			t.Errorf("gitEnvOverrides carries %q; it must stay scoped to RunReadOnlyNoLazyFetch", e)
+		}
+	}
+	if noLazyFetchEnv != "GIT_NO_LAZY_FETCH=1" {
+		t.Errorf("noLazyFetchEnv = %q", noLazyFetchEnv)
+	}
+}
+
+func TestIsMissingObjectError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"not a tree object", &GitError{ExitCode: 128, Stderr: "fatal: not a tree object"}, true},
+		{"bad object", &GitError{ExitCode: 128, Stderr: "fatal: bad object deadbeef"}, true},
+		{"invalid name", &GitError{ExitCode: 128, Stderr: "fatal: Not a valid object name deadbeef"}, true},
+		{"lazy fetch refused", &GitError{ExitCode: 128, Stderr: "fatal: lazy fetching disabled; some objects not available"}, true},
+		{"other fatal", &GitError{ExitCode: 128, Stderr: "fatal: not a git repository"}, false},
+		{"exit 1", &GitError{ExitCode: 1, Stderr: "bad object"}, false},
+		{"timeout", &GitError{ExitCode: -1}, false},
+		{"not a GitError", ErrGitUnavailable, false},
+	}
+	for _, c := range cases {
+		if got := IsMissingObjectError(c.err); got != c.want {
+			t.Errorf("%s: IsMissingObjectError = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestIsNotRepoError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"not a repo", &GitError{ExitCode: 128, Stderr: "fatal: not a git repository (or any of the parent directories): .git"}, true},
+		{"GIT_DIR variant", &GitError{ExitCode: 128, Stderr: "fatal: not a git repository: '/x/.git'"}, true},
+		{"wrapped", fmt.Errorf("commitscan: %w", &GitError{ExitCode: 128, Stderr: "fatal: not a git repository"}), true},
+		{"dubious ownership", &GitError{ExitCode: 128, Stderr: "fatal: detected dubious ownership in repository at '/mnt/c/x'"}, false},
+		{"missing object", &GitError{ExitCode: 128, Stderr: "fatal: bad object deadbeef"}, false},
+		{"exit 1 with the phrase", &GitError{ExitCode: 1, Stderr: "not a git repository"}, false},
+		{"quiet miss", &GitError{ExitCode: 1}, false},
+		{"timeout", &GitError{ExitCode: -1}, false},
+		{"git unavailable", ErrGitUnavailable, false},
+		{"nil", nil, false},
+	}
+	for _, c := range cases {
+		if got := IsNotRepoError(c.err); got != c.want {
+			t.Errorf("%s: IsNotRepoError = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestIsNotRepoError_RealGit pins the classifier against real git output: a
+// plain directory is not-a-repo; an unborn repo's quiet HEAD miss is not.
+func TestIsNotRepoError_RealGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	ctx := context.Background()
+	plain := t.TempDir()
+	_, _, err := RunReadOnly(ctx, plain, 0, "rev-parse", "--show-prefix")
+	if err == nil {
+		t.Skipf("%s resolved inside a repository (an enclosing .git?); cannot exercise the not-a-repo path", plain)
+	}
+	if !IsNotRepoError(err) {
+		t.Errorf("IsNotRepoError(%v) = false, want true for a plain directory", err)
+	}
+
+	repo := t.TempDir()
+	if out, err := exec.CommandContext(ctx, "git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	_, _, err = RunReadOnly(ctx, repo, 0, "rev-parse", "--verify", "--quiet", "HEAD")
+	if err == nil {
+		t.Fatal("rev-parse HEAD on an unborn repo: want an error")
+	}
+	if IsNotRepoError(err) {
+		t.Errorf("IsNotRepoError(%v) = true, want false for an unborn repository", err)
 	}
 }

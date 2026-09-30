@@ -50,6 +50,22 @@ const statusSnapshotTTL = 15 * time.Second
 // exceed while holding the singleflight gate.
 const statusScanTimeout = 2 * time.Minute
 
+// statusStaleServeMax bounds STALE-WHILE-REVALIDATE (optimization review
+// 2026-09-27, docs/audits/optimization-review-2026-09-27.md finding N3).
+//
+// Once an entry is older than statusSnapshotTTL it is no longer "fresh", but
+// for up to this long it is still SERVED — immediately — while exactly one
+// background scan recomputes it. Without this, the first poller after every
+// TTL boundary blocked for the whole scan (seconds on a real corpus, 5-18 s
+// measured while the watcher was writing), which is the "stale data for many
+// seconds, then a jump" the chrome showed every 15 s. The staleness a poller
+// can observe is therefore bounded by TTL + one scan, not by TTL alone; every
+// field here is a lifetime count or a last-seen stamp read as an order of
+// magnitude, so that is the same honesty contract statusSnapshotTTL documents.
+// Past this bound (an idle dashboard, a suspended laptop) the entry is too old
+// to present as current and the request falls back to the blocking path.
+const statusStaleServeMax = 2 * time.Minute
+
 // statusSnapshotCache memoizes the most recent diag.Snapshot for
 // GET /api/status.
 //
@@ -79,6 +95,16 @@ type statusSnapshotCache struct {
 	at    time.Time
 	snap  diag.StatusSnapshot
 	valid bool
+	// gen counts invalidations. A background refresh captures it before
+	// scanning and stores only if it is unchanged, so a scan that straddles
+	// a demo start/stop can never resurrect an entry invalidate() dropped.
+	gen uint64
+	// refreshing is true while a background (stale-while-revalidate) scan
+	// is in flight; it keeps a burst of stale hits to ONE refresh.
+	refreshing bool
+	// bg tracks in-flight background refreshes so tests can wait for them
+	// deterministically instead of sleeping.
+	bg sync.WaitGroup
 }
 
 // load returns the cached snapshot when one is live for this database at now.
@@ -98,11 +124,59 @@ func (c *statusSnapshotCache) load(database *sql.DB, now time.Time) (diag.Status
 	return c.snap, true
 }
 
+// loadStale returns the entry for this database when it is past its TTL but
+// still young enough (statusStaleServeMax) to be served while a background
+// scan refreshes it. A fresh entry is load's business, not this one's.
+func (c *statusSnapshotCache) loadStale(database *sql.DB, now time.Time) (diag.StatusSnapshot, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.valid || c.key != database {
+		return diag.StatusSnapshot{}, false
+	}
+	age := now.Sub(c.at)
+	if age < statusSnapshotTTL || age >= statusStaleServeMax {
+		return diag.StatusSnapshot{}, false
+	}
+	return c.snap, true
+}
+
 // store remembers snap as the entry for this database.
 func (c *statusSnapshotCache) store(database *sql.DB, now time.Time, snap diag.StatusSnapshot) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.key, c.at, c.snap, c.valid = database, now, snap, true
+}
+
+// storeIfGen is store for a background refresh: it is a no-op when the
+// cache was invalidated (gen moved) after the refresh captured gen.
+func (c *statusSnapshotCache) storeIfGen(gen uint64, database *sql.DB, now time.Time, snap diag.StatusSnapshot) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen != gen {
+		return
+	}
+	c.key, c.at, c.snap, c.valid = database, now, snap, true
+}
+
+// beginRefresh claims the single background-refresh slot, returning the
+// current generation. ok is false when a refresh is already in flight.
+func (c *statusSnapshotCache) beginRefresh() (gen uint64, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.refreshing {
+		return 0, false
+	}
+	c.refreshing = true
+	c.bg.Add(1)
+	return c.gen, true
+}
+
+// endRefresh releases the background-refresh slot.
+func (c *statusSnapshotCache) endRefresh() {
+	c.mu.Lock()
+	c.refreshing = false
+	c.mu.Unlock()
+	c.bg.Done()
 }
 
 // invalidate drops the cached entry unconditionally.
@@ -120,6 +194,7 @@ func (c *statusSnapshotCache) invalidate() {
 	defer c.mu.Unlock()
 	c.key, c.snap, c.valid = nil, diag.StatusSnapshot{}, false
 	c.at = time.Time{}
+	c.gen++
 }
 
 // statusSnapshot returns the /api/status snapshot, computing it at most once
@@ -166,6 +241,14 @@ func (s *Server) statusSnapshot(ctx context.Context) (diag.StatusSnapshot, error
 		return snap, nil
 	}
 
+	// Stale-while-revalidate: an entry just past its TTL is served NOW and
+	// refreshed in the background (statusStaleServeMax), so no poller ever
+	// waits for a scan once the cache has been warmed.
+	if snap, ok := s.statusSnap.loadStale(database, s.now()); ok {
+		s.refreshStatusSnapshotAsync(ctx, database)
+		return snap, nil
+	}
+
 	s.statusSnap.gate.Lock()
 	defer s.statusSnap.gate.Unlock()
 
@@ -186,6 +269,36 @@ func (s *Server) statusSnapshot(ctx context.Context) (diag.StatusSnapshot, error
 		s.statusSnap.store(database, s.now(), snap)
 	}
 	return snap, nil
+}
+
+// refreshStatusSnapshotAsync recomputes the snapshot for database in the
+// background, at most one refresh at a time. It takes the same singleflight
+// gate as the blocking path, so a background refresh and a blocking miss can
+// never scan concurrently, and it re-checks freshness under the gate so a
+// blocking miss that already refreshed the entry is not scanned twice. The
+// scan runs detached from the triggering request exactly like the blocking
+// path (see statusSnapshot), bounded by statusScanTimeout. A degraded
+// snapshot is never stored, and an invalidation that lands mid-scan wins.
+func (s *Server) refreshStatusSnapshotAsync(ctx context.Context, database *sql.DB) {
+	gen, ok := s.statusSnap.beginRefresh()
+	if !ok {
+		return
+	}
+	scanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusScanTimeout)
+	go func() {
+		defer s.statusSnap.endRefresh()
+		defer cancel()
+		s.statusSnap.gate.Lock()
+		defer s.statusSnap.gate.Unlock()
+		if _, fresh := s.statusSnap.load(database, s.now()); fresh {
+			return
+		}
+		snap, err := s.snapshot(scanCtx, database, s.opts.DBPath)
+		if err != nil || snap.QueryErrors != 0 {
+			return
+		}
+		s.statusSnap.storeIfGen(gen, database, s.now(), snap)
+	}()
 }
 
 // snapshot is the injected-IO seam in front of diag.Snapshot. Production

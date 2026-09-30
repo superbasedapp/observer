@@ -327,6 +327,7 @@ var seedTiers = map[string]Tier{
 	// so an explicit minor here is a statement of prominence, not a
 	// correctness fix — claude-opus-5 (2026-07-25) is the current
 	// flagship for complex agentic coding, hence the pin.
+	"claude-opus-5-5":  TierOpusClass, // current Opus flagship (2026-09-22); prominence pin — the claude-opus-5 prefix already classifies it
 	"claude-opus-5":    TierOpusClass,
 	"claude-opus-4-8":  TierOpusClass,
 	"claude-opus-4":    TierOpusClass,
@@ -356,36 +357,54 @@ var seedTiers = map[string]Tier{
 	// gpt-5.5 the prior frontier line; gpt-5.4 and earlier 5.x are the mid
 	// line; minis are the small class; the $0 nano is free. Pro variants
 	// are flagship-priced regardless of minor.
-	"gpt-6-astra":  TierOpusClass,
-	"gpt-6":        TierOpusClass, // family prefix → Astra (flagship)
-	"gpt-5.5":      TierOpusClass,
-	"gpt-5.5-pro":  TierOpusClass,
-	"gpt-5.4-pro":  TierOpusClass,
-	"gpt-5.2-pro":  TierOpusClass,
-	"gpt-5-pro":    TierOpusClass,
-	"gpt-5.4":      TierSonnetClass,
-	"gpt-5.4-mini": TierHaikuClass,
-	"gpt-5.4-nano": TierHaikuClass,
-	"gpt-5.3":      TierSonnetClass,
-	"gpt-5.2":      TierSonnetClass,
-	"gpt-5.1":      TierSonnetClass,
-	"gpt-5-mini":   TierHaikuClass,
-	"gpt-5-nano":   TierFree, // $0 per OpenAI 2026-04-29 catalog
-	"gpt-5":        TierSonnetClass,
-	"gpt-4.1":      TierSonnetClass,
-	"gpt-4.1-mini": TierHaikuClass,
-	"gpt-4.1-nano": TierHaikuClass,
-	"gpt-4o":       TierSonnetClass,
-	"gpt-4o-mini":  TierHaikuClass,
-	"gpt-4":        TierSonnetClass,
-	"gpt-3.5":      TierHaikuClass,
-	"o1-pro":       TierOpusClass,
-	"o1":           TierOpusClass,
-	"o1-mini":      TierHaikuClass,
-	"o3-pro":       TierOpusClass,
-	"o3":           TierSonnetClass,
-	"o3-mini":      TierHaikuClass,
-	"o4-mini":      TierHaikuClass,
+	"gpt-6-astra": TierOpusClass,
+	"gpt-6":       TierOpusClass, // family prefix → Astra (flagship)
+	// The other two GPT-6 SKUs (2026-09-23 grounding). WITHOUT these rows both
+	// inherited the `gpt-6` family placement and were classified Opus-class —
+	// Sol at a fifth of Astra's price and Luna at a HUNDREDTH. A tier is what
+	// the engine downshifts toward, so mis-tiering the cheap end of a
+	// generation is the direction that costs money.
+	//
+	// The names do not mean the same thing across generations: in GPT-5.6, Sol
+	// is the top tier; in GPT-6, Astra is the flagship and Sol is the
+	// coding/agentic tier. Placement here follows the rate card, not the word.
+	"gpt-6-sol":  TierSonnetClass, // $2/$10 — the coding/agentic mid tier
+	"gpt-6-luna": TierHaikuClass,  // $0.10/$0.50 — the high-volume small tier
+	// GPT-5.6's three peers, all still live and priced. They previously fell
+	// through to the bare `gpt-5` row and were ALL classified Sonnet-class,
+	// which flattened a 20x spread ($4/$20 Sol against $0.20/$1.20 Luna) into
+	// one tier.
+	"gpt-5.6-sol":   TierOpusClass,
+	"gpt-5.6-terra": TierSonnetClass,
+	"gpt-5.6-luna":  TierHaikuClass,
+	"gpt-5.5":       TierOpusClass,
+	"gpt-5.5-pro":   TierOpusClass,
+	"gpt-5.4-pro":   TierOpusClass,
+	"gpt-5.2-pro":   TierOpusClass,
+	"gpt-5-pro":     TierOpusClass,
+	"gpt-5.4":       TierSonnetClass,
+	"gpt-5.4-mini":  TierHaikuClass,
+	"gpt-5.4-nano":  TierHaikuClass,
+	"gpt-5.3":       TierSonnetClass,
+	"gpt-5.2":       TierSonnetClass,
+	"gpt-5.1":       TierSonnetClass,
+	"gpt-5-mini":    TierHaikuClass,
+	"gpt-5-nano":    TierFree, // $0 per OpenAI 2026-04-29 catalog
+	"gpt-5":         TierSonnetClass,
+	"gpt-4.1":       TierSonnetClass,
+	"gpt-4.1-mini":  TierHaikuClass,
+	"gpt-4.1-nano":  TierHaikuClass,
+	"gpt-4o":        TierSonnetClass,
+	"gpt-4o-mini":   TierHaikuClass,
+	"gpt-4":         TierSonnetClass,
+	"gpt-3.5":       TierHaikuClass,
+	"o1-pro":        TierOpusClass,
+	"o1":            TierOpusClass,
+	"o1-mini":       TierHaikuClass,
+	"o3-pro":        TierOpusClass,
+	"o3":            TierSonnetClass,
+	"o3-mini":       TierHaikuClass,
+	"o4-mini":       TierHaikuClass,
 
 	// Google. 3.x Pro is the frontier line; 2.5 Pro the mid; flash the
 	// small class. Family order matters: longest-prefix wins, so the
@@ -410,11 +429,18 @@ var seedTiers = map[string]Tier{
 	"gemini-3.7-flash": TierHaikuClass,
 	"gemini-3.8-flash": TierHaikuClass, // same family-shadow reasoning as 3.6/3.7 above
 	"gemini-3-flash":   TierHaikuClass,
-	"gemini-3":         TierOpusClass, // Pro-representative, mirroring cost
-	"gemini-2.5-pro":   TierSonnetClass,
-	"gemini-2.5-flash": TierHaikuClass,
-	"gemini-2.5":       TierSonnetClass,
-	"gemini-2":         TierHaikuClass,
+	// Flash-Lite (2026-09-27): "gemini-3.1-flash-lite" prefix-matches the
+	// Opus-class "gemini-3.1" family row above, so without its own row the
+	// cheapest Gemini line classified as Opus-class (it also covers the
+	// -preview id). gemini-3.5-flash-lite is already Haiku through the
+	// "gemini-3.5-flash" prefix; pinned for the same prominence reason.
+	"gemini-3.1-flash-lite": TierHaikuClass,
+	"gemini-3.5-flash-lite": TierHaikuClass,
+	"gemini-3":              TierOpusClass, // Pro-representative, mirroring cost
+	"gemini-2.5-pro":        TierSonnetClass,
+	"gemini-2.5-flash":      TierHaikuClass,
+	"gemini-2.5":            TierSonnetClass,
+	"gemini-2":              TierHaikuClass,
 
 	// xAI / Moonshot / DeepSeek / open-weight families. Mid-class
 	// placements unless the SKU is explicitly a small/cheap line.
@@ -429,6 +455,7 @@ var seedTiers = map[string]Tier{
 	"hermes":           TierSonnetClass,
 	"qwen":             TierSonnetClass,
 	"glm":              TierSonnetClass,
+	"glm-5.3-flash":    TierHaikuClass, // budget tier ($0.15/$0.50); the "glm" family would place it Sonnet-class
 	"mistral-large":    TierSonnetClass,
 	"mistral-small":    TierHaikuClass,
 	"mistral":          TierSonnetClass,
@@ -459,6 +486,12 @@ var seedTiers = map[string]Tier{
 	// two get entries below.
 	"ernie":          TierSonnetClass, // Baidu's flagship line (ernie-5.1), same vendor-family pattern as glm/mistral/minimax
 	"step-3.7-flash": TierHaikuClass,  // StepFun's budget/speed SKU; no "step" family exists yet to fall back to
+	// 2026-09-27 adapter-sweep additions. Xiaomi MiMo had no row at all (a
+	// miss -> TierUnclassified); cost.pricing.go now prices mimo-v2.6-flash
+	// and mimo-v2.6-pro. Same vendor-family pattern as glm/kimi/minimax: the
+	// family is mid-class, the Flash SKU is the cheap line.
+	"mimo":            TierSonnetClass,
+	"mimo-v2.6-flash": TierHaikuClass,
 }
 
 // seedRepresentatives names the canonical downshift target per

@@ -4,6 +4,7 @@ import { FloatingPanel } from "@/components/primitives/FloatingPanel";
 import { ContextMenu, type ContextMenuItem } from "@/components/primitives/ContextMenu";
 import { SegmentedControl } from "@/components/primitives/SegmentedControl";
 import { TruncatedPath } from "@/components/primitives/TruncatedPath";
+import { Icon, InlineLoading, Spinner, Tooltip } from "@/components/primitives";
 import { CloudDigestCard } from "@/components/CloudDigestCard";
 import { fmtBytes } from "@/lib/format";
 import {
@@ -26,6 +27,17 @@ import {
   type ProjectMeta,
   type ProjectPanelErrorCode,
 } from "@/lib/projectPanel";
+import {
+  ChevronDown,
+  ChevronRight,
+  CornerDownRight,
+  Ellipsis,
+  FolderTree,
+  GitBranch,
+  RefreshCw,
+  Tag,
+  type LucideIcon,
+} from "lucide-react";
 
 // STORAGE KEY (shared): one persisted default rect across all project panels —
 // tokens are ephemeral, so per-token rects would only accumulate garbage. The
@@ -110,19 +122,20 @@ function RowMenuHandle({
           Copied
         </span>
       )}
-      <button
-        type="button"
-        aria-label="Path actions"
-        title="Copy or paste this path"
-        onClick={(e) => {
-          e.stopPropagation();
-          const r = e.currentTarget.getBoundingClientRect();
-          onRowMenu(rel, r.right, r.bottom);
-        }}
-        className="pointer-events-auto hidden h-4 w-4 place-items-center rounded-1 bg-bg-1/80 text-fg-3 hover:bg-bg-3 hover:text-fg-0 group-hover:grid group-focus-within:grid"
-      >
-        ⋯
-      </button>
+      <Tooltip content="Copy or paste this path">
+        <button
+          type="button"
+          aria-label="Path actions"
+          onClick={(e) => {
+            e.stopPropagation();
+            const r = e.currentTarget.getBoundingClientRect();
+            onRowMenu(rel, r.right, r.bottom);
+          }}
+          className="pointer-events-auto hidden h-4 w-4 place-items-center rounded-1 bg-bg-1/80 text-fg-3 hover:bg-bg-3 hover:text-fg-0 group-hover:grid group-focus-within:grid"
+        >
+          <Icon icon={Ellipsis} size={11} />
+        </button>
+      </Tooltip>
     </span>
   );
 }
@@ -210,17 +223,17 @@ function relTime(iso: string): string {
 }
 
 const RefreshButton = ({ onClick, busy }: { onClick: () => void; busy: boolean }) => (
-  <button
-    type="button"
-    onClick={onClick}
-    disabled={busy}
-    title="Refresh"
-    className="grid h-6 w-6 shrink-0 place-items-center rounded-2 border border-line-2 bg-bg-2 text-[12px] text-fg-2 hover:bg-bg-3 hover:text-fg-0 disabled:opacity-50"
-  >
-    <span className={busy ? "inline-block animate-spin" : ""} aria-hidden>
-      ↻
-    </span>
-  </button>
+  <Tooltip content="Refresh">
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      aria-label="Refresh"
+      className="grid h-6 w-6 shrink-0 place-items-center rounded-2 border border-line-2 bg-bg-2 text-small text-fg-2 hover:bg-bg-3 hover:text-fg-0 disabled:opacity-50"
+    >
+      <Icon icon={RefreshCw} size="xs" className={busy ? "animate-spin" : undefined} />
+    </button>
+  </Tooltip>
 );
 
 export default function ProjectPanel({
@@ -377,8 +390,8 @@ export default function ProjectPanel({
         <div className="flex items-center gap-2 border-b border-line-1 px-4 py-2">
           <SegmentedControl<ProjectPanelTab>
             options={[
-              { value: "files", label: "Files" },
-              { value: "git", label: "Git" },
+              { value: "files", label: "Files", icon: FolderTree },
+              { value: "git", label: "Git", icon: GitBranch },
             ]}
             value={tab}
             onChange={onTabChange}
@@ -389,12 +402,14 @@ export default function ProjectPanel({
               rather than letting the panel imply a project. */}
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             {meta && isWorkingDir && (
-              <span
-                className="shrink-0 text-[9.5px] uppercase tracking-[0.05em] text-fg-3"
-                title={WORKING_DIR_HINT}
-              >
-                working directory
-              </span>
+              <Tooltip content={WORKING_DIR_HINT}>
+                <span
+                  tabIndex={0}
+                  className="shrink-0 cursor-help text-[9.5px] uppercase tracking-[0.05em] text-fg-3 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-ring"
+                >
+                  working directory
+                </span>
+              </Tooltip>
             )}
             {meta && (
               <TruncatedPath value={meta.root} className="text-[11px] text-fg-3" />
@@ -696,10 +711,17 @@ function FilesTab({
   );
 }
 
-function entryGlyph(type: DirEntry["type"], open: boolean): string {
-  if (type === "dir") return open ? "▾" : "▸";
-  if (type === "symlink") return "↳";
-  return " ";
+// ENTRY_GLYPH is the tree-row marker per entry kind (a directory by its
+// open state); a plain file carries no marker.
+const ENTRY_GLYPH: Record<string, LucideIcon> = {
+  "dir:open": ChevronDown,
+  "dir:closed": ChevronRight,
+  symlink: CornerDownRight,
+};
+
+function entryGlyph(type: DirEntry["type"], open: boolean): LucideIcon | null {
+  const key = type === "dir" ? `dir:${open ? "open" : "closed"}` : type;
+  return ENTRY_GLYPH[key] ?? null;
 }
 
 function DirChildren({
@@ -724,7 +746,16 @@ function DirChildren({
   const state = dirs[path];
   if (!state) return null;
   if (state.loading && state.entries.length === 0) {
-    return <div className="px-2 py-1 text-[11px] text-fg-4" style={{ paddingLeft: 8 + depth * 14 }}>loading…</div>;
+    return (
+      <div
+        role="status"
+        className="flex items-center gap-1.5 px-2 py-1 text-[11px] text-fg-4"
+        style={{ paddingLeft: 8 + depth * 14 }}
+      >
+        <Spinner size="xs" label="" />
+        loading
+      </div>
+    );
   }
   if (state.error) {
     return (
@@ -767,8 +798,11 @@ function DirChildren({
                   (isSel ? "bg-bg-3 text-fg-0" : dim ? "text-fg-4" : "text-fg-2")
                 }
               >
-                <span className="w-3 shrink-0 text-center text-fg-3" aria-hidden>
-                  {entryGlyph(e.type, isOpen)}
+                <span className="flex w-3 shrink-0 justify-center text-fg-3" aria-hidden>
+                  {(() => {
+                    const g = entryGlyph(e.type, isOpen);
+                    return g ? <Icon icon={g} size={11} /> : null;
+                  })()}
                 </span>
                 <span className="min-w-0 flex-1 truncate">{e.name}</span>
                 {!isDir && e.type === "file" && (
@@ -855,23 +889,24 @@ function FileViewer({
         {file && !file.binary && (
           <span className="shrink-0 text-[10px] text-fg-4">{fmtBytes(file.size)}</span>
         )}
-        <button
-          type="button"
-          aria-label="Path actions"
-          title="Copy or paste this path"
-          onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            onRowMenu(path, r.right, r.bottom);
-          }}
-          className="grid h-6 w-6 shrink-0 place-items-center rounded-2 border border-line-2 bg-bg-2 text-[12px] text-fg-2 hover:bg-bg-3 hover:text-fg-0"
-        >
-          ⋯
-        </button>
+        <Tooltip content="Copy or paste this path">
+          <button
+            type="button"
+            aria-label="Path actions"
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              onRowMenu(path, r.right, r.bottom);
+            }}
+            className="grid h-6 w-6 shrink-0 place-items-center rounded-2 border border-line-2 bg-bg-2 text-small text-fg-2 hover:bg-bg-3 hover:text-fg-0"
+          >
+            <Icon icon={Ellipsis} size="xs" />
+          </button>
+        </Tooltip>
         <RefreshButton onClick={onRefresh} busy={loading} />
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {loading ? (
-          <div className="p-6 text-[12px] text-fg-4">Loading…</div>
+          <InlineLoading label="Loading files" className="p-6" />
         ) : error ? (
           <div className="p-6 text-[12px] text-danger">{errorCopy(error).title}</div>
         ) : !file ? null : file.binary ? (
@@ -956,7 +991,7 @@ function GitTab({
 
   if (!gitAvailable) return <ErrorState code="git_unavailable" />;
   if (err) return <ErrorState code={err} />;
-  if (loading && !info) return <div className="p-6 text-[12px] text-fg-4">Loading git…</div>;
+  if (loading && !info) return <InlineLoading label="Loading git" className="p-6" />;
   if (!info) return null;
   if (!info.is_git) {
     return (
@@ -980,6 +1015,9 @@ function GitTab({
         )}
         {(info.ahead > 0 || info.behind > 0) && (
           <span className="flex items-center gap-1 text-[11px]">
+            {/* ↑N / ↓N is the VCS's own ahead/behind notation (as `status -sb`
+                prints it), kept as text on purpose: it is data, not an icon,
+                and the project-panels e2e asserts on it. */}
             {info.ahead > 0 && <span className="text-accent">↑{info.ahead}</span>}
             {info.behind > 0 && <span className="text-warn">↓{info.behind}</span>}
           </span>
@@ -1185,9 +1223,9 @@ function RefChip({ label }: { label: string }) {
       : "border-line-2 text-fg-3";
   return (
     <span
-      className={`rounded-1 border px-1 py-[1px] font-mono text-[9.5px] leading-none ${cls}`}
+      className={`inline-flex items-center gap-0.5 rounded-1 border px-1 py-[1px] font-mono text-[9.5px] leading-none ${cls}`}
     >
-      {isTag ? "⚑ " : ""}
+      {isTag && <Icon icon={Tag} size={9} label="tag" />}
       {text}
     </span>
   );

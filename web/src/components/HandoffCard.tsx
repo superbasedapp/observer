@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { ComboChip, SegmentedControl, ToolBadge, Tooltip } from "@/components/primitives";
+import { ComboChip, Icon, Modal, ModelId, SegmentedControl, Table, ToolBadge, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { HelpInd } from "@/components/HelpInd";
 import { CopyOnClick } from "@/components/CopyOnClick";
@@ -14,6 +14,7 @@ import type {
   SessionLaunchResponse,
 } from "@/lib/types";
 import { useLaunchDock } from "@/components/LaunchDock";
+import { ChevronRight, TriangleAlert } from "lucide-react";
 
 // HandoffCard — session handoff / continue-anywhere (docs/session-handoff.md,
 // plan §15 P2). The card is the entry point; the modal holds the target
@@ -130,14 +131,6 @@ function HandoffModal({
     [sessionId, target, carry, fork],
   );
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   // Don't leave the user stuck on a now-disabled choice: if they'd picked
   // full_cache and the estimate comes back reporting the source has no
   // full-body reader, drop back to the config default — full_cache would
@@ -222,110 +215,23 @@ function HandoffModal({
   const canLaunch = !!d?.targets?.find((t) => t.tool === target)?.launchable;
 
   return createPortal(
-    <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-6"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Continue this session in another tool"
-    >
-      <div
-        className="flex max-h-[88vh] w-[880px] flex-col overflow-hidden rounded-3 border bg-bg-1 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between gap-2 border-b px-5 py-3">
-          <span className="flex items-center gap-2 text-[13px] font-semibold text-fg-1">
-            Continue in…
-            <span className="flex items-center gap-1.5 text-[11px] font-normal text-fg-3">
-              <ToolBadge tool={sourceTool} />
-              <span className="font-mono" title={sessionId}>{fmtShortId(sessionId, 8)}</span>
-            </span>
-          </span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-2 px-2 py-0.5 text-[12px] text-fg-3 hover:bg-bg-3 hover:text-fg-1 focus:outline-none"
-          >
-            ✕ Close
-          </button>
-        </div>
-
-        <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
-          {result ? (
-            <HandoffResult result={result} onDone={onClose} />
-          ) : (
-            <>
-              <div className="flex flex-wrap items-center gap-3">
-                <ComboChip
-                  value={target}
-                  onChange={setTarget}
-                  options={targetOptions}
-                  label="Target tool"
-                  placeholder="Filter tools…"
-                />
-                <SegmentedControl
-                  size="sm"
-                  value={carry || carryUsed}
-                  onChange={setCarry}
-                  options={carryOptions}
-                />
-                {d?.estimate.target_model && (
-                  <span className="text-[10.5px] text-fg-3">
-                    priced at{" "}
-                    <span className="font-mono text-fg-2">
-                      {d.estimate.target_model}
-                    </span>
-                  </span>
-                )}
-              </div>
-
-              {d?.degrade_reason && (
-                <p className="rounded-2 border border-warn/30 bg-warn/10 px-3 py-1.5 text-[10.5px] text-fg-2">
-                  {d.degrade_reason}
-                </p>
-              )}
-              {d?.context_warning && (
-                <p className="flex items-start gap-1.5 rounded-2 border border-warn/30 bg-warn/10 px-3 py-1.5 text-[10.5px] text-fg-2">
-                  <span aria-hidden>⚠</span>
-                  <span>{d.context_warning}</span>
-                </p>
-              )}
-              {d?.fork.snapped && d.fork.reason && (
-                <p className="text-[10.5px] text-fg-3">fork: {d.fork.reason}</p>
-              )}
-
-              <ChartState
-                loading={est.loading && !est.data}
-                error={est.error}
-                empty={!d}
-                emptyHint="Computing estimate…"
-                height={160}
-              >
-                {d && (
-                  <>
-                    <EstimateTable d={d} carrySelected={carry} />
-                    {d.boundaries && d.boundaries.length > 0 ? (
-                      <ForkPicker
-                        boundaries={d.boundaries}
-                        resolvedIndex={d.fork.resolved_index}
-                        onPick={(idx) => setFork(idx)}
-                      />
-                    ) : (
-                      <p className="text-[10.5px] text-fg-3">
-                        No readable transcript - the handoff proceeds with
-                        action-derived metadata only, forked at the session
-                        end.
-                      </p>
-                    )}
-                  </>
-                )}
-              </ChartState>
-            </>
-          )}
-        </div>
-
-        {!result && (
-          <div className="flex items-center justify-between gap-3 border-t px-5 py-3">
+    <Modal
+      open
+      onClose={onClose}
+      zIndex={80}
+      width={880}
+      dismissible={!posting}
+      title="Continue in…"
+      subtitle={
+        <span className="flex items-center gap-1.5">
+          <ToolBadge tool={sourceTool} />
+          <span className="font-mono" title={sessionId}>{fmtShortId(sessionId, 8)}</span>
+        </span>
+      }
+      bodyClassName="space-y-4 px-5 py-4"
+      footer={
+        result ? undefined : (
+          <div className="flex w-full flex-wrap items-center justify-between gap-3">
             <span className="text-[10.5px] text-fg-3">
               Writes HANDOFF-*.md into the project root + one node-local
               record. The doc carries scrubbed conversation excerpts.
@@ -380,9 +286,82 @@ function HandoffModal({
               </Tooltip>
             </span>
           </div>
-        )}
-      </div>
-    </div>,
+        )
+      }
+    >
+      {result ? (
+        <HandoffResult result={result} onDone={onClose} />
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-3">
+            <ComboChip
+              value={target}
+              onChange={setTarget}
+              options={targetOptions}
+              label="Target tool"
+              placeholder="Filter tools…"
+            />
+            <SegmentedControl
+              size="sm"
+              value={carry || carryUsed}
+              onChange={setCarry}
+              options={carryOptions}
+            />
+            {d?.estimate.target_model && (
+              <span className="inline-flex min-w-0 items-center gap-1 text-[10.5px] text-fg-3">
+                priced at{" "}
+                <ModelId model={d.estimate.target_model} markSize={11} className="min-w-0" />
+              </span>
+            )}
+          </div>
+
+          {d?.degrade_reason && (
+            <p className="rounded-2 border border-warn/30 bg-warn/10 px-3 py-1.5 text-[10.5px] text-fg-2">
+              {d.degrade_reason}
+            </p>
+          )}
+          {d?.context_warning && (
+            <p className="flex items-start gap-1.5 rounded-2 border border-warn/30 bg-warn/10 px-3 py-1.5 text-[10.5px] text-fg-2">
+              <Icon icon={TriangleAlert} size="xs" className="mt-px shrink-0 text-warn" />
+              <span>{d.context_warning}</span>
+            </p>
+          )}
+          {d?.fork.snapped && d.fork.reason && (
+            <p className="text-[10.5px] text-fg-3">fork: {d.fork.reason}</p>
+          )}
+
+          <ChartState
+            loading={est.loading && !est.data}
+            error={est.error}
+            denied={est.denied}
+            deniedPermission={est.deniedPermission}
+            onRetry={est.reload}
+            empty={!d}
+            emptyHint="No estimate for this handoff"
+            height={160}
+          >
+            {d && (
+              <>
+                <EstimateTable d={d} carrySelected={carry} />
+                {d.boundaries && d.boundaries.length > 0 ? (
+                  <ForkPicker
+                    boundaries={d.boundaries}
+                    resolvedIndex={d.fork.resolved_index}
+                    onPick={(idx) => setFork(idx)}
+                  />
+                ) : (
+                  <p className="text-[10.5px] text-fg-3">
+                    No readable transcript - the handoff proceeds with
+                    action-derived metadata only, forked at the session
+                    end.
+                  </p>
+                )}
+              </>
+            )}
+          </ChartState>
+        </>
+      )}
+    </Modal>,
     document.body,
   );
 }
@@ -400,39 +379,42 @@ function EstimateTable({
   const active = carrySelected || d.carry_used;
   return (
     <div className="overflow-hidden rounded-2 border">
-      <table className="w-full text-[11px]">
-        <thead>
-          <tr className="border-b bg-bg-2 text-left text-[10px] uppercase tracking-[0.06em] text-fg-3">
+      <Table
+        size="sm"
+        minWidth={420}
+        head={
+          <tr className="bg-bg-2">
             <th className="px-3 py-1.5 font-semibold">Carry</th>
             <th className="px-3 py-1.5 text-right font-semibold">Tokens</th>
             <th className="px-3 py-1.5 text-right font-semibold">Cost</th>
             <th className="px-3 py-1.5 font-semibold">What moves</th>
           </tr>
-        </thead>
-        <tbody>
-          {d.estimate.rows.map((r) => (
-            <tr
-              key={r.mode}
-              className={clsx(
-                "border-b last:border-b-0",
-                r.mode === active ? "bg-accent/10" : undefined,
+        }
+      >
+        {d.estimate.rows.map((r) => (
+          <tr
+            key={r.mode}
+            className={clsx(
+              "border-b last:border-b-0",
+              r.mode === active ? "bg-accent/10" : undefined,
+            )}
+          >
+            <td className="whitespace-nowrap px-3 py-1.5 font-mono text-fg-1">
+              {r.mode === active && (
+                <Icon icon={ChevronRight} size={10} label="active" className="mr-0.5 inline-block align-middle text-accent" />
               )}
-            >
-              <td className="px-3 py-1.5 font-mono text-fg-1">
-                {r.mode === active ? "▸ " : ""}
-                {r.mode}
-              </td>
-              <td className="px-3 py-1.5 text-right tabular-nums text-fg-2">
-                {fmtCompact(r.tokens)}
-              </td>
-              <td className="px-3 py-1.5 text-right tabular-nums text-fg-1">
-                {fmtUSD(r.cost_usd, true)}
-              </td>
-              <td className="px-3 py-1.5 text-fg-3">{r.note}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+              {r.mode}
+            </td>
+            <td className="px-3 py-1.5 text-right tabular-nums text-fg-2">
+              {fmtCompact(r.tokens)}
+            </td>
+            <td className="px-3 py-1.5 text-right tabular-nums text-fg-1">
+              {fmtUSD(r.cost_usd, true)}
+            </td>
+            <td className="px-3 py-1.5 text-fg-3">{r.note}</td>
+          </tr>
+        ))}
+      </Table>
       {d.estimate.fork_share < 1 && (
         <p className="border-t bg-bg-2 px-3 py-1 text-[10px] text-fg-3">
           Fork share {Math.round(d.estimate.fork_share * 100)}% - the full row
@@ -472,69 +454,68 @@ function ForkPicker({
           Fork point - {boundaries.length} messages
         </span>
         <span className="text-[10px] text-fg-3">
-          included ▸ marks the cut · cumulative weight = share of the
+          included{" "}
+          <Icon icon={ChevronRight} size={10} className="inline-block align-middle" /> marks the cut · cumulative weight = share of the
           transcript carried
         </span>
       </div>
-      <div className="max-h-[240px] overflow-y-auto rounded-2 border">
-        <table className="w-full text-[11px]">
-          <tbody>
-            {boundaries.map((b) => {
-              const selected = b.index === resolvedIndex;
-              const row = (
-                <tr
-                  key={b.index}
-                  onClick={b.stable ? () => onPick(b.index) : undefined}
+      <Table className="rounded-2 border" size="sm" maxHeight={240}>
+        {boundaries.map((b) => {
+          const selected = b.index === resolvedIndex;
+          const row = (
+            <tr
+              key={b.index}
+              onClick={b.stable ? () => onPick(b.index) : undefined}
+              className={clsx(
+                "border-b last:border-b-0",
+                b.stable
+                  ? "cursor-pointer hover:bg-bg-3"
+                  : "opacity-45",
+                selected ? "bg-accent/10" : undefined,
+              )}
+            >
+              <td className="w-8 px-2 py-1 text-right font-mono text-fg-3">
+                {selected && (
+                  <Icon icon={ChevronRight} size={10} label="cut" className="mr-0.5 inline-block align-middle text-accent" />
+                )}
+                {b.index}
+              </td>
+              <td className="w-16 px-2 py-1">
+                <span
                   className={clsx(
-                    "border-b last:border-b-0",
-                    b.stable
-                      ? "cursor-pointer hover:bg-bg-3"
-                      : "opacity-45",
-                    selected ? "bg-accent/10" : undefined,
+                    "text-[10px] font-semibold uppercase",
+                    b.role === "user" ? "text-accent" : "text-fg-3",
                   )}
                 >
-                  <td className="w-8 px-2 py-1 text-right font-mono text-fg-3">
-                    {selected ? "▸" : ""}
-                    {b.index}
-                  </td>
-                  <td className="w-16 px-2 py-1">
-                    <span
-                      className={clsx(
-                        "text-[10px] font-semibold uppercase",
-                        b.role === "user" ? "text-accent" : "text-fg-3",
-                      )}
-                    >
-                      {b.role}
-                    </span>
-                  </td>
-                  <td className="w-24 whitespace-nowrap px-2 py-1 text-[10px] tabular-nums text-fg-3">
-                    {b.time ? fmtClock(b.time) : "-"}
-                  </td>
-                  <td className="max-w-0 truncate px-2 py-1 text-fg-2">
-                    {b.preview || (
-                      <span className="text-fg-3">
-                        {b.tool_call_count
-                          ? `${b.tool_call_count} tool call${b.tool_call_count > 1 ? "s" : ""}`
-                          : "(no text)"}
-                      </span>
-                    )}
-                  </td>
-                  <td className="w-20 px-2 py-1 text-right tabular-nums text-[10px] text-fg-3">
-                    {Math.round(b.cumulative_share * 100)}%
-                  </td>
-                </tr>
-              );
-              return b.stable ? (
-                row
-              ) : (
-                <Tooltip key={b.index} content={`Not a stable fork point: ${b.reason}`}>
-                  {row}
-                </Tooltip>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                  {b.role}
+                </span>
+              </td>
+              <td className="w-24 whitespace-nowrap px-2 py-1 text-[10px] tabular-nums text-fg-3">
+                {b.time ? fmtClock(b.time) : "-"}
+              </td>
+              <td className="max-w-0 truncate px-2 py-1 text-fg-2">
+                {b.preview || (
+                  <span className="text-fg-3">
+                    {b.tool_call_count
+                      ? `${b.tool_call_count} tool call${b.tool_call_count > 1 ? "s" : ""}`
+                      : "(no text)"}
+                  </span>
+                )}
+              </td>
+              <td className="w-20 px-2 py-1 text-right tabular-nums text-[10px] text-fg-3">
+                {Math.round(b.cumulative_share * 100)}%
+              </td>
+            </tr>
+          );
+          return b.stable ? (
+            row
+          ) : (
+            <Tooltip key={b.index} content={`Not a stable fork point: ${b.reason}`}>
+              {row}
+            </Tooltip>
+          );
+        })}
+      </Table>
     </div>
   );
 }

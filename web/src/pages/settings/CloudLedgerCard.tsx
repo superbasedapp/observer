@@ -46,7 +46,7 @@ export function CloudLedgerCard({ actionsAvailable }: { actionsAvailable: boolea
         Content-free - the exact bytes are rebuilt on demand.
       </p>
 
-      <ChartState loading={ledger.loading && !ledger.data} error={ledger.error} empty={false} height={80}>
+      <ChartState loading={ledger.loading && !ledger.data} error={ledger.error} denied={ledger.denied} deniedPermission={ledger.deniedPermission} empty={false} height={80}>
         {entries.length === 0 ? (
           <p className="mt-3 text-[11.5px] text-fg-3">Nothing has been sent from this device yet.</p>
         ) : (
@@ -154,9 +154,9 @@ function LedgerRow({
               items.map((it) => {
                 const meta = cloudStateMeta(it.state);
                 return (
-                  <span key={it.id} title={meta.meaning}>
-                    <Pill variant={meta.variant}>{meta.label}</Pill>
-                  </span>
+                  <Pill key={it.id} variant={meta.variant} title={meta.meaning}>
+                    {meta.label}
+                  </Pill>
                 );
               })
             )}

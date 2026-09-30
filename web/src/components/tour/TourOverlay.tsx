@@ -367,10 +367,11 @@ function TourStepView({
       {/* Thin progress bar across the top. */}
       <div className="h-1 w-full bg-line-2">
         <div
-          className="h-full bg-accent"
+          className="h-full w-full origin-left bg-accent"
           style={{
-            width: `${progress}%`,
-            transition: reduced ? undefined : "width 200ms var(--ease)",
+            // scaleX, never an animated width.
+            transform: `scaleX(${Math.max(0, Math.min(100, progress)) / 100})`,
+            transition: reduced ? undefined : "transform 200ms var(--ease)",
           }}
         />
       </div>

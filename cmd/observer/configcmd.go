@@ -32,9 +32,8 @@ func newConfigCmd() *cobra.Command {
 
 // newConfigMigrateCmd exposes the config auto-migration rail
 // (internal/config/migrate) as an explicit command. It renames
-// deprecated keys (e.g. the decommissioned [compression.code_graph] /
-// [intelligence.code_graph] blocks) onto their new [codeintel] homes
-// in place, preserving comments and untouched sections, and stamps a
+// deprecated keys onto their new homes and drops removed ones in
+// place, preserving comments and untouched sections, and stamps a
 // [observer] config_version. The same migration runs automatically on
 // `observer start`; this command is for manual/CI runs and dry-runs.
 func newConfigMigrateCmd() *cobra.Command {
@@ -200,11 +199,19 @@ func newConfigAdoptDefaultsCmd() *cobra.Command {
 			}
 			printAdoptReport(out, resolvedPath, res, false)
 			if res.Changed && !res.Skipped {
-				if pokeReload() {
-					fmt.Fprintln(out, "daemon reloaded — new settings apply to new sessions now")
-				} else {
-					fmt.Fprintln(out, "no running daemon detected — applies on next start")
-				}
+				// enabled_adapters is read exactly once, at daemon
+				// startup (internal/watcher.Watcher's allow list is
+				// fixed in New() and never mutated afterward) — it is
+				// NOT part of the live /api/config/reload contract,
+				// which only re-reads [profiles] and compression
+				// parameters for new sessions. Poking reload is still
+				// worth doing for any OTHER key a concurrent edit may
+				// have touched, but this command must never claim the
+				// newly-added adapter(s) are being watched until a
+				// real restart happens — that was the exact
+				// misleading message this comment replaces.
+				pokeReload()
+				fmt.Fprintln(out, "config.toml updated. enabled_adapters is read at daemon start — restart the daemon (observer start) for the newly-added adapter(s) to begin watching; nothing captures from them until then.")
 			}
 			return nil
 		},

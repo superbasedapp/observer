@@ -32,6 +32,7 @@ func newDoctorCmd() *cobra.Command {
 		configPath string
 		jsonOut    bool
 		probeHook  bool
+		integrity  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "doctor [tool]",
@@ -43,6 +44,11 @@ func newDoctorCmd() *cobra.Command {
 			"e.g. `observer doctor opencode` (provider-compatibility probe) or\n" +
 			"`observer doctor org` (enrolment). The name is matched as a\n" +
 			"substring against check ids.\n\n" +
+			"The whole-database integrity probe (PRAGMA quick_check) reads every\n" +
+			"page of the DB, so a per-tool doctor defers it, and an unscoped\n" +
+			"doctor skips it above [observer.db].integrity_check_max_gb (the same\n" +
+			"gate as the daemon's startup check); both say so. `observer doctor db`\n" +
+			"or --integrity runs it on demand regardless of size.\n\n" +
 			"--probe-hook fires a synthetic, obviously-fake secret through the\n" +
 			"REGISTERED prompt-submit hook command exactly as the host tool\n" +
 			"would invoke it, and reports whether it actually got blocked —\n" +
@@ -86,10 +92,16 @@ func newDoctorCmd() *cobra.Command {
 				return nil
 			}
 
+			var scope string
+			if len(args) == 1 {
+				scope = args[0]
+			}
 			report := diag.Run(cmd.Context(), diag.DoctorOptions{
-				Config:     cfg,
-				DB:         database,
-				BinaryPath: binary,
+				Config:         cfg,
+				DB:             database,
+				BinaryPath:     binary,
+				Scope:          scope,
+				ForceIntegrity: integrity,
 				// Fold the obs-plane admission health checks (judge
 				// reachability + audit-chain verify) into doctor, built in the
 				// one obs wiring file so diag never imports internal/obs.
@@ -105,10 +117,32 @@ func newDoctorCmd() *cobra.Command {
 				// routable ones). Otherwise fall back to a substring filter
 				// over the general checks (org, hooks, db, …).
 				if c, ok := diag.CheckAdapter(args[0], cfg); ok {
+					// General checks that name this tool (e.g. the
+					// cursor.hooks registration health check) ride along:
+					// the adapter capture check alone cannot see a hook
+					// registration that points at a dead receiver.
+					general := report.Filter(args[0]).Checks
 					report = diag.Report{Checks: []diag.Check{c}}
+					// Control coverage (2026-09-22 investigation,
+					// internal/controlcoverage): "what actually controls
+					// this developer's use of this tool" — the tool-call
+					// block channel, the prompt-submit channel, and the
+					// budget channel + route proof — is a separate
+					// question from the capture-health notes CheckAdapter
+					// already prints, so it lands as its own check rather
+					// than another Details line. Always StatusOK: this is
+					// informational, never a capture defect.
+					if line, ok := controlCoverageLine(args[0]); ok {
+						report.Checks = append(report.Checks, diag.Check{
+							Name:    args[0] + ".control-coverage",
+							Status:  diag.StatusOK,
+							Message: line,
+						})
+					}
+					report.Checks = append(report.Checks, general...)
 				} else {
 					report = report.Filter(args[0])
-					if len(report.Checks) == 0 {
+					if report.Matched() == 0 {
 						return fmt.Errorf("no doctor checks or adapters match %q (adapters: claude-code, codex, opencode, cursor, cline, copilot, gemini-cli, …; checks: org, hooks, db, mcp, governance)", args[0])
 					}
 				}
@@ -127,6 +161,7 @@ func newDoctorCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON instead of formatted output")
+	cmd.Flags().BoolVar(&integrity, "integrity", false, "Run the whole-database PRAGMA quick_check even for a per-tool doctor or a DB over [observer.db].integrity_check_max_gb")
 	cmd.Flags().BoolVar(&probeHook, "probe-hook", false, "Fire a synthetic secret through the registered prompt-submit hook and report whether it actually blocked")
 	return cmd
 }
@@ -266,10 +301,10 @@ func loadConfigAndDB(ctx context.Context, configPath string) (config.Config, *sq
 // its cost scales with the whole file, not with the work the daemon came
 // to do, and on a very large DB it was the dominant startup CPU cost. The
 // backfill half always runs regardless (cheap after its done-marker).
-// `observer doctor` is unaffected — internal/diag/doctor.go's
-// checkDBIntegrity calls `PRAGMA quick_check` directly and
-// unconditionally, independent of this gate, as the authoritative
-// on-demand probe.
+// `observer doctor` honours the SAME gate (db.IntegrityCheckShouldSkip):
+// an unscoped doctor over the cap reports the probe as skipped, a per-tool
+// doctor defers it, and `observer doctor db` / `observer doctor --integrity`
+// run it on demand regardless of size (the pointer the skip line gives).
 //
 // T2.3 (P1-F): guarded by a dblease so only one observer process on this
 // machine runs this pass per tick; a second process fails open (proceeds
@@ -374,21 +409,11 @@ func otlpIngressPostureCheck(cfg config.Config) diag.Check {
 
 // dbIntegrityCheckShouldSkip reports whether the AUTOMATIC startup
 // `PRAGMA quick_check` should be skipped because the DB file exceeds
-// [observer.db].integrity_check_max_gb (T2.2). Stat failures fail open
-// (never skip — an unreadable size shouldn't silently disable the
-// probe). ≤ 0 disables the gate: quick_check always runs.
+// [observer.db].integrity_check_max_gb (T2.2). The rule lives in ONE place,
+// db.IntegrityCheckShouldSkip, which `observer doctor` also asks: stat
+// failures fail open (never skip), and <= 0 disables the gate.
 func dbIntegrityCheckShouldSkip(cfg config.Config) (skip bool, sizeBytes int64) {
-	maxGB := cfg.Observer.DB.IntegrityCheckMaxGB
-	if maxGB <= 0 {
-		return false, 0
-	}
-	fi, err := os.Stat(cfg.Observer.DBPath)
-	if err != nil {
-		return false, 0
-	}
-	sizeBytes = fi.Size()
-	limit := int64(maxGB) << 30
-	return sizeBytes > limit, sizeBytes
+	return db.IntegrityCheckShouldSkip(cfg.Observer.DBPath, cfg.Observer.DB.IntegrityCheckMaxGB)
 }
 
 // acquireMaintenanceLease is the shared T2.3 dblease wrapper for the

@@ -73,25 +73,20 @@ func TestProjectProfiles(t *testing.T) {
 	}
 }
 
-// TestProjectCompression pins the param overlay + the two guards:
-// code_graph stays the daemon's, and conversation.enabled can only be
-// turned OFF by a project, never on.
+// TestProjectCompression pins the param overlay + the guard:
+// conversation.enabled can only be turned OFF by a project, never on.
 func TestProjectCompression(t *testing.T) {
 	base := Default().Compression
 	base.Conversation.Enabled = true
 	base.Conversation.TargetRatio = 0.85
-	base.CodeGraph.Enabled = true
 
-	raw := []byte("[compression.conversation]\ntarget_ratio = 0.5\n[compression.code_graph]\nenabled = false\nmcp_binary = \"/evil/binary\"\n")
+	raw := []byte("[compression.conversation]\ntarget_ratio = 0.5\n")
 	got, err := ProjectCompression(base, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Conversation.TargetRatio != 0.5 {
 		t.Errorf("target_ratio: got %v want 0.5 (project param overlay)", got.Conversation.TargetRatio)
-	}
-	if !got.CodeGraph.Enabled {
-		t.Error("code_graph must stay master-owned (world-authored file must not touch install capability)")
 	}
 	if !got.Conversation.Enabled {
 		t.Error("enabled untouched by file must stay base value")

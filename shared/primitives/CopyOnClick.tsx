@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
+import { Check, Copy } from "lucide-react";
+import { Icon } from "./Icon";
 import { Tooltip } from "./Tooltip";
 
 // CopyOnClick — wraps any content with a click-to-copy affordance.
@@ -18,6 +20,7 @@ export function CopyOnClick({
   children,
   className,
   title,
+  ariaLabel,
 }: {
   value: string;
   // resolveValue, when provided, is awaited on click and its result
@@ -31,6 +34,9 @@ export function CopyOnClick({
   children: React.ReactNode;
   className?: string;
   title?: React.ReactNode;
+  /** Accessible name for the copy button (e.g. "Copy session id"), for
+   *  content that does not read as a name on its own (an icon, a hash). */
+  ariaLabel?: string;
 }) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const [toast, setToast] = useState<{ top: number; left: number } | null>(
@@ -92,13 +98,22 @@ export function CopyOnClick({
           ref={btnRef}
           type="button"
           onClick={onCopy}
+          aria-label={ariaLabel}
           className={clsx(
             "group/copy relative inline-flex items-center gap-1 text-left transition-colors hover:text-accent",
             className,
           )}
         >
           {children}
-          <CopyIcon className="opacity-0 transition-opacity group-hover/copy:opacity-100" />
+          {/* Copy morphs to a Check while the "copied" toast shows. */}
+          <Icon
+            icon={toast ? Check : Copy}
+            size={10}
+            className={clsx(
+              "transition-opacity",
+              toast ? "text-success opacity-100" : "opacity-0 group-hover/copy:opacity-100",
+            )}
+          />
         </button>
       </Tooltip>
       {toast &&
@@ -114,33 +129,5 @@ export function CopyOnClick({
           document.body,
         )}
     </>
-  );
-}
-
-function CopyIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      width={10}
-      height={10}
-      viewBox="0 0 16 16"
-      fill="none"
-      className={className}
-      aria-hidden
-    >
-      <rect
-        x="4"
-        y="4"
-        width="9"
-        height="9"
-        rx="1.2"
-        stroke="currentColor"
-        strokeWidth="1.4"
-      />
-      <path
-        d="M11 4V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h1"
-        stroke="currentColor"
-        strokeWidth="1.4"
-      />
-    </svg>
   );
 }

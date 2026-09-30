@@ -1,6 +1,8 @@
 import clsx from "clsx";
 import { Pill } from "../../primitives";
 import { fmtCompact, fmtInt } from "../../lib/format";
+import { CACHE_FLAG, CACHE_TIER, cacheSummaryTone } from "../../lib/cacheVocab";
+import { VocabPill } from "../../lib/vocabPill";
 import type { CacheKpiLike, CacheTier } from "../../lib/types";
 
 // CacheKpiStrip + CacheTierBadge — the pure renderers of the session-detail
@@ -10,15 +12,10 @@ import type { CacheKpiLike, CacheTier } from "../../lib/types";
 // the full KPI set (already on its SessionCacheResult) as the node-style strip.
 // The live cache-expiry card and the /cache timeline fetch stay node-side.
 
+// CacheTierBadge renders the capture tier from the ONE CACHE_TIER table
+// (shared/lib/cacheVocab.ts), glyph from VOCAB_ICONS.sourceTier.
 export function CacheTierBadge({ tier }: { tier: CacheTier }) {
-  const map: Record<CacheTier, { label: string; variant: "info" | "neutral" | "success" }> = {
-    proxy: { label: "Tier 1 · proxy", variant: "success" },
-    transcript: { label: "Tier 2 · transcript", variant: "info" },
-    mixed: { label: "Mixed", variant: "info" },
-    none: { label: "None", variant: "neutral" },
-  };
-  const { label, variant } = map[tier];
-  return <Pill variant={variant}>{label}</Pill>;
+  return <VocabPill vocab="sourceTier" table={CACHE_TIER} value={tier} />;
 }
 
 // CacheKpiStrip — the bordered KPI grid + flagged-rewrite note. Pure: the cache
@@ -35,7 +32,7 @@ export function CacheKpiStrip({ summary }: { summary: CacheKpiLike }) {
         <CacheStat
           label="Rewrites"
           value={fmtInt(summary.rewrite_count)}
-          warn={summary.rewrite_count > 0 && !summary.has_flagged_rewrites}
+          warn={cacheSummaryTone(summary) === "warn"}
         />
         <CacheStat label="Ratio" value={ratioLabel} />
         <CacheStat
@@ -55,7 +52,7 @@ export function CacheKpiStrip({ summary }: { summary: CacheKpiLike }) {
       </div>
       {summary.has_flagged_rewrites && (
         <div className="mt-2 flex items-center gap-2 text-[10.5px] text-fg-3">
-          <Pill variant="neutral">flagged</Pill>
+          <FlaggedPill />
           One or more rewrites carry a flagged cause (e.g. tools_changed
           on MCP server toggle). Real signal - not alarm-worthy unless
           it dominates.
@@ -63,6 +60,12 @@ export function CacheKpiStrip({ summary }: { summary: CacheKpiLike }) {
       )}
     </div>
   );
+}
+
+// FlaggedPill - the "flagged" mark from the ONE CACHE_FLAG table (warn).
+function FlaggedPill() {
+  const f = CACHE_FLAG.flagged;
+  return <Pill variant={f.tone}>{f.label}</Pill>;
 }
 
 function CacheStat({

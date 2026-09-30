@@ -329,7 +329,7 @@ func TestParseSessionFile_StampsSurface(t *testing.T) {
 		if _, err := db.Exec(
 			`INSERT INTO cursorDiskKV VALUES(?, ?)`,
 			"composerData:"+convID,
-			[]byte(`{"name":"Empty window","createdAt":"2026-08-30T11:04:07.318Z","modelConfig":{"modelName":"default"}}`),
+			[]byte(`{"name":"Empty window","createdAt":"2026-08-30T11:04:07.318Z","modelConfig":{"modelName":"default"},"fullConversationHeadersOnly":[{"bubbleId":"b1","type":1}]}`),
 		); err != nil {
 			t.Fatal(err)
 		}

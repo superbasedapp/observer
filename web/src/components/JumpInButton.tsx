@@ -1,6 +1,6 @@
 import { useState } from "react";
 import clsx from "clsx";
-import { Tooltip } from "@/components/primitives";
+import { LiveDot, Tooltip } from "@/components/primitives";
 import { fetchJSON } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { useLaunchDock } from "@/components/LaunchDock";
@@ -200,10 +200,7 @@ export function JumpInButton({
               )}
             >
               {enabled && (
-                <span
-                  aria-hidden
-                  className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-success align-middle"
-                />
+                <LiveDot tone="success" className="mr-1.5 h-1.5 w-1.5 align-middle" />
               )}
               {loading ? "Checking…" : "Jump in"}
             </button>
@@ -225,20 +222,16 @@ export function JumpInButton({
           for a session that turns out to be joinable) — and only when the
           parent deemed it recently active (honest-disabled). */}
       {!loading && !fetchError && !match && watchable && onWatch && (
-        <button
-          type="button"
-          onClick={onWatch}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-2 border border-success/40 bg-success-soft px-2.5 py-1 text-[11px] font-medium text-success hover:bg-success/20 focus:outline-none"
-          title="Follow this session's messages read-only. Joining (driving the TUI) still requires an observer-launched session."
-        >
-          <span
-            aria-hidden
-            className="relative inline-block h-1.5 w-1.5 rounded-full bg-success align-middle"
+        <Tooltip content="Follow this session's messages read-only. Joining (driving the TUI) still requires an observer-launched session.">
+          <button
+            type="button"
+            onClick={onWatch}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-2 border border-success/40 bg-success-soft px-2.5 py-1 text-caption font-medium text-success hover:bg-success/20 focus:outline-none"
           >
-            <span className="absolute inset-0 animate-ping rounded-full bg-success/50" />
-          </span>
-          Watch instead (read-only)
-        </button>
+            <LiveDot tone="success" className="h-1.5 w-1.5 shrink-0" />
+            Watch instead (read-only)
+          </button>
+        </Tooltip>
       )}
     </section>
   );

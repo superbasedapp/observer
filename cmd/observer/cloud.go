@@ -114,6 +114,7 @@ func newCloudCmd() *cobra.Command {
 		newCloudDisableCmd(),
 		newCloudSyncCmd(),
 		newCloudJobCmd(),
+		newCloudGradeCommitCmd(),
 		newCloudLogoutCmd(),
 		newCloudDeleteAccountCmd(),
 	)

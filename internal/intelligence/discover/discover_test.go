@@ -315,3 +315,57 @@ func TestRun_ProjectAndDateFilters(t *testing.T) {
 		t.Errorf("days filter: TotalActions=%d", got.Summary.TotalActions)
 	}
 }
+
+// TestRun_StaleOnlyMatchesFullRunStaleFields pins Options.StaleOnly: the
+// stale-read rows and every stale / total field of the summary equal a full
+// Run's, and the other sections are left empty.
+func TestRun_StaleOnlyMatchesFullRunStaleFields(t *testing.T) {
+	database := openDB(t)
+	root := t.TempDir()
+	base := time.Date(2026, 4, 16, 10, 0, 0, 0, time.UTC)
+	var events []models.ToolEvent
+	for i, target := range []string{"a.go", "a.go", "a.go", "b.go", "b.go"} {
+		e := evt(string(rune('1'+i)), "s", models.ToolClaudeCode, models.ActionReadFile, target, base.Add(time.Duration(i)*time.Second), true)
+		e.ProjectRoot = root
+		events = append(events, e)
+	}
+	for i := 0; i < 3; i++ {
+		e := evt("c"+string(rune('0'+i)), "s", models.ToolClaudeCode, models.ActionRunCommand, "go test ./...", base.Add(time.Duration(10+i)*time.Second), true)
+		e.ProjectRoot = root
+		events = append(events, e)
+	}
+	ingest(t, database, root, events)
+	if _, err := database.ExecContext(context.Background(),
+		`UPDATE actions SET freshness = 'stale' WHERE source_event_id IN ('2', '3', '5')`); err != nil {
+		t.Fatal(err)
+	}
+
+	full, err := New(database).Run(context.Background(), Options{ProjectRoot: root})
+	if err != nil {
+		t.Fatalf("full Run: %v", err)
+	}
+	only, err := New(database).Run(context.Background(), Options{ProjectRoot: root, StaleOnly: true})
+	if err != nil {
+		t.Fatalf("StaleOnly Run: %v", err)
+	}
+	if len(full.StaleReads) == 0 || len(full.RepeatedCommands) == 0 {
+		t.Fatalf("fixture must exercise both sections: stale=%d repeated=%d", len(full.StaleReads), len(full.RepeatedCommands))
+	}
+	if len(only.StaleReads) != len(full.StaleReads) {
+		t.Fatalf("stale rows: %d vs %d", len(only.StaleReads), len(full.StaleReads))
+	}
+	for i := range full.StaleReads {
+		if only.StaleReads[i] != full.StaleReads[i] {
+			t.Errorf("stale row %d: %+v vs %+v", i, only.StaleReads[i], full.StaleReads[i])
+		}
+	}
+	fs, os := full.Summary, only.Summary
+	if os.TotalActions != fs.TotalActions || os.StaleReadCount != fs.StaleReadCount ||
+		os.CrossThreadStaleCount != fs.CrossThreadStaleCount || os.EstWastedTokens != fs.EstWastedTokens {
+		t.Errorf("stale summary differs: %+v vs %+v", os, fs)
+	}
+	if len(only.RepeatedCommands) != 0 || len(only.CrossToolFiles) != 0 || len(only.NativeVsBash) != 0 ||
+		os.RepeatedCmdGroups != 0 || os.CrossToolFileCount != 0 || os.NativeActionCount != 0 || os.BashActionCount != 0 {
+		t.Errorf("StaleOnly must leave the other sections empty: %+v", only)
+	}
+}

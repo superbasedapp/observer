@@ -17,14 +17,12 @@ import (
 // in one process, and the follow-up hint prints exactly once — while the
 // mapping itself still runs on every Load.
 func TestDeprecationEmitsOncePerProcess(t *testing.T) {
-	// A config carrying deprecated aliases from BOTH migration steps.
+	// A config carrying a removed codeintel key (warns) plus two of the
+	// removed flat org_client.share obs_* aliases, which no longer warn: the
+	// fields are gone and the config-migrate registry owns them on disk.
 	body := `
-[compression.code_graph]
-enabled = false
-auto_index = false
-
-[intelligence.code_graph]
-enabled = false
+[codeintel.index]
+disk_budget_mb = 500
 
 [org_client.share]
 obs_summary = true
@@ -71,6 +69,9 @@ obs_traces = true
 	counts := map[string]int{}
 	total := 0
 	for l := range lines {
+		if strings.Contains(l, "obs_summary") || strings.Contains(l, "obs_traces") {
+			t.Errorf("removed flat obs alias must not print a deprecation line: %q", l)
+		}
 		if strings.HasPrefix(l, "config: deprecation: ") {
 			counts[l]++
 			total++
@@ -86,9 +87,8 @@ obs_traces = true
 		}
 	}
 
-	// Distinct per-key messages present (5 code_graph keys mapped: enabled,
-	// auto_index for compression, enabled for intelligence + 2 org obs keys)
-	// plus exactly one hint line. Assert the hint fired once and that the
+	// Distinct per-key messages present (1 removed codeintel key; the flat
+	// obs aliases are silent) plus exactly one hint line. Assert the hint fired once and that the
 	// total equals the distinct count (i.e. nothing repeated).
 	hintCount := 0
 	for msg, n := range counts {

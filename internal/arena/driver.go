@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/shellwrapsvc"
 )
 
 // driver.go — headless one-shot drivers for the grounded harness set. The
@@ -437,7 +438,9 @@ func resolveToolBinary(tool string) (string, error) {
 	}
 	var lastErr error
 	for _, name := range ic.Binary.Names.Unix {
-		if p, err := exec.LookPath(name); err == nil {
+		// Skip a command-wrapping shim: the arena sets up its own routing
+		// and must run the vendor binary, not `observer <tool>`.
+		if p, err := shellwrapsvc.LookPath(name); err == nil {
 			return p, nil
 		} else {
 			lastErr = err

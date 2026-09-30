@@ -1,5 +1,7 @@
 import { useRef, type ReactNode } from "react";
 import clsx from "clsx";
+import type { LucideIcon } from "lucide-react";
+import { Icon } from "./Icon";
 
 // TabStrip — the dashboard's one horizontal tab control.
 //
@@ -23,7 +25,14 @@ import clsx from "clsx";
 
 export type TabDef<T extends string> = {
   id: T;
-  label: string;
+  /** The visible label. A string, or a node (a label with a badge, a mark).
+   *  A node label is never stringified: give `ariaLabel` so the tab keeps a
+   *  plain-text accessible name. */
+  label: ReactNode;
+  /** Plain-text accessible name, for a tab whose `label` is a node. */
+  ariaLabel?: string;
+  /** Optional lucide glyph before the label (drawn through <Icon>). */
+  icon?: LucideIcon;
   /** Optional trailing count (e.g. the message total). Rendered in mono. */
   count?: number | null;
   /** When true the tab is not selectable; `disabledReason` is then required. */
@@ -39,6 +48,7 @@ export function TabStrip<T extends string>({
   value,
   onChange,
   idPrefix,
+  ariaLabel = "Sections",
   className,
 }: {
   tabs: TabDef<T>[];
@@ -46,6 +56,8 @@ export function TabStrip<T extends string>({
   onChange: (id: T) => void;
   /** Prefix for the generated `id` / `aria-controls` pair. */
   idPrefix: string;
+  /** Accessible name of the tablist (e.g. "Session detail sections"). */
+  ariaLabel?: string;
   className?: string;
 }): ReactNode {
   const stripRef = useRef<HTMLDivElement>(null);
@@ -67,7 +79,7 @@ export function TabStrip<T extends string>({
     const target = usable[next];
     onChange(target.id);
     stripRef.current
-      ?.querySelector<HTMLButtonElement>(`#${idPrefix}-tab-${target.id}`)
+      ?.querySelector<HTMLButtonElement>(`#${CSS.escape(`${idPrefix}-tab-${target.id}`)}`)
       ?.focus();
   }
 
@@ -75,7 +87,7 @@ export function TabStrip<T extends string>({
     <div
       ref={stripRef}
       role="tablist"
-      aria-label="Session detail sections"
+      aria-label={ariaLabel}
       onKeyDown={onKeyDown}
       className={clsx(
         "flex items-stretch gap-0.5 overflow-x-auto border-b border-line-2",
@@ -91,6 +103,7 @@ export function TabStrip<T extends string>({
             type="button"
             role="tab"
             aria-selected={active}
+            aria-label={t.ariaLabel}
             aria-controls={`${idPrefix}-panel-${t.id}`}
             aria-disabled={t.disabled || undefined}
             // Only the active tab is in the tab order; arrow keys move within
@@ -100,7 +113,7 @@ export function TabStrip<T extends string>({
             title={t.disabled ? t.disabledReason : undefined}
             onClick={() => !t.disabled && onChange(t.id)}
             className={clsx(
-              "shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-[12px] transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-ring",
+              "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2 text-[12px] transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-ring",
               t.disabled
                 ? "cursor-not-allowed border-transparent text-fg-4"
                 : active
@@ -108,16 +121,23 @@ export function TabStrip<T extends string>({
                   : "border-transparent text-fg-3 hover:text-fg-1",
             )}
           >
+            {t.icon && (
+              <Icon
+                icon={t.icon}
+                size="xs"
+                className={clsx("shrink-0", active ? "text-accent" : "text-fg-4")}
+              />
+            )}
             {t.label}
             {t.count != null && (
-              <span className="ml-1.5 font-mono text-[10px] text-fg-4 tabular-nums">
+              <span className="font-mono text-[10px] text-fg-4 tabular-nums">
                 {t.count}
               </span>
             )}
             {t.dot && (
               <span
                 className={clsx(
-                  "ml-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle",
+                  "inline-block h-1.5 w-1.5 rounded-full align-middle",
                   t.dot === "danger" ? "bg-danger" : "bg-warn",
                 )}
               />

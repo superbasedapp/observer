@@ -1,0 +1,20 @@
+Per-user OAuth connections are made in the ORGANIZATION DASHBOARD, in a
+browser signed in to your org account: the dashboard starts the
+attempt, the provider redirects back to the dashboard origin's
+/connect/callback, and the connection is bound to the SAME signed-in
+member. This node never handles the OAuth callback and never sees the
+upstream token. `connect` prints that page's URL - on the dashboard
+origin of the org this node is enrolled with (or --dashboard-url) - and
+the per-user servers this node's accepted grant names. It makes no
+network call; --open launches your browser on it.
+
+Usage:
+  observer mcp connect [--server <id>] [flags]
+
+Flags:
+      --config string          path to config.toml (default ~/.observer/config.toml)
+      --dashboard-url string   org dashboard URL (default: the org server this node is enrolled with)
+  -h, --help                   help for connect
+      --json                   print JSON
+      --open                   open the URL in the default browser
+      --server string          registry MCP server id to connect

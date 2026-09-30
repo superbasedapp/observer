@@ -41,7 +41,7 @@ func TestSessionLOCWireShapeIsAggregateOnly(t *testing.T) {
 		"SessionID": true, "ProjectRootHash": true, // natural key (project hash already ships on SessionRow)
 
 		"AIAddedCode": true, "AIModifiedCode": true, "AIDeletedCode": true,
-		"AIAddedComment": true, "AIDeletedComment": true,
+		"AIAddedComment": true, "AIDeletedComment": true, "AISidechainAddedComment": true,
 		"AIWhitespace": true, "AIBlank": true, "AIUnknown": true,
 
 		"AISidechainAddedCode": true, "AISidechainModifiedCode": true, "AISidechainDeletedCode": true,
@@ -75,7 +75,7 @@ func TestLOCDayWireShapeIsAggregateOnly(t *testing.T) {
 	allowed := map[string]bool{
 		"OrgID": true, "UserEmail": true,
 		"Day": true, "ProjectRootHash": true,
-		"AICodeLines": true, "HumanCodeLines": true, "SystemCodeLines": true,
+		"AICodeLines": true, "AICommentLines": true, "HumanCodeLines": true, "SystemCodeLines": true,
 		"Files": true, "HumanCapture": true, "ClassifierVersion": true,
 	}
 	typ := reflect.TypeOf(orgcontract.LOCDayRow{})

@@ -87,7 +87,6 @@ default for a fresh install.
 |---|---|---|---|
 | **API proxy** | When your AI client points `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` at observer | **Your** API request, forwarded byte-identically to the upstream provider you chose (api.anthropic.com, chatgpt.com, openai.com, …) | `observer init --claude-code/--codex/--cursor` (writes the env-var hint into the AI client's config) |
 | **Message summary** | If `[messagesummary] enabled = true` | A subset of your conversation, to the LLM endpoint **you** configure (`base_url`, `model`, `api_key`) | TOML config — you provide the endpoint and key |
-| **Codegraph MCP** | If `[codegraph] enabled = true` | Local subprocess + 127.0.0.1 HTTP only. Code symbols + relationships indexed in-memory. | `observer init --codegraph` |
 | **Org enrolment** | If you ran `observer enroll <org-url>` | Aggregate per-day metrics (token totals, action counts, project hashes), and only the fields the org-server explicitly requests | `observer enroll` — explicit, prompts for org URL + token |
 | **Antigravity gRPC fallback** | When parsing Antigravity sessions on macOS where keychain decrypt fails | Local IPC to a Google-installed gRPC socket — never the internet | Automatic; only fires on Antigravity sessions |
 
@@ -106,7 +105,8 @@ The codebase is open source. To audit:
 # 1. Confirm no HTTP client in the watcher / adapter / hook code paths
 grep -rE 'http\.(Get|Post|Client|NewRequest)' cmd/observer internal/adapter internal/watcher internal/hook internal/store
 # Returns zero. All outbound HTTP is in internal/proxy/ (forwarding), internal/orgclient/ (org enrolment, opt-in),
-# internal/intelligence/summary/ (message-summary opt-in), and internal/codegraph/install.go (one-off installer).
+# and internal/intelligence/summary/ (message-summary opt-in). The code index (internal/codeintel) is in-process
+# and makes no network calls.
 
 # 2. Confirm no outbound DNS lookups from the binary
 strings $(which observer) | grep -Ei 'telemetry|analytics|metrics\.|amplitude|segment\.|posthog|datadog|sentry'

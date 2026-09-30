@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +101,98 @@ func TestPredictCmd_JSON(t *testing.T) {
 	if got.Estimate.Mid.MessageUSD <= 0 {
 		t.Errorf("mid message cost should be positive, got %f", got.Estimate.Mid.MessageUSD)
 	}
+}
+
+// seedPredictCorpusCursor mirrors seedPredictCorpus but for a "cursor"
+// session — internal/integration's registry carries an AUDITED negative
+// finding for cursor (no local usage-limit signal can ever exist), so
+// `observer predict` must render "not visible for cursor: <reason>"
+// instead of the ladder's misleading "route through the proxy" hint.
+func seedPredictCorpusCursor(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "o.db")
+	ctx := context.Background()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer database.Close()
+
+	var projectID int64
+	if err := database.QueryRowContext(ctx,
+		`INSERT INTO projects (root_path, created_at) VALUES ('/tmp/pred-cursor', '2026-06-09T00:00:00Z') RETURNING id`).
+		Scan(&projectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO sessions (id, tool, project_id, model, started_at)
+		 VALUES ('sCursor', 'cursor', ?, 'claude-opus-4-8', '2026-06-09T00:00:00Z')`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO token_usage (session_id, timestamp, tool, model, input_tokens, output_tokens, cache_read_tokens, source, reliability, source_file, source_event_id)
+		 VALUES ('sCursor', '2026-06-09T00:05:00Z', 'cursor', 'claude-opus-4-8', 1200, 300, 0, 'jsonl', 'approximate', 'r.jsonl', 'tk:sCursor:L1')`); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = "+fmt.Sprintf("%q", dbPath)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath
+}
+
+func TestPredictCmd_NoSourceTool(t *testing.T) {
+	cfgPath := seedPredictCorpusCursor(t)
+
+	t.Run("json", func(t *testing.T) {
+		cmd := newPredictCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"sCursor", "--config", cfgPath, "--json"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("predict: %v\n%s", err, out.String())
+		}
+		var got struct {
+			Limit struct {
+				NoSource   bool   `json:"no_source"`
+				SourceNote string `json:"source_note"`
+				NeedsProxy bool   `json:"needs_proxy"`
+			} `json:"limit"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v\n%s", err, out.String())
+		}
+		if !got.Limit.NoSource {
+			t.Error("limit.no_source = false, want true")
+		}
+		if got.Limit.SourceNote == "" {
+			t.Error("limit.source_note is empty")
+		}
+		if got.Limit.NeedsProxy {
+			t.Error("limit.needs_proxy = true at the same time as no_source — must never both be true")
+		}
+	})
+
+	t.Run("table", func(t *testing.T) {
+		cmd := newPredictCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"sCursor", "--config", cfgPath})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("predict: %v\n%s", err, out.String())
+		}
+		text := out.String()
+		if !strings.Contains(text, "not visible for cursor:") {
+			t.Errorf("table output missing the honest not-visible line, got:\n%s", text)
+		}
+		if strings.Contains(text, "route this client through the observer proxy") {
+			t.Errorf("table output still renders the misleading proxy hint for cursor, got:\n%s", text)
+		}
+	})
 }
 
 func TestPredictCmd_NoModelErrors(t *testing.T) {

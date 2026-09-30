@@ -1,4 +1,10 @@
-import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { FadeIn, UpdatingBadge } from "@shared/primitives/Motion";
+import { ChartSkeleton } from "@shared/primitives/Skeleton";
+import { EmptyState } from "@shared/primitives/EmptyState";
+import { chartMotion } from "@shared/lib/motion";
+import { usePortalQuery } from "../lib/query";
+import { ErrorPanel, HeaderSkeleton } from "../components/LoadState";
 import {
   Bar,
   BarChart,
@@ -20,7 +26,18 @@ import { ChartShell } from "@shared/primitives/ChartShell";
 import { Pill } from "@shared/primitives/Pill";
 import { SegmentedControl } from "@shared/primitives/SegmentedControl";
 import { CHART_AXIS, CHART_GRID } from "@shared/charts/common";
+import { ChartTooltip } from "@shared/charts/ChartTooltip";
 import { fmtInt, fmtYearMonth } from "@shared/lib/format";
+import { PageHeader } from "@shared/primitives/PageHeader";
+import { CardHeader } from "@shared/primitives/CardHeader";
+import { BookText, ChartColumn, type LucideIcon } from "lucide-react";
+import { routeIcon } from "../lib/nav";
+
+// SECTION_ICONS: one glyph per Community section title.
+const SECTION_ICONS = {
+  bands: ChartColumn,
+  definitions: BookText,
+} as const satisfies Record<string, LucideIcon>;
 
 // Community percentiles (divergence plan §3 W5 / R3), rebuilt onto the shared
 // design-system primitives so the cloud portal renders the same visual
@@ -80,14 +97,12 @@ function Definitions({
 }) {
   return (
     <div className="rounded-3 border border-line-2 bg-bg-2 p-4">
-      <h3 className="text-[13px] font-semibold text-fg-0">
-        Metric definitions
-      </h3>
-      <p className="mt-1 text-[11px] text-fg-3">
-        Every band is a range of one of these metrics, measured over your
-        chosen window. Cohorts group developers so the comparison is like for
-        like.
-      </p>
+      <CardHeader
+        icon={SECTION_ICONS.definitions}
+        title="Metric definitions"
+        sub="Every band is a range of one of these metrics, measured over your chosen window. Cohorts group developers so the comparison is like for like."
+        className="mb-0"
+      />
       {cohortLabel && (
         <p className="mt-2 text-[11px] text-fg-2">
           <span className="text-fg-3">Cohort: </span>
@@ -95,7 +110,7 @@ function Definitions({
         </p>
       )}
       {cohortDescription && (
-        <p className="mt-0.5 text-[11px] text-fg-4">{cohortDescription}</p>
+        <p className="mt-0.5 text-[11px] text-fg-3">{cohortDescription}</p>
       )}
       <dl className="mt-3 flex flex-col gap-2.5">
         {metrics.map((m) => (
@@ -106,7 +121,7 @@ function Definitions({
             <dt className="text-[12px] font-medium text-fg-1">
               {m.label}
               {m.unit && (
-                <span className="ml-1.5 text-[10px] font-normal text-fg-4">
+                <span className="ml-1.5 text-[10px] font-normal text-fg-3">
                   {m.unit}
                 </span>
               )}
@@ -149,77 +164,52 @@ function OwnBarLabel(props: {
 }
 
 export function Community() {
-  const [meta, setMeta] = useState<CommunityMetricsView | null>(null);
-  const [metaError, setMetaError] = useState<string | null>(null);
+  // The catalog is fetched once (cached across visits). Metric and cohort
+  // live in the URL, so a choice survives a reload and can be shared; the
+  // cohort defaults to global and the metric to the first one offered.
+  const metaQ = usePortalQuery<CommunityMetricsView>(
+    "community:metrics",
+    getCommunityMetrics,
+  );
+  const meta = metaQ.data;
+  const metaError = metaQ.error && !meta ? metaQ.error : null;
+  const [params, setParams] = useSearchParams();
+  const urlMetric = params.get("metric");
+  const metric =
+    meta?.metrics.find((m) => m.id === urlMetric)?.id ?? meta?.metrics[0]?.id;
+  const cohort = params.get("cohort") || "global";
+  const setParam = (k: string, v: string) => {
+    const next = new URLSearchParams(params);
+    next.set(k, v);
+    setParams(next, { replace: true });
+  };
+  const setMetric = (v: string) => setParam("metric", v);
+  const setCohort = (v: string) => setParam("cohort", v);
 
-  const [metric, setMetric] = useState<string | undefined>(undefined);
-  const [cohort, setCohort] = useState<string>("global");
-
-  const [data, setData] = useState<CommunityView | null>(null);
-  const [dataError, setDataError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  // Load the catalogs once, then seed the metric selector with the first
-  // metric the backend offers (the cohort selector defaults to global).
-  useEffect(() => {
-    let live = true;
-    getCommunityMetrics()
-      .then((m) => {
-        if (!live) return;
-        setMeta(m);
-        if (m.metrics.length > 0) {
-          setMetric(m.metrics[0].id);
-        } else {
-          // No metrics offered — nothing to load, so stop the spinner.
-          setLoading(false);
-        }
-      })
-      .catch((err: unknown) => {
-        if (live) {
-          setMetaError(err instanceof Error ? err.message : "failed to load");
-          setLoading(false);
-        }
-      });
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  // Reload the distribution whenever the metric or cohort changes. Version is
-  // resolved from the catalog for the selected metric so a v2 metric asks for
-  // v2 (the backend defaults to 1 otherwise); the window is omitted so the
-  // server picks the most recent finalized one.
-  useEffect(() => {
-    if (metric === undefined) {
-      return;
-    }
-    let live = true;
-    setLoading(true);
-    const version = meta?.metrics.find((m) => m.id === metric)?.version;
-    getCommunity({ metric, version, cohort })
-      .then((d) => {
-        if (!live) return;
-        setDataError(null);
-        setData(d);
-      })
-      .catch((err: unknown) => {
-        if (live) {
-          setDataError(err instanceof Error ? err.message : "failed to load");
-        }
-      })
-      .finally(() => {
-        if (live) setLoading(false);
-      });
-    return () => {
-      live = false;
-    };
-  }, [metric, cohort, meta]);
+  // Version is resolved from the catalog for the selected metric so a v2
+  // metric asks for v2 (the backend defaults to 1 otherwise); the window is
+  // omitted so the server picks the most recent finalized one. A metric or
+  // cohort switch keeps the previous distribution on screen, dimmed, until
+  // the new one lands (the chart no longer unmounts).
+  const version = meta?.metrics.find((m) => m.id === metric)?.version;
+  const dataQ = usePortalQuery<CommunityView>(
+    metric ? `community:${metric}:${version ?? ""}:${cohort}` : null,
+    () => getCommunity({ metric, version, cohort }),
+    [],
+    { keepPrevious: true },
+  );
+  const data = dataQ.data;
+  const dataError = dataQ.error && !data ? dataQ.error : null;
+  const loading = metaQ.loading || dataQ.loading;
 
   if (metaError) {
     return (
-      <div className="rounded-3 border border-danger/30 bg-bg-2 px-4 py-3 text-[13px] text-danger">
-        Could not load community metrics: {metaError}
-      </div>
+      <ErrorPanel
+        variant="page"
+        what="community metrics"
+        error={metaError}
+        onRetry={metaQ.reload}
+      />
     );
   }
 
@@ -256,16 +246,11 @@ export function Community() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-[20px] font-semibold text-fg-0">Community</h1>
-        <p className="mt-1 max-w-[640px] text-[11px] text-fg-3">
-          Where you sit in the private, opt-in developer community - a
-          floored, aggregate band distribution with your own band
-          highlighted. This is not a leaderboard: you never see another
-          developer&apos;s number, and cohort cells below the minimum size are
-          suppressed entirely.
-        </p>
-      </div>
+      <PageHeader
+        title="Community"
+        icon={routeIcon("/community")}
+        sub="Where you sit in the private, opt-in developer community - a floored, aggregate band distribution with your own band highlighted. This is not a leaderboard: you never see another developer's number, and cohort cells below the minimum size are suppressed entirely."
+      />
 
       {meta && metrics.length > 0 && (
         <div className="flex flex-wrap items-start gap-5 rounded-3 border border-line-2 bg-bg-2 p-4">
@@ -295,19 +280,26 @@ export function Community() {
       )}
 
       {dataError && (
-        <div className="rounded-3 border border-danger/30 bg-bg-2 px-4 py-3 text-[13px] text-danger">
-          Could not load community bands: {dataError}
+        <div className="rounded-3 border border-line-2 bg-bg-2">
+          <ErrorPanel
+            what="community bands"
+            error={dataError}
+            onRetry={dataQ.reload}
+          />
         </div>
       )}
 
       {loading && !dataError && (
-        <div className="text-[13px] text-fg-3">
-          Loading community bands...
+        <div className="flex flex-col gap-4" role="status" aria-label="Loading">
+          {!meta && <HeaderSkeleton />}
+          <div className="rounded-3 border border-line-2 bg-bg-2 p-4">
+            <ChartSkeleton height={240} />
+          </div>
         </div>
       )}
 
       {!loading && !dataError && data && (
-        <>
+        <FadeIn className="flex flex-col gap-6">
           {own && !own.contributed && (
             <div className="rounded-3 border border-line-2 bg-bg-2 px-4 py-3 text-[12px] text-fg-2">
               You are not contributing this metric yet, so there is no band
@@ -320,6 +312,7 @@ export function Community() {
 
           <ChartShell
             title={data.metric_label}
+            icon={SECTION_ICONS.bands}
             sub={
               (data.cohort_size > 0
                 ? `${fmtInt(data.cohort_size)} developers`
@@ -327,15 +320,22 @@ export function Community() {
               (data.window_id ? ` · ${fmtYearMonth(data.window_id)}` : "") +
               (selectedCohort ? ` · ${selectedCohort.label}` : "")
             }
-            right={ownPlacement}
+            right={
+              <span className="flex items-center gap-2">
+                <UpdatingBadge show={dataQ.isStale} />
+                {ownPlacement}
+              </span>
+            }
+            stale={dataQ.isStale}
           >
             {bands.length === 0 ? (
-              <div className="grid h-[220px] place-items-center text-center">
-                <p className="max-w-[360px] text-[12px] text-fg-3">
-                  Not enough developers in this cohort yet - community bands
-                  appear once at least 30 people opt in.
-                </p>
-              </div>
+              <EmptyState
+                variant="inline"
+                illustration="cohort"
+                illustrationSize={128}
+                title="Not enough developers in this cohort yet"
+                body="Community bands appear once at least 30 people opt in."
+              />
             ) : (
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart
@@ -351,29 +351,29 @@ export function Community() {
                   />
                   <Tooltip
                     cursor={{ fill: "var(--bg-3)" }}
-                    content={({ active, payload }) => {
-                      if (!active || !payload?.length) return null;
-                      const p = payload[0].payload as (typeof chartData)[number];
-                      return (
-                        <div className="rounded-2 border border-line-3 bg-bg-3/95 px-3 py-2 text-[11px] shadow-2 backdrop-blur">
-                          <div className="text-fg-1">{p.label}</div>
-                          <div className="mt-0.5 text-fg-3">
-                            {fmtInt(p.count)} dev{p.count === 1 ? "" : "s"}
-                            {p.isOwn && (
-                              <span className="ml-1 text-accent">
-                                · your band
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    }}
+                    content={
+                      <ChartTooltip
+                        formatItem={(_name, value) =>
+                          `${fmtInt(value)} dev${value === 1 ? "" : "s"}`
+                        }
+                        extra={(row) => (row.isOwn ? "Your band" : null)}
+                      />
+                    }
                   />
-                  <Bar dataKey="count" radius={[3, 3, 0, 0]}>
+                  <Bar
+                    {...chartMotion()}
+                    dataKey="count"
+                    name="Developers"
+                    fill="var(--fg-4)"
+                    radius={[3, 3, 0, 0]}
+                  >
                     {chartData.map((d) => (
                       <Cell
                         key={d.band}
-                        fill={d.isOwn ? "var(--accent)" : "var(--bg-5)"}
+                        // Non-own bands use fg-4 (3:1 on the card in both
+                        // themes); bg-5 was ~1.4:1 and the distribution
+                        // barely showed.
+                        fill={d.isOwn ? "var(--accent)" : "var(--fg-4)"}
                       />
                     ))}
                     <LabelList dataKey="isOwn" content={OwnBarLabel} />
@@ -388,7 +388,7 @@ export function Community() {
             cohortLabel={selectedCohort?.label}
             cohortDescription={selectedCohort?.description}
           />
-        </>
+        </FadeIn>
       )}
     </div>
   );

@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { fmtUSD } from "../lib/format";
 import type { AnalysisCostByDowHour } from "../lib/types";
 import { Tooltip } from "../primitives";
+import { ScaleLegend } from "./ScaleLegend";
 
 // DowHourHeatmap — 7×24 grid showing cost concentration across
 // day-of-week (rows) × hour-of-day (cols), matching the design's
@@ -11,18 +12,21 @@ import { Tooltip } from "../primitives";
 // Cells render with intensity = log(cost) / log(max) so a hot
 // hour-cluster (e.g. Tue/Wed 14:00–17:00) reads at-a-glance while
 // quieter cells stay visible rather than collapsing to bg.
-export function DowHourHeatmap({
+export const DowHourHeatmap = memo(function DowHourHeatmap({
   cells,
   timezone,
 }: {
   cells: AnalysisCostByDowHour["cells"];
   timezone?: string;
 }) {
-  const max = useMemo(() => {
+  // peak is the real top cell (the legend's honest high end); max floors
+  // it at 1 only as the log-scale divisor.
+  const peak = useMemo(() => {
     let m = 0;
     for (const c of cells) if (c.cost_usd > m) m = c.cost_usd;
-    return Math.max(1, m);
+    return m;
   }, [cells]);
+  const max = Math.max(1, peak);
 
   const [hovered, setHovered] = useState<{ dow: number; hour: number } | null>(
     null,
@@ -85,13 +89,18 @@ export function DowHourHeatmap({
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-3 text-[10.5px] text-fg-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10.5px] text-fg-3">
         <div className="flex items-center gap-2">
           <span className="font-mono uppercase tracking-[0.06em]">
             cost by hour of day × day of week · {timezone ?? "UTC"}
           </span>
         </div>
-        <ScaleLegend max={max} />
+        <ScaleLegend
+          colorAt={cellColor}
+          low={fmtUSD(0)}
+          high={fmtUSD(peak)}
+          label="Cost colour scale, log"
+        />
       </div>
 
       {/* Fixed-height readout slot — operator complaint: the prior
@@ -123,7 +132,7 @@ export function DowHourHeatmap({
       </div>
     </div>
   );
-}
+});
 
 function Row({
   label,
@@ -158,7 +167,7 @@ function Row({
           return (
             <Tooltip
               key={hour}
-              content={`${dayName(dow)} ${pad(hour)}:00 — ${fmtUSD(value)}${
+              content={`${dayName(dow)} ${pad(hour)}:00 · ${fmtUSD(value)}${
                 cell?.turn_count ? ` · ${cell.turn_count} turns` : ""
               }`}
             >
@@ -170,13 +179,7 @@ function Row({
                 onBlur={() => onHover(null)}
                 className="aspect-square w-full rounded-[2px] transition-all"
                 style={{
-                  background:
-                    intensity > 0
-                      ? `color-mix(in srgb, var(--accent) ${(
-                          14 +
-                          intensity * 76
-                        ).toFixed(0)}%, var(--bg-3))`
-                      : "var(--bg-3)",
+                  background: cellColor(intensity),
                   outline: isHovered ? "1px solid var(--accent)" : "none",
                   outlineOffset: isHovered ? "1px" : undefined,
                 }}
@@ -189,55 +192,21 @@ function Row({
   );
 }
 
-function ScaleLegend({ max }: { max: number }) {
-  // 5-step gradient legend mirroring the cell color ramp so the user
-  // can map a cell shade back to a dollar magnitude at a glance.
-  const stops = [0, 0.25, 0.5, 0.75, 1];
-  return (
-    <div className="flex items-center gap-1">
-      <span className="text-[9.5px] text-fg-4">$0</span>
-      <div className="flex h-2.5 items-stretch gap-px">
-        {stops.map((s, i) => (
-          <span
-            key={i}
-            className="w-3 rounded-[1px]"
-            style={{
-              background:
-                s > 0
-                  ? `color-mix(in srgb, var(--accent) ${(14 + s * 76).toFixed(0)}%, var(--bg-3))`
-                  : "var(--bg-3)",
-            }}
-          />
-        ))}
-      </div>
-      <span className="font-mono text-[9.5px] tabular-nums text-fg-4">
-        {fmtUSD(max)}
-      </span>
-    </div>
-  );
+// cellColor is the cell ramp (accent over bg-3); the ScaleLegend samples
+// the same function so the legend and the cells cannot drift.
+function cellColor(intensity: number): string {
+  return intensity > 0
+    ? `color-mix(in srgb, var(--accent) ${(14 + intensity * 76).toFixed(0)}%, var(--bg-3))`
+    : "var(--bg-3)";
 }
 
 function pad(n: number): string {
   return n.toString().padStart(2, "0");
 }
 
+// Go's time.Weekday() order: Sun=0 .. Sat=6.
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
 function dayName(dow: number): string {
-  switch (dow) {
-    case 0:
-      return "Sun";
-    case 1:
-      return "Mon";
-    case 2:
-      return "Tue";
-    case 3:
-      return "Wed";
-    case 4:
-      return "Thu";
-    case 5:
-      return "Fri";
-    case 6:
-      return "Sat";
-    default:
-      return String(dow);
-  }
+  return DAY_NAMES[dow] ?? String(dow);
 }

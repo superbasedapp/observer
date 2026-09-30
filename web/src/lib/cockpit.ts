@@ -130,33 +130,10 @@ export function isLive(lastActivityIso?: string | null, nowMs: number = Date.now
   return s != null && s <= LIVE_THRESHOLD_SECS;
 }
 
-// tokensPerSec — OUTPUT tokens per second for a turn. Ported verbatim from
-// SessionDetailPanel.tokensPerSec: only output tokens count (input/cache
-// tokens aren't generated), and tps_ms is the best server-chosen timing
-// source (see tps_basis). null when there's no output or no/zero timing.
-export function tokensPerSec(m: MessageRow): number | null {
-  if (m.output <= 0 || m.tps_ms == null || m.tps_ms <= 0) return null;
-  return m.output / (m.tps_ms / 1000);
-}
-
-/** One-decimal under 10 tok/s, whole above, "/s" suffixed. */
-export function fmtTps(tps: number): string {
-  return `${tps >= 10 ? Math.round(tps).toString() : tps.toFixed(1)}/s`;
-}
-
-/** Human label for the timing basis behind a tok/s value. */
-export function tpsBasisLabel(basis: MessageRow["tps_basis"]): string {
-  switch (basis) {
-    case "measured":
-      return "measured response time (proxy)";
-    case "intra-turn":
-      return "intra-turn generation span";
-    case "elapsed":
-      return "elapsed (to next message)";
-    default:
-      return "estimated";
-  }
-}
+// Tok/s: re-exported from the ONE client owner (@shared/lib/speed), which
+// renders the figure internal/sessionmsg computed server-side. Kept as a
+// re-export shim so CockpitContent's imports stay unchanged.
+export { fmtTps, tokensPerSec, tpsBasisLabel, tpsBasisShort, tpsSuppressedLabel, tpsTooltip } from "@shared/lib/speed";
 
 // newestMessage returns the latest MessageRow by timestamp. The tail endpoint
 // may hand rows back oldest-first, so we don't assume slice order.
@@ -168,12 +145,16 @@ export function newestMessage(rows: MessageRow[]): MessageRow | null {
   return best;
 }
 
-// newestAssistantWithOutput returns the latest assistant turn that actually
-// generated output — the turn whose tok/s is worth showing in the Now strip.
-export function newestAssistantWithOutput(rows: MessageRow[]): MessageRow | null {
+// newestTimedAssistant returns the latest assistant turn that carries a
+// throughput figure (a rate, or a suppression reason from a timed call) -
+// what the cockpit's Now strip shows, labelled with its age. (It replaced
+// newestAssistantWithOutput: the newest turn with output shows a permanent
+// "-" on a transcript-only session and flickers on a live proxied one,
+// where the transcript row can land before its api_turns twin.)
+export function newestTimedAssistant(rows: MessageRow[]): MessageRow | null {
   let best: MessageRow | null = null;
   for (const m of rows) {
-    if (m.role !== "assistant" || m.output <= 0) continue;
+    if (m.role !== "assistant" || m.tps_ms == null || m.tps_ms <= 0) continue;
     if (!best || Date.parse(m.timestamp) >= Date.parse(best.timestamp)) best = m;
   }
   return best;

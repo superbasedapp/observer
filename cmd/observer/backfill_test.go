@@ -287,7 +287,7 @@ func TestBackfillCursorHookUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logs := filepath.Join(root, "logs", "20260429T190737", "window1", "output_20260429T190743")
+	logs := filepath.Join(root, "Cursor", "logs", "20260429T190737", "window1", "output_20260429T190743")
 	if err := os.MkdirAll(logs, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -303,12 +303,22 @@ func TestBackfillCursorHookUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := backfillCursorHookUsage(ctx, database, filepath.Join(root, "logs"), 0)
+	roots := []string{filepath.Join(root, "Cursor", "logs"), filepath.Join(root, "missing-root")}
+	res, err := backfillCursorHookUsage(ctx, database, roots, 0)
 	if err != nil {
 		t.Fatalf("backfillCursorHookUsage: %v", err)
 	}
-	if res.FilesScanned != 1 || res.TokenUsageUpdated != 1 {
+	if res.FilesScanned != 1 || res.TokenRowsWritten != 1 {
 		t.Fatalf("unexpected summary: %+v", res)
+	}
+	// Idempotent: a re-run replays the same payload onto the same
+	// (source_file, source_event_id) key.
+	if _, err := backfillCursorHookUsage(ctx, database, roots, 0); err != nil {
+		t.Fatalf("backfillCursorHookUsage rerun: %v", err)
+	}
+	var rows int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_usage WHERE session_id = 'cursor-session'`).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("token rows after rerun = %d (err %v), want 1", rows, err)
 	}
 
 	var model string
@@ -329,6 +339,72 @@ func TestBackfillCursorHookUsage(t *testing.T) {
 	}
 	if model != "default" {
 		t.Fatalf("session model = %q", model)
+	}
+}
+
+// TestBackfillCursorHookUsageSweepsSquatterBeforeReplay pins S10-CURSOR
+// review finding 2: a historical mislabelled stop already stored under
+// generation B's key (carrying generation A's usage) must never absorb
+// B's REAL usage through the upsert's per-column MAX. Since review finding
+// F3 (2026-09-26) that is a PROVEN pair, not a counter-equality sweep: the
+// replayed afterAgentResponse is B's authoritative usage, it differs from
+// the stored row, and the stored row is a byte copy of A's - so the
+// squatter is evicted before B's real usage lands.
+func TestBackfillCursorHookUsageSweepsSquatterBeforeReplay(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(root, "obs.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, q := range []string{
+		`INSERT INTO projects (id, root_path, created_at) VALUES (1, '/repo', '2026-09-08T00:00:00Z')`,
+		`INSERT INTO sessions (id, tool, started_at, project_id) VALUES ('cc', 'cursor', '2026-09-08T04:00:00Z', 1)`,
+		// A: the real row. B: the squatter restating A's tuple 1 s later.
+		`INSERT INTO token_usage (session_id, timestamp, tool, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, source, source_file, source_event_id, message_id)
+		 VALUES ('cc', '2026-09-08T04:36:43.395Z', 'cursor', 'm', 420473, 53139, 15524224, 0, 'hook', 'cursor:hook', 'gen-A:stop', 'gen-A')`,
+		`INSERT INTO token_usage (session_id, timestamp, tool, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, source, source_file, source_event_id, message_id)
+		 VALUES ('cc', '2026-09-08T04:36:44.749Z', 'cursor', 'm', 420473, 53139, 15524224, 0, 'hook', 'cursor:hook', 'gen-B:stop', 'gen-B')`,
+	} {
+		if _, err := database.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logs := filepath.Join(root, "Cursor", "logs", "20260908T121927", "window1", "output_20260908T123734")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// B's REAL usage, smaller in two columns and larger in one, so a
+	// MAX-merge into the squatter would be visible.
+	body := strings.Join([]string{
+		"[2026-09-08T04:40:00.000Z] Running hook 1",
+		"INPUT:",
+		`{"conversation_id":"cc","generation_id":"gen-B","hook_event_name":"afterAgentResponse","workspace_roots":["/repo"],"model":"m","text":"ok","input_tokens":1000,"output_tokens":60000,"cache_read_tokens":400,"cache_write_tokens":0}`,
+		"OUTPUT:",
+		`{}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(logs, "cursor.hooks.workspaceId-t.log"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := backfillCursorHookUsage(ctx, database, []string{filepath.Join(root, "Cursor", "logs")}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DuplicatesRemoved != 1 {
+		t.Fatalf("duplicates removed = %d, want the squatter swept once", res.DuplicatesRemoved)
+	}
+	var in, out, cr int64
+	if err := database.QueryRowContext(ctx, `SELECT input_tokens, output_tokens, cache_read_tokens FROM token_usage WHERE source_event_id = 'gen-B:stop'`).Scan(&in, &out, &cr); err != nil {
+		t.Fatal(err)
+	}
+	// input is NET of cache read: 1000 - 400.
+	if in != 600 || out != 60000 || cr != 400 {
+		t.Fatalf("gen-B = %d/%d/%d, want its real 600/60000/400 (not a MAX-blend with the squatter)", in, out, cr)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT input_tokens FROM token_usage WHERE source_event_id = 'gen-A:stop'`).Scan(&in); err != nil || in != 420473 {
+		t.Fatalf("gen-A input = %d (err %v), want untouched 420473", in, err)
 	}
 }
 
@@ -442,7 +518,7 @@ func TestBackfillsAllPrepareCleanlyOnEmptyDB(t *testing.T) {
 	if _, err := backfillCursorMessageID(ctx, database); err != nil {
 		t.Errorf("backfillCursorMessageID: %v", err)
 	}
-	if _, err := backfillCursorHookUsage(ctx, database, emptyDir, 0); err != nil {
+	if _, err := backfillCursorHookUsage(ctx, database, []string{emptyDir}, 0); err != nil {
 		t.Errorf("backfillCursorHookUsage: %v", err)
 	}
 	if _, err := backfillCursorTranscriptActions(ctx, database, emptyDir, 0); err != nil {
@@ -2930,5 +3006,92 @@ func TestBackfillContent_Idempotent(t *testing.T) {
 
 	if second != first {
 		t.Errorf("otel_content rows after 2nd rescan = %d, want %d (unchanged — re-parse must not duplicate)", second, first)
+	}
+}
+
+// writeCursorHooksLog places body as a Cursor hooks output log under root
+// and returns the logs root to hand to backfillCursorHookUsage.
+func writeCursorHooksLog(t *testing.T, root, body string) string {
+	t.Helper()
+	logs := filepath.Join(root, "Cursor", "logs", "20260908T121927", "window1", "output_20260908T123734")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logs, "cursor.hooks.workspaceId-t.log"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(root, "Cursor", "logs")
+}
+
+func cursorUsageBlock(ts, gen, kind string, in int64) string {
+	return strings.Join([]string{
+		"[" + ts + "] Running hook 1",
+		"INPUT:",
+		fmt.Sprintf(`{"conversation_id":"cc","generation_id":%q,"hook_event_name":%q,"workspace_roots":["/repo"],"model":"m","text":"ok","input_tokens":%d,"output_tokens":53139,"cache_read_tokens":0,"cache_write_tokens":0}`, gen, kind, in),
+		"OUTPUT:",
+		`{}`,
+		"",
+	}, "\n")
+}
+
+// TestBackfillCursorHookUsageProvenRestatement pins review finding F3
+// (2026-09-26) end to end through the replay: a historical squatter under
+// generation B's key is removed ONLY because the replayed log itself shows
+// the pair (A's afterAgentResponse, then a stop naming B with A's exact
+// usage, and no afterAgentResponse for B before it); and in the same run,
+// two REAL consecutive requests whose counters are equal both survive.
+func TestBackfillCursorHookUsageProvenRestatement(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(root, "obs.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, q := range []string{
+		`INSERT INTO projects (id, root_path, created_at) VALUES (1, '/repo', '2026-09-08T00:00:00Z')`,
+		`INSERT INTO sessions (id, tool, started_at, project_id) VALUES ('cc', 'cursor', '2026-09-08T04:00:00Z', 1)`,
+		// The squatter a live mislabelled stop left before this fix.
+		`INSERT INTO token_usage (session_id, timestamp, tool, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, source, source_file, source_event_id, message_id)
+		 VALUES ('cc', '2026-09-08T04:36:44.244Z', 'cursor', 'm', 420473, 53139, 0, 0, 'hook', 'cursor:hook', 'gen-B:stop', 'gen-B')`,
+	} {
+		if _, err := database.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := cursorUsageBlock("2026-09-08T04:36:42.860Z", "gen-A", "afterAgentResponse", 420473) +
+		cursorUsageBlock("2026-09-08T04:36:44.244Z", "gen-B", "stop", 420473) +
+		// Two real requests, equal counters, each stop after its own response.
+		cursorUsageBlock("2026-09-08T05:00:00.000Z", "gen-C", "afterAgentResponse", 1000) +
+		cursorUsageBlock("2026-09-08T05:00:00.400Z", "gen-C", "stop", 1000) +
+		cursorUsageBlock("2026-09-08T05:00:02.000Z", "gen-D", "afterAgentResponse", 1000) +
+		cursorUsageBlock("2026-09-08T05:00:02.400Z", "gen-D", "stop", 1000)
+	logsRoot := writeCursorHooksLog(t, root, body)
+
+	res, err := backfillCursorHookUsage(ctx, database, []string{logsRoot}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DuplicatesRemoved != 1 {
+		t.Fatalf("duplicates removed = %d, want the proven squatter only", res.DuplicatesRemoved)
+	}
+	got := map[string]bool{}
+	rows, err := database.QueryContext(ctx, `SELECT message_id FROM token_usage WHERE session_id = 'cc'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var m string
+		_ = rows.Scan(&m)
+		got[m] = true
+	}
+	rows.Close()
+	if !got["gen-A"] || got["gen-B"] || !got["gen-C"] || !got["gen-D"] || len(got) != 3 {
+		t.Fatalf("rows = %v, want gen-A, gen-C and gen-D (the squatter gone, both equal real requests kept)", got)
+	}
+	// Idempotent.
+	res, err = backfillCursorHookUsage(ctx, database, []string{logsRoot}, 0)
+	if err != nil || res.DuplicatesRemoved != 0 {
+		t.Fatalf("re-run removed %d (err %v), want 0", res.DuplicatesRemoved, err)
 	}
 }

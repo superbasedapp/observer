@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/timebucket"
 )
 
 func testCtx(t *testing.T) context.Context {
@@ -864,7 +865,11 @@ func TestLoadCacheTimeseries_BucketsByDay(t *testing.T) {
 	// Day 3: 1 expiry_rewrite
 	insert("expiry_rewrite", "2026-06-09T10:00:00Z", 0, 3000)
 
-	got, err := loadCacheTimeseries(ctx, database, cacheOverviewQuery{})
+	daySpec, err := timebucket.Resolve(timebucket.Request{Gran: "1d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadCacheTimeseries(ctx, database, cacheTimeseriesQuery{Spec: daySpec})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -873,9 +878,9 @@ func TestLoadCacheTimeseries_BucketsByDay(t *testing.T) {
 	}
 
 	want := []CacheTimeseriesPoint{
-		{Bucket: "2026-06-07", ReadTokens: 4500, WrittenTokens: 500, EventCount: 3, RewriteCount: 0},
-		{Bucket: "2026-06-08", ReadTokens: 800, WrittenTokens: 4000, EventCount: 2, RewriteCount: 1},
-		{Bucket: "2026-06-09", ReadTokens: 0, WrittenTokens: 3000, EventCount: 1, RewriteCount: 1},
+		{Bucket: "2026-06-07", T: time.Date(2026, 6, 7, 0, 0, 0, 0, time.UTC).UnixMilli(), ReadTokens: 4500, WrittenTokens: 500, EventCount: 3, RewriteCount: 0},
+		{Bucket: "2026-06-08", T: time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC).UnixMilli(), ReadTokens: 800, WrittenTokens: 4000, EventCount: 2, RewriteCount: 1},
+		{Bucket: "2026-06-09", T: time.Date(2026, 6, 9, 0, 0, 0, 0, time.UTC).UnixMilli(), ReadTokens: 0, WrittenTokens: 3000, EventCount: 1, RewriteCount: 1},
 	}
 	for i, w := range want {
 		if got[i] != w {
@@ -884,7 +889,7 @@ func TestLoadCacheTimeseries_BucketsByDay(t *testing.T) {
 	}
 
 	// Project filter zeroes the corpus when no match.
-	filtered, err := loadCacheTimeseries(ctx, database, cacheOverviewQuery{Project: "/repo/nonexistent"})
+	filtered, err := loadCacheTimeseries(ctx, database, cacheTimeseriesQuery{Spec: daySpec, Project: "/repo/nonexistent"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,4 +1,11 @@
-import { Pill } from "@/components/primitives";
+import { Icon, Pill, Tooltip } from "@/components/primitives";
+import { X, type LucideIcon } from "lucide-react";
+import { VOCAB_ICONS } from "@shared/lib/vocabIcons";
+
+// Tags are an OPEN vocabulary, so only the closed outcome tags
+// (lib/tagTaxonomy.ts) carry a glyph (VOCAB_ICONS.outcomeTag); any other tag
+// renders without one rather than with a CircleHelp.
+const OUTCOME_TAG_ICON: Readonly<Record<string, LucideIcon>> = VOCAB_ICONS.outcomeTag;
 
 // TagPill — one session-classification tag rendered through the existing
 // Pill primitive. There is deliberately NO tag_defs table in v1 (see
@@ -50,6 +57,7 @@ export function TagPill({
   const body = (
     <Pill
       variant={tagVariant(tag)}
+      icon={OUTCOME_TAG_ICON[tag]}
       className={className}
       // Pill's own `title` renders a themed Tooltip and makes the span
       // focusable — only useful on the inert form; the interactive form
@@ -73,19 +81,19 @@ export function TagPill({
               onRemove(tag);
             }
           }}
-          className="-mr-0.5 cursor-pointer px-0.5 text-fg-3 hover:text-fg-0 focus:outline-none"
+          className="-mr-0.5 inline-flex cursor-pointer px-0.5 text-fg-3 hover:text-fg-0 focus:outline-none"
         >
-          ×
+          <Icon icon={X} size={10} />
         </span>
       )}
     </Pill>
   );
   if (!onClick) return body;
   return (
+    <Tooltip content={title ?? `Filter sessions tagged "${tag}"`}>
     <span
       role="button"
       tabIndex={0}
-      title={title ?? `Filter sessions tagged "${tag}"`}
       onClick={(e) => {
         e.stopPropagation();
         onClick(tag);
@@ -101,5 +109,6 @@ export function TagPill({
     >
       {body}
     </span>
+    </Tooltip>
   );
 }

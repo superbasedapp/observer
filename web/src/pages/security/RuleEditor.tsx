@@ -1,3 +1,4 @@
+import { Plus } from "lucide-react";
 import { useState } from "react";
 import {
   Button,
@@ -84,8 +85,8 @@ function OverrideEditor({
     <SlideOver
       open={open}
       onClose={onClose}
-      title={initial ? `Edit override — ${initial.rule}` : "Override a built-in rule"}
-      subtitle="Tunes an existing rule's decision/enforce. No matcher — overrides can't redefine what a rule matches, only how it decides."
+      title={initial ? `Edit override - ${initial.rule}` : "Override a built-in rule"}
+      subtitle="Tunes an existing rule's decision/enforce. No matcher - overrides can't redefine what a rule matches, only how it decides."
       width={520}
     >
       <div className="space-y-4 p-5">
@@ -121,7 +122,7 @@ function OverrideEditor({
           layout="stack"
           help={
             allowWeaken && !isGuardIntegrityRuleId(row.rule)
-              ? "This layer may loosen or disable — pick any decision, including below the built-in floor."
+              ? "This layer may loosen or disable - pick any decision, including below the built-in floor."
               : "Escalate-only: only decisions at or above the built-in's floor are offered."
           }
         >
@@ -137,7 +138,12 @@ function OverrideEditor({
         </SettingRow>
       </div>
       <div className="flex items-center gap-2 border-t border-line-1 px-5 py-3">
-        <Button variant="primary" disabled={!row.rule.trim()} onClick={() => onSave(row)}>
+        <Button
+          variant="primary"
+          iconLeft={initial ? undefined : Plus}
+          disabled={!row.rule.trim()}
+          onClick={() => onSave(row)}
+        >
           {initial ? "Save override" : "Add override"}
         </Button>
         <Button variant="secondary" onClick={onClose}>
@@ -156,7 +162,7 @@ function CustomRuleEditor({ open, onClose, initial, onSave }: Extract<RuleEditor
     <SlideOver
       open={open}
       onClose={onClose}
-      title={initial ? `Edit rule — ${initial.id}` : "New custom rule"}
+      title={initial ? `Edit rule - ${initial.id}` : "New custom rule"}
       subtitle="A [[rule]] definition (matcher-v1). Command-scoped and event-scoped matchers can't mix in one rule."
       width={640}
     >
@@ -215,7 +221,7 @@ function CustomRuleEditor({ open, onClose, initial, onSave }: Extract<RuleEditor
           />
         </SettingRow>
 
-        <SettingRow label="Matcher scope" layout="stack" help="A rule may use only one scope — split into two rules to mix.">
+        <SettingRow label="Matcher scope" layout="stack" help="A rule may use only one scope - split into two rules to mix.">
           <SegmentedControl<GuardRuleRow["scope"]>
             options={[
               { value: "command", label: "Command" },
@@ -330,7 +336,7 @@ function CustomRuleEditor({ open, onClose, initial, onSave }: Extract<RuleEditor
                 placeholder="Pick event kinds…"
               />
             </SettingRow>
-            <SettingRow label="taint_source" layout="stack" help="Pure condition — session carries this taint mark.">
+            <SettingRow label="taint_source" layout="stack" help="Pure condition - session carries this taint mark.">
               <Select
                 value={row.event.taint_source}
                 onChange={(e) => setRow((r) => ({ ...r, event: { ...r.event, taint_source: e.target.value } }))}
@@ -367,7 +373,12 @@ function CustomRuleEditor({ open, onClose, initial, onSave }: Extract<RuleEditor
         )}
       </div>
       <div className="flex items-center gap-2 border-t border-line-1 px-5 py-3">
-        <Button variant="primary" disabled={!row.id.trim()} onClick={() => onSave(row)}>
+        <Button
+          variant="primary"
+          iconLeft={initial ? undefined : Plus}
+          disabled={!row.id.trim()}
+          onClick={() => onSave(row)}
+        >
           {initial ? "Save rule" : "Add rule"}
         </Button>
         <Button variant="secondary" onClick={onClose}>

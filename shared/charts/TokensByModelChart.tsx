@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import {
   Bar,
   BarChart,
@@ -12,46 +12,56 @@ import {
 import { ChartTooltip } from "./ChartTooltip";
 import { ChartLegend } from "./ChartLegend";
 import { fmtCompact } from "../lib/format";
+import type { Granularity } from "../lib/granularity";
 import type { TokensByModelPoint } from "../lib/types";
-import { CHART_AXIS, CHART_GRID } from "./common";
+import { bucketTooltipLabel, categoryAxis, CHART_AXIS, CHART_GRID, type GridPoint } from "./common";
+import { useChartMotion } from "./useChartMotion";
+import { modelLegendLabel, modelSeriesColorMap, OTHER_SERIES_KEY } from "./modelLegend";
 
-// Per-day stacked bars where each segment is one model. Top 6
+// Per-bucket stacked bars where each segment is one model. Top 6
 // models by total tokens become real series; the rest collapse
 // into "other" so the legend stays readable.
 //
-// Color palette is deliberately a small, distinguishable set
-// of token-bucket-adjacent hues plus tool colors as fallback.
-export function TokensByModelChart({
+// Colour is by model FAMILY (modelSeriesColors: one family table owns model
+// colour; a 2nd/3rd model of a family is a shade of it), not by rank, and
+// the legend shows each model's family mark.
+export const TokensByModelChart = memo(function TokensByModelChart({
   data,
   height = 240,
   topN = 6,
+  granularity = "1d",
+  grid,
 }: {
   data: TokensByModelPoint[];
   height?: number;
   topN?: number;
+  /** Bucket granularity the rows were served at (the response `bucket`); drives the axis/tooltip labels. */
+  granularity?: Granularity;
+  /** The response `grid` (every bucket of the window) for zero-fill. */
+  grid?: readonly GridPoint[];
 }) {
   const { rows, modelKeys, colorFor } = useMemo(
-    () => flatten(data, topN),
-    [data, topN],
+    () => flatten(data, topN, grid),
+    [data, topN, grid],
   );
 
+  const motion = useChartMotion(rows, "bucket", "", modelKeys.length);
   return (
     <ResponsiveContainer width="100%" height={height + 28}>
       <BarChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
         <Legend
           verticalAlign="top"
           align="left"
-          height={28}
-          content={<ChartLegend />}
+          content={<ChartLegend renderLabel={modelLegendLabel} />}
         />
         <CartesianGrid {...CHART_GRID} />
-        <XAxis dataKey="bucket" {...CHART_AXIS} tickFormatter={shortDate} />
+        <XAxis {...CHART_AXIS} {...categoryAxis(rows, granularity)} />
         <YAxis {...CHART_AXIS} tickFormatter={fmtCompact} />
         <Tooltip
           content={
             <ChartTooltip
               labelKey="bucket"
-              labelFormatter={shortDate}
+              labelFormatter={bucketTooltipLabel(granularity)}
               formatItem={(name, value) => `${name}: ${fmtCompact(value)}`}
             />
           }
@@ -59,6 +69,7 @@ export function TokensByModelChart({
         />
         {modelKeys.map((k, i) => (
           <Bar
+            {...motion}
             key={k}
             dataKey={k}
             name={k}
@@ -70,24 +81,11 @@ export function TokensByModelChart({
       </BarChart>
     </ResponsiveContainer>
   );
-}
-
-// Cycle through a small set of distinguishable hues for arbitrary
-// model keys. Tokens come from the design system so theme switches
-// remain automatic.
-const MODEL_COLORS = [
-  "var(--tok-net)",
-  "var(--tok-read)",
-  "var(--tok-out)",
-  "var(--tok-write)",
-  "var(--info)",
-  "var(--success)",
-  "var(--warn)",
-];
+});
 
 const OTHER_COLOR = "var(--tool-other)";
 
-function flatten(data: TokensByModelPoint[], topN: number) {
+function flatten(data: TokensByModelPoint[], topN: number, grid?: readonly GridPoint[]) {
   // Aggregate per model to pick top-N.
   const total: Record<string, number> = {};
   for (const p of data) {
@@ -97,36 +95,33 @@ function flatten(data: TokensByModelPoint[], topN: number) {
     .sort((a, b) => b[1] - a[1])
     .map(([k]) => k);
   const top = new Set(ranked.slice(0, topN));
-  const collapse = (m: string) => (top.has(m) ? m : "other");
+  const collapse = (m: string) => (top.has(m) ? m : OTHER_SERIES_KEY);
 
   // Pivot data → one row per bucket with one key per model.
+  // Seed every bucket of the served grid (zero-fill order) so an empty
+  // bucket keeps its slot on the axis; rows sort by bucket start `t`.
   const byBucket = new Map<string, Record<string, number | string>>();
+  for (const g of grid ?? []) byBucket.set(g.bucket, { bucket: g.bucket, t: g.t });
   for (const p of data) {
-    const row = byBucket.get(p.bucket) ?? { bucket: p.bucket };
+    const row = byBucket.get(p.bucket) ?? { bucket: p.bucket, t: p.t ?? 0 };
     const key = collapse(p.model);
     row[key] = (Number(row[key]) || 0) + (p.total_tokens || 0);
     byBucket.set(p.bucket, row);
   }
 
   const rows = [...byBucket.values()].sort((a, b) =>
-    String(a.bucket) < String(b.bucket) ? -1 : 1,
+    Number(a.t) !== Number(b.t)
+      ? Number(a.t) - Number(b.t)
+      : String(a.bucket) < String(b.bucket)
+        ? -1
+        : 1,
   );
 
   const modelKeys = [...ranked.slice(0, topN)];
-  if (ranked.length > topN) modelKeys.push("other");
+  if (ranked.length > topN) modelKeys.push(OTHER_SERIES_KEY);
 
-  const colorMap = new Map<string, string>();
-  modelKeys.forEach((m, i) => {
-    if (m === "other") colorMap.set(m, OTHER_COLOR);
-    else colorMap.set(m, MODEL_COLORS[i % MODEL_COLORS.length]);
-  });
+  const colorMap = modelSeriesColorMap(modelKeys);
   const colorFor = (k: string) => colorMap.get(k) ?? OTHER_COLOR;
 
   return { rows, modelKeys, colorFor };
-}
-
-function shortDate(s: string): string {
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return s;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }

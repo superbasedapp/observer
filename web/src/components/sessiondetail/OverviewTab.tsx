@@ -1,12 +1,15 @@
+import { memo } from "react";
 import { ActionBreakdownDonut } from "@/components/charts";
 import {
   ModelsUsedPanel,
   TokenBucketsPanel,
 } from "@shared/components/sessiondetail";
 import { SessionLOCCard } from "@/components/SessionLOCCard";
+import { SessionCommitsCard } from "@/components/SessionCommitsCard";
 import { VerbosityCard } from "@/components/VerbosityCard";
 import { CloudRow } from "@/components/sessiondetail/CloudRow";
 import { OrgIntelCard } from "@/components/sessiondetail/OrgIntelCard";
+import { SessionQualityCard } from "@/components/sessiondetail/SessionQualityCard";
 import { PromptGuardLine } from "@/components/PromptGuardLine";
 import type { SessionDetail } from "@/lib/types";
 import { hasRecordedUsage } from "./shared";
@@ -20,7 +23,10 @@ import { hasRecordedUsage } from "./shared";
 // node-side because it composes the fetch-coupled LOC / Verbosity / Cloud
 // cards.
 
-export function OverviewTab({ d }: { d: SessionDetail }) {
+// Memoized: the drawer re-renders on every detail poll (and on each poll's
+// fetching flip). `d` keeps its identity while the detail is unchanged (the
+// query cache shares unchanged subtrees), so an idle poll skips this tab.
+export const OverviewTab = memo(function OverviewTab({ d }: { d: SessionDetail }) {
   return (
     <div className="space-y-5">
       <CloudRow key={d.id} sessionId={d.id} />
@@ -34,10 +40,12 @@ export function OverviewTab({ d }: { d: SessionDetail }) {
         )}
         <ModelsUsedPanel rows={d.per_model} totalCost={d.cost_usd} />
       </div>
+      <SessionQualityCard sessionId={d.id} />
       <SessionLOCCard sessionId={d.id} />
+      <SessionCommitsCard sessionId={d.id} />
       <VerbosityCard sessionId={d.id} />
       <OrgIntelCard sessionId={d.id} />
       <PromptGuardLine sessionId={d.id} />
     </div>
   );
-}
+});

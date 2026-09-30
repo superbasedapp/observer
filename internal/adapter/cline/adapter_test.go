@@ -633,3 +633,19 @@ func TestAssistantTextRooCodeRawToolName(t *testing.T) {
 		t.Errorf("raw_tool_name = %q, want roo-code.assistant_text", ev.RawToolName)
 	}
 }
+
+// TestActionMap_VendorGroundedNames pins the tool_use-path mappings added
+// 2026-09-28 (R2-TOOLMAP) for Cline tool names that used to land in
+// `unknown`. Grounded in cline/cline apps/vscode/src/shared/tools.ts
+// (ClineDefaultTool) and seen live. One case per new mapping; the
+// XML-tag path is pinned separately in xmltools_test.go.
+func TestActionMap_VendorGroundedNames(t *testing.T) {
+	cases := []struct{ native, want string }{
+		{"list_code_definition_names", models.ActionSearchFiles},
+	}
+	for _, tc := range cases {
+		if got, ok := actionMap[tc.native]; !ok || got != tc.want {
+			t.Errorf("actionMap[%q] = %q (present=%v), want %q", tc.native, got, ok, tc.want)
+		}
+	}
+}

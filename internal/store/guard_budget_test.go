@@ -42,20 +42,32 @@ func seedBudgetFixture(t *testing.T, s *Store, database *sql.DB) {
 			t.Fatalf("seed token_usage: %v", err)
 		}
 	}
+	// twin is the transcript copy of a turn() row: the same model and token
+	// shape, so the one session rule (sessionmsg.Derive, via the stored
+	// verdicts) counts the turn once - as its proxy row.
+	twin := func(sid string, ts time.Time, cost float64) {
+		if _, err := database.ExecContext(ctx, `
+			INSERT INTO token_usage (session_id, timestamp, tool, model, input_tokens, output_tokens,
+			                         estimated_cost_usd, source, reliability, source_event_id)
+			VALUES (?, ?, 'claude-code', 'claude-x', 10, 10, ?, 'jsonl', 'estimated', 'tk-twin')`,
+			sid, timestamp(ts.Add(2*time.Second)), cost); err != nil {
+			t.Fatalf("seed token_usage twin: %v", err)
+		}
+	}
 	turn("s-proxy", now, 1.00)
 	turn("s-proxy", now, 0.50)                    // proxy-only session: $1.50
 	usage("s-watch", now, 2.00)                   // watcher-only session: $2.00
-	turn("s-both", now, 3.00)                     // double-observed session:
-	usage("s-both", now, 2.50)                    //   MAX(3.00, 2.50) = $3.00
+	turn("s-both", now, 3.00)                     // double-observed turn: the
+	twin("s-both", now, 2.50)                     //   proxy row counts, $3.00
 	turn(nil, now, 0.25)                          // unattributed proxy turn: $0.25
 	turn("s-old", now.Add(-48*time.Hour), 9.99)   // in week/month, outside today
 	turn("s-month", now.Add(-10*24*time.Hour), 5) // in month, outside week/today
 }
 
-// TestGuardBudgetSpend pins the §12.1 spend query: per-session totals
-// take the larger of the proxy and watcher sums (never both), the
-// daily total sums per-session maxima including unattributed proxy
-// turns, and rows before dayStart don't count.
+// TestGuardBudgetSpend pins the §12.1 spend query: a turn observed by both
+// the proxy and the watcher counts once (the stored sessionmsg dedup
+// verdicts), the daily total sums every counted row including unattributed
+// proxy turns, and rows before dayStart don't count.
 func TestGuardBudgetSpend(t *testing.T) {
 	t.Parallel()
 	s, database := newTestStore(t)
@@ -75,7 +87,7 @@ func TestGuardBudgetSpend(t *testing.T) {
 	}{
 		{"proxy-only session", "s-proxy", 1.50},
 		{"watcher-only session", "s-watch", 2.00},
-		{"double-observed session takes the max", "s-both", 3.00},
+		{"double-observed turn counts once", "s-both", 3.00},
 		{"unknown session", "nope", 0},
 		{"empty session id skips the session half", "", 0},
 	}

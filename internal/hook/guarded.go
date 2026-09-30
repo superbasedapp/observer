@@ -99,6 +99,37 @@ func HandleGuarded(
 	return false, doPersist
 }
 
+// truncatedPreToolReason is the agent/human-facing reason for the
+// fail-closed ask HandleTruncatedPreTool emits.
+const truncatedPreToolReason = "Observer guard could not evaluate this tool call: its hook payload exceeded the size the guard reads, so the call is held for your approval instead of being approved unexamined."
+
+// HandleTruncatedPreTool is the fail-closed branch for a Claude Code
+// PreToolUse payload the caller could NOT read in full (security review
+// 2026-09-27, SR27-D2). A truncated body fails json.Unmarshal, and
+// HandleGuarded treats "not an evaluable shape" as approve - so before
+// this branch a Write/Edit whose content pushed the payload past the read
+// bound (e.g. an Edit of ~/.claude/settings.json or ~/.bashrc) was
+// approved WITHOUT evaluation even when an enforce-mode deny rule covered
+// its target. When the guard is enforcing, the call is held for the human
+// (ask) rather than approved; when it is not enforcing (observe / off),
+// nothing is written and the caller keeps its normal approve path.
+//
+// Returns true when it wrote the ask reply (the caller must not write
+// another).
+func HandleTruncatedPreTool(event string, enforcing bool, stdout, stderr io.Writer) bool {
+	if !enforcing {
+		return false
+	}
+	_ = json.NewEncoder(stdout).Encode(buildClaudeCodeBlockReply(guard.Emission{
+		Permission: "ask",
+		Enforced:   true,
+		Reason:     truncatedPreToolReason,
+	}))
+	fmt.Fprintf(stderr, "observer-hook: %s guard ask (payload truncated, not evaluable)\n", event)
+	appendHookEventLog(hookEvent{Event: event, Action: "guard:ask:truncated"})
+	return true
+}
+
 // claudeCodeBlockReply is the §6.2 Claude Code decision shape: the
 // modern hookSpecificOutput.permissionDecision contract plus the
 // legacy top-level decision/reason fields, emitted TOGETHER in one
@@ -139,10 +170,12 @@ type guardedPreToolPayload struct {
 	Cwd       string `json:"cwd"`
 	ToolName  string `json:"tool_name"`
 	ToolInput struct {
-		Command  string `json:"command"`
-		FilePath string `json:"file_path"`
-		URL      string `json:"url"`
-		Query    string `json:"query"`
+		Command      string `json:"command"`
+		FilePath     string `json:"file_path"`
+		NotebookPath string `json:"notebook_path"`
+		Path         string `json:"path"`
+		URL          string `json:"url"`
+		Query        string `json:"query"`
 	} `json:"tool_input"`
 }
 
@@ -159,42 +192,85 @@ var claudeCodePreToolCaps = policy.Capabilities{
 // claudeToolShape maps a Claude Code tool name onto the policy event
 // vocabulary. Table-driven (Module rule 5); the target selector keys
 // off which tool_input field carries the operand.
+//
+// Every Claude Code tool that runs a shell command or returns file content
+// needs a row here: a tool with no row is approved WITHOUT evaluation, so a
+// missing row is a guard bypass (security review 2026-09-27, SR27-D1 -
+// Monitor and PowerShell run a command, Grep returns file content).
 var claudeToolShape = map[string]struct {
 	kind       policy.EventKind
 	actionType string
 	target     func(*guardedPreToolPayload) string
+	dialect    policy.Dialect // "" = posix
 }{
 	"Bash": {
-		policy.KindShellExec, models.ActionRunCommand,
-		func(p *guardedPreToolPayload) string { return p.ToolInput.Command },
+		kind: policy.KindShellExec, actionType: models.ActionRunCommand,
+		target: func(p *guardedPreToolPayload) string { return p.ToolInput.Command },
+	},
+	// Monitor runs its `command` as a background shell script whose stdout
+	// streams back as events - the same exec surface as Bash.
+	"Monitor": {
+		kind: policy.KindShellExec, actionType: models.ActionRunCommand,
+		target: func(p *guardedPreToolPayload) string { return p.ToolInput.Command },
+	},
+	// The Windows-native PowerShell tool (and its lower-case aliases, the
+	// same spellings internal/tooltax classifies as run_command).
+	"PowerShell": {
+		kind: policy.KindShellExec, actionType: models.ActionRunCommand,
+		target:  func(p *guardedPreToolPayload) string { return p.ToolInput.Command },
+		dialect: policy.DialectPowerShell,
+	},
+	"powershell": {
+		kind: policy.KindShellExec, actionType: models.ActionRunCommand,
+		target:  func(p *guardedPreToolPayload) string { return p.ToolInput.Command },
+		dialect: policy.DialectPowerShell,
+	},
+	"pwsh": {
+		kind: policy.KindShellExec, actionType: models.ActionRunCommand,
+		target:  func(p *guardedPreToolPayload) string { return p.ToolInput.Command },
+		dialect: policy.DialectPowerShell,
+	},
+	// Grep with output_mode "content" returns file bytes, so its path is a
+	// read for the sensitive-path rules. A Grep with no path searches cwd
+	// (empty target -> not evaluated, as before).
+	"Grep": {
+		kind: policy.KindFileAccess, actionType: models.ActionReadFile,
+		target: func(p *guardedPreToolPayload) string { return p.ToolInput.Path },
 	},
 	"Write": {
-		policy.KindFileAccess, models.ActionWriteFile,
-		func(p *guardedPreToolPayload) string { return p.ToolInput.FilePath },
+		kind: policy.KindFileAccess, actionType: models.ActionWriteFile,
+		target: func(p *guardedPreToolPayload) string { return p.ToolInput.FilePath },
 	},
 	"Edit": {
-		policy.KindFileAccess, models.ActionEditFile,
-		func(p *guardedPreToolPayload) string { return p.ToolInput.FilePath },
+		kind: policy.KindFileAccess, actionType: models.ActionEditFile,
+		target: func(p *guardedPreToolPayload) string { return p.ToolInput.FilePath },
 	},
 	"MultiEdit": {
-		policy.KindFileAccess, models.ActionEditFile,
-		func(p *guardedPreToolPayload) string { return p.ToolInput.FilePath },
+		kind: policy.KindFileAccess, actionType: models.ActionEditFile,
+		target: func(p *guardedPreToolPayload) string { return p.ToolInput.FilePath },
 	},
+	// Claude Code's NotebookEdit names its operand notebook_path (file_path
+	// kept as a fallback for older payloads).
 	"NotebookEdit": {
-		policy.KindFileAccess, models.ActionEditFile,
-		func(p *guardedPreToolPayload) string { return p.ToolInput.FilePath },
+		kind: policy.KindFileAccess, actionType: models.ActionEditFile,
+		target: func(p *guardedPreToolPayload) string {
+			if p.ToolInput.NotebookPath != "" {
+				return p.ToolInput.NotebookPath
+			}
+			return p.ToolInput.FilePath
+		},
 	},
 	"Read": {
-		policy.KindFileAccess, models.ActionReadFile,
-		func(p *guardedPreToolPayload) string { return p.ToolInput.FilePath },
+		kind: policy.KindFileAccess, actionType: models.ActionReadFile,
+		target: func(p *guardedPreToolPayload) string { return p.ToolInput.FilePath },
 	},
 	"WebFetch": {
-		policy.KindToolCall, models.ActionWebFetch,
-		func(p *guardedPreToolPayload) string { return p.ToolInput.URL },
+		kind: policy.KindToolCall, actionType: models.ActionWebFetch,
+		target: func(p *guardedPreToolPayload) string { return p.ToolInput.URL },
 	},
 	"WebSearch": {
-		policy.KindToolCall, models.ActionWebSearch,
-		func(p *guardedPreToolPayload) string { return p.ToolInput.Query },
+		kind: policy.KindToolCall, actionType: models.ActionWebSearch,
+		target: func(p *guardedPreToolPayload) string { return p.ToolInput.Query },
 	},
 }
 
@@ -212,9 +288,10 @@ var claudeToolShape = map[string]struct {
 //     action post-hoc seconds later with the real root. Cwd IS set,
 //     so relative targets still resolve for the home-anchored rules
 //     (sensitive paths, persistence vectors).
-//   - Dialect stays posix: Claude Code's Bash tool runs a POSIX shell
-//     on every platform (Git-Bash on Windows); nested
-//     powershell/cmd payloads are detected mid-parse regardless.
+//   - Dialect stays posix for Bash/Monitor: Claude Code's Bash tool runs
+//     a POSIX shell on every platform (Git-Bash on Windows); nested
+//     powershell/cmd payloads are detected mid-parse regardless. The
+//     Windows-native PowerShell tool rows set DialectPowerShell.
 //   - mcp__<server>__<tool> names classify as mcp_call with the full
 //     name as Target (MCPServerFromTarget parses the server out).
 func BuildClaudeCodeEvent(body []byte) (policy.Event, bool) {
@@ -234,6 +311,7 @@ func BuildClaudeCodeEvent(body []byte) (policy.Event, bool) {
 		ev.Kind = shape.kind
 		ev.ActionType = shape.actionType
 		ev.Target = shape.target(&p)
+		ev.Dialect = shape.dialect
 		if ev.Target == "" {
 			return policy.Event{}, false
 		}

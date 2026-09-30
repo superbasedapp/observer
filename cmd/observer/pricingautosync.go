@@ -153,6 +153,18 @@ func pricingAutoSyncOnce(ctx context.Context, cfg config.Config, opts pricingfee
 		return // refusal / 304 / enrolled — the cache is unchanged, nothing to re-price.
 	}
 
+	// Re-compose the min-cacheable registry from the feed cache JUST persisted
+	// (review finding 8). The published min_cacheable_tokens rides in the same
+	// envelope as the rates, so a running daemon that re-priced on this tick but
+	// kept the thresholds it installed at startup would grade every later cache
+	// observation against stale data until a (runbook-forbidden) restart. The
+	// composition itself is the ONE seam in mincacheable_wire.go - the same call
+	// wireCacheTrack makes at startup - so the snapshot-then-feed order cannot
+	// drift between the two call sites. It runs before the engine lookup below
+	// because the registry is process-wide state in cachetrack, not a property
+	// of the cost engine: a process with no registered engine still holds it.
+	applyMinCacheableOverrides(ctx, st, slog.Default())
+
 	// Re-price the DAEMON's live engine. lookupProcessCostEngine returns the one
 	// engine buildProxy registered for this db path; a one-shot process that ran
 	// this with no proxy assembled has none, and then there is simply nothing to

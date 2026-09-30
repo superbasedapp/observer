@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/tooltax"
 )
 
 // newTestAdapter builds an adapter whose single watch root is dir, so the
@@ -477,5 +478,23 @@ func TestToolResultCrossTickEmitsOutcomeUpdate(t *testing.T) {
 				t.Errorf("DurationMs = %d, want 0 (the call lived in the prior window)", up.DurationMs)
 			}
 		})
+	}
+}
+
+// TestMapToolName_VendorGroundedNames pins the qwen-code tool names
+// added 2026-09-28 (R2-TOOLMAP). `advisor` is ToolNames.ADVISOR in
+// QwenLM/qwen-code packages/core/src/tools/tool-names.ts (Kind.Think).
+// One case per new mapping; each must agree with internal/tooltax.
+func TestMapToolName_VendorGroundedNames(t *testing.T) {
+	cases := []struct{ native, want string }{
+		{"advisor", models.ActionHarnessCall},
+	}
+	for _, tc := range cases {
+		if got := mapToolName(tc.native); got != tc.want {
+			t.Errorf("mapToolName(%q) = %q, want %q", tc.native, got, tc.want)
+		}
+		if e, ok := tooltax.Resolve(models.ToolQwenCode, tc.native); !ok || e.Tool != models.ToolQwenCode || e.ActionType != tc.want {
+			t.Errorf("tooltax.Resolve(qwen-code, %q) = %+v (ok=%v), want a qwen-code %q row", tc.native, e, ok, tc.want)
+		}
 	}
 }

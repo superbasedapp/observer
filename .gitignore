@@ -2,6 +2,7 @@
 bin/
 /observer
 /observer-org
+/observer-mcpgw
 *.exe
 *.test
 *.out
@@ -27,16 +28,24 @@ bin/
 dist/
 build/
 
-# Re-include committed React/Vite build outputs (the embedded /v2/
-# dashboard is shipped as part of the Go binary; web-build regenerates
-# these from web/ sources). Without these re-includes the global
-# dist/ rule above silently swallows the committed bundles.
-!web/dist
-!web/dist/**
+# Re-include the committed React/Vite bundles that are go:embed INPUTS:
+# the node dashboard (internal/intelligence/dashboard/webapp/dist, from
+# web/), the org dashboard (internal/orgserver/dashboard/webapp/dist, from
+# web2/) and the cloud portal (webcloud/dist is its own embed dir). They
+# stay committed because `go install .../cmd/observer@latest` (module zip =
+# committed files only), the Node-less Go CI job, the observer-org release
+# cross-compile and every `COPY . .` Dockerfile (.dockerignore drops web/ and
+# web2/) compile against them. Without these re-includes the global dist/
+# rule above silently swallows them.
+#
+# web/dist and web2/dist are NOT re-included: they are the raw Vite output
+# that `make web-build` / `make web-build-org` copy into the embed dirs
+# (minus source maps, scripts/sync-web-embed.sh), and every CI/release path
+# rebuilds them from source. Committing them doubled every web rebuild and
+# fed whole-bundle patches into coding agents' session stores (post-Agent-
+# Access backlog item 9). .gitattributes marks all of these trees -diff.
 !internal/intelligence/dashboard/webapp/dist
 !internal/intelligence/dashboard/webapp/dist/**
-!web2/dist
-!web2/dist/**
 !webcloud/dist
 !webcloud/dist/**
 !internal/orgserver/dashboard/webapp/dist
@@ -91,7 +100,13 @@ coverage.html
 # but vscode/.vscode/ is part of the extension's checked-in dev loop.
 !vscode/.vscode/
 !vscode/.vscode/**
-.claude/
+# Every .claude/ dir's CONTENTS stay ignored (local settings, agent worktrees,
+# scheduled-task locks), EXCEPT the project-scoped settings.json at the repo
+# root, which carries the tokcron agent deny rules (model-pricing/deploy/tokcron
+# README "Agent guard"). The contents pattern (not the bare dir) is what lets
+# the negation re-include one file.
+**/.claude/*
+!/.claude/settings.json
 # Negation: keep .claude/ fixture trees under testdata/ tracked.
 # Required by TestSidechain_CrossReferencedFromSubagentFiles in
 # internal/adapter/cowork — the test walks
@@ -145,6 +160,7 @@ website/keys/
 /plugingen
 /track-gen
 /pricing-seedgen
+/pricing-snapshotgen
 
 # Local Cloudflare wrangler state (never committed)
 .wrangler/
@@ -241,6 +257,13 @@ model-pricing/scripts/extract-cache/
 /web2/
 /charts/
 /Dockerfile.observer-org
+# Agent Access, org-side half (the node-side half stays public).
+/cmd/observer-mcpgw/
+/internal/mcpgw/
+/internal/agentid/idstore/
+/internal/agentid/keyprovider/
+/internal/agentid/hostedclient/
+/Dockerfile.observer-mcpgw
 # Makefile.private holds every make target whose INPUTS are private-only
 # paths (cmd/observer-org*, cmd/observer-edge, web2/, deploy/, docs/,
 # website/). The shared Makefile pulls it in with `-include` (leading
@@ -259,6 +282,13 @@ model-pricing/scripts/extract-cache/
 /.github/workflows/obs-eval.yml
 /.github/workflows/website-deploy.yml
 /.github/workflows/org-postgres.yml
+/.github/workflows/agent-access-images.yml
+/scripts/agent-access-supply-chain-check.sh
+/tests/invariant/agent_access_supply_chain_test.go
 # The org-plane half of the copilot harness walkthrough. Its Phase-1
 # sibling (examples/copilot-harness/README.md) stays public.
 /examples/copilot-harness/README-orgplane.md
+/cmd/observer/alignment_wire.go
+/cmd/observer/alignment_wire_test.go
+/cmd/observer/projects_judge_wire.go
+/cmd/observer/obs_wire_hostinglabel_test.go

@@ -98,11 +98,24 @@ const (
 	// router_decisions-backed wires above.
 	snapFamSessionLOC snapFamily = "session_loc"
 	snapFamLOCDays    snapFamily = "loc_days"
+	// The session quality score wire (BL2-ORG), windowed on scored_at and
+	// probed on MAX(scored_at) in sessionqualitysummary.go.
+	snapFamSessionQuality snapFamily = "session_quality"
+	// Commit ownership (lane F-PROJ), probed in commitownersummary.go over the
+	// two source families its fold reads (commits and AI line changes).
+	snapFamCommitOwnership snapFamily = "commit_ownership"
 	// The two node session-detail trickle-up families (W2/W3). The task wire
 	// is ONE recompute feeding TWO slices (items + transitions), so both share
 	// snapFamSessionTasks — the benchmark arrangement, not a second family.
 	snapFamSessionTasks       snapFamily = "session_tasks"
 	snapFamSessionToolAccount snapFamily = "session_tool_accounts"
+	// The Agent Access P4 MCP relay activity aggregate (mcprelaysummary.go).
+	// The per-record MCPRelayEvents sibling is a CURSOR wire and is not
+	// gated.
+	snapFamMCPRelayActivity snapFamily = "mcp_relay_activity"
+	// The Agent Access P11 (c) shadow-MCP discovery inventory
+	// (mcpinventory.go), probed through the host-bound provider seam.
+	snapFamMCPInventory snapFamily = "mcp_inventory"
 )
 
 // snapProbes is the family → probe registry (CLAUDE.md #5: a decision table,
@@ -150,8 +163,12 @@ var snapProbes = map[snapFamily]func(*Store, context.Context) (string, error){
 	snapFamLimitGauge:         (*Store).probeLimitSnapshots,
 	snapFamSessionLOC:         (*Store).probeFileChanges,
 	snapFamLOCDays:            (*Store).probeFileChanges,
+	snapFamSessionQuality:     (*Store).probeSessionQuality,
+	snapFamCommitOwnership:    (*Store).probeCommitOwnership,
 	snapFamSessionTasks:       (*Store).probeTaskFlow,
 	snapFamSessionToolAccount: (*Store).probeToolAccounts,
+	snapFamMCPRelayActivity:   (*Store).probeMCPRelayRecords,
+	snapFamMCPInventory:       (*Store).probeMCPInventory,
 }
 
 // snapGateDefaultMaxSkipAge is the freshness floor: the longest a clean family

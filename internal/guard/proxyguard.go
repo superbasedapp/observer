@@ -1255,6 +1255,10 @@ var responseToolShape = map[string]struct {
 	"run_command":      {policy.KindShellExec, models.ActionRunCommand, []string{"command", "cmd"}},
 	"run_terminal_cmd": {policy.KindShellExec, models.ActionRunCommand, []string{"command"}},
 	"execute_command":  {policy.KindShellExec, models.ActionRunCommand, []string{"command"}},
+	// goose (Block): its built-in developer extension exposes the shell as
+	// `developer__shell` ({"command": ...}) — grounded on the demo estate
+	// 2026-09-21 (session 7, node-3 goose 1.51.0 through the proxy lane).
+	"developer__shell": {policy.KindShellExec, models.ActionRunCommand, []string{"command"}},
 	"write":            {policy.KindFileAccess, models.ActionWriteFile, []string{"file_path", "path", "target_file"}},
 	"write_file":       {policy.KindFileAccess, models.ActionWriteFile, []string{"file_path", "path", "target_file"}},
 	"write_to_file":    {policy.KindFileAccess, models.ActionWriteFile, []string{"path", "file_path"}},

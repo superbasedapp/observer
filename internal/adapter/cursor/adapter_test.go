@@ -1414,3 +1414,80 @@ func TestBuildAfterOutcome_DerivedSuccess(t *testing.T) {
 		})
 	}
 }
+
+// TestPostToolUseDurationUnitByVersion pins S10-CURSOR review (Codex
+// pass 2) finding 4: current builds send postToolUse `duration` in
+// MILLISECONDS (grounded 3.17.21-3.21.13); only the version-less 3.4.x
+// shape keeps the seconds reading.
+func TestPostToolUseDurationUnitByVersion(t *testing.T) {
+	cases := []struct {
+		version string
+		d       float64
+		want    int64
+	}{
+		{"3.20.21", 1401.838, 1401},
+		{"3.17.21", 120086.182, 120086},
+		{"3.21.13", 0.859, 0},
+		{"4.0.1", 250, 250},
+		{"3.16.9", 6.332, 6332},
+		{"", 6.332, 6332},
+		{"garbage", 6.332, 6332},
+	}
+	for _, tc := range cases {
+		if got := postToolUseDurationMs(tc.d, tc.version); got != tc.want {
+			t.Errorf("postToolUseDurationMs(%v, %q) = %d, want %d", tc.d, tc.version, got, tc.want)
+		}
+	}
+}
+
+// TestBuildAfterOutcome_ReadPairsWithBeforeReadFile pins Codex pass-2
+// finding 5: the Read tool's postToolUse carries its path only in
+// tool_input.file_path, and must hash to the SAME id as the
+// beforeReadFile row (whose top-level file_path it matches verbatim).
+func TestBuildAfterOutcome_ReadPairsWithBeforeReadFile(t *testing.T) {
+	before := []byte(`{"hook_event_name":"beforeReadFile","conversation_id":"c1","generation_id":"g1",
+		"file_path":"/repo/internal/store/x_test.go","content":"package store","workspace_roots":["/repo"]}`)
+	ev, ok, err := BuildEvent(EventBeforeReadFile, before, nil)
+	if err != nil || !ok {
+		t.Fatalf("BuildEvent: ok=%v err=%v", ok, err)
+	}
+	post := []byte(`{"hook_event_name":"postToolUse","conversation_id":"c1","generation_id":"g1",
+		"tool_name":"Read","tool_input":{"file_path":"/repo/internal/store/x_test.go"},
+		"tool_output":"ok","duration":12.5,"cursor_version":"3.20.21","tool_use_id":"call-1"}`)
+	out, ok, err := BuildAfterOutcome(EventPostToolUse, post)
+	if err != nil || !ok {
+		t.Fatalf("BuildAfterOutcome: ok=%v err=%v", ok, err)
+	}
+	if out.SourceEventID != ev.SourceEventID {
+		t.Fatalf("outcome id %q != before-row id %q", out.SourceEventID, ev.SourceEventID)
+	}
+	if out.DurationMs != 12 {
+		t.Fatalf("duration_ms = %d, want 12 (ms on 3.20.21)", out.DurationMs)
+	}
+}
+
+// TestBuildEventUnmappedEventIsScrubbedAndCapped pins Codex pass-2
+// finding 7: an event with no mapping keeps its payload only through
+// the scrubber and the content cap, never verbatim.
+func TestBuildEventUnmappedEventIsScrubbedAndCapped(t *testing.T) {
+	secret := "sk-ant-api03-" + strings.Repeat("A", 90)
+	big := strings.Repeat("x", 3*1024*1024)
+	body := []byte(`{"hook_event_name":"someFutureEvent","conversation_id":"c1","generation_id":"g1",
+		"workspace_roots":["/repo"],"note":"key ` + secret + `","blob":"` + big + `"}`)
+	small := []byte(`{"hook_event_name":"someFutureEvent","conversation_id":"c1","generation_id":"g1",
+		"workspace_roots":["/repo"],"note":"key ` + secret + `"}`)
+	sev, ok, err := BuildEvent("someFutureEvent", small, scrub.New())
+	if err != nil || !ok {
+		t.Fatalf("BuildEvent: ok=%v err=%v", ok, err)
+	}
+	if strings.Contains(sev.RawToolInput, secret) || !strings.Contains(sev.RawToolInput, "conversation_id") {
+		t.Fatalf("unmapped event not scrubbed field-wise: %q", sev.RawToolInput)
+	}
+	ev, ok, err := BuildEvent("someFutureEvent", body, scrub.New())
+	if err != nil || !ok {
+		t.Fatalf("BuildEvent: ok=%v err=%v", ok, err)
+	}
+	if len(ev.RawToolInput) >= len(body) || len(ev.RawToolInput) > 1024*1024 {
+		t.Fatalf("unmapped event payload not capped: %d bytes", len(ev.RawToolInput))
+	}
+}

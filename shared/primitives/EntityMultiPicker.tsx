@@ -6,6 +6,8 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import clsx from "clsx";
+import { X } from "lucide-react";
+import { Icon } from "./Icon";
 
 // EntityMultiPicker — a type-to-filter combobox for picking SEVERAL entities
 // by id, rendering each pick as a removable chip: label on top, the id as a
@@ -217,7 +219,7 @@ export function EntityMultiPicker({
                   }}
                   className="text-fg-3 hover:text-danger"
                 >
-                  <RemoveIcon />
+                  <Icon icon={X} size={10} />
                 </button>
               )}
             </span>
@@ -301,18 +303,5 @@ export function EntityMultiPicker({
         </div>
       )}
     </div>
-  );
-}
-
-function RemoveIcon() {
-  return (
-    <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <path
-        d="M4 4l8 8M12 4l-8 8"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-      />
-    </svg>
   );
 }

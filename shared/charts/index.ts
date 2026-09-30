@@ -20,3 +20,4 @@ export {
   type SavingsUnit,
 } from "./CompressionSavingsChart";
 export { SavingsByMechanismDonut } from "./SavingsByMechanismDonut";
+export { ScaleLegend } from "./ScaleLegend";

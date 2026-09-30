@@ -113,13 +113,11 @@ func TestResolveCompression_DefaultIsByteIdentical(t *testing.T) {
 
 // TestResolveCompression_EnablementSplit pins §2.3 decision 2 (Q6):
 // a profile NEVER flips the master conversation switch — in either
-// direction — while its parameters apply once enabled. CodeGraph is
-// install capability, also master-owned.
+// direction — while its parameters apply once enabled.
 func TestResolveCompression_EnablementSplit(t *testing.T) {
 	for _, masterEnabled := range []bool{true, false} {
 		master := Default().Compression
 		master.Conversation.Enabled = masterEnabled
-		master.CodeGraph.Enabled = !masterEnabled // distinguishable sentinel
 
 		got, err := ResolveCompression(master, "claude-code")
 		if err != nil {
@@ -127,9 +125,6 @@ func TestResolveCompression_EnablementSplit(t *testing.T) {
 		}
 		if got.Conversation.Enabled != masterEnabled {
 			t.Errorf("masterEnabled=%v: profile overrode the master conversation switch", masterEnabled)
-		}
-		if got.CodeGraph.Enabled != master.CodeGraph.Enabled {
-			t.Errorf("masterEnabled=%v: profile overrode master CodeGraph", masterEnabled)
 		}
 		// And the profile's parameters DID apply: claude-code pins
 		// cache_aware mode + 0.85 ratio (recipe content of record).

@@ -74,6 +74,9 @@ type SandboxAvailability struct {
 	// "readonly") so the dialog can show what a sandboxed launch will do to
 	// $HOME without a separate config read.
 	HomeMode string `json:"home_mode,omitempty"`
+	// Egress echoes the live [terminal.sandbox].egress network tier
+	// ("internet", "proxy_only", "none" or "host"; SR27-SBX-1).
+	Egress string `json:"egress,omitempty"`
 	// DefaultOn mirrors [terminal.sandbox].default_on so the New Terminal
 	// dialog can honor the operator's persisted default after restart.
 	DefaultOn bool `json:"default_on"`

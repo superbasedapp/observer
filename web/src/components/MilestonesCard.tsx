@@ -9,6 +9,8 @@ import {
 } from "@/lib/usageAnchor";
 import { HeroWordmark } from "@/components/HeroWordmark";
 import { StarPrompt } from "@/components/StarPrompt";
+import { Icon } from "@/components/primitives";
+import { Check, X } from "lucide-react";
 
 // MilestonesCard — delight moment D-4 (usability arc P5.6 / review
 // §9.3): small once-each milestone cards on Overview. Three
@@ -128,7 +130,7 @@ export function MilestonesCard({ sessions }: { sessions: number | null }) {
   useEffect(() => {
     if (fired("saved10")) return;
     let cancelled = false;
-    fetch("/api/compression/timeseries?days=36500&bucket=day")
+    fetch("/api/compression/timeseries?days=36500&gran=1w")
       .then((r) => (r.ok ? r.json() : null))
       .then((data: { series?: { total_saved_usd_est: number }[] } | null) => {
         if (cancelled || !data?.series) return;
@@ -216,22 +218,28 @@ export function MilestonesCard({ sessions }: { sessions: number | null }) {
     }
   };
   return (
-    <section className="relative flex items-center gap-3 rounded-3 border border-[#F4A024]/35 bg-bg-2 px-4 py-2.5">
+    <section className="relative flex items-center gap-3 rounded-3 border border-warn/35 bg-bg-2 px-4 py-2.5">
       <span
         aria-hidden
-        className="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-[#F4A024]"
+        className="inline-block h-2.5 w-2.5 shrink-0 rounded-pill bg-warn"
       />
-      <span className="shrink-0 font-mono text-[10.5px] tracking-[0.1em] text-[#F4A024]">
+      <span className="shrink-0 font-mono text-[10.5px] tracking-[0.1em] text-warn">
         {chip}
       </span>
-      <span className="min-w-0 flex-1 text-[12px] text-fg-2">{text}</span>
+      <span className="min-w-0 flex-1 text-small text-fg-2">{text}</span>
       <HeroWordmark variant="inline" className="hidden shrink-0 sm:inline" />
       <button
         type="button"
         onClick={share}
-        className="shrink-0 text-[11px] font-medium text-accent hover:text-accent-strong"
+        className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-strong"
       >
-        {shareState === "done" ? "Copied ✓" : "Share"}
+        {shareState === "done" ? (
+          <>
+            Copied <Icon icon={Check} size="xs" />
+          </>
+        ) : (
+          "Share"
+        )}
       </button>
       <button
         type="button"
@@ -239,7 +247,7 @@ export function MilestonesCard({ sessions }: { sessions: number | null }) {
         className="shrink-0 text-[11px] text-fg-4 hover:text-fg-2"
         aria-label="Dismiss milestone"
       >
-        ✕
+        <Icon icon={X} size="xs" />
       </button>
     </section>
   );

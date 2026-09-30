@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/dataauthority"
 )
 
 // chatCompletionsJudge calls an OpenAI-compatible /chat/completions endpoint
@@ -106,12 +108,15 @@ func (j chatCompletionsJudge) withTuning(maxTokens, numCtx int) chatCompletionsJ
 // (judgeHostingLabel uses the same test; there is no hosting= config field). A
 // loopback judge is treated as no-egress: its credential may be empty and an
 // Ollama-style num_ctx hint may be passed through.
+//
+// The actual grammar (exact-host allow-list, not a substring test) lives in
+// internal/dataauthority.IsLoopbackJudgeEndpoint — the JUDGE-1 egress gate's
+// pure copy — so there is exactly one owner of "is this endpoint local"
+// shared by the live client here and the egress-gate decision there. This
+// binding-layer wrapper exists only so call sites in this package keep their
+// short, unqualified name.
 func isLoopbackJudgeURL(baseURL string) bool {
-	u := strings.ToLower(baseURL)
-	return strings.Contains(u, "127.0.0.1") ||
-		strings.Contains(u, "localhost") ||
-		strings.Contains(u, "0.0.0.0") ||
-		strings.Contains(u, "[::1]")
+	return dataauthority.IsLoopbackJudgeEndpoint(baseURL)
 }
 
 // withEgressScrub returns a copy of the judge that caps and secret-redacts the

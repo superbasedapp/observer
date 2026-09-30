@@ -768,7 +768,7 @@ func (st *parseState) emitTokens(rec *rawRecord, e *sessionEvent, lineStart int6
 	if obs := emitCacheObservation(st.cacheAcc, st.path, st.sessionID, tokenSourceEventID, st.model, parseTimestamp(rec.RecordedAt), tp); obs != nil {
 		res.CacheObservations = append(res.CacheObservations, *obs)
 	}
-	res.TokenEvents = append(res.TokenEvents, models.TokenEvent{
+	ev := models.TokenEvent{
 		SourceFile:          st.path,
 		SourceEventID:       tokenSourceEventID,
 		SessionID:           st.sessionID,
@@ -797,7 +797,23 @@ func (st *parseState) emitTokens(rec *rawRecord, e *sessionEvent, lineStart int6
 		Source:      models.TokenSourceJSONL,
 		Reliability: models.ReliabilityApproximate,
 		MessageID:   e.ResponseID,
-	})
+	}
+	// model_completed.duration_ms is ALREADY milliseconds (unlike
+	// recorded_at, which is microseconds) — verified against the
+	// simple-session fixture: eight consecutive duration_ms values on one
+	// turn sum to ~26,950ms against that turn's own terminal event
+	// turn_duration_ms=34,762 (testdata/muse/simple-session.jsonl), i.e.
+	// strictly less than the turn total (which also includes inter-call
+	// tool time), and a per-call span of thousands of ms is the plausible
+	// reading, not the ~4µs a mis-scaled microseconds value would imply.
+	// It covers exactly this one model_completed call's own tokens, so it
+	// stamps as-is with no conversion.
+	if e.DurationMs > 0 {
+		ev.GenMs = e.DurationMs
+		ev.GenBasis = models.GenBasisNative
+		ev.GenTimingV = 1
+	}
+	res.TokenEvents = append(res.TokenEvents, ev)
 }
 
 // compile-time interface check.

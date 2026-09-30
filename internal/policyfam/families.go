@@ -5,6 +5,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/policyfam/admission"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/egress"
+	"github.com/marmutapp/superbased-observer/internal/policyfam/mcpaccess"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/nodefeatures"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/planebadmission"
@@ -56,12 +57,19 @@ const (
 // SupportedFamilies is the v1 closed enum, in a stable order. New families
 // are appended last so an index into this slice stays stable across
 // releases for any caller that persisted one.
-var SupportedFamilies = []string{FamilyAdmissionInput, FamilyEgressGuardrail, FamilyGatewayProviders, FamilyNodeGovernance, FamilyNodeFeatures, FamilyPlaneBAdmission}
+var SupportedFamilies = []string{FamilyAdmissionInput, FamilyEgressGuardrail, FamilyGatewayProviders, FamilyNodeGovernance, FamilyNodeFeatures, FamilyPlaneBAdmission, FamilyMCPAccess}
 
 // FamilyPlaneBAdmission is the Plane-B judged-admission body (design §4.6,
 // gap register G1-JUDGED-ADM): the inner admission spec + the gateway judge
 // route + the default-OFF node-lane flip. See internal/policyfam/planebadmission.
 const FamilyPlaneBAdmission = planebadmission.Family
+
+// FamilyMCPAccess is the Agent Access grant family `tools.mcp_access`
+// (docs/plans/agent-access-implementation-plan-2026-09-23.md §11.4 W2b,
+// D10): the registry view + grant rows that internal/mcpaccess compiles
+// into the agentgateway mcpAuthorization CEL, the node decision table, the
+// AuthZEN function and the PDP fast path. See internal/policyfam/mcpaccess.
+const FamilyMCPAccess = mcpaccess.Family
 
 // IsSupportedFamily reports whether family is one of the v1 closed set.
 func IsSupportedFamily(family string) bool {
@@ -118,6 +126,12 @@ func CompileFamilyBody(family string, raw []byte, maxBytes int64) (spec any, can
 			return nil, nil, cerr
 		}
 		return s, canon, nil
+	case FamilyMCPAccess:
+		s, canon, cerr := mcpaccess.CompileBody(raw, maxBytes)
+		if cerr != nil {
+			return nil, nil, cerr
+		}
+		return s, canon, nil
 	default:
 		return nil, nil, fmt.Errorf("policyfam.CompileFamilyBody: unsupported family %q", family)
 	}
@@ -166,6 +180,8 @@ func SpecRequestsEnforceMode(family string, spec any) bool {
 		return true
 	case FamilyPlaneBAdmission:
 		return planebadmission.Enforces(spec.(planebadmission.PolicySpec)) //nolint:forcetypeassert // caller contract: spec came from CompileFamilyBody(family, ...)
+	case FamilyMCPAccess:
+		return mcpaccess.Enforces(spec.(mcpaccess.PolicySpec)) //nolint:forcetypeassert // caller contract: spec came from CompileFamilyBody(family, ...)
 	default:
 		panic(fmt.Sprintf("policyfam.SpecRequestsEnforceMode: unsupported family %q", family))
 	}

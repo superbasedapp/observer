@@ -27,6 +27,14 @@ type terminalSandboxConfigPayload struct {
 	ExtraROBinds           []string `json:"extra_ro_binds"`
 	ExtraRWBinds           []string `json:"extra_rw_binds"`
 	PrepTimeoutSeconds     int      `json:"prep_timeout_seconds"`
+	// Egress and AllowToolConfigWrites are pointers so a client that
+	// predates them (and so omits them) KEEPS the saved values instead of
+	// resetting them on every save.
+	Egress                *string `json:"egress,omitempty"`
+	AllowToolConfigWrites *bool   `json:"allow_tool_config_writes,omitempty"`
+	// EgressAllowCIDRs is a pointer for the same reason: a client that
+	// predates the private-destination allow-list keeps the saved list.
+	EgressAllowCIDRs *[]string `json:"egress_allow_cidrs,omitempty"`
 }
 
 // handleTerminalSandboxConfig serves GET/PUT
@@ -86,6 +94,16 @@ func (s *Server) handleTerminalSandboxConfigPut(w http.ResponseWriter, r *http.R
 	s.configWriteMu.Lock()
 	cfg, err := loadConfigForDashboard(s.opts.ConfigPath)
 	if err == nil {
+		// Omitted optional fields keep their saved value (see the payload).
+		if body.Egress == nil {
+			next.Egress = cfg.Terminal.Sandbox.Egress
+		}
+		if body.AllowToolConfigWrites == nil {
+			next.AllowToolConfigWrites = cfg.Terminal.Sandbox.AllowToolConfigWrites
+		}
+		if body.EgressAllowCIDRs == nil {
+			next.EgressAllowCIDRs = cfg.Terminal.Sandbox.EgressAllowCIDRs
+		}
 		cfg.Terminal.Sandbox = next
 		err = config.Validate(cfg)
 	}
@@ -101,8 +119,8 @@ func (s *Server) handleTerminalSandboxConfigPut(w http.ResponseWriter, r *http.R
 
 	s.notifyConfigSaved()
 	s.recordManageAudit(r, "terminal_sandbox_config", fmt.Sprintf(
-		"enabled=%v default_on=%v remote_clone=%v worktree=%v mask_paths=%d ro_binds=%d rw_binds=%d",
-		next.Enabled, next.DefaultOn, next.AllowRemoteClone, next.AllowWorktreeSource,
+		"enabled=%v default_on=%v egress=%s egress_allow_cidrs=%d tool_config_writes=%v remote_clone=%v worktree=%v mask_paths=%d ro_binds=%d rw_binds=%d",
+		next.Enabled, next.DefaultOn, next.Egress, len(next.EgressAllowCIDRs), next.AllowToolConfigWrites, next.AllowRemoteClone, next.AllowWorktreeSource,
 		len(next.MaskPaths), len(next.ExtraROBinds), len(next.ExtraRWBinds),
 	))
 	writeJSON(w, map[string]any{
@@ -115,6 +133,12 @@ func (s *Server) handleTerminalSandboxConfigPut(w http.ResponseWriter, r *http.R
 }
 
 func sandboxConfigPayload(c config.TerminalSandboxConfig) terminalSandboxConfigPayload {
+	egress := c.Egress
+	if egress == "" {
+		egress = "internet" // the empty value's meaning ([terminal.sandbox].egress)
+	}
+	writes := c.AllowToolConfigWrites
+	cidrs := nonNilStrings(c.EgressAllowCIDRs)
 	return terminalSandboxConfigPayload{
 		Enabled:                c.Enabled,
 		Backend:                c.Backend,
@@ -129,6 +153,9 @@ func sandboxConfigPayload(c config.TerminalSandboxConfig) terminalSandboxConfigP
 		ExtraROBinds:           nonNilStrings(c.ExtraROBinds),
 		ExtraRWBinds:           nonNilStrings(c.ExtraRWBinds),
 		PrepTimeoutSeconds:     c.PrepTimeoutSeconds,
+		Egress:                 &egress,
+		AllowToolConfigWrites:  &writes,
+		EgressAllowCIDRs:       &cidrs,
 	}
 }
 
@@ -176,6 +203,15 @@ func normalizedSandboxConfig(p terminalSandboxConfigPayload) (config.TerminalSan
 		ExtraROBinds:           p.ExtraROBinds,
 		ExtraRWBinds:           p.ExtraRWBinds,
 		PrepTimeoutSeconds:     p.PrepTimeoutSeconds,
+	}
+	if p.Egress != nil {
+		next.Egress = strings.TrimSpace(*p.Egress)
+	}
+	if p.AllowToolConfigWrites != nil {
+		next.AllowToolConfigWrites = *p.AllowToolConfigWrites
+	}
+	if p.EgressAllowCIDRs != nil {
+		next.EgressAllowCIDRs = cleanStringList(*p.EgressAllowCIDRs)
 	}
 	// Validate against an otherwise-default config before taking the write
 	// locks so request mistakes are a 400, not an internal-error-shaped 500.

@@ -2,8 +2,11 @@ import { useState } from "react";
 import clsx from "clsx";
 import { ChevronDown, ChevronRight, Copy } from "lucide-react";
 import {
+  Icon,
+  InlineLoading,
   Pill,
   SlideOver,
+  Table,
   ToolBadge,
   Tooltip,
   TruncatedPath,
@@ -76,7 +79,7 @@ export function GuidanceCard({ root }: { root: string }) {
               ? `${rows.length} file${rows.length === 1 ? "" : "s"} across ${
                   projectGroups.length + userGroups.length
                 } tool${projectGroups.length + userGroups.length === 1 ? "" : "s"}`
-              : "Loading…"}
+              : <InlineLoading label="Loading guidance files" />}
             {data.data?.scanned_at && (
               <> · last scanned {fmtRelative(data.data.scanned_at)}</>
             )}
@@ -95,6 +98,8 @@ export function GuidanceCard({ root }: { root: string }) {
       <ChartState
         loading={data.loading && !data.data}
         error={data.error}
+        denied={data.denied}
+        deniedPermission={data.deniedPermission}
         empty={data.data != null && rows.length === 0}
         emptyHint="No instructions, skills, agents, commands, rules or config files were found for this project yet."
         height={140}
@@ -166,9 +171,9 @@ function CollapsibleSection({
         aria-expanded={open}
       >
         {open ? (
-          <ChevronDown size={14} className="shrink-0 text-fg-3" />
+          <Icon icon={ChevronDown} size="sm" className="shrink-0 text-fg-3" />
         ) : (
-          <ChevronRight size={14} className="shrink-0 text-fg-3" />
+          <Icon icon={ChevronRight} size="sm" className="shrink-0 text-fg-3" />
         )}
         <div className="min-w-0">
           <div className="text-[12px] font-semibold text-fg-1">{title}</div>
@@ -203,9 +208,9 @@ function ToolGroupPanel({
         aria-expanded={open}
       >
         {open ? (
-          <ChevronDown size={14} className="shrink-0 text-fg-3" />
+          <Icon icon={ChevronDown} size="sm" className="shrink-0 text-fg-3" />
         ) : (
-          <ChevronRight size={14} className="shrink-0 text-fg-3" />
+          <Icon icon={ChevronRight} size="sm" className="shrink-0 text-fg-3" />
         )}
         <ToolBadge tool={group.tool} />
         <span className="font-mono text-[10px] text-fg-4 tabular-nums">
@@ -251,56 +256,52 @@ function KindTable({
           {rows.length}
         </span>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[520px] text-left text-[11.5px]">
-          <tbody>
-            {rows.map((r) => (
-              <tr
-                key={r.rel_path}
-                onClick={() => onOpenFile(r.rel_path)}
-                className={clsx(
-                  "cursor-pointer border-b border-line-1 last:border-b-0 hover:bg-bg-3/40",
-                  !r.present && "opacity-60",
+      <Table minWidth={520}>
+        {rows.map((r) => (
+          <tr
+            key={r.rel_path}
+            onClick={() => onOpenFile(r.rel_path)}
+            className={clsx(
+              "cursor-pointer border-b border-line-1 last:border-b-0",
+              !r.present && "opacity-60",
+            )}
+          >
+            <td className="py-1.5 pl-1 align-top">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-semibold text-fg-1">
+                  {r.name}
+                </span>
+                {!r.present && <Pill variant="warn">removed</Pill>}
+                {r.parse_error && (
+                  <Pill variant="danger" title={r.parse_error}>
+                    parse error
+                  </Pill>
                 )}
-              >
-                <td className="py-1.5 pl-1 align-top">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="font-semibold text-fg-1">
-                      {r.name}
-                    </span>
-                    {!r.present && <Pill variant="warn">removed</Pill>}
-                    {r.parse_error && (
-                      <Pill variant="danger" title={r.parse_error}>
-                        parse error
-                      </Pill>
-                    )}
-                    <UsagePill row={r} windowDays={windowDays} />
-                  </div>
-                  {r.description && (
-                    <div className="mt-0.5 max-w-[440px] truncate text-fg-3">
-                      {r.description}
-                    </div>
-                  )}
-                  <TruncatedPath
-                    value={r.rel_path}
-                    className="mt-0.5 max-w-[440px] font-mono text-[10.5px] text-fg-4"
-                  />
-                </td>
-                <td className="w-[90px] py-1.5 text-right align-top tabular-nums text-fg-3">
-                  {fmtBytes(r.size_bytes)}
-                </td>
-                <td className="w-[150px] py-1.5 pr-1 text-right align-top tabular-nums text-fg-3">
-                  <Tooltip content={fmtDateTime(r.modified_at)}>
-                    <span tabIndex={0} className="cursor-help focus:outline-none">
-                      {fmtRelative(r.modified_at)}
-                    </span>
-                  </Tooltip>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                <UsagePill row={r} windowDays={windowDays} />
+              </div>
+              {r.description && (
+                <div className="mt-0.5 max-w-[440px] truncate text-fg-3">
+                  {r.description}
+                </div>
+              )}
+              <TruncatedPath
+                value={r.rel_path}
+                className="mt-0.5 max-w-[440px] font-mono text-[10.5px] text-fg-4"
+              />
+            </td>
+            <td className="w-[90px] py-1.5 text-right align-top tabular-nums text-fg-3">
+              {fmtBytes(r.size_bytes)}
+            </td>
+            <td className="w-[150px] py-1.5 pr-1 text-right align-top tabular-nums text-fg-3">
+              <Tooltip content={fmtDateTime(r.modified_at)}>
+                <span tabIndex={0} className="cursor-help focus:outline-none">
+                  {fmtRelative(r.modified_at)}
+                </span>
+              </Tooltip>
+            </td>
+          </tr>
+        ))}
+      </Table>
     </div>
   );
 }
@@ -373,6 +374,8 @@ function GuidanceFileViewer({
         <ChartState
           loading={file.loading && !file.data}
           error={file.error}
+          denied={file.denied}
+          deniedPermission={file.deniedPermission}
           empty={false}
           height={200}
         >
@@ -391,7 +394,7 @@ function GuidanceFileViewer({
                 </span>
                 <CopyOnClick value={file.data.content}>
                   <span className="flex h-6 items-center gap-1 rounded-2 border border-line-2 bg-bg-2 px-2 text-[10.5px] text-fg-2 hover:bg-bg-3 hover:text-fg-0">
-                    <Copy size={12} /> Copy
+                    <Icon icon={Copy} size="xs" /> Copy
                   </span>
                 </CopyOnClick>
               </div>

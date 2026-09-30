@@ -1,0 +1,26 @@
+-- 134_mcp_relay_record_corr_indexes.sql — Agent Access P11 fold (lane PF1;
+-- lane IA Q2, doc3 §11.12b (a), rulings R10.7 / R11.8).
+--
+-- The node session detail's MCP-calls tab (GET /api/session/<id>/mcp-calls,
+-- internal/store/mcpcorrelate.go -> internal/mcprelay/record/correlate.go
+-- SQLStore.ForCorrelation) selects the relay decisions anchored to one coding
+-- session: `record_kind = 'decision' AND coding_session_id = ?` and
+-- `record_kind = 'decision' AND action_ref IN (the session's tool-use ids)`,
+-- each `ORDER BY seq DESC LIMIT ?`. Migration 131 indexed ts, call_id and
+-- decision_seq but neither anchor, so every tab open scanned the whole
+-- append-only (never pruned) chain.
+--
+-- Two PARTIAL single-column indexes on the anchors: gap / gap_resolution /
+-- completion rows and every call with no anchor carry NULL, and the panel's
+-- equality / IN terms imply NOT NULL, so SQLite uses the partial index. seq
+-- is the INTEGER PRIMARY KEY (the rowid), which every index entry already
+-- carries, so the session read's `ORDER BY seq DESC` walks the index without
+-- a sort (the IN-list read sorts only the rows it matched). The node
+-- has no mcp_node_decision_event (that is the org's ingest table, indexed by
+-- server migration 173 / PG 0039).
+--
+-- NODE-LOCAL: mcp_relay_record stays in tests/invariant/privacy_test.go's
+-- forbiddenCacheTables; no wire shape, no paired server migration (the org
+-- pair of the INDEXES is 173, which touches org tables only).
+CREATE INDEX IF NOT EXISTS idx_mcprelayrec_codingsess ON mcp_relay_record(coding_session_id) WHERE coding_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_mcprelayrec_actionref ON mcp_relay_record(action_ref) WHERE action_ref IS NOT NULL;

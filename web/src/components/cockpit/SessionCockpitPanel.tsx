@@ -1,5 +1,6 @@
 import { useMemo, useRef } from "react";
 import { FloatingPanel } from "@/components/primitives/FloatingPanel";
+import { Icon } from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
 import { toolMeta } from "@/lib/tools";
 import {
@@ -9,6 +10,7 @@ import {
   type TerminalSessionLink,
 } from "@/lib/cockpit";
 import { CockpitContent } from "./CockpitContent";
+import { CircleDot } from "lucide-react";
 
 // SessionCockpitPanel — the per-terminal floating "⊙ Session" cockpit. Wraps
 // the FloatingPanel primitive and owns Phase-1 link resolution (terminal token
@@ -74,7 +76,12 @@ export default function SessionCockpitPanel({
       cascade={cascade}
       onRaise={onRaise}
       onClose={onClose}
-      title="⊙ Session"
+      title={
+        <span className="inline-flex items-center gap-1.5">
+          <Icon icon={CircleDot} size="sm" />
+          Session
+        </span>
+      }
       ariaLabel={sessionId ? `Session cockpit ${shortId(sessionId)}` : "Session cockpit"}
       subtitle={subtitle}
     >

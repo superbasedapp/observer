@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { AnchoredPopover } from "@/components/primitives/AnchoredPopover";
+import { Tooltip } from "@/components/primitives";
 import { HandoffCard } from "@/components/HandoffCard";
 import { JumpInButton } from "@/components/JumpInButton";
 import { ResumeButton } from "@/components/ResumeButton";
@@ -348,18 +349,20 @@ function SessionAnnotationChips({
           collapsed state still answers "is there anything written here?" at a
           glance — the one thing the old always-open textarea told you for
           free. */}
-      <button
-        ref={noteTriggerRef}
-        type="button"
-        aria-haspopup="dialog"
-        aria-expanded={noteOpen}
-        title={
+      <Tooltip
+        content={
           classifyBlocked
             ? CLASSIFY_REMOTE_BLOCKED_MSG
             : hasNote
               ? "Read or edit this session's note"
               : "Add a note - why this session matters"
         }
+      >
+      <button
+        ref={noteTriggerRef}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={noteOpen}
         onClick={() => setNoteOpen((o) => !o)}
         className={clsx(
           "inline-flex items-center gap-1 rounded-2 border px-1.5 py-0.5 text-[10.5px] transition-colors",
@@ -377,6 +380,7 @@ function SessionAnnotationChips({
         />
         {hasNote ? "note" : "+ note"}
       </button>
+      </Tooltip>
 
       {/* Status that used to live beside the textarea, kept inline so an
           unsaved / saving / failed note is visible with the popover CLOSED. */}
@@ -386,12 +390,11 @@ function SessionAnnotationChips({
           <span className="text-warn">unsaved</span>
         )}
         {externalNote !== null && (
-          <span
-            className="text-warn"
-            title="This note changed elsewhere while you were editing - your text is kept; saving writes it over theirs."
-          >
-            changed elsewhere
-          </span>
+          <Tooltip content="This note changed elsewhere while you were editing - your text is kept; saving writes it over theirs.">
+            <span tabIndex={0} className="text-warn focus:outline-none">
+              changed elsewhere
+            </span>
+          </Tooltip>
         )}
       </span>
       {err && (

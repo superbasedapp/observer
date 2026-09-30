@@ -105,23 +105,30 @@ func (a *Adapter) IsSessionFile(path string) bool {
 
 // actionMap translates Cline/Roo tool names to the normalized taxonomy.
 var actionMap = map[string]string{
-	"execute_command":       models.ActionRunCommand,
-	"powershell":            models.ActionRunCommand,
-	"pwsh":                  models.ActionRunCommand,
-	"cmd":                   models.ActionRunCommand,
-	"cmd.exe":               models.ActionRunCommand,
-	"bash":                  models.ActionRunCommand,
-	"sh":                    models.ActionRunCommand,
-	"read_file":             models.ActionReadFile,
-	"write_to_file":         models.ActionWriteFile,
-	"replace_in_file":       models.ActionEditFile,
-	"search_files":          models.ActionSearchText,
-	"list_files":            models.ActionSearchFiles,
-	"browser_action":        models.ActionBrowserAction,
-	"attempt_completion":    models.ActionTaskComplete,
-	"use_mcp_tool":          models.ActionMCPCall,
-	"access_mcp_resource":   models.ActionMCPCall,
-	"ask_followup_question": models.ActionAskUser,
+	"execute_command": models.ActionRunCommand,
+	"powershell":      models.ActionRunCommand,
+	"pwsh":            models.ActionRunCommand,
+	"cmd":             models.ActionRunCommand,
+	"cmd.exe":         models.ActionRunCommand,
+	"bash":            models.ActionRunCommand,
+	"sh":              models.ActionRunCommand,
+	"read_file":       models.ActionReadFile,
+	"write_to_file":   models.ActionWriteFile,
+	"replace_in_file": models.ActionEditFile,
+	"search_files":    models.ActionSearchText,
+	"list_files":      models.ActionSearchFiles,
+	// list_code_definition_names (ClineDefaultTool.LIST_CODE_DEF,
+	// cline/cline apps/vscode/src/shared/tools.ts) lists the top-level
+	// definitions of the source files in a directory — a structural
+	// directory scan. Cline's own SDK alias table routes it to
+	// `search_codebase`, which the cline-cli adapter maps to
+	// ActionSearchFiles; same bucket here as `list_files`.
+	"list_code_definition_names": models.ActionSearchFiles,
+	"browser_action":             models.ActionBrowserAction,
+	"attempt_completion":         models.ActionTaskComplete,
+	"use_mcp_tool":               models.ActionMCPCall,
+	"access_mcp_resource":        models.ActionMCPCall,
+	"ask_followup_question":      models.ActionAskUser,
 }
 
 type rawMessage struct {

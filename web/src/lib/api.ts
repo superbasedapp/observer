@@ -12,6 +12,7 @@ import type {
   InstanceTestResult,
   LOCSummaryResponse,
   SessionLOCResponse,
+  SessionQualityResponse,
   SessionTagsRequest,
   SessionTagsResponse,
   TagManageRequest,
@@ -32,13 +33,16 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly path: string,
-    body: string,
+    // The full response body. The message keeps only a 200-char excerpt; a
+    // caller that must read a structured error (the re-price card's
+    // `409 {"error":"plan_changed","plan":{...}}`) parses this instead.
+    public readonly body: string,
   ) {
     super(`api ${status} ${path}: ${body.slice(0, 200)}`);
   }
 }
 
-function buildUrl(path: string, params?: QueryParams): string {
+export function buildUrl(path: string, params?: QueryParams): string {
   if (!params) return path;
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -334,6 +338,20 @@ export function sessionOrgIntelPath(sessionId: string): string {
   return `/api/session/${encodeURIComponent(sessionId)}/org-intel`;
 }
 
+// sessionQualityPath is the per-session quality score read (GET) and
+// score-now (POST) route.
+export function sessionQualityPath(sessionId: string): string {
+  return `/api/session/${encodeURIComponent(sessionId)}/quality`;
+}
+
+// scoreSessionNow asks the daemon to score one session immediately and
+// persist it; it answers the same body a GET does.
+export function scoreSessionNow(sessionId: string): Promise<SessionQualityResponse> {
+  return fetchJSON<SessionQualityResponse>(sessionQualityPath(sessionId), undefined, {
+    method: "POST",
+  });
+}
+
 // fetchSessionLOC returns one session's line-authorship buckets.
 export function fetchSessionLOC(
   sessionId: string,
@@ -379,4 +397,23 @@ export function apiReason(e: unknown): string {
     return e.message;
   }
   return e instanceof Error ? e.message : String(e);
+}
+
+// sessionCommitsPath is the per-session "Commits" read: every git commit
+// this session's prompts reached, with the commit's owning session
+// (docs/projects-page.md "Commit ownership").
+export function sessionCommitsPath(sessionId: string): string {
+  return `/api/session/${encodeURIComponent(sessionId)}/commits`;
+}
+
+// fetchSessionCommits returns the commits one session contributed to.
+export function fetchSessionCommits(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<import("@/lib/types").SessionCommitsResponse> {
+  return fetchJSON<import("@/lib/types").SessionCommitsResponse>(
+    sessionCommitsPath(sessionId),
+    undefined,
+    { signal },
+  );
 }

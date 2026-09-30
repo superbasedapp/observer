@@ -70,13 +70,12 @@ func TestXMLToolTagsTable(t *testing.T) {
 			wantTarget: "internal",
 		},
 		{
-			// Deliberate gap: no actionMap / tooltax row exists for
-			// this real tag, so it lands as `unknown` rather than
-			// staying invisible inside prose.
-			name:       "list_code_definition_names_unknown",
+			// A structural directory scan (Cline's SDK aliases it to
+			// search_codebase) — search_files, like list_files.
+			name:       "list_code_definition_names",
 			text:       "<list_code_definition_names>\n<path>internal/adapter</path>\n</list_code_definition_names>",
 			wantRaw:    "list_code_definition_names",
-			wantAction: models.ActionUnknown,
+			wantAction: models.ActionSearchFiles,
 			wantTarget: "internal/adapter",
 		},
 		{

@@ -959,10 +959,17 @@ func printProxyRouteResult(out io.Writer, tool string, res proxyroute.Registrati
 	}
 	if res.AlreadySet {
 		fmt.Fprintf(out, "%-12s route already set in %s → %s\n", tool, res.ConfigPath, res.BaseURL)
-		return
-	}
-	if res.Added {
+	} else if res.Added {
 		fmt.Fprintf(out, "%-12s route %s in %s → %s\n", tool, verb, res.ConfigPath, res.BaseURL)
+	}
+	if res.GatewayHintsAdded {
+		// Claude Code's gateway hint headers (prompt-id capture), written
+		// beside the route; an operator's own value is never overwritten.
+		hintVerb := "enabled"
+		if dryRun {
+			hintVerb = "would enable"
+		}
+		fmt.Fprintf(out, "%-12s gateway hint headers %s (%s=1)\n", tool, hintVerb, proxyroute.ClaudeGatewayHintEnv)
 	}
 }
 

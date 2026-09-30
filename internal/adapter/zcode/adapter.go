@@ -508,7 +508,10 @@ func (a *Adapter) toolEvent(sourceFile string, row partRow, rootCache map[string
 	// ToolOutput: capture the tool result body for every tool, not only
 	// failed bash commands. State.Output is OpenCode's canonical output
 	// slot; Metadata.Output is the bash-specific stdout/stderr fallback.
-	output := firstNonEmpty(part.State.Output, part.State.Metadata.Output)
+	// Cap BEFORE scrubbing (the claudecode/qwencode order): the 1 MiB
+	// ToolOutput contract in models.ToolEvent is the adapter's to keep,
+	// and this path was the one OpenCode-family emitter that skipped it.
+	output := contentcap.Cap(firstNonEmpty(part.State.Output, part.State.Metadata.Output), contentcap.DefaultMaxBytes)
 	if a.scrubber != nil {
 		output = a.scrubber.String(output)
 	}

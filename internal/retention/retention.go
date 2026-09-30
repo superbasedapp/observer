@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/db"
 )
 
 // Result summarizes one Run.
@@ -403,12 +405,23 @@ func (p *Pruner) deleteActionsOlder(ctx context.Context, cutoff string, res *Res
 	if _, err := tx.ExecContext(ctx, `DELETE FROM tool_account_observations WHERE observed_at < ?`, cutoff); err != nil {
 		return fmt.Errorf("retention: delete account observations: %w", err)
 	}
-	a, err := tx.ExecContext(ctx, `DELETE FROM actions WHERE timestamp < ?`, cutoff)
-	if err != nil {
-		return fmt.Errorf("retention: delete actions: %w", err)
-	}
-	if n, err := a.RowsAffected(); err == nil {
-		res.ActionsDeleted += int(n)
+	// Ageing, not a correction (agent migration 141): the marker keeps these
+	// deletes out of the org tombstone queue, so the org keeps the rows under
+	// its own retention policy.
+	if err := db.WithRetentionDeletes(ctx, tx, func() error {
+		if err := db.RecordAgeingCutoff(ctx, tx, cutoff); err != nil {
+			return fmt.Errorf("retention: %w", err)
+		}
+		a, err := tx.ExecContext(ctx, `DELETE FROM actions WHERE timestamp < ?`, cutoff)
+		if err != nil {
+			return fmt.Errorf("retention: delete actions: %w", err)
+		}
+		if n, err := a.RowsAffected(); err == nil {
+			res.ActionsDeleted += int(n)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -429,18 +442,34 @@ func (p *Pruner) deleteActionsOlder(ctx context.Context, cutoff string, res *Res
 // tool_use block (see decision log 2026-04-16). Those sessions look
 // orphaned by the actions table alone, but their token_usage data is
 // still load-bearing for cost rollups.
+//
+// Ageing, not a correction (agent migration 141): runs under the retention
+// marker, so a session this sweep removes is never tombstoned on the org.
 func (p *Pruner) deleteOrphanedSessions(ctx context.Context, res *Result) error {
-	r, err := p.db.ExecContext(ctx,
-		`DELETE FROM sessions
-		 WHERE id NOT IN (SELECT DISTINCT session_id FROM actions)
-		   AND id NOT IN (SELECT DISTINCT session_id FROM token_usage)
-		   AND id NOT IN (SELECT DISTINCT session_id FROM failure_context)
-		   AND id NOT IN (SELECT DISTINCT session_id FROM compaction_events)`)
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("retention: orphaned sessions: %w", err)
+		return fmt.Errorf("retention: orphaned sessions: begin: %w", err)
 	}
-	if n, err := r.RowsAffected(); err == nil {
-		res.OrphanedSessionsDeleted = int(n)
+	defer func() { _ = tx.Rollback() }()
+	if err := db.WithRetentionDeletes(ctx, tx, func() error {
+		r, err := tx.ExecContext(ctx,
+			`DELETE FROM sessions
+			 WHERE id NOT IN (SELECT DISTINCT session_id FROM actions)
+			   AND id NOT IN (SELECT DISTINCT session_id FROM token_usage)
+			   AND id NOT IN (SELECT DISTINCT session_id FROM failure_context)
+			   AND id NOT IN (SELECT DISTINCT session_id FROM compaction_events)`)
+		if err != nil {
+			return fmt.Errorf("retention: orphaned sessions: %w", err)
+		}
+		if n, err := r.RowsAffected(); err == nil {
+			res.OrphanedSessionsDeleted = int(n)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("retention: orphaned sessions: commit: %w", err)
 	}
 	return nil
 }
@@ -572,3 +601,28 @@ func sizeOf(path string) int64 {
 
 // nowUTC is a var so tests can inject a fixed clock.
 var nowUTC = func() time.Time { return time.Now().UTC() }
+
+// AgeingHorizon is the oldest instant no retention pass under opts can have
+// deleted a pushed row (actions or sessions) from, as of now: rows at or after
+// it are still on the node unless a CORRECTION removed them. It is what lets
+// `observer org resync --deletions` tell a correction from ageing when it
+// compares the node with the org (store.PushManifestOptions.NotBefore).
+//
+// The age pass deletes actions older than MaxAgeDays; the size-cap pass never
+// crosses sizeCapActionFloorDays; the orphaned-session sweep only removes a
+// session with no actions left, so it follows the actions horizon. One day of
+// margin absorbs a pass that ran just before now. The zero time means no
+// ageing is configured at all.
+func AgeingHorizon(opts Options, now time.Time) time.Time {
+	days := 0
+	if opts.MaxAgeDays > 0 {
+		days = opts.MaxAgeDays
+	}
+	if opts.MaxDBSizeMB > 0 && (days == 0 || days > sizeCapActionFloorDays) {
+		days = sizeCapActionFloorDays
+	}
+	if days == 0 {
+		return time.Time{}
+	}
+	return now.UTC().AddDate(0, 0, -(days - 1))
+}

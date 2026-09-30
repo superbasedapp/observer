@@ -1,12 +1,31 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { IdLink, Pill, ToolBadge } from "@/components/primitives";
+import {
+  AnimatedValue,
+  ErrorState,
+  Icon,
+  IdLink,
+  LiveDot,
+  Meter,
+  Pill,
+  ToolBadge,
+  Tooltip,
+  TooltipSpan,
+} from "@/components/primitives";
+import {
+  ACTIVITY_DOT,
+  PROCESS_DOT,
+  UTIL_BANDS,
+  bandTone,
+  liveDotProps,
+  withDotClass,
+} from "@/lib/liveSignals";
 import { ResourceCharts, type SessionMetricsResponse } from "./ResourceCharts";
 import { useApi } from "@/lib/useApi";
 import { useNowTick } from "@/lib/useNowTick";
 import { isRemoteView } from "@/lib/remote";
 import { markRestartPending } from "@/lib/restartPending";
-import { fmtBytes, fmtCompact, fmtInt, fmtUSD } from "@/lib/format";
+import { fmtBytes, fmtCompact, fmtDuration as fmtDurationMs, fmtInt, fmtUSD } from "@/lib/format";
 import {
   activityLabel,
   basename,
@@ -19,14 +38,16 @@ import {
   fmtTps,
   isLive,
   networkSummary,
-  newestAssistantWithOutput,
+  newestTimedAssistant,
   newestMessage,
   runningProcessCount,
   secondsSince,
   secondsUntil,
   shortId,
   tokensPerSec,
-  tpsBasisLabel,
+  tpsBasisShort,
+  tpsSuppressedLabel,
+  tpsTooltip,
   utilPct,
   WEAK_LINK_CONFIDENCE,
   type BurnRate,
@@ -44,6 +65,11 @@ import type {
   SessionMessages,
   SessionProcessResponse,
 } from "@/lib/types";
+import { ArrowDown, ArrowUp } from "lucide-react";
+import { CACHE_EXPIRY } from "@shared/lib/cacheVocab";
+import { vocabView } from "@shared/lib/vocabEntry";
+import { vocabIcon } from "@shared/lib/vocabIcons";
+import { contextGaugeModel } from "@/lib/sessionContextGauge";
 
 // CockpitContent — Phase-2 body of the Session Cockpit. Given a resolved
 // terminal→session link, it polls the per-section vitals (each an independent
@@ -153,7 +179,7 @@ export function CockpitContent({ link, linkError, linkLoading, mountMs }: Cockpi
   const sd = session.data;
   const msgRows = messages.data?.messages ?? [];
   const newest = newestMessage(msgRows);
-  const lastAssistant = newestAssistantWithOutput(msgRows);
+  const lastAssistant = newestTimedAssistant(msgRows);
   const lastActivityIso = newest?.timestamp ?? sd?.last_activity_at ?? sd?.started_at ?? null;
   const live = isLive(lastActivityIso, now);
 
@@ -172,9 +198,9 @@ export function CockpitContent({ link, linkError, linkLoading, mountMs }: Cockpi
           <Link to={`/sessions?session=${encodeURIComponent(sessionId)}`}>{shortId(sessionId)}</Link>
         </IdLink>
         <StatusDot live={live} lastActivityIso={lastActivityIso} now={now} />
-        <span className="text-[11px] tabular-nums text-fg-3" title={`started ${startIso}`}>
+        <Tooltip content={`started ${startIso}`}><span tabIndex={0} className="text-caption tabular-nums text-fg-3">
           {fmtElapsed(elapsedSecs)}
-        </span>
+        </span></Tooltip>
         {confidence > 0 && confidence < WEAK_LINK_CONFIDENCE && (
           <Pill
             variant="warn"
@@ -216,6 +242,8 @@ export function CockpitContent({ link, linkError, linkLoading, mountMs }: Cockpi
         metrics={metrics.data}
         metricsLoading={metrics.loading}
         metricsErr={metrics.error}
+        metricsDenied={metrics.denied}
+        metricsDeniedPermission={metrics.deniedPermission}
         network={network.data}
         networkErr={network.error}
         err={procs.error}
@@ -241,8 +269,10 @@ function SectionLabel({ children }: { children: ReactNode }) {
   );
 }
 
+// SectionErr: a cockpit section's failed read, through the shared ErrorState.
+// The section polls, so there is no Retry button - it retries on its own.
 function SectionErr({ label }: { label: string }) {
-  return <div className="text-[10.5px] text-danger">{label} unavailable - retrying…</div>;
+  return <ErrorState title={`${label} unavailable`} error="Retrying automatically." variant="compact" className="py-1" />;
 }
 
 // --- Degraded states -------------------------------------------------------
@@ -278,7 +308,7 @@ function WaitingState({
   return (
     <div className="rounded-3 border border-line-2 bg-bg-2 p-3">
       <div className="flex items-center gap-2 text-[12px] text-fg-1">
-        <span className="inline-block size-2 animate-pulse rounded-full bg-info" aria-hidden />
+        <LiveDot tone="info" className="size-2 shrink-0" />
         Waiting for session…
       </div>
       <p className="mt-1 text-[11px] text-fg-3">
@@ -316,13 +346,10 @@ function StatusDot({
   const since = secondsSince(lastActivityIso, now);
   const label = live ? "live" : since != null ? `idle · ${fmtAgo(since)}` : "idle";
   return (
-    <span className="inline-flex items-center gap-1 text-[10.5px] text-fg-3" title={label}>
-      <span
-        className={`inline-block size-1.5 rounded-full ${live ? "bg-success" : "bg-fg-4"}`}
-        aria-hidden
-      />
+    <Tooltip content={label}><span tabIndex={0} className="inline-flex items-center gap-1 text-[10.5px] text-fg-3">
+      <LiveDot {...withDotClass(liveDotProps(ACTIVITY_DOT, live ? "live" : "idle"), "size-1.5 shrink-0")} />
       {live ? "live" : "idle"}
-    </span>
+    </span></Tooltip>
   );
 }
 
@@ -351,6 +378,10 @@ function NowStrip({
   const since = newest ? secondsSince(newest.timestamp, now) : null;
   const tps = lastAssistant ? tokensPerSec(lastAssistant) : null;
   const measured = lastAssistant?.tps_basis === "measured";
+  const tpsAge = lastAssistant ? secondsSince(lastAssistant.timestamp, now) : null;
+  const tpsTitle = lastAssistant
+    ? tpsTooltip(lastAssistant, fmtInt, fmtDurationMs)
+    : "no timed assistant turn yet - speed is shown only for model calls whose duration was captured (proxy-routed or a tool that records per-call timing)";
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2 border border-line-1 bg-bg-2/50 px-2.5 py-1.5 text-[11px]">
       <span className="text-fg-2">
@@ -364,24 +395,39 @@ function NowStrip({
         )}
       </span>
       <span className="text-fg-4">|</span>
-      <span className="flex items-center gap-1 text-fg-2" title={lastAssistant ? tpsBasisLabel(lastAssistant.tps_basis) : "no timed assistant turn yet"}>
+      <Tooltip content={
+          tps == null && lastAssistant?.tps_suppressed
+            ? tpsSuppressedLabel(lastAssistant.tps_suppressed)
+            : tpsTitle
+        }><span tabIndex={0} className="flex items-center gap-1 text-fg-2">
         {tps != null ? (
           <>
             <span className="font-medium tabular-nums text-fg-1">{fmtTps(tps)}</span>
-            <Pill variant={measured ? "success" : "neutral"}>{measured ? "measured" : "est."}</Pill>
+            <Pill variant={measured ? "success" : "neutral"}>{tpsBasisShort(lastAssistant?.tps_basis)}</Pill>
+            {tpsAge != null && <span className="text-fg-3">· {fmtAgo(tpsAge)}</span>}
           </>
+        ) : lastAssistant?.tps_suppressed ? (
+          <span className="text-fg-3">- tok/s</span>
         ) : (
           <span className="text-fg-3">- tok/s</span>
         )}
-      </span>
+      </span></Tooltip>
       <span className="text-fg-4">|</span>
-      <span className="text-fg-2" title="processes still running in the captured tree">
+      <Tooltip content={
+          procEnabled !== false && !procLoaded
+            ? procErr
+              ? "process vitals unavailable"
+              : "loading process vitals…"
+            : procEnabled !== false && procErr
+              ? "processes still running in the captured tree. The last process refresh failed; showing the previous count."
+              : "processes still running in the captured tree"
+        }><span tabIndex={0} className="text-fg-2">
         {procEnabled === false ? (
           <span className="text-fg-3">proc off</span>
         ) : !procLoaded ? (
           // Don't render a failed/absent /processes fetch as "0 proc live" -
           // that reads as an observed zero. Show an honest unavailable marker.
-          <span className="text-fg-4" title={procErr ? "process vitals unavailable" : "loading process vitals…"}>
+          <span className="text-fg-4">
             proc {procErr ? "n/a" : "…"}
           </span>
         ) : (
@@ -390,17 +436,10 @@ function NowStrip({
             <span className="text-fg-3">proc live</span>
             {/* Fix 4: useApi retains the last good tree on a later poll failure;
                 mark it stale so the retained count isn't read as current. */}
-            {procErr && (
-              <span
-                className="text-warn"
-                title="The last process refresh failed; showing the previous count."
-              >
-                {" "}· stale
-              </span>
-            )}
+            {procErr && <span className="text-warn"> · stale</span>}
           </>
         )}
-      </span>
+      </span></Tooltip>
     </div>
   );
 }
@@ -441,28 +480,30 @@ function CostStrip({
       <div className="flex items-end justify-between gap-3 rounded-2 border border-line-1 bg-bg-2/50 px-2.5 py-2">
         <div>
           <div className="text-[22px] font-semibold leading-none tabular-nums text-fg-0">
-            {fmtCost(session?.cost_usd)}
+            <AnimatedValue value={fmtCost(session?.cost_usd)} />
           </div>
           <div className="mt-1 text-[10.5px] text-fg-3">
             AI {fmtCost(session?.ai_cost_usd)} · tool {fmtCost(session?.tool_cost_usd)}
           </div>
         </div>
-        <div className="text-right" title={burnTitle(burn)}>
-          <div className="text-[10px] uppercase tracking-wide text-fg-4">burn</div>
-          <div className="text-[12px] font-medium tabular-nums text-fg-1">
-            {burn ? (
-              <>
-                {fmtCost(burn.usdPerHour)}
-                <span className="text-fg-3">/h</span>
-              </>
-            ) : (
-              <span className="text-fg-4">-</span>
-            )}
+        <Tooltip content={burnTitle(burn)}>
+          <div tabIndex={0} className="text-right">
+            <div className="text-[10px] uppercase tracking-wide text-fg-4">burn</div>
+            <div className="text-[12px] font-medium tabular-nums text-fg-1">
+              {burn ? (
+                <>
+                  <AnimatedValue value={fmtCost(burn.usdPerHour)} />
+                  <span className="text-fg-3">/h</span>
+                </>
+              ) : (
+                <span className="text-fg-4">-</span>
+              )}
+            </div>
+            <div className="text-[10px] tabular-nums text-fg-3">
+              {projected != null ? <>+1h ≈ {fmtCost(projected)}</> : " "}
+            </div>
           </div>
-          <div className="text-[10px] tabular-nums text-fg-3">
-            {projected != null ? <>+1h ≈ {fmtCost(projected)}</> : " "}
-          </div>
-        </div>
+        </Tooltip>
         <div className="text-right">
           <div className="text-[10px] uppercase tracking-wide text-fg-4">next msg</div>
           <div className="text-[12px] font-medium tabular-nums text-fg-1">
@@ -502,11 +543,17 @@ function ContextTokens({
   predict?: PredictResponse | null;
 }) {
   if (!session) return null;
-  const budget = session.context_budget_tokens ?? 0;
-  const current = predict?.estimate?.prefix_tokens ?? 0;
-  const fillPct = budget > 0 && current > 0 ? Math.min(100, (current / budget) * 100) : null;
-  const fillColor =
-    fillPct == null ? "bg-fg-4" : fillPct > 90 ? "bg-danger" : fillPct > 70 ? "bg-warn" : "bg-accent";
+  // The daemon's context gauge when present (older daemons: the client
+  // fallback); a null ratio is unknown, never a 0% or 100% fill.
+  const gauge = contextGaugeModel({
+    gauge: session.context_gauge,
+    prefixTokens: predict?.estimate?.prefix_tokens,
+    hasShape: predict?.estimate?.has_shape,
+    contextBudgetTokens: session.context_budget_tokens,
+  });
+  const budget = gauge.budget;
+  const current = gauge.used;
+  const fillPct = gauge.ratio != null ? gauge.ratio * 100 : null;
 
   const t = session.tokens;
   const buckets: { label: string; value: number; cls: string }[] = [
@@ -528,13 +575,11 @@ function ContextTokens({
               {fmtCompact(current)} / {fmtCompact(budget)} · {fillPct.toFixed(0)}%
             </span>
           </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-bg-3">
-            <div className={`h-full ${fillColor}`} style={{ width: `${fillPct}%` }} />
-          </div>
+          <Meter ratio={fillPct / 100} tone={bandTone(UTIL_BANDS, fillPct)} label="Context fill" />
         </div>
       ) : (
-        <div className="mb-1 text-[10.5px] text-fg-4" title="context budget not reported for this session">
-          context fill n/a
+        <div className="mb-1 text-[10.5px] text-fg-4">
+          <Tooltip content={gauge.state === "over_window" ? "the prefix is larger than the catalog context window for this model, so the real limit is not known" : "context limit not known for this session"}><span tabIndex={0}>context fill n/a</span></Tooltip>
         </div>
       )}
       {total > 0 ? (
@@ -584,14 +629,18 @@ function RateLimitGauge({ limit }: { limit?: PredictResponse["limit"] }) {
   );
 }
 
+// UtilBar - one rate-limit window's utilisation. The fill is the shared
+// Meter (scaleX, never width) toned by the UTIL_BANDS table.
 function UtilBar({ label, pct }: { label: string; pct: number }) {
-  const cls = pct > 90 ? "bg-danger" : pct > 70 ? "bg-warn" : "bg-accent";
   return (
     <div className="flex items-center gap-2 text-[10.5px]">
       <span className="w-6 shrink-0 text-fg-3">{label}</span>
-      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-bg-3">
-        <div className={`h-full ${cls}`} style={{ width: `${pct}%` }} />
-      </div>
+      <Meter
+        ratio={pct / 100}
+        tone={bandTone(UTIL_BANDS, pct)}
+        label={`${label} window utilisation`}
+        className="flex-1"
+      />
       <span className="w-9 shrink-0 text-right tabular-nums text-fg-2">{pct.toFixed(0)}%</span>
     </div>
   );
@@ -619,24 +668,26 @@ function CacheCountdown({
       <div className="flex flex-wrap gap-1.5">
         {live.slice(0, 6).map((w, i) => {
           const secs = Math.max(0, secondsUntil(w.window.expires_at, now) ?? w.seconds_to_expiry);
-          const critical = w.severity === "critical";
+          // Tone + glyph from the ONE CACHE_EXPIRY table
+          // (@shared/lib/cacheVocab), the same as the Cache expiry card.
+          const v = vocabView("cacheExpiry", CACHE_EXPIRY, w.severity);
           return (
-            <span
+            <Pill
               key={`${w.window.scope}-${i}`}
-              className={`inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 text-[10px] tabular-nums ${
-                critical ? "border-warn/40 bg-warn-soft text-warn" : "border-line-2 bg-bg-2 text-fg-2"
-              }`}
-              title={`${w.window.model} · ${w.window.ttl_tier} tier${w.estimated ? " · estimated expiry" : ""}`}
+              variant={v.tone}
+              icon={v.icon}
+              className="tabular-nums"
+              title={`${v.label} · ${w.window.model} · ${w.window.ttl_tier} tier${w.estimated ? " · estimated expiry" : ""}`}
             >
-              <span className="text-fg-3">{w.window.ttl_tier || "cache"}</span>
-              <span className="font-medium">
+              <span className="opacity-70">{w.window.ttl_tier || "cache"}</span>
+              <span>
                 {w.estimated ? "~" : ""}
                 {fmtCountdown(secs)}
               </span>
               {w.value_at_risk_usd > 0 && (
-                <span className="text-fg-3">· {fmtUSD(w.value_at_risk_usd, true)} at risk</span>
+                <span className="opacity-70">· {fmtUSD(w.value_at_risk_usd, true)} at risk</span>
               )}
-            </span>
+            </Pill>
           );
         })}
       </div>
@@ -652,6 +703,8 @@ function SystemSection({
   metrics,
   metricsLoading,
   metricsErr,
+  metricsDenied,
+  metricsDeniedPermission,
   network,
   networkErr,
   err,
@@ -661,6 +714,8 @@ function SystemSection({
   metrics?: SessionMetricsResponse | null;
   metricsLoading: boolean;
   metricsErr: Error | null;
+  metricsDenied?: boolean;
+  metricsDeniedPermission?: string | null;
   network?: SessionNetworkSummary | null;
   networkErr: Error | null;
   err: Error | null;
@@ -691,18 +746,22 @@ function SystemSection({
     <div>
       <SectionLabel>System</SectionLabel>
       <div className="mb-2">
-        <ResourceCharts metrics={metrics ?? null} loading={metricsLoading} error={metricsErr} />
+        <ResourceCharts
+          metrics={metrics ?? null}
+          loading={metricsLoading}
+          error={metricsErr}
+          denied={metricsDenied}
+          deniedPermission={metricsDeniedPermission}
+        />
       </div>
 
       {recent.length > 0 && (
         <div className="space-y-0.5">
           {recent.map((n) => (
             <div key={n.process_key} className="flex items-center gap-2 text-[11px]">
-              <span
-                className={`inline-block size-1.5 shrink-0 rounded-full ${n.exited ? "bg-fg-4" : "bg-success"}`}
-                title={n.exited ? "exited" : "running"}
-                aria-hidden
-              />
+              <Tooltip content={n.exited ? "exited" : "running"}><span tabIndex={0} className="inline-flex shrink-0">
+                <LiveDot {...withDotClass(liveDotProps(PROCESS_DOT, n.exited ? "exited" : "running"), "size-1.5")} />
+              </span></Tooltip>
               <span className="min-w-0 flex-1 truncate font-mono text-fg-1" title={n.command || n.exe}>
                 {basename(n.exe)}
               </span>
@@ -751,11 +810,10 @@ function NetworkTraffic({
 }) {
   if (networkEnabled === false) {
     return (
-      <div
-        className="mt-2 text-[10.5px] text-fg-4"
-        title="Network capture is off - set [observer.process.network].enabled to record this session's outbound API/network activity."
-      >
-        Network capture off
+      <div className="mt-2 text-[10.5px] text-fg-4">
+        <Tooltip content="Network capture is off - set [observer.process.network].enabled to record this session's outbound API/network activity."><span tabIndex={0}>
+          Network capture off
+        </span></Tooltip>
       </div>
     );
   }
@@ -769,34 +827,35 @@ function NetworkTraffic({
   const stale = Boolean(err && network);
   return (
     <div className="mt-2 space-y-0.5">
-      <div
-        className="text-[10.5px] text-fg-3"
-        title={
-          hasBytes
+      <Tooltip
+        content={
+          (hasBytes
             ? "Body byte totals exist only for SuperBased-proxied/plaintext API flows; per-process network bytes are not captured."
             : bodyCapture === false
               ? "Body byte capture is off ([observer.process.network].capture_bodies) - proxied calls are counted, but their request/response bytes were not measured."
-              : "No request/response bytes have been recorded yet for this session's proxied calls."
+              : "No request/response bytes have been recorded yet for this session's proxied calls.") +
+          (stale ? " The last network refresh failed; showing the previous values." : "")
         }
       >
-        API traffic (proxied): {fmtInt(sum.proxied_calls)} calls
-        {hasBytes && (
-          <>
-            {" · "}↑{fmtBytes(sum.request_bytes)} ↓{fmtBytes(sum.response_bytes)}
-          </>
-        )}
-        {stale && (
-          <span className="text-warn" title="The last network refresh failed; showing the previous values.">
-            {" "}· stale
-          </span>
-        )}
-      </div>
+        <div tabIndex={0} className="w-fit text-[10.5px] text-fg-3">
+          API traffic (proxied): {fmtInt(sum.proxied_calls)} calls
+          {hasBytes && (
+            <>
+              {" · "}
+              <Icon icon={ArrowUp} size={10} label="sent" className="inline-block align-middle" />
+              {fmtBytes(sum.request_bytes)}{" "}
+              <Icon icon={ArrowDown} size={10} label="received" className="inline-block align-middle" />
+              {fmtBytes(sum.response_bytes)}
+            </>
+          )}
+          {stale && <span className="text-warn"> · stale</span>}
+        </div>
+      </Tooltip>
       {sum.os_connections > 0 && (
-        <div
-          className="text-[10.5px] text-fg-4"
-          title="OS-observed outbound connections from the captured process tree - raw sockets, not proxied API calls (no body bytes)."
-        >
-          Network connections: {fmtInt(sum.os_connections)}
+        <div className="text-[10.5px] text-fg-4">
+          <Tooltip content="OS-observed outbound connections from the captured process tree - raw sockets, not proxied API calls (no body bytes)."><span tabIndex={0}>
+            Network connections: {fmtInt(sum.os_connections)}
+          </span></Tooltip>
         </div>
       )}
     </div>
@@ -883,19 +942,29 @@ function ProcessEnableCTA() {
         session has no system vitals.
       </p>
       <div className="mt-2 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onEnable}
-          disabled={state === "saving" || remote}
-          title={
-            remote
-              ? "Config changes are owner-local - enable process capture from the local dashboard."
-              : "Turns on process capture, preserving the configured backend."
-          }
-          className="rounded-2 border border-accent/40 bg-accent-soft px-2.5 py-1 text-[11px] font-medium text-accent hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {state === "saving" ? "Enabling…" : "Enable"}
-        </button>
+        {(() => {
+          const disabled = state === "saving" || remote;
+          const tip = remote
+            ? "Config changes are owner-local - enable process capture from the local dashboard."
+            : "Turns on process capture, preserving the configured backend.";
+          const btn = (
+            <button
+              type="button"
+              onClick={onEnable}
+              disabled={disabled}
+              className="rounded-2 border border-accent/40 bg-accent-soft px-2.5 py-1 text-caption font-medium text-accent hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {state === "saving" ? "Enabling…" : "Enable"}
+            </button>
+          );
+          // A disabled <button> swallows pointer events, so its tip rides on
+          // a hoverable span (the NewTerminalDialog pattern).
+          return disabled ? (
+            <TooltipSpan content={tip}>{btn}</TooltipSpan>
+          ) : (
+            <Tooltip content={tip}>{btn}</Tooltip>
+          );
+        })()}
         {state === "err" && <span className="text-[10.5px] text-danger">{msg || "save failed"}</span>}
       </div>
     </div>
@@ -903,19 +972,6 @@ function ProcessEnableCTA() {
 }
 
 // --- 8: Recent turns -------------------------------------------------------
-
-function roleGlyph(role: string): string {
-  switch (role) {
-    case "assistant":
-      return "A";
-    case "user":
-      return "U";
-    case "tool":
-      return "T";
-    default:
-      return role ? role[0].toUpperCase() : "?";
-  }
-}
 
 function RecentTurns({
   rows,
@@ -944,15 +1000,16 @@ function RecentTurns({
               className="flex items-center gap-2 rounded-2 px-1.5 py-1 text-[11px] hover:bg-fg-2/5"
             >
               <span
-                className="grid size-4 shrink-0 place-items-center rounded-1 bg-bg-3 text-[9px] font-semibold text-fg-3"
+                className="grid size-4 shrink-0 place-items-center rounded-1 bg-bg-3 text-fg-3"
                 title={m.role}
               >
-                {roleGlyph(m.role)}
+                {/* Role glyph: VOCAB_ICONS.messageRole (CircleHelp for an unknown role). */}
+                <Icon icon={vocabIcon("messageRole", m.role)} size={10} label={m.role || "unknown role"} />
               </span>
               <span className="w-14 shrink-0 tabular-nums text-fg-2" title="output tokens">
                 {fmtCompact(m.output)} tok
               </span>
-              <span className="w-14 shrink-0 tabular-nums text-fg-3">
+              <span className="w-14 shrink-0 tabular-nums text-fg-3" title={tps != null || m.tps_suppressed ? tpsTooltip(m, fmtInt, fmtDurationMs) : undefined}>
                 {tps != null ? fmtTps(tps) : "-"}
               </span>
               <span className="flex-1 text-right tabular-nums text-fg-2">{fmtCost(m.cost_usd)}</span>

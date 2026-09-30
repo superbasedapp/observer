@@ -24,6 +24,10 @@ func TestSupportedFamiliesDriveDispatch(t *testing.T) {
 		// body above.
 		FamilyNodeFeatures:    `{}`,
 		FamilyPlaneBAdmission: `{"admission":{"mode":"enforce"}}`,
+		// tools.mcp_access's minimal body: a registry with one vserver and
+		// no grant compiles to the invariants + deny-all sentinel (a valid,
+		// meaningful "nothing is granted yet" policy).
+		FamilyMCPAccess: `{"mode":"enforce","registry":{"issuer":"https://auth.acme.superbased.app","org":"acme","gateway_base_uri":"https://mcp-gw.acme.superbased.app","policy_gen":1,"vservers":[{"id":"vs","slug":"gh","sender_constraint":"bearer"}]},"grants":[]}`,
 	}
 
 	if len(minimalBody) != len(SupportedFamilies) {

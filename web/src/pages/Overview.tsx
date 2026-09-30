@@ -1,5 +1,8 @@
-import { useState } from "react";
+import { hasNonZero } from "@shared/lib/seriesEmpty";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import type { ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "@/components/DataTable";
 import {
   ActionsAreaChart,
   CostAreaChart,
@@ -8,10 +11,15 @@ import {
 } from "@/components/charts";
 import { ChartState } from "@/components/ChartState";
 import {
+  Button,
   ChartShell,
+  HeroStat,
+  Icon,
+  ModelId,
   PageHeader,
   Pill,
   SegmentedControl,
+  Stagger,
   StatCard,
   ToolBadge,
   Tooltip,
@@ -22,18 +30,23 @@ import { OnboardingCard } from "@/components/OnboardingCard";
 import { MilestonesCard } from "@/components/MilestonesCard";
 import { CommunityCard } from "@/components/CommunityCard";
 import {
-  AlertIcon,
-  BoltIcon,
-  DatabaseIcon,
-  LayersIcon,
-} from "@/components/icons";
-import {
   useFilters,
   windowLabel,
   windowParams,
-  windowSpanHours,
+  useGranularity,
 } from "@/lib/filters";
 import { useApi } from "@/lib/useApi";
+import { useNowTick } from "@/lib/useNowTick";
+import { modelSeriesColors } from "@/lib/models";
+import {
+  OVERVIEW_SECTIONS,
+  loadOverviewLayout,
+  moveSection,
+  saveOverviewLayout,
+  toggleSection,
+  type OverviewLayout,
+  type OverviewSectionId,
+} from "@/lib/overviewLayout";
 import {
   fmtCompact,
   fmtDateTime,
@@ -52,17 +65,65 @@ import type {
   StatusSnapshot,
   ToolsResponse,
 } from "@/lib/types";
+import {
+  ArrowDown,
+  ArrowUp,
+  ChartArea,
+  ChartBar,
+  ChartLine,
+  ChartPie,
+  Settings2,
+  Table2,
+  type LucideIcon,
+} from "lucide-react";
+import { navIcon } from "@/lib/nav";
+import { GranControl } from "@/components/GranControl";
+import { asGranularity, perBucketTitle } from "@shared/lib/granularity";
+import { cacheCauseTone } from "@shared/lib/cacheVocab";
+import { MetricIcon } from "@/components/MetricIcon";
+
+// One glyph per overview section card title (the ChartShell `icon` slot): the
+// chart or table shape the section shows, never decoration.
+const SECTION_ICONS = {
+  costOverTime: ChartArea,
+  actionsOverTime: ChartLine,
+  topModels: ChartBar,
+  topTools: ChartPie,
+  recentSessions: Table2,
+} satisfies Record<string, LucideIcon>;
 
 export function OverviewPage() {
-  const [costMode, setCostMode] = useState<CostAreaMode>("tokens");
+  const [costMode, setCostMode] = useState<CostAreaMode>(loadCostMode);
+  const pickCostMode = (m: CostAreaMode) => {
+    setCostMode(m);
+    try {
+      localStorage.setItem(COST_MODE_KEY, m);
+    } catch {
+      // Storage unavailable: the choice lasts this page view.
+    }
+  };
+  const [layout, setLayout] = useState<OverviewLayout>(loadOverviewLayout);
+  const updateLayout = (next: OverviewLayout) => {
+    setLayout(next);
+    saveOverviewLayout(next);
+  };
   const { win, customRange, tool, project } = useFilters();
   const winParams = windowParams(win, customRange);
-  const bucket = windowSpanHours(win, customRange) <= 48 ? "hour" : "day";
+  // Chart bucket: the shared granularity rule + the viewer's `gran=` choice
+  // (lib/filters.tsx useGranularity), never an inline span threshold.
+  const gran = useGranularity();
   const winLbl = windowLabel(win, customRange);
   const toolParam = tool === "all" ? undefined : tool;
   const projectParam = project === "all" ? undefined : project;
 
-  const status = useApi<StatusSnapshot>("/api/status");
+  // /api/status is shared with the TopBar + Sidebar pollers through the
+  // query cache: one request per tick. Its payload changes on every poll
+  // (uptime is stamped per request), so the page selects the two fields it
+  // reads and re-renders only when one of them changes; "last activity"
+  // stays live through its own leaf tick (LastActivityAgo).
+  const status = useApi<StatusSnapshot, OverviewStatusSlice>("/api/status", undefined, [], {
+    select: selectOverviewStatus,
+  });
   const scoped = useApi<StatusScoped>(
     "/api/status/scoped",
     { ...winParams, tool: toolParam, project: projectParam },
@@ -70,14 +131,16 @@ export function OverviewPage() {
   );
   const costTs = useApi<CostTimeseries>(
     "/api/timeseries/cost",
-    { ...winParams, bucket, tool: toolParam, project: projectParam },
-    [win, customRange, tool, project],
+    { ...winParams, ...gran.params, tool: toolParam, project: projectParam },
+    [win, customRange, tool, project, gran.params],
   );
   const actionsTs = useApi<ActionsTimeseries>(
     "/api/timeseries/actions",
-    { ...winParams, bucket, tool: toolParam, project: projectParam },
-    [win, customRange, tool, project],
+    { ...winParams, ...gran.params, tool: toolParam, project: projectParam },
+    [win, customRange, tool, project, gran.params],
   );
+  const costGran = asGranularity(costTs.data?.bucket ?? gran.expected);
+  const actionsGran = asGranularity(actionsTs.data?.bucket ?? gran.expected);
   const models = useApi<CostSummary>(
     "/api/models",
     { ...winParams, tool: toolParam, project: projectParam },
@@ -94,11 +157,14 @@ export function OverviewPage() {
     [tool, project],
   );
   // Discover is only used for the stale-reads KPI tile; pull a thin
-  // slice with no pagination payload.
+  // slice with no pagination payload, and only the stale-read pass
+  // (sections=stale): the full report's repeated-command and rerun passes
+  // were the slowest request on the page and this tile reads none of them.
   const discover = useApi<DiscoverResponse>(
     "/api/discover",
     {
       ...winParams,
+      sections: "stale",
       stale_limit: 1,
       repeated_limit: 1,
       tool: toolParam,
@@ -112,177 +178,222 @@ export function OverviewPage() {
   // standalone cache overview page.
   const cache = useApi<CacheOverviewResponse>("/api/cache/overview");
 
-  const kpis = deriveKpis(costTs.data, actionsTs.data, status.data);
+  const kpis = deriveKpis(costTs.data, actionsTs.data);
+  const staleCount = discover.data?.summary.stale_read_count;
+  const apiTurns = scoped.data?.api_turns;
 
-  return (
-    <div className="space-y-6 p-6">
-      <PageHeader
-        title="Overview"
-        sub="High-level snapshot - KPI tiles, daily cost and activity, plus top-N models and tools across the selected window."
-        helpId="tab.overview"
-      />
-      {/* First-run onboarding (P5.1/F1+D-1): renders only while the
-          DB has zero sessions; permanently dismissable. */}
-      <OnboardingCard sessions={status.data?.counts?.sessions ?? null} />
-      {/* Milestones (P5.6/D-4): once-each, max one visible,
-          dismissable; existing installs retire crossed ones silently. */}
-      <MilestonesCard sessions={status.data?.counts?.sessions ?? null} />
-      {/* KPI grid */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-5">
+  const sections: Record<OverviewSectionId, ReactNode> = {
+    kpis: (
+      /* KPI band: the window's spend leads as a 2x2 hero (it was computed
+         and never shown), beside six operational tiles in a 3x2 block. The
+         band cascades in on page entry (sb-stagger) and numbers count up. */
+      <Stagger className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+        <HeroStat
+          label={`Spend · ${winLbl}`}
+          icon={<MetricIcon metric="spend" />}
+          helpId="chart.cost_over_time"
+          aurora
+          className="col-span-2 md:col-span-3 xl:col-span-2 xl:row-span-2"
+          loading={costTs.loading}
+          stale={costTs.isStale}
+          value={costTs.data ? fmtUSD(kpis.cost) : "-"}
+          sub={
+            costTs.data
+              ? `${fmtInt(kpis.turns)} priced turns · ${fmtCompact(kpis.tokens)} tokens`
+              : costTs.error
+                ? "spend unavailable"
+                : "-"
+          }
+          spark={kpis.costSpark}
+          sparkMode="wide"
+        />
         <StatCard
           label="Sessions"
           helpId="tile.sessions"
-          icon={<LayersIcon />}
+          icon={<MetricIcon metric="sessions" />}
           loading={scoped.loading}
+          stale={scoped.isStale}
           value={fmtInt(scoped.data?.sessions)}
           cornerPill={
-            <span
-              title={`window ${winLbl}`}
-              className="rounded-pill border border-success/40 bg-success-soft px-1.5 py-0.5 text-[9.5px] font-medium text-success"
-            >
+            <Pill variant="success" className="normal-case">
               window {winLbl}
-            </span>
+            </Pill>
           }
           sub={
             // Honesty rule: "no activity yet" is a CLAIM about a loaded,
             // empty database — it must never render off an unresolved
-            // /api/status. That endpoint is a whole-DB scan the SPA polls
-            // from three places at once, so on a large corpus `status.data`
-            // is legitimately null for the first several seconds of a page
-            // load (and again on any aborted poll). Falling through to the
-            // empty-state copy there told a busy install it had never been
-            // used. Only a RESOLVED response gets to make the claim; while
-            // the request is in flight, or when it failed outright, the
-            // subtitle stays neutral.
-            // ERROR FIRST, before any use of retained data. useApi keeps the
-            // last good payload across a failed refetch, so checking
-            // `status.data` first would keep printing "last activity 4m ago"
-            // — or, from a stale-empty payload, "no activity yet" — while the
-            // endpoint is actually failing, which is a stronger claim than
-            // the page can support at that moment.
+            // /api/status. That endpoint is a whole-DB scan, so on a large
+            // corpus `status.data` is legitimately null for the first several
+            // seconds of a page load (and again on any aborted poll). Only a
+            // RESOLVED response gets to make the claim; while the request is
+            // in flight, or when it failed outright, the subtitle stays
+            // neutral. ERROR FIRST, before any use of retained data: the
+            // cache keeps the last good payload across a failed refetch.
             status.error
               ? "activity unavailable"
               : status.data?.last_action_at
-                ? `last activity ${relativeTime(status.data.last_action_at)}`
+                ? <LastActivityAgo iso={status.data.last_action_at} />
                 : status.data
                   ? "no activity yet"
                   : "-"
           }
+        />
+        <StatCard
+          label="Actions"
+          helpId="chart.actions_over_time"
+          icon={<MetricIcon metric="actions" />}
+          linkTo="/actions"
+          loading={scoped.loading}
+          stale={scoped.isStale}
+          value={fmtInt(scoped.data?.actions)}
+          sub={
+            kpis.failures > 0
+              ? `${fmtInt(kpis.failures)} failed · ${((kpis.failures / Math.max(1, kpis.actionsTotal)) * 100).toFixed(1)}%`
+              : actionsTs.data
+                ? "no failures in window"
+                : "-"
+          }
+          warn={kpis.actionsTotal > 0 && kpis.failures / kpis.actionsTotal > 0.1}
           spark={kpis.actionsSpark}
           sparkColor="var(--accent)"
         />
         <StatCard
           label="API Turns (proxy)"
           helpId="tile.api_turns"
-          icon={<BoltIcon />}
+          icon={<MetricIcon metric="apiTurns" />}
           loading={scoped.loading}
-          value={fmtInt(scoped.data?.api_turns)}
+          stale={scoped.isStale}
+          value={fmtInt(apiTurns)}
           sub={
-            (scoped.data?.api_turns ?? 0) === 0
-              ? "proxy not engaged · accurate-token source"
-              : `accurate token source · ${fmtInt(scoped.data?.token_usage)} rows`
+            // Only a RESOLVED response may claim the proxy is not engaged.
+            apiTurns == null
+              ? "-"
+              : apiTurns === 0
+                ? "proxy not engaged · accurate-token source"
+                : `accurate token source · ${fmtInt(scoped.data?.token_usage)} rows`
           }
-          warn={(scoped.data?.api_turns ?? 0) === 0}
+          warn={apiTurns === 0}
           spark={kpis.turnsSpark}
           sparkColor="var(--tok-net)"
         />
         <StatCard
           label="Token Rows (jsonl)"
           helpId="tile.token_rows"
-          icon={<DatabaseIcon />}
+          icon={<MetricIcon metric="tokenRows" />}
           loading={scoped.loading}
+          stale={scoped.isStale}
           value={fmtCompact(scoped.data?.token_usage)}
-          spark={kpis.costSpark}
+          // Token VOLUME per bucket (was the $ series by mistake).
+          spark={kpis.tokenSpark}
           sparkColor="var(--tok-read)"
           sub="plentiful but unreliable · de-duped at cost time"
         />
         <StatCard
           label="Stale re-reads"
           helpId="metric.stale_count"
-          icon={<AlertIcon />}
+          icon={<MetricIcon metric="staleRereads" />}
           linkTo="/discovery"
           loading={discover.loading}
-          value={
-            discover.data ? fmtInt(discover.data.summary.stale_read_count) : "-"
-          }
-          warn={
-            (discover.data?.summary.stale_read_count ?? 0) > 0
-          }
+          stale={discover.isStale}
+          value={staleCount != null ? fmtInt(staleCount) : "-"}
+          warn={(staleCount ?? 0) > 0}
           cornerPill={
-            (discover.data?.summary.stale_read_count ?? 0) === 0 ? (
-              <span className="rounded-pill border border-info/40 bg-info-soft px-1.5 py-0.5 text-[9.5px] font-medium text-info">
-                all systems nominal
-              </span>
+            // "Nominal" is a claim about a LOADED zero, never about a
+            // pending or failed request.
+            staleCount === 0 ? (
+              <Pill variant="info">all systems nominal</Pill>
             ) : undefined
           }
           sub={
-            discover.data?.summary.cross_thread_stale_count
-              ? `${fmtInt(discover.data.summary.cross_thread_stale_count)} cross-thread`
-              : "from Discovery tab"
+            discover.error
+              ? "discovery unavailable"
+              : discover.data?.summary.cross_thread_stale_count
+                ? `${fmtInt(discover.data.summary.cross_thread_stale_count)} cross-thread`
+                : "from Discovery tab"
           }
         />
         <CacheEfficiencyTile data={cache.data} loading={cache.loading} />
-      </div>
-
-      {/* Two time-series charts side by side on wide screens */}
+      </Stagger>
+    ),
+    trends: (
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <ChartShell
           title={<TitleWithHelp text="Cost over time" helpId="chart.cost_over_time" />}
+          icon={SECTION_ICONS.costOverTime}
+          stale={costTs.isStale}
           sub={
             costMode === "cost"
-              ? `Daily cost in dollars · ${winLbl}`
-              : `Tokens by Anthropic billing bucket · ${winLbl}`
+              ? `${perBucketTitle("Cost", costGran)} in dollars · ${winLbl}`
+              : `${perBucketTitle("Tokens", costGran)} by Anthropic billing bucket · ${winLbl}`
           }
           right={
-            <SegmentedControl<CostAreaMode>
-              options={[
-                { value: "tokens", label: "Tokens" },
-                { value: "cost", label: "Cost $" },
-              ]}
-              value={costMode}
-              onChange={setCostMode}
-              size="sm"
-            />
+            <div className="flex flex-wrap items-center gap-2">
+              <GranControl served={costTs.data} />
+              <SegmentedControl<CostAreaMode>
+                options={[
+                  { value: "tokens", label: "Tokens" },
+                  { value: "cost", label: "Cost $" },
+                ]}
+                value={costMode}
+                onChange={pickCostMode}
+                size="sm"
+              />
+            </div>
           }
         >
           <ChartState
             loading={costTs.loading}
             error={costTs.error}
-            empty={!costTs.data?.series?.length}
+            denied={costTs.denied}
+            deniedPermission={costTs.deniedPermission}
+            onRetry={costTs.reload}
+            empty={!hasNonZero(costTs.data?.series, ["turn_count"])}
             emptyHint="No cost data in this window."
           >
             {costTs.data && (
-              <CostAreaChart data={costTs.data.series} mode={costMode} />
+              <CostAreaChart data={costTs.data.series} mode={costMode} granularity={costGran} />
             )}
           </ChartState>
         </ChartShell>
 
         <ChartShell
           title={<TitleWithHelp text="Actions over time" helpId="chart.actions_over_time" />}
-          sub={`Stacked by tool · ${winLbl}`}
+          icon={SECTION_ICONS.actionsOverTime}
+          stale={actionsTs.isStale}
+          sub={`${perBucketTitle("Actions", actionsGran)}, stacked by tool · ${winLbl}`}
+          right={<GranControl served={actionsTs.data} />}
         >
           <ChartState
             loading={actionsTs.loading}
             error={actionsTs.error}
-            empty={!actionsTs.data?.series?.length}
+            denied={actionsTs.denied}
+            deniedPermission={actionsTs.deniedPermission}
+            onRetry={actionsTs.reload}
+            empty={!hasNonZero(actionsTs.data?.series, ["total"])}
             emptyHint="No actions in this window."
           >
             {actionsTs.data && (
-              <ActionsAreaChart data={actionsTs.data.series} />
+              <ActionsAreaChart data={actionsTs.data.series} granularity={actionsGran} />
             )}
           </ChartState>
         </ChartShell>
       </div>
-
-      {/* Top models + Top tools side by side */}
+    ),
+    top: (
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <ChartShell
           title={<TitleWithHelp text="Top models by tokens" helpId="chart.top_models" />}
+          icon={SECTION_ICONS.topModels}
+          stale={models.isStale}
           sub={`Net input + cache read + output · ${winLbl}`}
         >
           <ChartState
+            kind="list"
             loading={models.loading}
             error={models.error}
+            denied={models.denied}
+            deniedPermission={models.deniedPermission}
+            onRetry={models.reload}
             empty={!models.data?.rows?.length}
             emptyHint="No model data yet."
           >
@@ -292,11 +403,17 @@ export function OverviewPage() {
 
         <ChartShell
           title={<TitleWithHelp text="Top tools by actions" helpId="chart.top_tools" />}
+          icon={SECTION_ICONS.topTools}
+          stale={tools.isStale}
           sub={`Donut + success rate · ${winLbl}`}
         >
           <ChartState
+            kind="donut"
             loading={tools.loading}
             error={tools.error}
+            denied={tools.denied}
+            deniedPermission={tools.deniedPermission}
+            onRetry={tools.reload}
             empty={!tools.data?.tools?.length}
             emptyHint="No tools active in window."
           >
@@ -304,10 +421,12 @@ export function OverviewPage() {
           </ChartState>
         </ChartShell>
       </div>
-
-      {/* Recent sessions mini-list */}
+    ),
+    recent: (
       <ChartShell
         title="Recent sessions"
+        icon={SECTION_ICONS.recentSessions}
+        stale={sessions.isStale}
         sub="Most recent 6 - click through for the full list"
         right={
           <Link
@@ -319,17 +438,177 @@ export function OverviewPage() {
         }
       >
         <ChartState
+          kind="table"
           loading={sessions.loading}
           error={sessions.error}
+          denied={sessions.denied}
+          deniedPermission={sessions.deniedPermission}
+          onRetry={sessions.reload}
           empty={!sessions.data?.rows?.length}
           emptyHint="No sessions yet. With the daemon running, a session appears here the moment you use an AI tool - route Claude Code / Codex through the proxy from the Compression page's Proxy banner, or wire hooks + MCP with `observer init`."
         >
           {sessions.data && <RecentSessions rows={sessions.data.rows} />}
         </ChartState>
       </ChartShell>
-      {/* Community & support — star the repo, report problems,
-          share/refer, send feedback. Persistent (not dismissable). */}
-      <CommunityCard />
+    ),
+    // Community & support — star the repo, report problems, share/refer,
+    // send feedback. Hideable from Customize (it was not dismissable).
+    community: <CommunityCard />,
+  };
+
+  const visible = layout.order.filter((id) => !layout.hidden.includes(id));
+
+  return (
+    <div className="space-y-6 p-4 sm:p-6">
+      <PageHeader
+        icon={navIcon("overview")}
+        title="Overview"
+        sub="High-level snapshot - KPI tiles, daily cost and activity, plus top-N models and tools across the selected window."
+        helpId="tab.overview"
+        right={<CustomizeOverview layout={layout} onChange={updateLayout} />}
+      />
+      {/* First-run onboarding (P5.1/F1+D-1): renders only while the
+          DB has zero sessions; permanently dismissable. */}
+      <OnboardingCard sessions={status.data?.sessions ?? null} />
+      {/* Milestones (P5.6/D-4): once-each, max one visible,
+          dismissable; existing installs retire crossed ones silently. */}
+      <MilestonesCard sessions={status.data?.sessions ?? null} />
+      {/* Sections in the operator's chosen order; each rises in on page
+          entry (sb-stagger on the wrapper). */}
+      <Stagger className="space-y-6">
+        {visible.map((id) => (
+          <section key={id} aria-label={sectionLabel(id)}>
+            {sections[id]}
+          </section>
+        ))}
+      </Stagger>
+      {visible.length === 0 && (
+        <p className="rounded-3 border border-dashed border-line-3 p-6 text-center text-[12px] text-fg-3">
+          Every section is hidden. Use Customize to bring them back.
+        </p>
+      )}
+    </div>
+  );
+}
+
+const COST_MODE_KEY = "superbased.overview.costMode";
+
+function loadCostMode(): CostAreaMode {
+  try {
+    const v = localStorage.getItem(COST_MODE_KEY);
+    if (v === "cost" || v === "tokens") return v;
+  } catch {
+    // Storage unavailable.
+  }
+  return "tokens";
+}
+
+function sectionLabel(id: OverviewSectionId): string {
+  return OVERVIEW_SECTIONS.find((s) => s.id === id)?.label ?? id;
+}
+
+// CustomizeOverview: show / hide and reorder the Overview sections, saved
+// per browser. A small popover; keyboard reachable, Esc and outside-click
+// close it.
+function CustomizeOverview({
+  layout,
+  onChange,
+}: {
+  layout: OverviewLayout;
+  onChange: (l: OverviewLayout) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [open]);
+  const btn =
+    "sb-press inline-flex items-center rounded-2 px-1.5 py-0.5 text-[11px] text-fg-3 hover:bg-bg-4 hover:text-fg-1 disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring";
+  return (
+    <div ref={rootRef} className="relative">
+      <Button
+        size="sm"
+        iconLeft={Settings2}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => setOpen((o) => !o)}
+        className="sb-press"
+      >
+        Customize
+      </Button>
+      {open && (
+        <div
+          role="dialog"
+          aria-label="Customize Overview"
+          className="sb-scale-in absolute right-0 top-full z-30 mt-2 w-72 origin-top-right rounded-3 border border-line-2 bg-bg-2 p-3 shadow-3"
+        >
+          <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-fg-3">
+            Sections
+          </p>
+          <ul className="space-y-1">
+            {layout.order.map((id, i) => {
+              const shown = !layout.hidden.includes(id);
+              return (
+                <li
+                  key={id}
+                  className="flex items-center gap-2 rounded-2 px-1.5 py-1 hover:bg-bg-3"
+                >
+                  <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-[12px] text-fg-1">
+                    <input
+                      type="checkbox"
+                      checked={shown}
+                      onChange={() => onChange(toggleSection(layout, id))}
+                      className="accent-[var(--accent)]"
+                    />
+                    <span className={shown ? "truncate" : "truncate text-fg-3 line-through"}>
+                      {sectionLabel(id)}
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    aria-label={`Move ${sectionLabel(id)} up`}
+                    disabled={i === 0}
+                    onClick={() => onChange(moveSection(layout, id, -1))}
+                    className={btn}
+                  >
+                    <Icon icon={ArrowUp} size="xs" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Move ${sectionLabel(id)} down`}
+                    disabled={i === layout.order.length - 1}
+                    onClick={() => onChange(moveSection(layout, id, 1))}
+                    className={btn}
+                  >
+                    <Icon icon={ArrowDown} size="xs" />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="mt-2 flex justify-end border-t border-line-1 pt-2">
+            <button
+              type="button"
+              onClick={() => onChange({ order: OVERVIEW_SECTIONS.map((s) => s.id), hidden: [] })}
+              className="text-[11px] font-medium text-accent hover:text-accent-strong"
+            >
+              Reset to default
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -353,12 +632,10 @@ export function OverviewPage() {
 //   #1 — baseline aggregation: the headline is the R/W ratio,
 //        which is the cache-payback signal. The frontend doesn't
 //        itemize individual events here.
-//   #2 — flagged honesty: when the dominant non-baseline cause
-//        is a flagged one (tools_changed today; per
-//        docs/cache-tracking.md known-limitations), the corner
-//        pill renders in neutral tone, not warn. A real
-//        invalidation (system_changed / expiry / model-switch
-//        in the top cause) gets the warn tone.
+//   #2 — one tone owner: the corner pill reads cacheCauseTone
+//        (@shared/lib/cacheVocab) - a flagged cause (tools_changed
+//        today; per docs/cache-tracking.md known-limitations) takes
+//        CACHE_FLAG's warn, any other cause its CACHE_CAUSE tone.
 function CacheEfficiencyTile({
   data,
   loading,
@@ -389,18 +666,16 @@ function CacheEfficiencyTile({
 
   const cornerPill =
     dominantCause && dominantCause.count > 0 ? (
-      <span
-        className={clsxPill(dominantCause.flagged === true)}
-      >
+      <Pill variant={cacheCauseTone(dominantCause.cause, dominantCause.flagged)} className="normal-case">
         {dominantCause.cause}
-      </span>
+      </Pill>
     ) : undefined;
 
   return (
     <StatCard
-      label="Cache efficiency"
+      label="Cache efficiency (all time)"
       helpId="tile.cache_efficiency"
-      icon={<DatabaseIcon />}
+      icon={<MetricIcon metric="cacheHitRate" />}
       loading={loading}
       value={value}
       sub={subLine}
@@ -429,35 +704,50 @@ function pickDominantNonBaselineCause(
   return best;
 }
 
-// clsxPill chooses the cornerPill tone based on whether the
-// dominant cause is flagged (operator UI steer #2 — neutral, not
-// alarm-red).
-function clsxPill(flagged: boolean): string {
-  return flagged
-    ? "rounded-pill border border-fg-3/40 bg-bg-3 px-1.5 py-0.5 text-[9.5px] font-medium text-fg-2"
-    : "rounded-pill border border-warn/40 bg-warn-soft px-1.5 py-0.5 text-[9.5px] font-medium text-warn";
+// OverviewStatusSlice is all the page reads from /api/status.
+type OverviewStatusSlice = { last_action_at: string | null; sessions: number | null };
+
+function selectOverviewStatus(s: StatusSnapshot): OverviewStatusSlice {
+  return { last_action_at: s.last_action_at || null, sessions: s.counts?.sessions ?? null };
+}
+
+// LastActivityAgo re-renders itself every 5 s so the relative time walks
+// without re-rendering the page (it used to ride the page-wide status poll).
+function LastActivityAgo({ iso }: { iso: string }) {
+  useNowTick(5000);
+  return <>{`last activity ${relativeTime(iso)}`}</>;
+}
+
+// Ago is the recent-sessions "started X ago" cell: it walks on its own tick
+// (the page no longer re-renders on every status poll, and table rows are
+// memoized, so nothing else would refresh it).
+function Ago({ iso }: { iso: string }) {
+  useNowTick(5000);
+  return <>{relativeTime(iso)}</>;
 }
 
 function deriveKpis(
   cost?: CostTimeseries | null,
   actions?: ActionsTimeseries | null,
-  _status?: StatusSnapshot | null,
 ) {
   const series = cost?.series ?? [];
   const cost_usd = series.reduce((acc, p) => acc + (p.cost_usd || 0), 0);
   const turns = series.reduce((acc, p) => acc + (p.turn_count || 0), 0);
+  const bucketTokens = (p: CostTimeseries["series"][number]) =>
+    (p.input || 0) + (p.output || 0) + (p.cache_read || 0) + (p.cache_creation || 0);
   const actionsSeries = actions?.series ?? [];
   return {
     cost: cost_usd,
     turns,
+    tokens: series.reduce((acc, p) => acc + bucketTokens(p), 0),
     costSpark: series.map((p) => p.cost_usd || 0),
     turnsSpark: series.map((p) => p.turn_count || 0),
-    actionsSpark: actionsSeries.map(
-      (p) =>
-        Object.entries(p)
-          .filter(([k]) => k !== "bucket")
-          .reduce((a, [, v]) => a + (typeof v === "number" ? v : 0), 0),
-    ),
+    tokenSpark: series.map(bucketTokens),
+    actionsTotal: actionsSeries.reduce((a, p) => a + (p.total || 0), 0),
+    failures: actionsSeries.reduce((a, p) => a + (p.failures || 0), 0),
+    // `total` already counts every action in the bucket; the old sum over
+    // every numeric key double-counted `failures`.
+    actionsSpark: actionsSeries.map((p) => p.total || 0),
   };
 }
 
@@ -469,20 +759,11 @@ function relativeTime(iso: string): string {
   return `${fmtDuration(diffMs)} ago`;
 }
 
-// Per-model palette. Pulled from design tokens so themes follow.
-const MODEL_PALETTE = [
-  "var(--tok-net)",
-  "var(--tok-read)",
-  "var(--tok-out)",
-  "var(--tok-write)",
-  "var(--info)",
-  "var(--success)",
-  "var(--warn)",
-  "var(--accent)",
-];
-
 function TopModelsBars({ rows }: { rows: CostSummary["rows"] }) {
   const top = rows.slice(0, 8);
+  // Colour by model FAMILY (one family table owns model colour), with a
+  // shade per extra model of the same family - not by rank.
+  const colors = modelSeriesColors(top.map((r) => r.key));
   const max = Math.max(
     1,
     ...top.map(
@@ -496,27 +777,23 @@ function TopModelsBars({ rows }: { rows: CostSummary["rows"] }) {
         const total =
           r.tokens.input + r.tokens.cache_read + r.tokens.output;
         const pct = (total / max) * 100;
-        const color = MODEL_PALETTE[i % MODEL_PALETTE.length];
+        const color = colors[i];
         return (
           <li key={r.key} className="space-y-0.5">
             <div className="flex items-baseline justify-between gap-2">
-              <span className="flex items-center gap-1.5 truncate">
-                <span
-                  className="h-1.5 w-1.5 shrink-0 rounded-pill"
-                  style={{ background: color }}
-                />
-                <span className="truncate font-mono text-[11px] text-fg-1">
-                  {r.key}
-                </span>
-              </span>
+              <ModelId model={r.key} className="min-w-0 text-[11px]" />
               <span className="shrink-0 text-[11px] text-fg-3 tabular-nums">
                 {fmtCompact(total)} · {fmtUSD(r.cost_usd)}
               </span>
             </div>
             <div className="h-2 w-full overflow-hidden rounded-pill bg-bg-3">
               <span
-                className="block h-full"
-                style={{ width: `${pct}%`, background: color }}
+                className="sb-bar-grow block h-full origin-left rounded-pill"
+                style={{
+                  transform: `scaleX(${pct / 100})`,
+                  background: color,
+                  animationDelay: `${i * 40}ms`,
+                }}
               />
             </div>
           </li>
@@ -526,55 +803,80 @@ function TopModelsBars({ rows }: { rows: CostSummary["rows"] }) {
   );
 }
 
+type RecentSessionRow = SessionsResponse["rows"][number];
+
+// RECENT_SESSION_COLUMNS keeps the list's recency order (the card is "the
+// six most recent sessions"), so no column sorts.
+const RECENT_SESSION_COLUMNS: ColumnDef<RecentSessionRow, unknown>[] = [
+  {
+    id: "tool",
+    header: () => <>Tool<HelpInd id="column.sessions.tool" /></>,
+    enableSorting: false,
+    cell: ({ row }) => <ToolBadge tool={row.original.tool} />,
+  },
+  {
+    id: "project",
+    header: () => <>Project<HelpInd id="column.sessions.project" /></>,
+    enableSorting: false,
+    meta: { mono: true },
+    cell: ({ row }) =>
+      row.original.project ? (
+        <TruncatedPath value={row.original.project} className="max-w-[280px] text-[11px]" />
+      ) : (
+        <Pill>no project</Pill>
+      ),
+  },
+  {
+    id: "started",
+    header: () => <>Started<HelpInd id="column.sessions.started" /></>,
+    enableSorting: false,
+    cell: ({ row }) => (
+      <Tooltip content={fmtDateTime(row.original.started_at)}>
+        <span tabIndex={0} className="cursor-help text-[11px] text-fg-3 focus:outline-none">
+          <Ago iso={row.original.started_at} />
+        </span>
+      </Tooltip>
+    ),
+  },
+  {
+    id: "actions",
+    header: () => <>Actions<HelpInd id="column.sessions.actions" /></>,
+    enableSorting: false,
+    meta: { align: "right" },
+    cell: ({ row }) => <span className="text-fg-1">{fmtInt(row.original.total_actions)}</span>,
+  },
+  {
+    id: "tokens",
+    header: () => <>Tokens<HelpInd id="column.sessions.tokens" /></>,
+    enableSorting: false,
+    meta: { align: "right" },
+    cell: ({ row }) => <span className="text-fg-2">{fmtCompact(row.original.total_tokens)}</span>,
+  },
+  {
+    id: "cost",
+    header: () => <>Cost<HelpInd id="column.sessions.cost" /></>,
+    enableSorting: false,
+    meta: { align: "right" },
+    cell: ({ row }) => <span className="text-fg-1">{fmtUSD(row.original.cost_usd)}</span>,
+  },
+  {
+    id: "elapsed",
+    header: () => <>Elapsed<HelpInd id="column.sessions.elapsed" /></>,
+    enableSorting: false,
+    meta: { align: "right" },
+    cell: ({ row }) => (
+      <span className="text-fg-3">{fmtDuration(row.original.duration_seconds * 1000)}</span>
+    ),
+  },
+];
+
 function RecentSessions({ rows }: { rows: SessionsResponse["rows"] }) {
   return (
-    <div className="-mx-1 overflow-x-auto px-1">
-    <table className="w-full min-w-[540px] text-left text-[12px]">
-      <thead className="text-[10.5px] uppercase tracking-[0.06em] text-fg-3">
-        <tr>
-          <th className="py-1.5 font-medium">Tool<HelpInd id="column.sessions.tool" /></th>
-          <th className="py-1.5 font-medium">Project<HelpInd id="column.sessions.project" /></th>
-          <th className="py-1.5 font-medium">Started<HelpInd id="column.sessions.started" /></th>
-          <th className="py-1.5 text-right font-medium">Actions<HelpInd id="column.sessions.actions" /></th>
-          <th className="py-1.5 text-right font-medium">Tokens<HelpInd id="column.sessions.tokens" /></th>
-          <th className="py-1.5 text-right font-medium">Cost<HelpInd id="column.sessions.cost" /></th>
-          <th className="py-1.5 text-right font-medium">Elapsed<HelpInd id="column.sessions.elapsed" /></th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.slice(0, 6).map((s) => (
-          <tr key={s.id} className="border-t border-line-1 hover:bg-bg-3/40">
-            <td className="py-1.5">
-              <ToolBadge tool={s.tool} />
-            </td>
-            <td className="max-w-[280px] py-1.5 font-mono text-[11px] text-fg-2">
-              {s.project ? (
-                <TruncatedPath value={s.project} />
-              ) : (
-                <Pill>no project</Pill>
-              )}
-            </td>
-            <Tooltip content={fmtDateTime(s.started_at)}>
-              <td tabIndex={0} className="cursor-help py-1.5 text-[11px] text-fg-3 focus:outline-none">
-                {relativeTime(s.started_at)}
-              </td>
-            </Tooltip>
-            <td className="py-1.5 text-right tabular-nums text-fg-1">
-              {fmtInt(s.total_actions)}
-            </td>
-            <td className="py-1.5 text-right tabular-nums text-fg-2">
-              {fmtCompact(s.total_tokens)}
-            </td>
-            <td className="py-1.5 text-right tabular-nums text-fg-1">
-              {fmtUSD(s.cost_usd)}
-            </td>
-            <td className="py-1.5 text-right tabular-nums text-fg-3">
-              {fmtDuration(s.duration_seconds * 1000)}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-    </div>
+    <DataTable<RecentSessionRow>
+      data={rows.slice(0, 6)}
+      columns={RECENT_SESSION_COLUMNS}
+      rowKey={(s) => s.id}
+      minWidth={540}
+    />
   );
 }

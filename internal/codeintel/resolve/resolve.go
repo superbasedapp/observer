@@ -39,7 +39,7 @@ func BuildNameIndex(nodes []NodeRef) *NameIndex {
 }
 
 // Resolve picks the target node id for a callee name observed in
-// callerFile. Resolution policy (name-matched, codegraph-grade):
+// callerFile. Resolution policy (name-matched):
 //
 //   - no node with that name      -> (0, false)  [unresolved/external]
 //   - exactly one                 -> that id

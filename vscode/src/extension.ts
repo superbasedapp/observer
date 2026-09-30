@@ -12,6 +12,7 @@ import { BudgetNotifier } from './notifications/budget';
 import { WatcherLagNotifier } from './notifications/watcherLag';
 import { createCostStatusBar, StatusBarController } from './status/costBar';
 import { createCacheStatusBar } from './status/cacheBar';
+import { createAgentAccessStatusBar } from './agentAccessStatus';
 import { registerLocTracker } from './loc/tracker';
 import { registerTerminalProfile } from './terminal/profile';
 import { TodayTreeProvider } from './views/todayTree';
@@ -98,6 +99,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     if (cacheStatusBar) {
       ctx.subscriptions.push(cacheStatusBar);
     }
+
+    // Agent Access P10: "MCP access" item (hidden unless the relay is on
+    // and the node is enrolled); disposed with the extension context.
+    ctx.subscriptions.push(createAgentAccessStatusBar(ctx, manager));
 
     const today = new TodayTreeProvider(manager);
     const sessions = new SessionsTreeProvider(manager);

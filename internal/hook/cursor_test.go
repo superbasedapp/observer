@@ -151,9 +151,10 @@ func TestHandleCursorEvent_StopIngestsTokenUsage(t *testing.T) {
 		t.Errorf("second transcript event = %+v (want ActionReadFile)", sink.called[1])
 	}
 	// InputTokens is NET non-cached: fixture's gross 123 with
-	// cache_read_tokens=67 → 56. See cursor.BuildStopTokenEvent.
-	if sink.tokens[0].InputTokens != 56 || sink.tokens[0].Model != "default" || sink.tokens[0].MessageID != "g1" {
-		t.Fatalf("unexpected token event: %+v (want InputTokens=56 net of 67 cached)", sink.tokens[0])
+	// cache_read_tokens=67 and cache_write_tokens=8 → 48 (both cache
+	// buckets are inside Cursor's gross input). See cursor.buildTokenEvent.
+	if sink.tokens[0].InputTokens != 48 || sink.tokens[0].Model != "default" || sink.tokens[0].MessageID != "g1" {
+		t.Fatalf("unexpected token event: %+v (want InputTokens=48 net of 67 read + 8 written)", sink.tokens[0])
 	}
 	// Reply still emitted.
 	if stdout.Len() == 0 {

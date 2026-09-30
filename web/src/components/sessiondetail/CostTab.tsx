@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, memo } from "react";
 import clsx from "clsx";
-import { ComboChip, Pill, type ComboOption } from "@/components/primitives";
+import { ComboChip, ModelId, Pill, Tooltip, type ComboOption } from "@/components/primitives";
+import { modelFamily } from "@shared/lib/modelFamilies";
 import { ChartState } from "@/components/ChartState";
 import { HelpInd } from "@/components/HelpInd";
 import { useApi } from "@/lib/useApi";
+import { useNowTick } from "@/lib/useNowTick";
 import { fmtCompact, fmtInt, fmtUSD } from "@/lib/format";
 import type {
   CacheForecastResponse,
@@ -28,7 +30,10 @@ import type {
 // non-empty — the forecaster compares a CURRENT model against a candidate, so
 // with no recorded current model there is nothing to compare from). When it is
 // gated off the tab says so rather than silently rendering one card.
-export function CostTab({ d }: { d: SessionDetail }) {
+// Memoized: the drawer re-renders on every detail poll (and on each poll's
+// fetching flip). `d` keeps its identity while the detail is unchanged (the
+// query cache shares unchanged subtrees), so an idle poll skips this tab.
+export const CostTab = memo(function CostTab({ d }: { d: SessionDetail }) {
   return (
     <div className="space-y-5">
       <PredictorCard sessionId={d.id} tool={d.tool} />
@@ -44,7 +49,7 @@ export function CostTab({ d }: { d: SessionDetail }) {
       )}
     </div>
   );
-}
+});
 
 // PredictorCard — the Next-Message Cost & Limit Predictor. Two composed
 // halves: the cost band (always on where the session has token data) and
@@ -75,8 +80,11 @@ function PredictorCard({ sessionId, tool }: { sessionId: string; tool: string })
       <ChartState
         loading={predict.loading && !predict.data}
         error={predict.error}
+        denied={predict.denied}
+        deniedPermission={predict.deniedPermission}
+        onRetry={predict.reload}
         empty={!predict.data}
-        emptyHint="Loading estimate…"
+        emptyHint="No estimate for this session"
         height={80}
       >
         {predict.data && <PredictorBody data={predict.data} tool={tool} />}
@@ -121,7 +129,7 @@ function PredictorBody({ data, tool }: { data: PredictResponse; tool: string }) 
               ))}
           </div>
           <div className="text-[10.5px] text-fg-3">
-            <span className="font-mono text-fg-2">{est.model}</span> · cached
+            <ModelId model={est.model} markSize={11} className="min-w-0 align-middle" /> · cached
             prefix {fmtCompact(est.prefix_tokens)} tok re-read - and billed -
             each turn ·{" "}
             {est.turns_tier === "observed"
@@ -206,9 +214,9 @@ function PredictBandStat({
       <span className="mt-0.5 text-[10px] text-fg-3">
         ~{band.turns} turns · {fmtCompact(band.output)} out/turn
       </span>
-      <span
-        className="text-[10px] tabular-nums text-fg-3"
-        title={
+      <Tooltip
+        maxWidth={360}
+        content={
           `Billed tokens = turns × (cached prefix + fresh input + output) = ` +
           `${band.turns} × (${fmtInt(prefixTokens)} + ${fmtInt(band.fresh_input)} + ${fmtInt(band.output)}) ` +
           `≈ ${fmtInt(tok.billed)}. Of that, ${fmtInt(tok.cached)} is the SAME cached prefix ` +
@@ -216,9 +224,11 @@ function PredictBandStat({
           `This is throughput, not context size. Cache-WRITE tokens are not included.`
         }
       >
-        <span className="text-fg-2">{fmtCompact(tok.billed)} tok</span> billed ·{" "}
-        {fmtCompact(tok.fresh)} new
-      </span>
+        <span tabIndex={0} className="text-micro tabular-nums text-fg-3 focus:outline-none">
+          <span className="text-fg-2">{fmtCompact(tok.billed)} tok</span> billed ·{" "}
+          {fmtCompact(tok.fresh)} new
+        </span>
+      </Tooltip>
       <span className="text-[10px] text-fg-3">{sub}</span>
     </div>
   );
@@ -252,9 +262,13 @@ function PredictWarningPill({ kind }: { kind: PredictWarning }) {
 
 // PredictLimitSection renders the 5h/weekly limit gauge. Source is either
 // the proxy (Anthropic response headers) or the tool's own session log
-// (codex token_count rate_limits — "from session log"). When neither is
-// available it shows the help-icon "route through the proxy to unlock"
-// state (Anthropic) or the "provider exposes no window" note.
+// (codex token_count rate_limits — "from session log"). When unavailable,
+// three DIFFERENT states each get their own copy (never a shared
+// "unavailable"): no_source (an audited registry finding — no local
+// signal can ever exist for this tool, e.g. cursor/grokbot — checked
+// FIRST, since it must never fall through to the proxy hint below),
+// no_window ("provider exposes no window"), or the "route through the
+// proxy to unlock" hint (a real, actionable remedy).
 function PredictLimitSection({ limit }: { limit: PredictResponse["limit"] }) {
   return (
     <div className="rounded-3 border bg-bg-1 px-3 py-2.5">
@@ -263,7 +277,8 @@ function PredictLimitSection({ limit }: { limit: PredictResponse["limit"] }) {
           5-hour / weekly limit
         </span>
         <HelpInd id="glossary.limit_gauge" />
-        {limit.needs_proxy && <Pill variant="neutral">needs proxy</Pill>}
+        {limit.no_source && <Pill variant="neutral">not visible</Pill>}
+        {!limit.no_source && limit.needs_proxy && <Pill variant="neutral">needs proxy</Pill>}
         {limit.available && limit.source === "transcript" && (
           <Pill variant="neutral">from session log</Pill>
         )}
@@ -271,7 +286,12 @@ function PredictLimitSection({ limit }: { limit: PredictResponse["limit"] }) {
           <span className="text-[10px] text-fg-3">· {limit.observed_age}</span>
         )}
       </div>
-      {limit.available ? (
+      {limit.no_source ? (
+        <p className="mt-1 text-[10.5px] text-fg-3">
+          {limit.source_note ||
+            "Usage limits are not visible for this tool - no local signal exists to read."}
+        </p>
+      ) : limit.available ? (
         <div className="mt-1.5 grid grid-cols-2 gap-3 text-[11px]">
           <LimitWindowStat
             label="5-hour window"
@@ -323,11 +343,18 @@ function LimitWindowStat({
       </span>
       {reset != null && (
         <span className="mt-0.5 text-[10px] text-fg-3">
-          resets {fmtResetClock(reset)}
+          resets <ResetClock unixSec={reset} />
         </span>
       )}
     </div>
   );
+}
+
+// ResetClock walks the countdown on its own 30 s tick: the tab is memoized
+// (it re-renders only when the detail changes), so nothing else refreshes it.
+function ResetClock({ unixSec }: { unixSec: number }) {
+  useNowTick(30_000);
+  return <>{fmtResetClock(unixSec)}</>;
 }
 
 // fmtResetClock renders a unix-seconds reset timestamp as a short
@@ -381,31 +408,25 @@ function ForecastWidget({ sessionId }: { sessionId: string }) {
   );
 
   // Build the dropdown options once per pricing fetch. Sort by
-  // (family, model id) so the operator sees claude-/gpt-/gemini-/
-  // … grouped naturally — ComboChip's flat list + the per-row
-  // family prefix in the label reads like an optgroup without
-  // needing a separate primitive.
+  // (family, model id) so the operator sees Claude / GPT / Gemini /
+  // … grouped naturally - ComboChip's flat list + the per-row
+  // family mark (ModelId, resolved by the table-driven modelFamily()
+  // matcher) reads like an optgroup without needing a separate
+  // primitive.
   const options = useMemo<ComboOption[]>(() => {
     if (!pricing.data?.defaults) return [];
     const entries = Object.entries(pricing.data.defaults);
-    entries.sort((a, b) => a[0].localeCompare(b[0]));
+    // Unmatched ids sort after every named family ("~" > letters).
+    const famKey = (id: string) => modelFamily(id)?.label ?? "~";
+    entries.sort(
+      (a, b) => famKey(a[0]).localeCompare(famKey(b[0])) || a[0].localeCompare(b[0]),
+    );
     return entries.map(([modelId, p]) => {
       const inputRate = p?.input ?? 0;
-      const family = familyOf(modelId);
       return {
         value: modelId,
-        // Label shows the family as a muted prefix + the bare model
-        // id so a scan column-aligns: "claude   opus-4-7-20251001".
-        label: (
-          <span className="flex w-full items-baseline gap-1.5">
-            {family && (
-              <span className="text-[10px] uppercase tracking-[0.05em] text-fg-3">
-                {family}
-              </span>
-            )}
-            <span className="font-mono">{stripFamilyPrefix(modelId, family)}</span>
-          </span>
-        ),
+        // Label: family mark + the model id (ModelId).
+        label: <ModelId model={modelId} className="min-w-0" />,
         searchable: modelId.toLowerCase(),
         rightMeta: inputRate > 0 ? `$${inputRate}/M` : undefined,
         title: `Input ${inputRate}/M · Output ${p?.output ?? 0}/M · Cache R ${p?.cache_read ?? 0}/M · Cache W ${p?.cache_creation ?? 0}/M`,
@@ -452,7 +473,7 @@ function ForecastWidget({ sessionId }: { sessionId: string }) {
           }
           buttonValueRender={(selected) =>
             selected ? (
-              <b className="font-mono text-fg-0">{selected.value}</b>
+              <ModelId model={selected.value} className="min-w-0 font-semibold" />
             ) : (
               <span className="font-mono text-fg-3">pick a model…</span>
             )
@@ -471,7 +492,11 @@ function ForecastWidget({ sessionId }: { sessionId: string }) {
       {submitted && (
         <ChartState
           loading={forecast.loading}
+          stale={forecast.isStale}
+          onRetry={forecast.reload}
           error={forecast.error}
+          denied={forecast.denied}
+          deniedPermission={forecast.deniedPermission}
           empty={!forecast.data}
           emptyHint="Forecast unavailable."
           height={80}
@@ -481,38 +506,6 @@ function ForecastWidget({ sessionId }: { sessionId: string }) {
       )}
     </section>
   );
-}
-
-// familyOf maps a model id to its family prefix so the dropdown
-// can label the row with a muted family chip. Returns "" when the
-// id doesn't match a known family - the row renders without the
-// chip and the full id shows mono-spaced.
-function familyOf(modelId: string): string {
-  if (modelId.startsWith("claude-")) return "claude";
-  if (modelId.startsWith("gpt-")) return "gpt";
-  if (modelId.startsWith("gemini-")) return "gemini";
-  if (modelId.startsWith("deepseek")) return "deepseek";
-  if (modelId.startsWith("o1") || modelId.startsWith("o3") || modelId.startsWith("o4")) {
-    return "openai-o";
-  }
-  if (modelId.startsWith("babbage") || modelId.startsWith("davinci")) return "openai-legacy";
-  if (modelId.startsWith("text-")) return "openai-text";
-  if (modelId.startsWith("kilo-")) return "kilo";
-  return "";
-}
-
-// stripFamilyPrefix removes the family prefix from the model id so
-// the dropdown row reads as `claude  opus-4-7-20251001` rather than
-// `claude  claude-opus-4-7-20251001`. When family is empty the
-// full id is returned untouched.
-function stripFamilyPrefix(modelId: string, family: string): string {
-  if (!family) return modelId;
-  // openai-o / openai-legacy / openai-text are virtual groupings —
-  // their model ids don't actually start with the family label. Skip
-  // the strip in those cases.
-  if (family.startsWith("openai")) return modelId;
-  const prefix = family + "-";
-  return modelId.startsWith(prefix) ? modelId.slice(prefix.length) : modelId;
 }
 
 function ForecastResultPanel({ data }: { data: CacheForecastResponse }) {
@@ -551,7 +544,10 @@ function ForecastResultPanel({ data }: { data: CacheForecastResponse }) {
         </div>
       )}
       <div className="text-[10.5px] text-fg-3">
-        {data.current_model} → {data.candidate_model} · per-turn{" "}
+        <ModelId model={data.current_model} markSize={11} className="min-w-0 align-middle" />
+        {" → "}
+        <ModelId model={data.candidate_model} markSize={11} className="min-w-0 align-middle" />
+        {" · "}per-turn{" "}
         {fmtUSD(data.per_turn_before_usd)} → {fmtUSD(data.per_turn_after_usd)}
       </div>
     </div>

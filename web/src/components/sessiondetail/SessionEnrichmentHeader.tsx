@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Pencil } from "lucide-react";
-import { Pill } from "@/components/primitives";
+import { Icon, Pill, Tooltip } from "@/components/primitives";
 import { CopyOnClick } from "@/components/CopyOnClick";
 import { useApi } from "@/lib/useApi";
 import { fmtShortId } from "@/lib/format";
@@ -180,7 +180,7 @@ export function SessionEnrichmentHeader({ sessionId }: { sessionId: string }) {
           onClick={startEdit}
           className="inline-flex items-center gap-1 text-[11.5px] text-fg-3 hover:text-accent"
         >
-          <Pencil size={11} aria-hidden />
+          <Icon icon={Pencil} size={11} />
           Add a title for this session
         </button>
       </section>
@@ -242,19 +242,23 @@ export function SessionEnrichmentHeader({ sessionId }: { sessionId: string }) {
             </h3>
           )}
           {!classifyBlocked && (
-            <button
-              type="button"
-              onClick={startEdit}
-              title={usingUserTitle ? "Edit your title" : "Set your own title"}
-              className="opacity-0 transition-opacity hover:text-accent group-hover:opacity-100"
-            >
-              <Pencil size={11} aria-hidden />
-            </button>
+            <Tooltip content={usingUserTitle ? "Edit your title" : "Set your own title"}>
+              <button
+                type="button"
+                onClick={startEdit}
+                aria-label={usingUserTitle ? "Edit your title" : "Set your own title"}
+                className="opacity-0 transition-opacity hover:text-accent focus:opacity-100 group-hover:opacity-100"
+              >
+                <Icon icon={Pencil} size={11} />
+              </button>
+            </Tooltip>
           )}
           {classifyBlocked && (
-            <span title={CLASSIFY_REMOTE_BLOCKED_MSG} className="text-[10px] text-fg-4">
-              (read-only here)
-            </span>
+            <Tooltip content={CLASSIFY_REMOTE_BLOCKED_MSG}>
+              <span tabIndex={0} className="text-micro text-fg-4 focus:outline-none">
+                (read-only here)
+              </span>
+            </Tooltip>
           )}
           {!usingUserTitle && aiTitle && aiTitle !== effectiveTitle && (
             <span className="text-[11px] text-fg-4 line-through">AI: {aiTitle}</span>

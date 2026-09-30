@@ -2,7 +2,7 @@
   "name": "superbased-observer-apps",
   "version": "0.0.0",
   "private": true,
-  "description": "npm workspace root for the application UI surfaces (web, web2, webcloud) and the shared design system (shared/). Not a Go concern; the Go module is defined by go.mod. The dependencies below are the shared design-system's runtime peers, declared here so they hoist to the root node_modules that shared/ resolves against; each app also declares the ones it uses and resolve.dedupe keeps a single React instance.",
+  "description": "npm workspace root for the application UI surfaces (web, web2, webcloud) and the shared design system (shared/). Not a Go concern; the Go module is defined by go.mod. The dependencies below are the shared design-system's runtime peers (incl. @tanstack/react-table for the shared DataTable), declared here so they hoist to the root node_modules that shared/ resolves against; each app also declares the ones it uses and resolve.dedupe keeps a single React instance.",
   "workspaces": [
     "shared",
     "web",
@@ -16,7 +16,9 @@
     "recharts": "^2.13.3",
     "clsx": "^2.1.1",
     "@floating-ui/react": "^0.27.19",
-    "framer-motion": "^11.13.1"
+    "framer-motion": "^11.13.1",
+    "lucide-react": "^0.469.0",
+    "@tanstack/react-table": "^8.21.3"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",

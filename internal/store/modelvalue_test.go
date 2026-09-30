@@ -388,3 +388,63 @@ func TestLoadModelValueFacts_MultiSessionUnorderedWithoutSQLSort(t *testing.T) {
 		t.Errorf("action counts per session = %+v, want sess-a:2 sess-b:2", byActionSession)
 	}
 }
+
+// TestLoadModelValueFacts_DedupFollowsDerive pins the loader onto the one
+// session rule, sessionmsg.DeriveVerdicts (lane R2-PARITY-2). The old
+// set-membership shape key compared the transcript's RAW output with the
+// proxy's gross output, so a codex-shaped reasoning-split twin survived as a
+// second turn; and it dropped EVERY same-shape transcript row, where Derive
+// claims one twin per proxy row.
+func TestLoadModelValueFacts_DedupFollowsDerive(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "mv_derive.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	st := New(database)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	projectID, err := st.UpsertProject(ctx, "/repo/codex", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertSession(ctx, models.Session{ID: "sess-cx", ProjectID: projectID, Tool: "codex", StartedAt: now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	turnAt := now.Add(-30 * time.Minute)
+	if _, err := st.InsertAPITurn(ctx, models.APITurn{
+		SessionID: "sess-cx", ProjectID: projectID, Provider: "openai", Model: "gpt-5.4",
+		RequestID: "resp_1", Timestamp: turnAt, InputTokens: 1000, OutputTokens: 300, CostUSD: 0.03,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.InsertTokenEvents(ctx, []models.TokenEvent{
+		{
+			SourceFile: "r.jsonl", SourceEventID: "tk:L1", SessionID: "sess-cx", ProjectRoot: "/repo/codex", Tool: "codex",
+			Model: "gpt-5.4", Timestamp: turnAt.Add(5 * time.Second), InputTokens: 1000, OutputTokens: 250, ReasoningTokens: 50,
+		},
+		{
+			SourceFile: "r.jsonl", SourceEventID: "tk:L2", SessionID: "sess-cx", ProjectRoot: "/repo/codex", Tool: "codex",
+			Model: "gpt-5.4", Timestamp: turnAt.Add(10 * time.Minute), InputTokens: 1000, OutputTokens: 250, ReasoningTokens: 50,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := st.LoadModelValueFacts(ctx, modelvalue.LoadOptions{WindowDays: 1, Now: now})
+	if err != nil {
+		t.Fatalf("LoadModelValueFacts: %v", err)
+	}
+	if len(f.Turns) != 2 {
+		t.Fatalf("turns = %d, want 2 (the twin once, the second transcript turn kept): %+v", len(f.Turns), f.Turns)
+	}
+	var proxy *modelvalue.TurnRow
+	for i := range f.Turns {
+		if f.Turns[i].HasLatency || f.Turns[i].StoredCostUSD == 0.03 {
+			proxy = &f.Turns[i]
+		}
+	}
+	if proxy == nil || proxy.Output != 250 || proxy.Reasoning != 50 {
+		t.Fatalf("proxy turn = %+v, want output 250 / reasoning 50 (its twin's split)", proxy)
+	}
+}

@@ -1,13 +1,35 @@
 import { useEffect, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { Link as RouterLink, useLocation } from "react-router-dom";
 import clsx from "clsx";
+import {
+  ArrowUp,
+  CircleHelp,
+  Download,
+  ExternalLink,
+  Link,
+  Menu,
+  Monitor,
+  Moon,
+  RefreshCw,
+  Sun,
+} from "lucide-react";
 import { NAV_GROUPS } from "@/lib/nav";
-import { useApi } from "@/lib/useApi";
+import { useApi, useApiActivity } from "@/lib/useApi";
 import { fmtDuration } from "@/lib/format";
 import { useTheme, type ThemeMode } from "@/lib/theme";
 import type { CloudStatusResponse, EnrolmentStatus, SetupClaude, StatusSnapshot } from "@/lib/types";
 import { isUpdateAvailable, useUpdateCheck } from "@/lib/version";
-import { Tooltip } from "@/components/primitives";
+import { Icon, LiveDot, Tooltip } from "@/components/primitives";
+import { DensityToggle } from "@shared/primitives/DensityToggle";
+import { DENSITY_STORAGE_KEY } from "@shared/lib/density";
+import { useDensity } from "@shared/lib/useDensity";
+import {
+  ACTIVITY_DOT,
+  CAPTURE_DOT,
+  CLOUD_SIGN_IN_DOT,
+  liveDotProps,
+  withDotClass,
+} from "@/lib/liveSignals";
 import { InstanceSwitcher } from "@/components/InstanceSwitcher";
 
 // `dashboard-refresh` is a window-level CustomEvent that useApi
@@ -46,7 +68,12 @@ export function TopBar({
   // Live-capture refresh: 5s on the lightweight status surface so the
   // header's "last seen" and counters stay current. Setup config is
   // static; no refresh.
-  const status = useApi<StatusSnapshot>("/api/status", undefined, [], { refreshMs: 5000 });
+  // The header reads two fields; select them so a poll that only moves the
+  // per-request fields (uptime) does not re-render the header.
+  const status = useApi<StatusSnapshot, TopBarStatus>("/api/status", undefined, [], {
+    refreshMs: 5000,
+    select: selectTopBarStatus,
+  });
   const setup = useApi<SetupClaude>("/api/setup/claude");
   const lastSeen = status.data?.last_action_at;
 
@@ -84,7 +111,7 @@ export function TopBar({
             aria-label="Open navigation"
             className="grid h-7 w-7 shrink-0 place-items-center rounded-2 border border-line-2 bg-bg-2 text-fg-2 hover:bg-bg-3 hover:text-fg-0 lg:hidden"
           >
-            <MenuIcon />
+            <Icon icon={Menu} size={15} />
           </button>
         )}
         {group && (
@@ -115,7 +142,7 @@ export function TopBar({
               onClick={exportCurrent}
               className="flex h-7 items-center gap-1.5 rounded-2 border border-line-2 bg-bg-2 px-2.5 text-[11px] text-fg-2 hover:bg-bg-3 hover:text-fg-0"
             >
-              <DownloadIcon />
+              <Icon icon={Download} size="xs" />
               Export
             </button>
           </Tooltip>
@@ -124,9 +151,11 @@ export function TopBar({
           <button
             type="button"
             onClick={refresh}
-            className="flex h-7 items-center gap-1.5 rounded-2 bg-accent px-2.5 text-[11px] font-semibold text-accent-on hover:bg-accent-strong"
+            className="sb-press flex h-7 items-center gap-1.5 rounded-2 bg-accent px-2.5 text-[11px] font-semibold text-accent-on hover:bg-accent-strong"
           >
-            <RefreshIcon />
+            {/* Spins while any foreground request is in flight, so a click
+                visibly does something (the refetch itself is silent). */}
+            <RefreshGlyph />
             <span className="hidden sm:inline">Refresh</span>
           </button>
         </Tooltip>
@@ -137,7 +166,7 @@ export function TopBar({
             title="Open in new tab"
             onClick={() => window.open(window.location.href, "_blank")}
           >
-            <NewTabIcon />
+            <Icon icon={ExternalLink} size="xs" />
           </IconButton>
           <IconButton
             title="Copy link"
@@ -145,9 +174,10 @@ export function TopBar({
               void navigator.clipboard?.writeText(window.location.href);
             }}
           >
-            <LinkIcon />
+            <Icon icon={Link} size="xs" />
           </IconButton>
         </div>
+        <TopBarDensity />
         <ThemeToggle />
         {onHelp && (
           <span data-tour="topbar-help" className="inline-flex">
@@ -155,7 +185,7 @@ export function TopBar({
               title={<>Help <kbd>?</kbd></>}
               onClick={onHelp}
             >
-              <span className="text-[12px] font-semibold">?</span>
+              <Icon icon={CircleHelp} size="sm" />
             </IconButton>
           </span>
         )}
@@ -169,9 +199,9 @@ export function TopBar({
 function ThemeToggle() {
   const { mode, setMode } = useTheme();
   const opts: { value: ThemeMode; label: ReactSVG; title: string }[] = [
-    { value: "light", label: <SunIcon />, title: "Light theme" },
-    { value: "dark", label: <MoonIcon />, title: "Dark theme" },
-    { value: "system", label: <MonitorIcon />, title: "Follow system" },
+    { value: "light", label: <Icon icon={Sun} size={11} />, title: "Light theme" },
+    { value: "dark", label: <Icon icon={Moon} size={11} />, title: "Dark theme" },
+    { value: "system", label: <Icon icon={Monitor} size={11} />, title: "Follow system" },
   ];
   return (
     <div
@@ -204,6 +234,26 @@ function ThemeToggle() {
 
 type ReactSVG = React.ReactElement;
 
+// Comfortable / Compact row density, beside the theme control (both are
+// per-browser display preferences). Icons only in the bar; the words stay
+// available to screen readers and in the tooltip.
+function TopBarDensity() {
+  const [density, setDensity] = useDensity(DENSITY_STORAGE_KEY.web);
+  return (
+    <Tooltip content="Density: Comfortable or Compact">
+      <span className="inline-flex">
+        <DensityToggle value={density} onChange={setDensity} labels="hidden" />
+      </span>
+    </Tooltip>
+  );
+}
+
+type TopBarStatus = { last_action_at?: string; version?: string };
+
+function selectTopBarStatus(s: StatusSnapshot): TopBarStatus {
+  return { last_action_at: s.last_action_at, version: s.version };
+}
+
 function LastActivity({ iso }: { iso?: string }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -220,12 +270,7 @@ function LastActivity({ iso }: { iso?: string }) {
   const fresh = ms < 60_000;
   return (
     <span className="flex items-center gap-1.5">
-      <span
-        className={clsx(
-          "h-1.5 w-1.5 rounded-full",
-          fresh ? "bg-success" : "bg-fg-4",
-        )}
-      />
+      <LiveDot {...withDotClass(liveDotProps(ACTIVITY_DOT, fresh ? "live" : "idle"), "h-1.5 w-1.5 shrink-0")} />
       last activity{" "}
       <span className="text-fg-2">{fmtDuration(ms)} ago</span>
     </span>
@@ -263,24 +308,10 @@ function UpdateAvailablePill({ current }: { current?: string }) {
         rel="noreferrer"
         className="flex h-6 items-center gap-1.5 rounded-pill border border-accent/40 bg-accent-soft px-2 text-[10.5px] font-medium text-accent hover:bg-accent/20"
       >
-        <UpArrowIcon />
+        <Icon icon={ArrowUp} size={10} />
         v{latest} available
       </a>
     </Tooltip>
-  );
-}
-
-function UpArrowIcon() {
-  return (
-    <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden>
-      <path
-        d="M6 10V2m0 0L3 5m3-3 3 3"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
 
@@ -296,13 +327,13 @@ function EnrolmentBadge() {
   const org = status.data.org_name || status.data.org_id || "organisation";
   return (
     <Tooltip content={`Sharing content-free activity rollups with ${org}. Manage in Settings → Enrolment.`}>
-      <a
-        href="/settings"
+      <RouterLink
+        to="/settings"
         className="flex h-6 items-center gap-1.5 rounded-pill border border-accent/40 bg-accent-soft px-2 text-[10.5px] font-medium text-accent hover:bg-accent/20"
       >
-        <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+        <span className="h-1.5 w-1.5 rounded-pill bg-accent" />
         Enrolled in {org}
-      </a>
+      </RouterLink>
     </Tooltip>
   );
 }
@@ -328,8 +359,8 @@ function CloudAccountBadge() {
     : "Optional cloud enrichment is off until you sign in. Sign in from Settings → Cloud Intelligence.";
   return (
     <Tooltip content={tip}>
-      <a
-        href="/settings?section=cloud"
+      <RouterLink
+        to="/settings?section=cloud"
         className={
           "flex h-6 items-center gap-1.5 rounded-pill border px-2 text-[10.5px] font-medium " +
           (signedIn
@@ -337,9 +368,14 @@ function CloudAccountBadge() {
             : "border-line-2 bg-bg-2 text-fg-3 hover:bg-bg-3")
         }
       >
-        <span className={"h-1.5 w-1.5 rounded-full " + (signedIn ? "bg-success" : signingIn ? "bg-info" : "bg-fg-4")} />
+        <LiveDot
+          {...withDotClass(
+            liveDotProps(CLOUD_SIGN_IN_DOT, signingIn ? "signing_in" : signedIn ? "signed_in" : "signed_out"),
+            "h-1.5 w-1.5 shrink-0",
+          )}
+        />
         {label}
-      </a>
+      </RouterLink>
     </Tooltip>
   );
 }
@@ -364,12 +400,7 @@ function CaptureStatePill({ setup }: { setup: SetupClaude | null }) {
             : "border-warn/40 bg-warn-soft text-warn",
         )}
       >
-        <span
-          className={clsx(
-            "h-1.5 w-1.5 rounded-full",
-            active ? "bg-success" : "bg-warn",
-          )}
-        />
+        <LiveDot {...withDotClass(liveDotProps(CAPTURE_DOT, active ? "active" : "paused"), "h-1.5 w-1.5 shrink-0")} />
         {active ? "Active" : "Paused"}
       </span>
     </Tooltip>
@@ -398,122 +429,13 @@ function IconButton({
   );
 }
 
-// --- icons (inline so we don't take a deps hit) -----------------------
-
-function MenuIcon() {
+// RefreshGlyph spins while any foreground request is in flight. A leaf so the
+// busy/idle flip re-renders only this icon, not the TopBar.
+function RefreshGlyph() {
+  const busy = useApiActivity() > 0;
   return (
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-      <path
-        d="M2.5 4h11M2.5 8h11M2.5 12h11"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function DownloadIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-      <path
-        d="M8 2v8m0 0L5 7m3 3 3-3M3 13h10"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function RefreshIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-      <path
-        d="M3 8a5 5 0 0 1 8.5-3.5L13 6m0-3v3h-3m3 2a5 5 0 0 1-8.5 3.5L3 10m0 3v-3h3"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function NewTabIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-      <path
-        d="M6 3H3v10h10v-3M9 3h4v4M13 3 7 9"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function LinkIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-      <path
-        d="M6.5 9.5 9.5 6.5M7 4.5l1.5-1.5a2.5 2.5 0 1 1 3.5 3.5L10.5 8M9 11.5 7.5 13a2.5 2.5 0 1 1-3.5-3.5L5.5 8"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function SunIcon() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
-      <circle cx="8" cy="8" r="3" stroke="currentColor" strokeWidth="1.4" />
-      <path
-        d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.3 3.3l1 1M11.7 11.7l1 1M3.3 12.7l1-1M11.7 4.3l1-1"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function MoonIcon() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
-      <path
-        d="M13 9.5A5 5 0 0 1 6.5 3a5 5 0 1 0 6.5 6.5Z"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function MonitorIcon() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
-      <rect
-        x="2"
-        y="3"
-        width="12"
-        height="8"
-        rx="1.2"
-        stroke="currentColor"
-        strokeWidth="1.4"
-      />
-      <path
-        d="M6 13.5h4M8 11v2.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
+    <span className={busy ? "inline-flex animate-spin" : "inline-flex"} aria-hidden>
+      <Icon icon={RefreshCw} size="xs" />
+    </span>
   );
 }

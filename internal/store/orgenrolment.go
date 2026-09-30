@@ -118,6 +118,11 @@ func (s *Store) DeleteEnrolment(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM schema_meta WHERE key = ?`, lastPushPayloadKey); err != nil {
 		return fmt.Errorf("store.DeleteEnrolment: clear payload: %w", err)
 	}
+	// Stop re-send tracking (agent migration 140): without an org there is
+	// nothing to converge, and the floors are what arm the change triggers.
+	if err := s.clearPushTracking(ctx); err != nil {
+		return fmt.Errorf("store.DeleteEnrolment: %w", err)
+	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM org_announcements`); err != nil {
 		return fmt.Errorf("store.DeleteEnrolment: clear announcements: %w", err)
 	}

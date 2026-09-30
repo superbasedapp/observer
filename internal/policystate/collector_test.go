@@ -543,3 +543,62 @@ func TestResolve_Gen2FieldsGatedToNodeDashboardOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestAssemble_MapsNodeMCPRelayPointToItsFamily pins the Agent Access P4
+// effective-state row (doc3 §12.8): the node-mcp-relay point resolves to
+// the tools.mcp_access family through the SAME ordered decision table as
+// every other point, and the three statuses the plan names for it —
+// effective, accepted_inert (not_preauthorized) and none — all fit the
+// closed enum with no new value.
+func TestAssemble_MapsNodeMCPRelayPointToItsFamily(t *testing.T) {
+	cases := []struct {
+		name       string
+		facts      PointFacts
+		wantStatus string
+		wantReason string
+		wantMode   string
+	}{
+		{"effective", PointFacts{HasOrgRail: true, CachedAcceptedVersion: 7, RunningVersion: 7, EffectiveHash: hex64, EnforceMode: "enforce"}, "effective", "ok", "enforce"},
+		{"accepted_inert not_preauthorized", PointFacts{HasOrgRail: true, CachedAcceptedVersion: 7, RunningVersion: 7, EffectiveHash: hex64, EnforceMode: "observe", InertReason: "not_preauthorized"}, "accepted_inert", "not_preauthorized", "observe"},
+		{"none no_policy (relay disabled / no table)", PointFacts{EnforceMode: "off"}, "none", "no_policy", "off"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tc.facts
+			readers := map[string]PointReader{
+				PointNodeMCPRelay: func(context.Context) (PointFacts, error) { return f, nil },
+			}
+			rows, err := Assemble(context.Background(), readers)
+			if err != nil {
+				t.Fatalf("Assemble: %v", err)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("rows = %d, want 1", len(rows))
+			}
+			r := rows[0]
+			if r.Family != FamilyToolsMCPAccess || r.EnforcementPoint != PointNodeMCPRelay {
+				t.Fatalf("row = %+v, want family %q point %q", r, FamilyToolsMCPAccess, PointNodeMCPRelay)
+			}
+			if r.Status != tc.wantStatus || r.Reason != tc.wantReason || r.Mode != tc.wantMode {
+				t.Errorf("status/reason/mode = %s/%s/%s, want %s/%s/%s", r.Status, r.Reason, r.Mode, tc.wantStatus, tc.wantReason, tc.wantMode)
+			}
+			// Enum-only: the node-dashboard-only extension fields never ride
+			// this row (the server 400s them on any other point).
+			if r.AcceptedAuthority != nil || r.ExtractionEffective != nil || r.DroppedClasses != nil || r.EffectivePins != nil {
+				t.Errorf("node-mcp-relay row carries node-dashboard-only fields: %+v", r)
+			}
+		})
+	}
+}
+
+// TestOptionalPoints_NodeMCPRelayIsNewestNotCore pins node-mcp-relay as the
+// FOURTH (newest) OptionalPoints member: the ladder drops it first when a
+// pre-v5 server refuses the snapshot, and it is never one of the core four.
+func TestOptionalPoints_NodeMCPRelayIsNewestNotCore(t *testing.T) {
+	if len(OptionalPoints) == 0 || OptionalPoints[len(OptionalPoints)-1] != PointNodeMCPRelay {
+		t.Fatalf("OptionalPoints = %v, want node-mcp-relay LAST (ORDER IS THE CONTRACT)", OptionalPoints)
+	}
+	if IsCorePoint(PointNodeMCPRelay) || !IsOptionalPoint(PointNodeMCPRelay) {
+		t.Fatal("node-mcp-relay must be optional, not core")
+	}
+}

@@ -273,6 +273,10 @@ func Open(ctx context.Context, opts Options) (*sql.DB, error) {
 		_ = database.Close()
 		return nil, fmt.Errorf("db.Open: ping: %w", err)
 	}
+	// SR27-A4: the file now exists; keep captured content owner-only.
+	// Best-effort: a chmod refusal (a file another account owns) must never
+	// break capture.
+	_ = RestrictFileMode(opts.Path)
 
 	if err := applyPragmas(ctx, database, opts.Path); err != nil {
 		_ = database.Close()

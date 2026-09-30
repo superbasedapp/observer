@@ -44,6 +44,11 @@ const (
 	// the config-gating layer, not by Probe (which has no config input); the
 	// value lives here so the vocabulary has one owner.
 	VerdictDisabledByConfig = "disabled_by_config"
+	// VerdictNetNSDenied: bwrap works, but it cannot create a private
+	// network namespace (`--unshare-net`), which the configured egress tier
+	// needs. Never downgraded to a shared-namespace sandbox: the launch is
+	// refused and the reason names the tier and the fix.
+	VerdictNetNSDenied = "netns_denied"
 )
 
 // Availability is the classified readiness surface rendered identically by the
@@ -59,6 +64,9 @@ type Availability struct {
 	Backend        string
 	BackendVersion string
 	HomeMode       string
+	// Egress echoes the configured network tier for display (populated by
+	// the caller, like HomeMode).
+	Egress string
 }
 
 // Env is the injected I/O surface for Probe. Every field is data or a func so
@@ -69,11 +77,17 @@ type Availability struct {
 // Canary runs the ms-scale smoke `bwrap --ro-bind / / --tmpfs /tmp
 // --die-with-parent -- true` and returns its error (nil = user namespaces
 // work).
+//
+// NetCanary, when non-nil, runs the same smoke with `--unshare-net` added; the
+// caller sets it only when the configured egress tier needs a private network
+// namespace, so a host that cannot build one gets netns_denied instead of a
+// launch that fails later (or, worse, a silently shared namespace).
 type Env struct {
 	GOOS      string
 	LookBwrap func() (string, error)
 	Version   func() (string, error)
 	Canary    func() error
+	NetCanary func() error
 }
 
 // Probe walks the platform/backend readiness ladder (§7) over the injected
@@ -85,6 +99,7 @@ type Env struct {
 //	LookBwrap fails / empty   → backend_missing
 //	version < 0.4.0 / unknown → backend_too_old
 //	canary returns an error   → userns_denied
+//	net canary returns error  → netns_denied (only when NetCanary is set)
 //	otherwise                 → available
 func Probe(env Env) Availability {
 	if env.GOOS != "linux" {
@@ -143,6 +158,17 @@ func Probe(env Env) Availability {
 				Backend:        BackendBwrap,
 				BackendVersion: version,
 				Reason:         fmt.Sprintf("unprivileged user namespaces appear disabled (kernel.unprivileged_userns_clone / user.max_user_namespaces): %v", cerr),
+			}
+		}
+	}
+
+	if env.NetCanary != nil {
+		if nerr := env.NetCanary(); nerr != nil {
+			return Availability{
+				Verdict:        VerdictNetNSDenied,
+				Backend:        BackendBwrap,
+				BackendVersion: version,
+				Reason:         fmt.Sprintf("bwrap could not create a private network namespace, which the configured egress tier needs (set [terminal.sandbox].egress = \"host\" to share the host network, which leaves the dashboard reachable from inside the sandbox): %v", nerr),
 			}
 		}
 	}

@@ -101,55 +101,36 @@ func (s *Server) handleReportMonthly(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Combined dedup rows for the month, joined through sessions for
-	// tool/project attribution (both arms bucket identically).
-	args := []any{startArg, endArg, startArg, endArg, startArg, endArg}
-	projectWhere := ""
-	if project != "" {
-		projectWhere = " WHERE COALESCE(p.root_path, '') = ?"
-		args = append(args, project)
-	}
-	//nolint:gosec // G202: SQL fragments are code constants; values bound via args.
-	rows, err := s.db().QueryContext(r.Context(),
-		`WITH proxy_turn_ids AS (
-			SELECT request_id FROM api_turns
-			 WHERE request_id IS NOT NULL AND request_id != '' AND timestamp >= ? AND timestamp < ?
-		),
-		combined AS (
-			SELECT at.session_id, at.model, at.input_tokens, at.output_tokens,
-			       at.cache_read_tokens, at.cache_creation_tokens, at.cache_creation_1h_tokens,
-			       0 AS reasoning_tokens, at.web_search_requests, at.cost_usd,
-			       COALESCE(at.compression_original_bytes, 0) - COALESCE(at.compression_compressed_bytes, 0) AS comp_saved,
-			       at.timestamp
-			FROM api_turns at
-			WHERE at.timestamp >= ? AND at.timestamp < ?
-			  AND (at.error_class IS NULL OR at.error_class = '')
-			UNION ALL
-			SELECT tu.session_id, tu.model, tu.input_tokens, tu.output_tokens,
-			       tu.cache_read_tokens, tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-			       tu.reasoning_tokens, tu.web_search_requests, tu.estimated_cost_usd, 0,
-			       tu.timestamp
-			FROM token_usage tu
-			WHERE tu.timestamp >= ? AND tu.timestamp < ?
-			  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-			       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-		)
-		SELECT COALESCE(c.session_id, ''), COALESCE(s.tool, ''), COALESCE(p.root_path, ''),
-		       COALESCE(s.started_at, ''), COALESCE(c.model, ''),
-		       COALESCE(c.input_tokens, 0), COALESCE(c.output_tokens, 0),
-		       COALESCE(c.cache_read_tokens, 0), COALESCE(c.cache_creation_tokens, 0),
-		       COALESCE(c.cache_creation_1h_tokens, 0), COALESCE(c.reasoning_tokens, 0),
-		       COALESCE(c.web_search_requests, 0), COALESCE(c.cost_usd, 0), COALESCE(c.comp_saved, 0),
-		       COALESCE(c.timestamp, '')
-		FROM combined c
-		LEFT JOIN sessions s ON s.id = c.session_id
-		LEFT JOIN projects p ON p.id = s.project_id`+projectWhere,
-		args...)
+	// The month's spend rows: the node's deduped substrate (spendTurns —
+	// the one session dedup rule, sessionmsg.DeriveVerdicts, applied by the
+	// cost engine), project-scoped the way the engine scopes every surface.
+	turns, err := s.spendTurns(r.Context(), start, end, "", project, nil)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer rows.Close()
+	// Tool and start time come from each row's session, so both arms bucket
+	// identically (a transcript row's own tool column is not consulted).
+	sessionIDs := make([]string, 0, len(turns))
+	seenSession := map[string]bool{}
+	for _, t := range turns {
+		if t.SessionID != "" && !seenSession[t.SessionID] {
+			seenSession[t.SessionID] = true
+			sessionIDs = append(sessionIDs, t.SessionID)
+		}
+	}
+	meta, err := s.reportSessionMeta(r.Context(), sessionIDs)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	// Compression telemetry is a property of the proxy rows alone (never
+	// deduped away), so it is summed straight off api_turns.
+	compSavedTotal, err := s.reportCompressionSaved(r.Context(), startArg, endArg, project)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 
 	type tot struct {
 		cost                                 float64
@@ -157,7 +138,7 @@ func (s *Server) handleReportMonthly(w http.ResponseWriter, r *http.Request) {
 		input, output, cacheRead, cacheWrite int64
 		compSaved                            int64
 	}
-	var totals tot
+	totals := tot{compSaved: compSavedTotal}
 	byModel := map[string]*reportRow{}
 	byTool := map[string]*reportRow{}
 	byProject := map[string]*reportRow{}
@@ -168,39 +149,19 @@ func (s *Server) handleReportMonthly(w http.ResponseWriter, r *http.Request) {
 	}
 	bySession := map[string]*sessAgg{}
 
-	for rows.Next() {
-		var (
-			sid, tool, root, started, model, tsStr string
-			bundle                                 cost.TokenBundle
-			rec                                    float64
-			compSaved                              int64
-		)
-		if rows.Scan(&sid, &tool, &root, &started, &model,
-			&bundle.Input, &bundle.Output, &bundle.CacheRead, &bundle.CacheCreation,
-			&bundle.CacheCreation1h, &bundle.Reasoning, &bundle.WebSearchRequests,
-			&rec, &compSaved, &tsStr) != nil {
-			continue
-		}
-		// Date-effective pricing ladder: a recorded cost (ground
-		// truth from the proxy or JSONL backfill) always wins; a row
-		// with no recorded cost is priced at the rate in force on
-		// its OWN timestamp (LookupAt falls back to the current rate
-		// when the model has no dated timeline or the timestamp is
-		// unparseable), never the current rate unconditionally.
-		rowCost := rec
-		if rowCost <= 0 && s.opts.CostEngine != nil {
-			ts, _ := time.Parse(time.RFC3339Nano, tsStr)
-			if p, ok := s.opts.CostEngine.LookupAt(model, ts); ok {
-				rowCost = cost.Compute(p, bundle)
-			}
-		}
+	for _, t := range turns {
+		sid, root, model, bundle := t.SessionID, t.ProjectPath, t.Model, t.Bundle
+		tool, started := meta[sid].tool, meta[sid].started
+		// The engine's price: a recorded cost (ground truth from the proxy
+		// or JSONL backfill) always wins; a row with no recorded cost is
+		// priced at the rate in force on its OWN timestamp.
+		rowCost := t.CostUSD
 		totals.cost += rowCost
 		totals.turns++
 		totals.input += bundle.Input
 		totals.output += bundle.Output
 		totals.cacheRead += bundle.CacheRead
 		totals.cacheWrite += bundle.CacheCreation + bundle.CacheCreation1h
-		totals.compSaved += compSaved
 		bump := func(m map[string]*reportRow, key string) {
 			if key == "" {
 				key = "(unattributed)"
@@ -225,10 +186,6 @@ func (s *Server) handleReportMonthly(w http.ResponseWriter, r *http.Request) {
 			sa.cost += rowCost
 			sa.turns++
 		}
-	}
-	if err := rows.Err(); err != nil {
-		writeErr(w, err)
-		return
 	}
 
 	// Session counts per tool/project ride the per-session aggregation.
@@ -305,4 +262,69 @@ func (s *Server) handleReportMonthly(w http.ResponseWriter, r *http.Request) {
 	}
 	resp["top_sessions"] = topSessions
 	writeJSON(w, resp)
+}
+
+// reportSessionTool is one session's tool and start time for the monthly
+// report's attribution.
+type reportSessionTool struct {
+	tool, started string
+}
+
+// reportSessionMeta resolves tool + started_at for the given session ids,
+// chunked under the SQLite bind-variable ceiling.
+func (s *Server) reportSessionMeta(ctx context.Context, ids []string) (map[string]reportSessionTool, error) {
+	out := make(map[string]reportSessionTool, len(ids))
+	for start := 0; start < len(ids); start += cost.MaxSessionIDsPerScope {
+		end := start + cost.MaxSessionIDsPerScope
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		//nolint:gosec // G202: only a ?-placeholder list is interpolated; ids bind via args.
+		rows, err := s.db().QueryContext(ctx,
+			`SELECT id, COALESCE(tool, ''), COALESCE(started_at, '') FROM sessions WHERE id IN (`+
+				strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			var m reportSessionTool
+			if err := rows.Scan(&id, &m.tool, &m.started); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[id] = m
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// reportCompressionSaved sums the proxy's compression saving (original -
+// compressed bytes) over the month's non-error api_turns rows, scoped to one
+// project through the row's session when project is set.
+func (s *Server) reportCompressionSaved(ctx context.Context, startArg, endArg, project string) (int64, error) {
+	q := `SELECT COALESCE(SUM(COALESCE(at.compression_original_bytes, 0) - COALESCE(at.compression_compressed_bytes, 0)), 0)
+		FROM api_turns at
+		LEFT JOIN sessions s ON s.id = at.session_id
+		LEFT JOIN projects p ON p.id = s.project_id
+		WHERE at.timestamp >= ? AND at.timestamp < ?
+		  AND (at.error_class IS NULL OR at.error_class = '')`
+	args := []any{startArg, endArg}
+	if project != "" {
+		q += ` AND COALESCE(p.root_path, '') = ?`
+		args = append(args, project)
+	}
+	var saved int64
+	err := s.db().QueryRowContext(ctx, q, args...).Scan(&saved)
+	return saved, err
 }

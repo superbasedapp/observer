@@ -1,10 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { PageHeader, Pill, ToolBadge, Tooltip } from "@/components/primitives";
+import { EmptyState, PageHeader, Pill, ToolBadge, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { useApi } from "@/lib/useApi";
 import { fmtDateTime, fmtDuration, fmtInt } from "@/lib/format";
 import type { SearchResponse } from "@/lib/types";
+import { navIcon } from "@/lib/nav";
 
 // Global search (P6.2): the FTS5 index behind the MCP
 // search_past_outputs tool, surfaced as a page. The query lives in
@@ -39,8 +40,9 @@ export function SearchPage() {
   );
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6 p-4 sm:p-6">
       <PageHeader
+        icon={navIcon("search")}
         title="Search"
         sub="Full-text search over everything the observer captured - command outputs, test failures, error messages. The same index your AI tool queries through MCP's search_past_outputs."
         helpId="tab.search"
@@ -54,29 +56,32 @@ export function SearchPage() {
         className="w-full rounded-3 border border-line-2 bg-bg-2 px-4 py-2.5 text-[13px] text-fg-1 outline-none placeholder:text-fg-3 focus:border-accent/60 focus:ring-2 focus:ring-[var(--accent-ring)]"
       />
       {!urlQ ? (
-        <div className="rounded-3 border border-line-2 bg-bg-2 p-8 text-center">
-          <p className="text-[13px] text-fg-2">
-            Type to search the output index.
-          </p>
-          <p className="mx-auto mt-2 max-w-lg text-[12px] leading-relaxed text-fg-3">
-            Results come from the FTS5 excerpt index, filled as sessions are
-            captured. If searches come back empty on a fresh install, the
-            index may still be growing - it fills as new tool outputs land.
-          </p>
-        </div>
+        <EmptyState
+          illustration="search"
+          title="Type to search the output index"
+          body="Results come from the FTS5 excerpt index, filled as sessions are captured. If searches come back empty on a fresh install, the index may still be growing - it fills as new tool outputs land."
+        />
       ) : (
         <ChartState
           loading={results.loading}
+          stale={results.isStale}
+          onRetry={results.reload}
           error={results.error}
+          denied={results.denied}
+          deniedPermission={results.deniedPermission}
           empty={false}
           emptyHint=""
         >
           {results.data && results.data.hits.length === 0 ? (
-            <div className="rounded-3 border border-line-2 bg-bg-2 p-8 text-center">
-              <p className="text-[13px] text-fg-2">
-                No matches for <span className="font-mono">{urlQ}</span>.
-              </p>
-            </div>
+            <EmptyState
+              illustration="search"
+              title="No matches"
+              body={
+                <>
+                  Nothing in the output index matches <span className="font-mono">{urlQ}</span>.
+                </>
+              }
+            />
           ) : results.data ? (
             <>
               <p className="text-[11px] text-fg-3">
@@ -98,7 +103,7 @@ export function SearchPage() {
 
 function SearchHitRow({ h }: { h: SearchResponse["hits"][number] }) {
   return (
-    <li className="rounded-3 border border-line-2 bg-bg-2 p-3">
+    <li className="sb-lift rounded-3 border border-line-2 bg-bg-2 p-3">
       <div className="flex items-center gap-2">
         {h.tool && <ToolBadge tool={h.tool} />}
         {h.tool_name && <Pill>{h.tool_name}</Pill>}

@@ -1,24 +1,16 @@
-// BrandMark — the SuperBased glyph mark, matching the local dashboard's
-// Sidebar Brand treatment exactly: the bare U+259E ("QUADRANT UPPER RIGHT
-// AND LOWER LEFT") glyph set in the mono face and tinted Blueprint blue.
-// This is the standalone glyph — NOT a badge box, no rounded-rect, no
-// shadow. Rendered next to the "superbased" wordmark in the top nav and
-// on the sign-in / consent cards. Purely presentational.
+import { BrandMark as SharedBrandMark } from "@shared/primitives/BrandMark";
 
+// BrandMark: the SuperBased mark, now the shared SVG (shared/primitives/
+// BrandMark.tsx) in --brand-blueprint, like every other surface. It used to
+// be a typed U+259E glyph tinted var(--brand-blue, var(--accent)); --brand-blue
+// was never defined, so the portal's mark rendered accent-blue instead of
+// Blueprint. `size` keeps its old meaning (the glyph's font size), so call
+// sites are unchanged. Purely presentational.
 export function BrandMark({ size = 21 }: { size?: number }) {
-  return (
-    <span
-      className="brand-mark mono"
-      style={{ fontSize: size }}
-      role="img"
-      aria-label="SuperBased"
-    >
-      {"▞"}
-    </span>
-  );
+  return <SharedBrandMark size={Math.round(size * 0.8)} title="SuperBased" className="shrink-0" />;
 }
 
-// BrandLockup — the mark plus the lowercase "superbased" wordmark, matching
+// BrandLockup: the mark plus the lowercase "superbased" wordmark, matching
 // the dashboard's Brand component (web/src/components/Sidebar.tsx). No
 // "Cloud" suffix, no gradient, no title case.
 export function BrandLockup({ size = 21 }: { size?: number }) {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/cachetrack"
 	"github.com/marmutapp/superbased-observer/internal/compression/indexing"
+	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/dataauthority"
 	"github.com/marmutapp/superbased-observer/internal/failure"
 	"github.com/marmutapp/superbased-observer/internal/freshness"
@@ -24,6 +25,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/identity"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/pidbridge"
+	"github.com/marmutapp/superbased-observer/internal/sessionend"
 )
 
 // Store is the storage layer over an initialized SQLite database. All methods
@@ -82,6 +84,10 @@ type Store struct {
 	// means "no posture reported", which is byte-identical to a build without
 	// the budget rail. See SetBudgetPostureProvider.
 	budgetPosture BudgetPostureProvider
+	// mcpInventory is the shadow-MCP discovery inventory seam
+	// (internal/store/mcpinventory.go, Agent Access P11 (c)). A zero value
+	// composes no MCPInventoryRow. See SetMCPInventoryProviders.
+	mcpInventory MCPInventoryProviders
 }
 
 // SetObsOrgProviders wires the org-tier observability provider seam
@@ -286,7 +292,19 @@ func (s *Store) UpsertSession(ctx context.Context, sess models.Session) error {
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   project_id = excluded.project_id,
-		   model = COALESCE(NULLIF(excluded.model, ''), sessions.model),
+		   -- A router placeholder ("default" / "auto": the model id an
+		   -- auto-routing client reports before the answering model is
+		   -- known) never replaces a concrete model already recorded -
+		   -- e.g. a Cursor Auto session resolved to cursor-grok-4.5-high
+		   -- from its store.db must not flip back to "default" when a
+		   -- later hook batch lands. Empty never clobbers either.
+		   model = CASE
+		     WHEN NULLIF(excluded.model, '') IS NULL THEN sessions.model
+		     WHEN lower(excluded.model) IN ('default', 'auto')
+		      AND COALESCE(sessions.model, '') <> ''
+		      AND lower(sessions.model) NOT IN ('default', 'auto') THEN sessions.model
+		     ELSE excluded.model
+		   END,
 		   ended_at = COALESCE(excluded.ended_at, sessions.ended_at),
 		   git_branch = COALESCE(NULLIF(excluded.git_branch, ''), sessions.git_branch),
 		   total_actions = MAX(sessions.total_actions, excluded.total_actions),
@@ -476,6 +494,36 @@ func (s *Store) SessionHasSourceFileRows(ctx context.Context, sessionID, sourceF
 	return true, nil
 }
 
+// SessionHasActionsOutside reports whether sessionID has at least one
+// action row whose source_file is NOT excludeSourceFile and whose
+// action_type is none of ignoreTypes. It is the mirror of
+// SessionHasSourceFileRows: a replay path that writes under one source
+// identity (Cursor's hooks-log replay, `cursor:hook`) asks whether a
+// DIFFERENT source already captured the conversation's activity, so it
+// does not add a second, differently-keyed copy. ignoreTypes names row
+// kinds the other source writes but the replay never does (e.g. the
+// store.db system_prompt / prompt_context rows), which must not count.
+func (s *Store) SessionHasActionsOutside(ctx context.Context, sessionID, excludeSourceFile string, ignoreTypes ...string) (bool, error) {
+	q := `SELECT 1 FROM actions WHERE session_id = ? AND source_file <> ?`
+	args := []any{sessionID, excludeSourceFile}
+	if len(ignoreTypes) > 0 {
+		q += ` AND action_type NOT IN (?` + strings.Repeat(`, ?`, len(ignoreTypes)-1) + `)`
+		for _, t := range ignoreTypes {
+			args = append(args, t)
+		}
+	}
+	q += ` LIMIT 1`
+	var present int
+	err := s.db.QueryRowContext(ctx, q, args...).Scan(&present)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store.SessionHasActionsOutside: %w", err)
+	}
+	return true, nil
+}
+
 // LoadActionTargets returns the distinct Target column values already
 // persisted for sourceFile, split by ActionType into user_prompt
 // targets and assistant targets. Used by the antigravity
@@ -593,6 +641,31 @@ func (s *Store) SetCursor(ctx context.Context, sourceFile string, offset int64) 
 	)
 	if err != nil {
 		return fmt.Errorf("store.SetCursor: %w", err)
+	}
+	return nil
+}
+
+// RewindCursor stores offset for sourceFile AS-IS, even when it is lower
+// than the persisted cursor. It exists for a file whose writer rotates
+// it in place (adapter.FileCursorSemantics.RewindsOnTruncate): after a
+// rotation the stale cursor points past the end of a different, new
+// file, and SetCursor's MAX rule would pin it there forever. Callers
+// other than the watcher's rotation branch must use SetCursor.
+func (s *Store) RewindCursor(ctx context.Context, sourceFile string, offset int64) error {
+	if sourceFile == "" {
+		return errors.New("store.RewindCursor: sourceFile is required")
+	}
+	now := timestamp(time.Now().UTC())
+	if _, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO parse_cursors (source_file, byte_offset, last_parsed)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(source_file) DO UPDATE SET
+		   byte_offset = excluded.byte_offset,
+		   last_parsed = excluded.last_parsed`,
+		sourceFile, offset, now,
+	); err != nil {
+		return fmt.Errorf("store.RewindCursor: %w", err)
 	}
 	return nil
 }
@@ -842,6 +915,20 @@ func marshalUserAttachments(atts []models.UserAttachment) any {
 // populated with the new rowid so callers can chain additional work
 // (e.g. freshness.UpsertFileState). Rows skipped via INSERT OR IGNORE retain
 // ID = 0.
+// capToolOutput is the store-side backstop for the 1 MiB
+// actions.raw_tool_output contract (models.ToolEvent.ToolOutput). Adapters
+// are meant to cap at emit time via internal/contentcap, but several tool
+// paths never did (the OpenCode-family tool parts, Codex exec output), so a
+// multi-megabyte build log or diff dump landed in the DB verbatim - the
+// "store excerpts, not command outputs" rule in CLAUDE.md. Every writer of
+// the column (InsertActions, insertSingleAction, updateActionOutcome) binds
+// through here, so the contract holds whatever an adapter forgets. Capping
+// is idempotent: an already-capped body is at most max + marker bytes and
+// the length-merge in the upserts never prefers it over a longer stored one.
+func capToolOutput(s string) string {
+	return contentcap.Cap(s, contentcap.DefaultMaxBytes)
+}
+
 func (s *Store) InsertActions(ctx context.Context, actions []models.Action) (int, error) {
 	if len(actions) == 0 {
 		return 0, nil
@@ -902,7 +989,7 @@ func (s *Store) InsertActions(ctx context.Context, actions []models.Action) (int
 				nullableInt64(a.PriorActionID), boolToInt(a.ChangeDetected),
 				nullableString(a.PrecedingReasoning),
 				nullableString(a.RawToolName), nullableString(a.RawToolInput),
-				nullableString(a.RawToolOutput),
+				nullableString(capToolOutput(a.RawToolOutput)),
 				a.Tool, a.SourceFile, sha256HexOrEmpty(a.SourceFile), a.SourceEventID,
 				boolToInt(a.IsSidechain), nullableString(a.MessageID),
 				marshalActionMetadata(a.Metadata),
@@ -931,7 +1018,7 @@ func (s *Store) InsertActions(ctx context.Context, actions []models.Action) (int
 			nullableInt64(a.PriorActionID), boolToInt(a.ChangeDetected),
 			nullableString(a.PrecedingReasoning),
 			nullableString(a.RawToolName), nullableString(a.RawToolInput),
-			nullableString(a.RawToolOutput),
+			nullableString(capToolOutput(a.RawToolOutput)),
 			a.Tool, a.SourceFile, sha256HexOrEmpty(a.SourceFile), a.SourceEventID,
 			boolToInt(a.IsSidechain), nullableString(a.MessageID),
 			marshalActionMetadata(a.Metadata),
@@ -1026,6 +1113,7 @@ func (s *Store) updateActionOutcome(
 	if sourceFile == "" || sourceEventID == "" {
 		return 0, errors.New("store.UpdateActionOutcome: sourceFile and sourceEventID are required")
 	}
+	toolOutput = capToolOutput(toolOutput)
 	res, err := s.db.ExecContext(
 		ctx,
 		`UPDATE actions SET
@@ -1097,15 +1185,196 @@ func (s *Store) updateActionOutcome(
 	return n, nil
 }
 
+// Cursor's mislabelled stop (grounded 3.17.21, session cc8322af,
+// 2026-09-08): Cursor can fire `stop` carrying the NEXT request's
+// generation_id while its usage is byte-identical to the
+// afterAgentResponse that closed the previous request. Both hook kinds
+// share one row identity (`<generation>:stop`), so the restatement would
+// land under the next request's key - double-counting the request and
+// squatting the key the next request's real usage then MAX-merges into.
+//
+// The rules below act ONLY on a proven pair (review finding F3,
+// 2026-09-26). Counter equality alone is never enough to drop or delete a
+// row: two genuinely distinct requests with the same counts must both
+// survive, and a row already stored is never deleted because a neighbour
+// happens to match it. What proves a pair is the hook KIND the adapter
+// carries in memory (TokenEvent.HookEvent, never persisted) plus the
+// state of the incoming row's own key:
+//
+//   - a STOP whose own generation has NO row yet (its afterAgentResponse
+//     has not fired - the mislabelled stop names the next request) that
+//     restates, byte for byte and with the same model, an earlier row of
+//     the same session within 10 s is skipped (cursorStopRestatesEarlier).
+//     A real request's stop follows its own afterAgentResponse, finds its
+//     key present, and upserts as ever;
+//   - an AFTERAGENTRESPONSE - the authoritative usage for its generation -
+//     whose key holds a row that differs from it but is a byte-for-byte
+//     copy of another generation's earlier row within 10 s evicts that
+//     squatter before it is written, so the real usage is never MAX-merged
+//     into a restatement (evictCursorSquatter);
+//   - an event the ADAPTER proved from both halves in its own source
+//     (TokenEvent.Restates, the hooks-log replay) is never written, and a
+//     row under its key is removed only while it still carries exactly the
+//     restated usage and the restated row is present (removeProvenRestatement).
+//
+// 10 s: the three live restatements sit 0.37 / 0.81 / 1.35 s after the
+// row they restate, and no other identical pair exists within 600 s
+// (every Cursor hook token row in the live DB, 2026-09-23).
+//
+// Stated residuals. (1) If the two hook processes race and the restating
+// stop commits BEFORE the afterAgentResponse it restates, neither live rule
+// can prove the pair at that moment: the double count stands until the
+// next request's afterAgentResponse evicts the squatter, or a hooks-log
+// replay proves it. (2) The stop rule infers "its afterAgentResponse has
+// not fired" from the stop's own key being empty; on a Cursor build whose
+// afterAgentResponse carried no usage at all, two real consecutive requests
+// with byte-identical usage and model inside 10 s would lose the second.
+// No captured build is that shape (3.4.20 / 3.9.16 put usage on
+// afterAgentResponse only; 3.17.21 / 3.20.21 on both).
+const (
+	cursorHookStop               = "stop"               // cursor.EventStop (the store cannot import the adapter)
+	cursorHookAfterAgentResponse = "afterAgentResponse" // cursor.EventAfterAgentResponse
+)
+
+// hookUsageMatchSQL is the byte-identical usage predicate between a
+// candidate row `o` and the bound usage (model + all eight billed dims).
+const hookUsageMatchSQL = `o.model = ?
+	  AND COALESCE(o.input_tokens, 0) = ? AND COALESCE(o.output_tokens, 0) = ?
+	  AND COALESCE(o.cache_read_tokens, 0) = ? AND COALESCE(o.cache_creation_tokens, 0) = ?
+	  AND COALESCE(o.cache_creation_1h_tokens, 0) = ? AND COALESCE(o.reasoning_tokens, 0) = ?
+	  AND COALESCE(o.web_search_requests, 0) = ? AND COALESCE(o.fast, 0) = ?`
+
+func hookUsageArgs(e models.TokenEvent) []any {
+	return []any{
+		e.Model, e.InputTokens, e.OutputTokens, e.CacheReadTokens, e.CacheCreationTokens,
+		e.CacheCreation1hTokens, e.ReasoningTokens, e.WebSearchRequests, boolToInt(e.Fast),
+	}
+}
+
+// cursorStopRestatesEarlierSQL: an earlier-or-equal hook row of the same
+// session, under a different generation, with identical usage within 10 s,
+// while the incoming stop's OWN key holds nothing yet.
+const cursorStopRestatesEarlierSQL = `SELECT 1 FROM token_usage o
+	WHERE o.tool = 'cursor' AND o.source = 'hook' AND o.session_id = ?
+	  AND COALESCE(o.message_id, '') != ?
+	  AND ` + hookUsageMatchSQL + `
+	  AND ABS(julianday(o.timestamp) - julianday(?)) * 86400.0 <= 10
+	  AND julianday(o.timestamp) <= julianday(?)
+	  AND NOT EXISTS (SELECT 1 FROM token_usage k WHERE k.source_file = ? AND k.source_event_id = ?)
+	LIMIT 1`
+
+// cursorStopRestatesEarlier reports whether the incoming STOP e is Cursor's
+// mislabelled restatement of an already-stored request.
+func cursorStopRestatesEarlier(ctx context.Context, q querier, e models.TokenEvent) (bool, error) {
+	ts := timestamp(e.Timestamp)
+	args := append([]any{e.SessionID, e.MessageID}, hookUsageArgs(e)...)
+	args = append(args, ts, ts, e.SourceFile, e.SourceEventID)
+	var one int
+	err := q.QueryRowContext(ctx, cursorStopRestatesEarlierSQL, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("cursor stop restatement check: %w", err)
+	}
+	return true, nil
+}
+
+// execer is the tx / db subset the restatement removals need.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// evictCursorSquatterSQL deletes the row under an incoming
+// afterAgentResponse's key when that row DIFFERS from the authoritative
+// usage being delivered for its generation AND is a byte-for-byte copy
+// (same model, all dims) of ANOTHER generation's row of the same session
+// written within 10 s of it - the squatter a mislabelled stop left. Either
+// side of the 10 s: when the two hook processes race, the restating stop
+// can commit (and be timestamped) before the afterAgentResponse it
+// restates, and this is what heals that order once the next request's own
+// usage arrives.
+const evictCursorSquatterSQL = `DELETE FROM token_usage
+	WHERE source_file = ? AND source_event_id = ? AND tool = 'cursor' AND source = 'hook'
+	  AND NOT (model = ?
+	       AND COALESCE(input_tokens, 0) = ? AND COALESCE(output_tokens, 0) = ?
+	       AND COALESCE(cache_read_tokens, 0) = ? AND COALESCE(cache_creation_tokens, 0) = ?
+	       AND COALESCE(cache_creation_1h_tokens, 0) = ? AND COALESCE(reasoning_tokens, 0) = ?
+	       AND COALESCE(web_search_requests, 0) = ? AND COALESCE(fast, 0) = ?)
+	  AND EXISTS (
+	    SELECT 1 FROM token_usage o
+	     WHERE o.tool = 'cursor' AND o.source = 'hook'
+	       AND o.session_id = token_usage.session_id
+	       AND o.id != token_usage.id
+	       AND COALESCE(o.message_id, '') != COALESCE(token_usage.message_id, '')
+	       AND o.model = token_usage.model
+	       AND COALESCE(o.input_tokens, 0) = COALESCE(token_usage.input_tokens, 0)
+	       AND COALESCE(o.output_tokens, 0) = COALESCE(token_usage.output_tokens, 0)
+	       AND COALESCE(o.cache_read_tokens, 0) = COALESCE(token_usage.cache_read_tokens, 0)
+	       AND COALESCE(o.cache_creation_tokens, 0) = COALESCE(token_usage.cache_creation_tokens, 0)
+	       AND COALESCE(o.cache_creation_1h_tokens, 0) = COALESCE(token_usage.cache_creation_1h_tokens, 0)
+	       AND COALESCE(o.reasoning_tokens, 0) = COALESCE(token_usage.reasoning_tokens, 0)
+	       AND COALESCE(o.web_search_requests, 0) = COALESCE(token_usage.web_search_requests, 0)
+	       AND COALESCE(o.fast, 0) = COALESCE(token_usage.fast, 0)
+	       AND ABS(julianday(o.timestamp) - julianday(token_usage.timestamp)) * 86400.0 <= 10)`
+
+// evictCursorSquatter applies evictCursorSquatterSQL for one incoming
+// afterAgentResponse and returns the rows removed (0 or 1).
+func evictCursorSquatter(ctx context.Context, ex execer, e models.TokenEvent) (int, error) {
+	args := append([]any{e.SourceFile, e.SourceEventID}, hookUsageArgs(e)...)
+	res, err := ex.ExecContext(ctx, evictCursorSquatterSQL, args...)
+	if err != nil {
+		return 0, fmt.Errorf("cursor squatter eviction: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// removeProvenRestatementSQL deletes the row under a PROVEN restatement's
+// key only while it still carries exactly the restated usage AND the
+// restated row (same session, message_id = e.Restates) is present with
+// that same usage - so a row that has since absorbed real usage, or whose
+// original is gone, is never removed.
+const removeProvenRestatementSQL = `DELETE FROM token_usage
+	WHERE source_file = ? AND source_event_id = ? AND session_id = ?
+	  AND EXISTS (SELECT 1 FROM token_usage o WHERE o.id = token_usage.id AND ` + hookUsageMatchSQL + `)
+	  AND EXISTS (SELECT 1 FROM token_usage o WHERE o.session_id = token_usage.session_id
+	       AND o.id != token_usage.id AND o.message_id = ? AND ` + hookUsageMatchSQL + `)`
+
+// removeProvenRestatement applies removeProvenRestatementSQL for one
+// adapter-proven restatement and returns the rows removed (0 or 1).
+func removeProvenRestatement(ctx context.Context, ex execer, e models.TokenEvent) (int, error) {
+	args := []any{e.SourceFile, e.SourceEventID, e.SessionID}
+	args = append(args, hookUsageArgs(e)...)
+	args = append(args, e.Restates)
+	args = append(args, hookUsageArgs(e)...)
+	res, err := ex.ExecContext(ctx, removeProvenRestatementSQL, args...)
+	if err != nil {
+		return 0, fmt.Errorf("proven restatement removal: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // InsertTokenEvents batches token_usage rows. Idempotent via
 // UNIQUE(source_file, source_event_id).
 func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEvent) (int, error) {
+	n, _, err := s.insertTokenEvents(ctx, events)
+	return n, err
+}
+
+// insertTokenEvents is InsertTokenEvents that also reports how many stored
+// rows a proven restatement rule removed (see the Cursor mislabelled-stop
+// block above), so Ingest can surface it.
+//
+//nolint:gocyclo // one sequential branch per per-tool cross-key dedup rule, walked in order.
+func (s *Store) insertTokenEvents(ctx context.Context, events []models.TokenEvent) (int, int, error) {
 	if len(events) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("store.InsertTokenEvents: begin: %w", err)
+		return 0, 0, fmt.Errorf("store.InsertTokenEvents: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -1128,16 +1397,48 @@ func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEven
 	//
 	// model upgrade rule retained: empty new value is preserved as the
 	// existing one via COALESCE+NULLIF (placeholder → resolved swap).
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO token_usage (
+	//
+	// RELIABILITY (2026-09-29, lane G-WIRE2). `reliability` used to be
+	// frozen on first insert too, so a source that changed its mind about
+	// whether its counts are MEASURED left a stale tier and stale counts
+	// behind (Crush: a one-step session's real counts stayed `approximate`
+	// after the session grew and its re-emit became 0/0 `unknown`). It now
+	// follows the ordered reconcile table in tokenreliability.go
+	// (tokenReliabilityRules): same tier keeps today's MAX merge; `unknown`
+	// is promoted by a measured tier (counts still MAX); a measured row
+	// restated as all-zero `unknown` is DEMOTED and its counts REPLACED;
+	// anything else keeps the stored tier and MAX. Only transitions to or
+	// from `unknown` change behaviour, so every adapter that re-emits one
+	// constant tier (all the MAX-reliant ones) is untouched.
+	stmt, err := tx.PrepareContext(ctx, renderTokenUpsertSQL(`INSERT INTO token_usage (
 		session_id, timestamp, tool, model,
 		input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
 		cache_creation_1h_tokens, reasoning_tokens, web_search_requests,
 		estimated_cost_usd, source, reliability,
 		source_file, source_file_hash, source_event_id, message_id, turn_id,
-		org_id, user_email, fast, is_sidechain
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		org_id, user_email, fast, is_sidechain,
+		gen_ms, gen_basis, gen_timing_v
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(source_file, source_event_id) DO UPDATE SET
 		model = COALESCE(NULLIF(excluded.model, ''), token_usage.model),
+		-- Generation timing (agent migration 136, S10-SPEED). Adapters stamp
+		-- gen_ms only on a COMPLETE row, so the first stamped value is final:
+		-- a re-parse at the SAME parser version never moves it (no healing,
+		-- no MIN/MAX), and an empty re-emit never clears it. Only a STRICTLY
+		-- newer gen_timing_v replaces the triple - that is how a fixed
+		-- parser re-derives on rescan.
+		gen_ms = CASE
+			WHEN COALESCE(excluded.gen_ms, 0) > 0
+			 AND (token_usage.gen_ms IS NULL OR COALESCE(excluded.gen_timing_v, 0) > COALESCE(token_usage.gen_timing_v, 0))
+			THEN excluded.gen_ms ELSE token_usage.gen_ms END,
+		gen_basis = CASE
+			WHEN COALESCE(excluded.gen_ms, 0) > 0
+			 AND (token_usage.gen_ms IS NULL OR COALESCE(excluded.gen_timing_v, 0) > COALESCE(token_usage.gen_timing_v, 0))
+			THEN excluded.gen_basis ELSE token_usage.gen_basis END,
+		gen_timing_v = CASE
+			WHEN COALESCE(excluded.gen_ms, 0) > 0
+			 AND (token_usage.gen_ms IS NULL OR COALESCE(excluded.gen_timing_v, 0) > COALESCE(token_usage.gen_timing_v, 0))
+			THEN excluded.gen_timing_v ELSE token_usage.gen_timing_v END,
 		-- Heal a placeholder message_id. Modern Copilot CLI process logs
 		-- record a "Request-ID null" header, so a Tier-1 row first lands with
 		-- the literal "null"; a later parse recovers the real id from the
@@ -1165,24 +1466,38 @@ func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEven
 		-- decomposition — trust it. Scoped to the copilot tools + the
 		-- cache_creation-grew condition, so every other adapter keeps the
 		-- monotonic MAX (a partial re-parse can't lower a complete count).
-		input_tokens = CASE
+		-- Token counts: MAX-monotone, EXCEPT where the reliability
+		-- reconcile table (tokenreliability.go) says a re-parse restates
+		-- the row - then the incoming counts replace the stored ones.
+		-- {{replace_counts}} is that table's replace predicate
+		-- (renderTokenUpsertSQL); a demotion wins over the copilot input
+		-- carve-out because it is the outer CASE.
+		input_tokens = CASE WHEN {{replace_counts}} THEN excluded.input_tokens ELSE CASE
 			WHEN excluded.tool IN ('copilot-cli', 'copilot')
 			 AND COALESCE(excluded.cache_creation_tokens, 0) > COALESCE(token_usage.cache_creation_tokens, 0)
 			THEN excluded.input_tokens
 			ELSE MAX(COALESCE(token_usage.input_tokens, 0), COALESCE(excluded.input_tokens, 0))
-		END,
-		output_tokens         = MAX(COALESCE(token_usage.output_tokens, 0), COALESCE(excluded.output_tokens, 0)),
-		cache_read_tokens     = MAX(COALESCE(token_usage.cache_read_tokens, 0), COALESCE(excluded.cache_read_tokens, 0)),
-		cache_creation_tokens = MAX(COALESCE(token_usage.cache_creation_tokens, 0), COALESCE(excluded.cache_creation_tokens, 0)),
-		cache_creation_1h_tokens = CASE
-			-- NULL-safe MAX: the column is nullable (Anthropic-only),
-			-- so coalesce both sides to 0 for comparison and preserve
-			-- NULL only when both are NULL.
+		END END,
+		output_tokens         = CASE WHEN {{replace_counts}} THEN excluded.output_tokens
+			ELSE MAX(COALESCE(token_usage.output_tokens, 0), COALESCE(excluded.output_tokens, 0)) END,
+		cache_read_tokens     = CASE WHEN {{replace_counts}} THEN excluded.cache_read_tokens
+			ELSE MAX(COALESCE(token_usage.cache_read_tokens, 0), COALESCE(excluded.cache_read_tokens, 0)) END,
+		cache_creation_tokens = CASE WHEN {{replace_counts}} THEN excluded.cache_creation_tokens
+			ELSE MAX(COALESCE(token_usage.cache_creation_tokens, 0), COALESCE(excluded.cache_creation_tokens, 0)) END,
+		-- NULL-safe MAX: the column is nullable (Anthropic-only), so
+		-- coalesce both sides to 0 for comparison and preserve NULL only
+		-- when both are NULL.
+		cache_creation_1h_tokens = CASE WHEN {{replace_counts}} THEN excluded.cache_creation_1h_tokens
 			WHEN excluded.cache_creation_1h_tokens IS NULL AND token_usage.cache_creation_1h_tokens IS NULL
 			THEN NULL
 			ELSE MAX(COALESCE(token_usage.cache_creation_1h_tokens, 0), COALESCE(excluded.cache_creation_1h_tokens, 0))
 		END,
-		reasoning_tokens      = MAX(COALESCE(token_usage.reasoning_tokens, 0), COALESCE(excluded.reasoning_tokens, 0)),
+		reasoning_tokens      = CASE WHEN {{replace_counts}} THEN excluded.reasoning_tokens
+			ELSE MAX(COALESCE(token_usage.reasoning_tokens, 0), COALESCE(excluded.reasoning_tokens, 0)) END,
+		-- reliability: the ordered reconcile table (tokenreliability.go).
+		-- Every SET expression reads the PRE-update row, so the count
+		-- columns above see the stored tier, not this new one.
+		reliability = {{reliability}},
 		-- turn_id backfill: existing row's NULL upgrades to a non-empty
 		-- new value (older codex parses pre-migration 032 had no TurnID
 		-- to set; re-parse with v1.7.24+ adapter fills it in). Keep an
@@ -1233,13 +1548,13 @@ func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEven
 	-- depend on this: a batch without those tools must not be able to
 	-- modify their rows at all. On a cross-tool collision this predicate
 	-- is false, so conflict resolution no-ops (RowsAffected 0, no error).
-	WHERE token_usage.tool = excluded.tool`)
+	WHERE token_usage.tool = excluded.tool`))
 	if err != nil {
-		return 0, fmt.Errorf("store.InsertTokenEvents: prepare: %w", err)
+		return 0, 0, fmt.Errorf("store.InsertTokenEvents: prepare: %w", err)
 	}
 	defer stmt.Close()
 
-	var inserted int
+	var inserted, removed int
 	hasCopilotCLI := false
 	cursorSessions := make(map[string]struct{})
 	hasMsgIDBearing := false
@@ -1259,7 +1574,7 @@ func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEven
 				if err == nil {
 					e.SourceFile = sourceFile
 				} else if !errors.Is(err, sql.ErrNoRows) {
-					return inserted, fmt.Errorf("store.InsertTokenEvents: cursor source identity: %w", err)
+					return inserted, removed, fmt.Errorf("store.InsertTokenEvents: cursor source identity: %w", err)
 				}
 			}
 		}
@@ -1274,6 +1589,40 @@ func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEven
 		}
 		if e.MessageID != "" {
 			hasMsgIDBearing = true
+		}
+		if e.Restates != "" {
+			// An adapter-PROVEN restatement is never written; a row
+			// already squatting its key is removed only while it still
+			// carries exactly the restated usage.
+			n, err := removeProvenRestatement(ctx, tx, e)
+			if err != nil {
+				return inserted, removed, fmt.Errorf("store.InsertTokenEvents: %w", err)
+			}
+			removed += n
+			continue
+		}
+		if e.Tool == models.ToolCursor && e.Source == models.TokenSourceHook {
+			// Cursor's mislabelled stop, acted on only as a proven pair
+			// (the block above cursorStopRestatesEarlierSQL). Checked
+			// BEFORE the upsert: a restatement inserted under the NEXT
+			// generation's key would squat it, and the next request's
+			// REAL usage would then MAX-merge into it.
+			switch e.HookEvent {
+			case cursorHookStop:
+				dup, err := cursorStopRestatesEarlier(ctx, tx, e)
+				if err != nil {
+					return inserted, removed, fmt.Errorf("store.InsertTokenEvents: %w", err)
+				}
+				if dup {
+					continue
+				}
+			case cursorHookAfterAgentResponse:
+				n, err := evictCursorSquatter(ctx, tx, e)
+				if err != nil {
+					return inserted, removed, fmt.Errorf("store.InsertTokenEvents: %w", err)
+				}
+				removed += n
+			}
 		}
 		s.stamper.Stamp(tokenOrgRow{&e}) // no-op unless enrolled
 		res, err := stmt.ExecContext(
@@ -1301,9 +1650,12 @@ func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEven
 			nullableString(e.UserEmail),
 			boolToInt(e.Fast),
 			boolToInt(e.IsSidechain),
+			genMsOrNull(e),
+			genBasisOrNull(e),
+			genTimingVOrNull(e),
 		)
 		if err != nil {
-			return inserted, fmt.Errorf("store.InsertTokenEvents: exec: %w", err)
+			return inserted, removed, fmt.Errorf("store.InsertTokenEvents: exec: %w", err)
 		}
 		n, _ := res.RowsAffected()
 		inserted += int(n)
@@ -1322,7 +1674,7 @@ func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEven
 			 AND (token_usage.message_id = c.message_id
 			 OR substr(token_usage.message_id, 1, length(c.message_id) + 1) = c.message_id || '-')
 			)`, sessionID); err != nil {
-			return inserted, fmt.Errorf("store.InsertTokenEvents: cursor usage dedup: %w", err)
+			return inserted, removed, fmt.Errorf("store.InsertTokenEvents: cursor usage dedup: %w", err)
 		}
 	}
 
@@ -1354,7 +1706,7 @@ func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEven
 			   )`,
 			models.ToolCopilotCLI, models.TokenSourceJSONL, models.TokenSourceOTel,
 		); err != nil {
-			return inserted, fmt.Errorf("store.InsertTokenEvents: dedup: %w", err)
+			return inserted, removed, fmt.Errorf("store.InsertTokenEvents: dedup: %w", err)
 		}
 
 		// Tier 0 (`source='session_summary'`, derived from
@@ -1417,7 +1769,7 @@ func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEven
 			models.ToolCopilotCLI, models.TokenSourceSessionSummary,
 			models.ToolCopilotCLI, models.TokenSourceOTel,
 		); err != nil {
-			return inserted, fmt.Errorf("store.InsertTokenEvents: session_summary dedup: %w", err)
+			return inserted, removed, fmt.Errorf("store.InsertTokenEvents: session_summary dedup: %w", err)
 		}
 	}
 
@@ -1487,7 +1839,7 @@ func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEven
 			   )`,
 			models.ToolClaudeCode, models.ToolCodex,
 		); err != nil {
-			return inserted, fmt.Errorf("store.InsertTokenEvents: tuple dedup: %w", err)
+			return inserted, removed, fmt.Errorf("store.InsertTokenEvents: tuple dedup: %w", err)
 		}
 	}
 
@@ -1569,14 +1921,14 @@ func (s *Store) InsertTokenEvents(ctx context.Context, events []models.TokenEven
 			   )`,
 			models.ToolClaudeCode,
 		); err != nil {
-			return inserted, fmt.Errorf("store.InsertTokenEvents: snapshot-drift dedup: %w", err)
+			return inserted, removed, fmt.Errorf("store.InsertTokenEvents: snapshot-drift dedup: %w", err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return inserted, fmt.Errorf("store.InsertTokenEvents: commit: %w", err)
+		return inserted, removed, fmt.Errorf("store.InsertTokenEvents: commit: %w", err)
 	}
-	return inserted, nil
+	return inserted, removed, nil
 }
 
 // IngestOptions parameterizes Ingest.
@@ -1664,8 +2016,14 @@ var fileActionTypes = map[string]struct{}{
 type IngestResult struct {
 	ActionsInserted int
 	TokensInserted  int
-	ProjectsTouched int
-	SessionsTouched int
+	// TokenRestatementsRemoved counts stored token rows a PROVEN
+	// restatement rule removed in this batch (Cursor's mislabelled stop:
+	// an adapter-proven restatement's squatter, or a squatter evicted by
+	// its own generation's authoritative afterAgentResponse). Never a
+	// counter-equality sweep (review finding F3, 2026-09-26).
+	TokenRestatementsRemoved int
+	ProjectsTouched          int
+	SessionsTouched          int
 	// CacheObservationsSeen is the count of cache observations the
 	// caller supplied in IngestOptions.CacheObservations. C6 plumbs
 	// the count through so the watcher → Ingest path is testable
@@ -1735,6 +2093,10 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 	projectIDs := map[string]int64{}
 	sessionsSeen := map[string]struct{}{}
 	sessionExistsCache := map[string]bool{}
+	// Sessions whose batch carried a lifecycle action (session_end /
+	// session_start / user_prompt): their ended_at is recomputed once the
+	// batch's actions are in (refreshSessionEnded).
+	lifecycleSessions := map[string]struct{}{}
 	var result IngestResult
 
 	actionCapacity := len(events)
@@ -1829,6 +2191,9 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 		}
 		if usageOnly {
 			continue
+		}
+		if sessionend.RoleOf(e.ActionType) != sessionend.RoleNone {
+			lifecycleSessions[e.SessionID] = struct{}{}
 		}
 		act := models.Action{
 			SessionID:          e.SessionID,
@@ -1946,6 +2311,8 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 
 	// Upsert sessions referenced only by TokenEvents (e.g. subagent
 	// compaction turns that have usage but no tool_use blocks).
+	// S10-SPEED: stamp-only re-emissions never insert (gentiming.go).
+	tokens, genStamps := splitGenStamps(tokens)
 	validTokens := make([]models.TokenEvent, 0, len(tokens))
 	for _, tk := range tokens {
 		if tk.SessionID == "" {
@@ -2025,6 +2392,9 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 		return result, err
 	}
 	result.ActionsInserted += n
+	if err := s.refreshSessionEnded(ctx, lifecycleSessions); err != nil {
+		return result, err
+	}
 
 	if opts.RecordFailures {
 		for i := range actions {
@@ -2104,11 +2474,15 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 		}
 	}
 
-	tn, err := s.InsertTokenEvents(ctx, validTokens)
+	tn, removed, err := s.insertTokenEvents(ctx, validTokens)
 	if err != nil {
 		return result, err
 	}
 	result.TokensInserted = tn
+	result.TokenRestatementsRemoved = removed
+	if err := s.stampGenTiming(ctx, genStamps); err != nil {
+		return result, err
+	}
 
 	// sessions.model rollup (IDE-13 / plan C8): several adapters (codex,
 	// cursor, cline, cowork, ...) emit ToolEvents with no Model, leaving
@@ -2618,7 +2992,7 @@ func (s *Store) insertSingleAction(ctx context.Context, a *models.Action) (bool,
 		nullableString(a.PrecedingReasoning),
 		nullableString(a.RawToolName),
 		nullableString(a.RawToolInput),
-		nullableString(a.RawToolOutput),
+		nullableString(capToolOutput(a.RawToolOutput)),
 		a.Tool,
 		a.SourceFile,
 		sha256HexOrEmpty(a.SourceFile),
@@ -2721,8 +3095,9 @@ func (s *Store) InsertAPITurn(ctx context.Context, t models.APITurn) (int64, err
 			compression_count, compression_dropped_count, compression_marker_count,
 			http_status, error_class, error_message,
 			org_id, user_email, fast, source,
-			route, routing_generation, authority_source
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			route, routing_generation, authority_source,
+			prompt_id, request_class
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nullableString(t.SessionID),
 		nullableInt64(t.ProjectID),
 		timestamp(t.Timestamp),
@@ -2758,6 +3133,8 @@ func (s *Store) InsertAPITurn(ctx context.Context, t models.APITurn) (int64, err
 		nullableString(t.Route),
 		nullableInt64(t.RoutingGeneration),
 		nullableString(t.AuthoritySource),
+		nullableString(t.PromptID),
+		nullableString(t.RequestClass),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store.InsertAPITurn: %w", err)

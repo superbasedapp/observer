@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/tooltax"
 )
 
 const (
@@ -459,6 +460,55 @@ func TestToolResultCrossTickEmitsOutcomeUpdate(t *testing.T) {
 			}
 			if up.DurationMs != 0 {
 				t.Errorf("DurationMs = %d, want 0 (the call lived in the prior window)", up.DurationMs)
+			}
+		})
+	}
+}
+
+// TestMapKimiTool_V211Builtins pins the kimi-code 2.1.1 built-in tool
+// names added 2026-09-28 (R2-TOOLMAP), spelled exactly as the shipped
+// bundle registers them (@moonshot-ai/kimi-code 2.1.1 dist/main.mjs,
+// `name = "..."`; source github.com/MoonshotAI/kimi-code
+// packages/agent-core-v2). One case per new mapping, and each must agree
+// with internal/tooltax through Resolve's normalized pass.
+func TestMapKimiTool_V211Builtins(t *testing.T) {
+	cases := []struct{ native, want string }{
+		{"AskUserQuestion", models.ActionAskUser},
+		{"EnterPlanMode", models.ActionPermissionMode},
+		{"ExitPlanMode", models.ActionPermissionMode},
+		{"Skill", models.ActionSkillInvoke},
+		{"CronCreate", models.ActionSchedule},
+		{"CronList", models.ActionSchedule},
+		{"CronDelete", models.ActionSchedule},
+		{"TaskList", models.ActionAgentControl},
+		{"TaskOutput", models.ActionAgentControl},
+		{"TaskStop", models.ActionAgentControl},
+		{"WaitFor", models.ActionSubagentWait},
+		{"NotifyUser", models.ActionNotification},
+		{"CreateGoal", models.ActionHarnessCall},
+		{"GetGoal", models.ActionHarnessCall},
+		{"SetGoalBudget", models.ActionHarnessCall},
+		{"UpdateGoal", models.ActionHarnessCall},
+		{"TowerInit", models.ActionHarnessCall},
+		{"TowerPlan", models.ActionTodoUpdate},
+		{"TowerSpawn", models.ActionSpawnSubagent},
+		{"TowerMerge", models.ActionHarnessCall},
+		{"TowerTeardown", models.ActionWorktreeRemove},
+		{"TowerSend", models.ActionAgentMessage},
+		{"TowerInbox", models.ActionAgentControl},
+		{"TowerFinding", models.ActionAgentMessage},
+		{"TowerReview", models.ActionAgentMessage},
+		{"TowerMission", models.ActionTodoUpdate},
+		{"TowerStatus", models.ActionAgentControl},
+	}
+	for _, tc := range cases {
+		t.Run(tc.native, func(t *testing.T) {
+			if got := mapKimiTool(tc.native); got != tc.want {
+				t.Errorf("mapKimiTool(%q) = %q, want %q", tc.native, got, tc.want)
+			}
+			e, ok := tooltax.Resolve(models.ToolKimiCode, tc.native)
+			if !ok || e.Tool != models.ToolKimiCode || e.ActionType != tc.want {
+				t.Errorf("tooltax.Resolve(kimi-code, %q) = %+v (ok=%v), want a kimi-code %q row", tc.native, e, ok, tc.want)
 			}
 		})
 	}

@@ -1,0 +1,29 @@
+/* SuperBased shared component styles.
+ *
+ * Global rules that a SHARED component relies on and that Tailwind cannot
+ * express (scrollbar pseudo-elements). One owner, imported by each app's
+ * entry CSS right after motion.css, so a promoted component never depends on
+ * a rule that only one app's stylesheet carries.
+ */
+
+/* --------------------------------------------------------------
+   Horizontal table scroller (shared/primitives/DataTable's wrapper).
+   The apps' global scrollbar rules give a transparent track, which
+   on a wide data table reads as "no scrollbar at all" until you
+   happen to drag. Here the track is painted, so the bar is visible whenever
+   the table overflows, paired with DataTable's edge fades.
+   -------------------------------------------------------------- */
+.table-scroll-x {
+  scrollbar-color: var(--line-3) var(--bg-3);
+}
+.table-scroll-x::-webkit-scrollbar {
+  height: 10px;
+}
+.table-scroll-x::-webkit-scrollbar-track {
+  background: var(--bg-3);
+  border-radius: 999px;
+}
+.table-scroll-x::-webkit-scrollbar-thumb {
+  background: var(--line-3);
+  border: 2px solid var(--bg-3);
+}

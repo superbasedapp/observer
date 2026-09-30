@@ -19,6 +19,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/ratelimitstate"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/tooltax"
 )
@@ -553,7 +554,13 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	}
 	defer f.Close()
 
+	// rlTracker is the change-only rate-limit emission state
+	// (handleRateLimitEvent). On an incremental resume it is rebuilt from
+	// the pre-offset rate_limit_event records first, so a watcher poll
+	// emits exactly the rows a full rescan would.
+	var rlTracker ratelimitstate.Tracker
 	if fromOffset > 0 {
+		rlTracker = seedRateLimitTracker(f, fromOffset, instanceSessionID(path))
 		if _, err := f.Seek(fromOffset, io.SeekStart); err != nil {
 			return adapter.ParseResult{}, fmt.Errorf("cowork.ParseSessionFile: seek: %w", err)
 		}
@@ -688,7 +695,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		case "tool_use_summary":
 			handleToolUseSummary(&res, rec, allToolUseIdx)
 		case "rate_limit_event":
-			a.handleRateLimitEvent(&res, path, rec, sessionID, projectRoot, projectRemote, &sc, ts)
+			a.handleRateLimitEvent(&res, path, rec, sessionID, projectRoot, projectRemote, &sc, ts, &rlTracker)
 		default:
 			res.Warnings = append(res.Warnings, fmt.Sprintf("line %d: unknown record type %q", lineNum, rec.Type))
 		}
@@ -1027,7 +1034,7 @@ func (a *Adapter) handleResult(
 		if cw1h > cw {
 			cw1h = cw
 		}
-		res.TokenEvents = append(res.TokenEvents, models.TokenEvent{
+		tok := models.TokenEvent{
 			SourceFile:            path,
 			SourceEventID:         rec.UUID + ":" + model,
 			SessionID:             sessionID,
@@ -1045,7 +1052,23 @@ func (a *Adapter) handleResult(
 			Source:                models.TokenSourceJSONL,
 			Reliability:           models.ReliabilityAccurate,
 			MessageID:             "result:" + rec.UUID + ":" + model,
-		})
+		}
+		// rec.DurationAPIMs ("duration_api_ms") is the WHOLE result
+		// batch's total API (model-generation) time across every model
+		// in modelUsage — already milliseconds (verified against the
+		// live-capture fixture: duration_api_ms=7000 is a strict subset
+		// of duration_ms=9000, the wall-clock total including tool time,
+		// which is the expected api-time-within-wall-time relationship).
+		// With exactly ONE model in this result it unambiguously covers
+		// that model's own tokens; with 2+ models it's an UNDIVIDED
+		// aggregate across models observer has no way to split, so no
+		// model gets a stamp.
+		if len(models_) == 1 && rec.DurationAPIMs > 0 {
+			tok.GenMs = rec.DurationAPIMs
+			tok.GenBasis = models.GenBasisNative
+			tok.GenTimingV = 1
+		}
+		res.TokenEvents = append(res.TokenEvents, tok)
 	}
 
 	res.CacheObservations = append(res.CacheObservations,
@@ -1422,10 +1445,14 @@ func (a *Adapter) handleSystem(
 }
 
 // handleRateLimitEvent emits an ActionRateLimit row carrying the
-// rate-limit window status. Cowork polls rate limits periodically
-// (~50/session in observed data); each poll lands as a distinct
-// row so the dashboard can chart status transitions over time. Not
-// deduped — see plan §M2/T20 for the rationale.
+// rate-limit window status. Cowork polls rate limits periodically; the
+// polls almost never differ (live corpus 2026-09-30: 256 rows over 32
+// sessions, ZERO changes after each session's first), and every row used
+// to render as its own "Rate limit" message. Emission is therefore
+// change-only through the shared ratelimitstate predicate — the first
+// reading per session, any status / overage / reset move, plus a
+// heartbeat — which still records every status TRANSITION (the original
+// §M2/T20 reason for keeping each poll).
 func (a *Adapter) handleRateLimitEvent(
 	res *adapter.ParseResult,
 	path string,
@@ -1433,8 +1460,12 @@ func (a *Adapter) handleRateLimitEvent(
 	sessionID, projectRoot, projectRemote string,
 	sc *sidecar,
 	ts time.Time,
+	tr *ratelimitstate.Tracker,
 ) {
 	if len(rec.RateLimitInfo) == 0 {
+		return
+	}
+	if !coworkRateLimitEmit(tr, sessionID, rec.RateLimitInfo, ts) {
 		return
 	}
 	var info struct {
@@ -1481,6 +1512,53 @@ func (a *Adapter) handleRateLimitEvent(
 		MessageID:     "ratelimit:" + rec.UUID,
 		Metadata:      meta,
 	})
+}
+
+// coworkRateLimitEmit asks the shared change-only predicate whether a
+// rate_limit_info payload becomes a row. A payload the predicate cannot
+// read is emitted (fail-open, the pre-change behaviour).
+func coworkRateLimitEmit(tr *ratelimitstate.Tracker, sessionID string, info json.RawMessage, ts time.Time) bool {
+	snap, ok := ratelimitstate.Parse(string(info))
+	if !ok {
+		return true
+	}
+	emit, _ := tr.Observe(sessionID, snap, ts)
+	return emit
+}
+
+// seedRateLimitTracker replays the rate_limit_event records before
+// `until` through coworkRateLimitEmit (state only, nothing emitted) so a
+// resumed parse inherits the emission baseline. Only lines that mention
+// rate_limit_event are decoded, so the replay stays cheap. Best-effort: a
+// read error just stops the replay (the resumed parse then treats its
+// first reading as the session's first, at most one extra row).
+func seedRateLimitTracker(f *os.File, until int64, sessionID string) ratelimitstate.Tracker {
+	var tr ratelimitstate.Tracker
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return tr
+	}
+	reader := bufio.NewReaderSize(f, 64*1024)
+	var read int64
+	for {
+		line, err := reader.ReadString('\n')
+		if !strings.HasSuffix(line, "\n") {
+			return tr
+		}
+		read += int64(len(line))
+		if read > until {
+			return tr
+		}
+		if strings.Contains(line, "rate_limit_event") {
+			var rec rawRecord
+			if json.Unmarshal([]byte(strings.TrimRight(line, "\r\n")), &rec) == nil &&
+				rec.Type == "rate_limit_event" && len(rec.RateLimitInfo) > 0 {
+				coworkRateLimitEmit(&tr, sessionID, rec.RateLimitInfo, parseTimestamp(rec.AuditTimestamp))
+			}
+		}
+		if err != nil {
+			return tr
+		}
+	}
 }
 
 // collectSidechainUUIDs walks the local-instance's inner Claude Code

@@ -214,7 +214,73 @@ func TestParse_Tokens(t *testing.T) {
 	if fin.InputTokens != 200 || fin.OutputTokens != 15 {
 		t.Errorf("final tokens in=%d out=%d, want 200/15", fin.InputTokens, fin.OutputTokens)
 	}
+	// metadata.metrics.total_time_ms is this node's own generation
+	// wall-clock (fixture: 2178 / 1404), so it stamps GenMs verbatim.
+	if live.GenMs != 2178 || live.GenBasis != models.GenBasisNative || live.GenTimingV != 1 {
+		t.Errorf("live GenMs/GenBasis/GenTimingV = %d/%q/%d, want 2178/native/1", live.GenMs, live.GenBasis, live.GenTimingV)
+	}
+	if fin.GenMs != 1404 || fin.GenBasis != models.GenBasisNative || fin.GenTimingV != 1 {
+		t.Errorf("final GenMs/GenBasis/GenTimingV = %d/%q/%d, want 1404/native/1", fin.GenMs, fin.GenBasis, fin.GenTimingV)
+	}
 }
+
+// TestTokenEvent_GenMs is a table-driven unit test over (*Adapter).tokenEvent
+// covering the total_time_ms stamping decision directly, independent of the
+// SQLite fixture: total_time_ms is metadata.metrics.total_time_ms
+// (nodeMetrics.TotalTimeMs, adapter.go ~L180), the per-node model generation
+// wall-clock time for exactly that node's own tokens.
+func TestTokenEvent_GenMs(t *testing.T) {
+	a := newTestAdapter()
+	s := sessionRow{ID: "sess1", Model: "swe-1-6-slow"}
+	n := node{NodeID: 1, Created: 1783551872}
+
+	metrics := func(totalMs *float64) *chatMessage {
+		return &chatMessage{
+			MessageID: "a-1",
+			Role:      "assistant",
+			Metadata: &nodeMetadata{
+				GenerationModel: "swe-1-6-slow",
+				Metrics: &nodeMetrics{
+					InputTokens:  ptrInt64(120),
+					OutputTokens: ptrInt64(20),
+					TotalTimeMs:  totalMs,
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name      string
+		totalMs   *float64
+		wantStamp bool
+		wantGenMs int64
+	}{
+		{"positive duration stamps", ptrFloat64(2178.4), true, 2178},
+		{"nil duration leaves unset", nil, false, 0},
+		{"zero duration leaves unset", ptrFloat64(0), false, 0},
+		{"negative duration leaves unset", ptrFloat64(-5), false, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev, ok := a.tokenEvent("sessions.db", "/proj", "", s, n, metrics(tt.totalMs))
+			if !ok {
+				t.Fatal("tokenEvent() returned ok=false")
+			}
+			if tt.wantStamp {
+				if ev.GenMs != tt.wantGenMs || ev.GenBasis != models.GenBasisNative || ev.GenTimingV != 1 {
+					t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want %d/native/1", ev.GenMs, ev.GenBasis, ev.GenTimingV, tt.wantGenMs)
+				}
+			} else {
+				if ev.GenMs != 0 || ev.GenBasis != "" || ev.GenTimingV != 0 {
+					t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want zero value (no stamp)", ev.GenMs, ev.GenBasis, ev.GenTimingV)
+				}
+			}
+		})
+	}
+}
+
+func ptrFloat64(v float64) *float64 { return &v }
+func ptrInt64(v int64) *int64       { return &v }
 
 func TestParse_MalformedNodeSkipped(t *testing.T) {
 	a := newTestAdapter()

@@ -1,4 +1,5 @@
 import { KpiBand as SharedKpiBand } from "@shared/components/sessiondetail/KpiBand";
+import { tokenSourcesLine } from "@shared/lib/tokenSources";
 import type { SessionDetail } from "@/lib/types";
 import { hasRecordedUsage } from "./shared";
 
@@ -31,6 +32,9 @@ export function KpiBand({ d }: { d: SessionDetail }) {
       endedAt={d.ended_at}
       lastActivityAt={d.last_activity_at}
       usageRecorded={hasRecordedUsage(d)}
+      // Same caption, same counts, same rule as the org drawer's Tokens tile
+      // (MCP audit #4b); absent counts (an older daemon) keep the old caption.
+      tokensSub={tokenSourcesLine({ turns: d.turn_count, proxyTurns: d.proxy_turn_count }) ?? undefined}
     />
   );
 }

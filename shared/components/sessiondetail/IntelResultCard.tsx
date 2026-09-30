@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
-import { Pill } from "../../primitives";
+import { HostMark, ModelId, Pill } from "../../primitives";
 import { fmtInt } from "../../lib/format";
+import { JOB_STATUS } from "../../lib/sessionVocab";
+import { VocabPill } from "../../lib/vocabPill";
 import type { IntelResultLike } from "../../lib/types";
 import { type RenderCost } from "./cost";
 
@@ -20,14 +22,6 @@ import { type RenderCost } from "./cost";
 //     zero — the node cache simply does not carry them;
 //   - taxonomy tags and model-suggested tags are visually distinguished so a
 //     reader can tell an applied classification from a suggestion.
-
-const JOB_STATE_VARIANT: Record<string, "neutral" | "success" | "warn" | "danger" | "info" | "accent"> = {
-  queued: "info",
-  running: "accent",
-  done: "success",
-  parked: "warn",
-  failed: "danger",
-};
 
 // NarrativeList renders one labelled bullet list, or nothing at all when the
 // list is absent or empty - an absent field is rendered as absence, never as
@@ -84,9 +78,7 @@ export function IntelResultCard({
           Session enrichment
         </span>
         {result?.jobState && (
-          <Pill variant={JOB_STATE_VARIANT[result.jobState] ?? "neutral"}>
-            {result.jobState}
-          </Pill>
+          <VocabPill vocab="jobStatus" table={JOB_STATUS} value={result.jobState} />
         )}
       </div>
 
@@ -162,12 +154,21 @@ export function IntelResultCard({
               </span>
             )}
             {result.provider && (
-              <span>
-                provider {result.provider}
-                {result.model ? ` · ${result.model}` : ""}
+              <span className="inline-flex min-w-0 items-center gap-1">
+                provider <HostMark host={result.provider} size={11} /> {result.provider}
+                {result.model && (
+                  <>
+                    {" · "}
+                    <ModelId model={result.model} markSize={11} className="min-w-0 [&>span]:text-fg-4" />
+                  </>
+                )}
               </span>
             )}
-            {!result.provider && result.model && <span>model {result.model}</span>}
+            {!result.provider && result.model && (
+              <span className="inline-flex min-w-0 items-center gap-1">
+                model <ModelId model={result.model} markSize={11} className="min-w-0 [&>span]:text-fg-4" />
+              </span>
+            )}
             {(result.tokensIn != null || result.tokensOut != null) && (
               <span>
                 {fmtInt(result.tokensIn ?? 0)} in / {fmtInt(result.tokensOut ?? 0)} out

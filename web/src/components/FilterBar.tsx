@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import clsx from "clsx";
 import {
   useFilters,
@@ -10,14 +11,17 @@ import {
 import { useApi } from "@/lib/useApi";
 import type { ToolsResponse, ProjectsResponse } from "@/lib/types";
 import { toolMeta } from "@/lib/tools";
+import { filterScopeFor, ignoredFilters } from "@/lib/filterScope";
 import {
   ComboChip,
   type ComboOption,
   DateRangePopover,
+  Icon,
   ToolDot,
   Tooltip,
 } from "./primitives";
 import { HelpInd } from "./HelpInd";
+import { Box, Clock, Folder, Search } from "lucide-react";
 
 const WINDOW_OPTIONS: ComboOption[] = [
   { value: "1h", label: "1 hr", searchable: "1 hr hour sub-day" },
@@ -39,33 +43,52 @@ export function FilterBar({
 }) {
   const { win, customRange, tool, setTool, project, setProject, query } =
     useFilters();
+  // Route-aware: only the filters the current page actually reads are shown
+  // (lib/filterScope.ts). Search opens the global palette, so it stays.
+  const { pathname } = useLocation();
+  const scope = filterScopeFor(pathname);
+  const ignored = ignoredFilters(scope, { tool, project });
 
   // /api/tools is the source of truth for which tools have data in
-  // the active window (mirrors the legacy dashboard's behaviour).
+  // the active window (mirrors the legacy dashboard's behaviour). Neither
+  // list is fetched on a page that does not show its picker.
   const tools = useApi<ToolsResponse>(
-    "/api/tools",
+    scope.tool ? "/api/tools" : null,
     { ...windowParams(win, customRange) },
     [win, customRange],
   );
-  const projects = useApi<ProjectsResponse>("/api/projects");
+  const projects = useApi<ProjectsResponse>(scope.project ? "/api/projects" : null);
 
   return (
     <div className="flex flex-wrap items-center gap-2 gap-y-2 border-b border-line-1 bg-bg-1 px-3 py-2 lg:h-[var(--filterbar-h)] lg:flex-nowrap lg:gap-3 lg:px-5 lg:py-0">
-      <WindowSelect />
+      {scope.window && <WindowSelect />}
 
-      <ToolSelect
-        value={tool}
-        onChange={setTool}
-        tools={tools.data?.tools ?? []}
-      />
+      {scope.tool && (
+        <ToolSelect
+          value={tool}
+          onChange={setTool}
+          tools={tools.data?.tools ?? []}
+        />
+      )}
 
-      <ProjectSelect
-        value={project}
-        onChange={setProject}
-        projects={projects.data?.rows ?? []}
-      />
+      {scope.project && (
+        <ProjectSelect
+          value={project}
+          onChange={setProject}
+          projects={projects.data?.rows ?? []}
+        />
+      )}
 
       <SearchTrigger query={query} onOpen={onOpenPalette} />
+
+      {/* A tool / project filter that is set but not read here is still
+          applied on the pages that read it; say so rather than hide it. */}
+      {ignored.length > 0 && (
+        <span className="text-[11px] text-fg-3">
+          {ignored.length === 2 ? "Tool and project filters" : ignored[0] === "tool" ? "The tool filter" : "The project filter"}{" "}
+          {ignored.length === 2 ? "do" : "does"} not apply to this page
+        </span>
+      )}
 
       {/* Spacer pushes the loading note to the right on desktop; on
           mobile it would force an unwanted wrap break, so it's hidden
@@ -110,7 +133,7 @@ function SearchTrigger({
           : "border-line-2 text-fg-3 hover:bg-bg-3 hover:text-fg-1",
       )}
     >
-      <SearchIcon />
+      <Icon icon={Search} size={11} />
       {trimmed ? (
         <span className="max-w-[180px] truncate font-mono text-[11px] text-fg-0">
           {trimmed}
@@ -123,26 +146,6 @@ function SearchTrigger({
       </kbd>
     </button>
     </Tooltip>
-  );
-}
-
-function SearchIcon() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
-      <circle
-        cx="7"
-        cy="7"
-        r="4.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-      />
-      <path
-        d="m10.5 10.5 3 3"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
   );
 }
 
@@ -179,7 +182,7 @@ function WindowSelect() {
         value={win}
         onChange={onPick}
         options={WINDOW_OPTIONS}
-        icon={<ClockIcon />}
+        icon={<Icon icon={Clock} size={13} className="text-fg-3" />}
         popoverWidth={200}
         placeholder="Filter windows…"
         buttonValueRender={() => (
@@ -236,11 +239,13 @@ function ToolSelect({
       value={value}
       onChange={onChange}
       options={options}
-      icon={<ToolIcon />}
+      icon={<Icon icon={Box} size={13} className="text-fg-3" />}
       popoverWidth={300}
       placeholder="Filter tools…"
-      buttonValueRender={(sel) => {
-        if (value === "all" || !sel) {
+      // The chip shows the APPLIED filter, even before /api/tools answers (a
+      // filter restored from the URL is in force while the list loads).
+      buttonValueRender={() => {
+        if (value === "all") {
           return <b className="font-semibold text-fg-0">all</b>;
         }
         return (
@@ -291,11 +296,13 @@ function ProjectSelect({
       value={value}
       onChange={onChange}
       options={options}
-      icon={<FolderIcon />}
+      icon={<Icon icon={Folder} size={13} className="text-fg-3" />}
       popoverWidth={420}
       placeholder="Filter projects…"
-      buttonValueRender={(sel) => {
-        if (value === "all" || !sel) {
+      // Like the tool chip: the applied filter, even before /api/projects
+      // answers.
+      buttonValueRender={() => {
+        if (value === "all") {
           return <b className="font-semibold text-fg-0">all</b>;
         }
         return (
@@ -313,74 +320,6 @@ function ProjectSelect({
         );
       }}
     />
-  );
-}
-
-function ClockIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden
-      className="text-fg-3"
-    >
-      <circle cx="8" cy="8" r="6.25" stroke="currentColor" strokeWidth="1.4" />
-      <path
-        d="M8 4.5V8l2.5 1.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function ToolIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden
-      className="text-fg-3"
-    >
-      <path
-        d="M8 1.5 2 5v6l6 3.5L14 11V5L8 1.5Z"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M2 5l6 3.5m0 0L14 5M8 8.5V14.5"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function FolderIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden
-      className="text-fg-3"
-    >
-      <path
-        d="M2 4.5A1 1 0 0 1 3 3.5h3.6l1.4 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5Z"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
 

@@ -192,6 +192,37 @@ type SessionLOC struct {
 	// ClassifierVersion is the highest internal/loc.Version any of these
 	// rows was produced by.
 	ClassifierVersion int `json:"classifier_version"`
+	// AISplit is the code-vs-comment split (internal/loc.SplitAuthored)
+	// of the AI actor's MAIN-line code-category lines - the same buckets
+	// the card's "AI code lines" headline sums, so its CodeLines always
+	// equals that headline.
+	AISplit loc.AuthoredSplit `json:"ai_split"`
+	// AISidechainSplit is the same split for the AI actor's SIDECHAIN
+	// code-category lines, including the read-time sub-agent fold (a
+	// folded child's rows are sidechain from the parent's vantage).
+	AISidechainSplit loc.AuthoredSplit `json:"ai_sidechain_split"`
+}
+
+// locAISplits derives the AI code-vs-comment splits from an
+// already-deduplicated bucket set: AI actor, code category only (docs and
+// config lines are counted but never code), main and sidechain apart.
+// It reads the SAME buckets a surface's headline is summed from, never a
+// second query, so the split and the headline cannot disagree about the
+// dedup rule or the sub-agent fold. The counts and the share come from
+// loc.Stats.AuthoredSplit, the one derivation.
+func locAISplits(buckets []LOCBucket) (mainSplit, sideSplit loc.AuthoredSplit) {
+	var mainStats, sideStats loc.Stats
+	for _, b := range buckets {
+		if b.Actor != LOCActorAI || b.Category != string(loc.CategoryCode) {
+			continue
+		}
+		if b.Sidechain {
+			sideStats.Add(b.Stats)
+		} else {
+			mainStats.Add(b.Stats)
+		}
+	}
+	return mainStats.AuthoredSplit(), sideStats.AuthoredSplit()
 }
 
 // LOCLanguage is one language's share of a session.
@@ -278,6 +309,7 @@ func (s *Store) LoadSessionLOC(ctx context.Context, sessionID string) (SessionLO
 	// side is computed, not stored: a folded child row (session_id != the
 	// parent) is sidechain from the parent's vantage; the parent's own rows
 	// keep their stored sidechain value. The CASE's ? binds after the CTE.
+	//nolint:gosec // G202: every fragment is a compile-time constant SQL string; values bind via args.
 	bucketQ := locDedupCTESQL(sessFilter) + `
 		SELECT fc.actor,
 		       CASE WHEN fc.session_id <> ? THEN 1 ELSE fc.sidechain END AS side,
@@ -309,7 +341,9 @@ func (s *Store) LoadSessionLOC(ctx context.Context, sessionID string) (SessionLO
 		return out, fmt.Errorf("store.LoadSessionLOC: buckets rows: %w", err)
 	}
 	_ = rows.Close()
+	out.AISplit, out.AISidechainSplit = locAISplits(out.Buckets)
 
+	//nolint:gosec // G202: every fragment is a compile-time constant SQL string; values bind via args.
 	langQ := locDedupCTESQL(sessFilter) + `
 		SELECT fc.language, fc.category, COUNT(*),` + locStatsColumns + `
 		FROM file_changes fc JOIN keep k ON k.id = fc.id` + locFoldDoubleCountGuard + `
@@ -372,6 +406,10 @@ func (s *Store) LoadSessionLOC(ctx context.Context, sessionID string) (SessionLO
 type SessionLOCLines struct {
 	AICodeLines    int
 	HumanCodeLines int
+	// AICommentLines is the AI actor's added comment lines in code files -
+	// the comment half of internal/loc.SplitAuthored, read in the same
+	// pass and under the same dedup rule as AICodeLines.
+	AICommentLines int
 }
 
 // locLinesChunkSize bounds the IN list per statement so a whole-corpus
@@ -421,7 +459,8 @@ func (s *Store) LoadSessionLOCLines(ctx context.Context, sessionIDs []string) (m
 		//nolint:gosec // G202: only the ?-placeholder list is concatenated; every value is bound.
 		q := locDedupCTESQL(" AND session_id IN ("+placeholders+")") + `
 			SELECT fc.session_id, fc.actor,
-			       COALESCE(SUM(fc.added_code + fc.modified_code), 0)
+			       COALESCE(SUM(fc.added_code + fc.modified_code), 0),
+			       COALESCE(SUM(fc.added_comment), 0)
 			FROM file_changes fc JOIN keep k ON k.id = fc.id
 			WHERE fc.category = 'code' AND fc.actor IN (?, ?)
 			GROUP BY fc.session_id, fc.actor`
@@ -431,8 +470,8 @@ func (s *Store) LoadSessionLOCLines(ctx context.Context, sessionIDs []string) (m
 		}
 		for rows.Next() {
 			var sid, actor string
-			var lines int
-			if err := rows.Scan(&sid, &actor, &lines); err != nil {
+			var lines, comments int
+			if err := rows.Scan(&sid, &actor, &lines, &comments); err != nil {
 				_ = rows.Close()
 				return nil, fmt.Errorf("store.LoadSessionLOCLines: scan: %w", err)
 			}
@@ -440,6 +479,7 @@ func (s *Store) LoadSessionLOCLines(ctx context.Context, sessionIDs []string) (m
 			switch actor {
 			case LOCActorAI:
 				entry.AICodeLines = lines
+				entry.AICommentLines = comments
 			case LOCActorHuman:
 				entry.HumanCodeLines = lines
 			}
@@ -513,6 +553,11 @@ type LOCSummary struct {
 	// CostUSD is the window's spend, so the UI can render "code lines per
 	// dollar" without a second round trip. Zero when unavailable.
 	CostUSD float64 `json:"cost_usd"`
+	// AISplit is the code-vs-comment split (internal/loc.SplitAuthored)
+	// of every AI code-category line in the window, main and sidechain
+	// together - the same buckets the lines-per-dollar numerator sums, so
+	// its CodeLines always equals that numerator.
+	AISplit loc.AuthoredSplit `json:"ai_split"`
 }
 
 // LoadLOCSummary returns the window-scoped headline: buckets by actor and
@@ -554,6 +599,8 @@ func (s *Store) LoadLOCSummary(ctx context.Context, days int, projectID int64) (
 		return out, fmt.Errorf("store.LoadLOCSummary: rows: %w", err)
 	}
 	_ = rows.Close()
+	aiMain, aiSide := locAISplits(out.Buckets)
+	out.AISplit = aiMain.Add(aiSide)
 
 	// HUMAN CAPTURE IS "IS AN EDITOR REPORTING SAVES", not "did any row
 	// come out human" — same rule as LoadSessionLOC, and it must be the
@@ -582,6 +629,103 @@ func (s *Store) LoadLOCSummary(ctx context.Context, days int, projectID int64) (
 		return out, err
 	}
 	out.ByDay = byDay
+	return out, nil
+}
+
+// ProjectLOCWindow is one project's AI-authored added/modified line
+// totals from LoadProjectLOCWindowed, in an EXACT [since, until) window.
+//
+// Only category=code files count (2026-09-28 fix): before it, this read
+// summed added_code/modified_code across EVERY category, so the Projects
+// list and detail "AI code lines" silently included docs and config lines
+// (on the reference node docs alone carried ~384k "added_code" lines,
+// because a Markdown file's non-blank lines classify as code). AIComment
+// is the added comment lines of the same rows, for the code-vs-comment
+// split (internal/loc.SplitAuthored).
+type ProjectLOCWindow struct {
+	AIAdded    int
+	AIModified int
+	AIComment  int
+}
+
+// LoadProjectLOCWindowed returns AI-authored added/modified code-line
+// totals per project in the EXACT [since, until) window, keyed by
+// project id, using the SAME locDedupCTESQL collapse rule every other
+// LOC read applies (2026-09-22 rework finding #5).
+//
+// projectID == 0 scopes every project in one query — the Projects
+// LIST's read (store.LoadProjectListExtras), which needs a per-project
+// breakdown across the whole corpus without paying for N separate
+// queries (R11). A non-zero projectID additionally splices `project_id
+// = ?` into the window bound itself, so the detail panel's
+// single-project read (LoadProjectLOCTotals) scopes the expensive
+// duplicate-collapse GROUP BY to just that project's rows rather than
+// computing it over the whole file_changes table before filtering.
+//
+// The window bound is spliced into BOTH of locDedupCTESQL's collapse
+// arms (via its `extra` parameter), not applied only to the outer
+// SELECT after the join — this is the actual fix for finding #5's
+// measured perf problem (an EXPLAIN showing an index-wide/full scan
+// plus a temporary B-tree): the old call path
+// (LoadProjectLOCTotals -> LoadLOCSummary -> locDedupCTE) ran the
+// duplicate-collapse GROUP BY over the ENTIRE unbounded table before
+// ever applying a saved_at filter. Bounding the CTE itself means the
+// collapse only ever considers rows already inside the window (plus
+// migration 130's idx_file_changes_project_saved / idx_file_changes_
+// saved_at indexes, matching this query's actual leading predicates).
+//
+// The scoped/unscoped cases use TWO DIFFERENT `extra` predicates rather
+// than one `(? = 0 OR project_id = ?)` idiom (the convention
+// LoadLOCByDay/LoadLOCSummary use elsewhere in this file): SQLite's
+// planner fixes the query plan at PREPARE time, before any parameter is
+// bound, so an OR'd project_id equality can never be proven safe to
+// seek on and the planner falls back to idx_file_changes_saved_at for
+// BOTH cases — verified live via EXPLAIN QUERY PLAN, which is exactly
+// the perf regression finding #5 flagged. Branching the query text
+// itself lets the scoped case seek idx_file_changes_project_saved on a
+// real project_id equality while the unscoped (list, projectID==0)
+// case still seeks idx_file_changes_saved_at.
+func (s *Store) LoadProjectLOCWindowed(ctx context.Context, projectID int64, since, until time.Time) (map[int64]ProjectLOCWindow, error) {
+	sinceStr, untilStr := timestamp(since), timestamp(until)
+	var extra string
+	var armArgs []any
+	if projectID != 0 {
+		extra = " AND project_id = ? AND saved_at >= ? AND saved_at < ?"
+		armArgs = []any{projectID, sinceStr, untilStr}
+	} else {
+		extra = " AND saved_at >= ? AND saved_at < ?"
+		armArgs = []any{sinceStr, untilStr}
+	}
+	//nolint:gosec // G202: every fragment is a compile-time constant SQL string; values bind via args.
+	q := locDedupCTESQL(extra) + `
+		SELECT fc.project_id, SUM(fc.added_code), SUM(fc.modified_code), SUM(fc.added_comment)
+		  FROM file_changes fc JOIN keep k ON k.id = fc.id
+		 WHERE fc.actor = ? AND fc.category = 'code'
+		 GROUP BY fc.project_id`
+	// locDedupCTESQL splices `extra` into BOTH collapse arms, so its
+	// binds are supplied twice (arm 1, then arm 2), same as every other
+	// locDedupCTESQL caller in this file.
+	args := make([]any, 0, len(armArgs)*2+1)
+	args = append(args, armArgs...)
+	args = append(args, armArgs...)
+	args = append(args, LOCActorAI)
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store.LoadProjectLOCWindowed: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[int64]ProjectLOCWindow)
+	for rows.Next() {
+		var pid int64
+		var added, modified, comment sql.NullInt64
+		if err := rows.Scan(&pid, &added, &modified, &comment); err != nil {
+			return nil, fmt.Errorf("store.LoadProjectLOCWindowed: scan: %w", err)
+		}
+		out[pid] = ProjectLOCWindow{AIAdded: int(added.Int64), AIModified: int(modified.Int64), AIComment: int(comment.Int64)}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.LoadProjectLOCWindowed: rows: %w", err)
+	}
 	return out, nil
 }
 
@@ -648,9 +792,11 @@ func (s *Store) MarkEditorEcho(ctx context.Context, id int64) error {
 // reconciliation would silently stop working.
 //
 // Callers must pass an ALREADY project-relative path (see
-// RelativeProjectPath); this function does no normalization of its own,
-// because normalizing twice is how two call sites end up disagreeing.
-func HashPath(projectRelative string) string { return sha256Hex(projectRelative) }
+// RelativeProjectPath). It delegates to internal/loc.PathHash with an
+// empty root, which re-runs RelativeProjectPath's normalization — a no-op
+// on an already-relative path — rather than duplicating the hash logic
+// here.
+func HashPath(projectRelative string) string { return loc.PathHash("", projectRelative) }
 
 // ProjectIDForRoot resolves a project root path to its row id, returning
 // 0 when the root is not a known project.

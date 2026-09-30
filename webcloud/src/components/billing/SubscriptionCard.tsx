@@ -4,6 +4,9 @@ import { Pill } from "@shared/primitives/Pill";
 import { fmtDateTime, fmtShortId } from "@shared/lib/format";
 import type { BillingSubscription } from "../../api";
 import { dateWithRelative, statusMeta } from "./util";
+import { Button } from "@shared/primitives/Button";
+import { Card } from "@shared/primitives/Card";
+import { Receipt } from "lucide-react";
 
 // SubscriptionCard is Row 3, rendered only when a subscription exists. It
 // shows the status, the relevant date for that status, both Paddle ids
@@ -21,15 +24,16 @@ export function SubscriptionCard({
   const dateLine = subscriptionDateLine(sub);
 
   return (
-    <div className="bg-bg-2 border border-line-1 rounded-xl p-5">
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-fg-3">
-          Subscription
-        </h2>
-        <Pill variant={meta.variant}>{meta.label}</Pill>
-      </div>
-
-      <DefinitionList className="mt-3">
+    <Card
+      title="Subscription"
+      icon={Receipt}
+      actions={
+        <Pill variant={meta.variant} icon={meta.icon}>
+          {meta.label}
+        </Pill>
+      }
+    >
+      <DefinitionList>
         <DefinitionRow label="Plan" value={`${sub.plan_name} (v${sub.plan_version})`} />
         {dateLine && <DefinitionRow label={dateLine.label} value={dateLine.value} />}
         {sub.status === "canceled" && sub.canceled_at && (
@@ -58,7 +62,7 @@ export function SubscriptionCard({
       </DefinitionList>
 
       {!showResubscribeOffer && <ManagementSection sub={sub} />}
-    </div>
+    </Card>
   );
 }
 
@@ -111,24 +115,25 @@ function ManagementSection({ sub }: { sub: BillingSubscription }) {
       </p>
       <div className="mt-2 flex flex-wrap gap-2">
         {urls.update_payment_method && (
-          <a
-            className="btn btn-sm"
+          <Button
+            size="sm"
             href={urls.update_payment_method}
             target="_blank"
             rel="noopener"
           >
             Update payment method
-          </a>
+          </Button>
         )}
         {urls.cancel && (
-          <a
-            className="btn btn-ghost btn-sm"
+          <Button
+            variant="ghost"
+            size="sm"
             href={urls.cancel}
             target="_blank"
             rel="noopener"
           >
             Cancel subscription
-          </a>
+          </Button>
         )}
       </div>
     </div>

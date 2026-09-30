@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/remoteauth"
 )
 
@@ -196,10 +197,26 @@ func (s *Server) guardedHandler(addr string) http.Handler {
 	} else {
 		h = browserGuard(s.Handler(), hostIsLoopback)
 	}
+	if s.opts.ReadCaches {
+		h = costRowCacheMiddleware(h)
+	}
 	// Execute-tier hardening headers + CSP ride the OUTERMOST wrapper so they
 	// apply to every response on both the loopback and the deliberately-armed
 	// remote direct bind (plan §8.1 item 7).
 	return securityHeaders(h)
+}
+
+// costRowCacheMiddleware marks safe (GET/HEAD) requests so the cost engine
+// may answer their row loads from its short-lived shared cache
+// (cost.WithRowCache). Mutating requests are never marked: a handler that
+// writes and then reads back must see its own write.
+func costRowCacheMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			r = r.WithContext(cost.WithRowCache(r.Context()))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // remoteGuardedHandler builds the handler chain for a remotely-exposed bind
@@ -217,7 +234,7 @@ func (s *Server) remoteGuardedHandler(rc RemoteController) http.Handler {
 	// authz chain on THIS branch too. Both branches of guardedHandler get it
 	// — a governed section must be refused identically whether the request
 	// arrived on the owner-trusted loopback listener or a paired remote one.
-	return browserGuard(s.governanceGuard(mux, sections, authz), hostAllowlistPredicate(rc.AllowedHosts()))
+	return browserGuard(s.analyticsInvalidateOnWrite(s.governanceGuard(mux, sections, authz)), hostAllowlistPredicate(rc.AllowedHosts()))
 }
 
 // requiredCapability maps a route's registered base capability + the request

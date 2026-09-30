@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/orgclient/gen"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -118,13 +119,17 @@ var ErrAgentTooOld = errors.New("orgclient: agent below the org's minimum versio
 // both configured ([org_client] enabled) and enrolled; see package doc.
 type Client struct {
 	// bg owns the node-side break-glass lease state (breakglass.go).
-	bg           breakGlassState
-	cfg          config.OrgClientConfig
-	store        *store.Store
-	bearers      BearerStore
-	httpClient   *http.Client
-	logger       *slog.Logger
-	agentVersion string
+	bg      breakGlassState
+	cfg     config.OrgClientConfig
+	store   *store.Store
+	bearers BearerStore
+	// agentAccessKeys is the per-device agent-access key slot (P1); nil
+	// until cmd/observer wires it (SetAgentAccessKeyStore), in which case no
+	// SourceNodeKey is derived and the envelope stays pre-P4-shaped.
+	agentAccessKeys AgentAccessKeyStore
+	httpClient      *http.Client
+	logger          *slog.Logger
+	agentVersion    string
 
 	// P0-6 effective-policy-state fetch-outcome sinks (nil-defaulted seam,
 	// R6-1). When non-nil, PolicyPollLoop/PushLoop forward the TOTAL typed
@@ -417,6 +422,7 @@ func ShareOptionsFromConfig(cfg config.OrgClientConfig) store.ShareOptions {
 		TerminalDetail:        cfg.Share.TerminalDetail,
 		TaskDetail:            cfg.Share.TaskDetail,
 		ToolAccountDetail:     cfg.Share.ToolAccountDetail,
+		MCPActivity:           cfg.Share.MCPActivity,
 		ObsSummary:            cfg.Share.Obs.Summary,
 		ObsTraces:             cfg.Share.Obs.Traces,
 		ObsContent:            cfg.Share.Obs.Content,
@@ -832,7 +838,28 @@ func (c *Client) evaluateGrantOffer(er *orgcontract.EnrollResponse, orgURL, orgK
 	}
 }
 
-// Unenroll deletes the local enrolment row and clears the keychain secrets.
+// clearAgentAccessKeys removes the per-device agent-access key on unenrol
+// (ledger AA-5): the injected slot when set, and the slot beside the bearer
+// store's own location (keychain record AND 0600 file) when the bearer store
+// is one of the real backends - so an unenrolled node keeps no agent-access
+// key whether or not the slot was wired. Both clears are idempotent.
+func (c *Client) clearAgentAccessKeys() error {
+	var errs []error
+	if c.agentAccessKeys != nil {
+		if err := c.agentAccessKeys.ClearAgentAccessKey(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if cl, ok := c.bearers.(agentAccessKeyClearer); ok {
+		if err := cl.agentAccessKeys().ClearAgentAccessKey(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Unenroll deletes the local enrolment row and clears the keychain secrets
+// (the bearer store's records and the agent-access key).
 // The enrolment row is removed first so a concurrent push loop, which re-reads
 // the row each cycle, stops pushing as soon as it observes the absence. Absent
 // state is not an error (idempotent).
@@ -883,6 +910,9 @@ func (c *Client) Unenroll(ctx context.Context) error {
 	}
 	c.budget.clear()
 	if err := c.bearers.Clear(); err != nil {
+		return fmt.Errorf("orgclient.Unenroll: %w", err)
+	}
+	if err := c.clearAgentAccessKeys(); err != nil {
 		return fmt.Errorf("orgclient.Unenroll: %w", err)
 	}
 	c.clearBreakGlass()
@@ -970,6 +1000,12 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		store.ScopeOptions{
 			ProjectRootAllowlist: c.cfg.Scope.ProjectRootAllowlist,
 			ProjectRootDenylist:  c.cfg.Scope.ProjectRootDenylist,
+			// S10-SPEED: hold a transcript-timed token row back until its
+			// generation duration is stamped (or the window elapses).
+			Settle: store.PushSettle{
+				Tools:  integration.TranscriptTimedTools(),
+				Window: store.DefaultPushSettleWindow,
+			},
 		},
 	)
 	if err != nil {
@@ -980,6 +1016,18 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		// as delivered as it can be: commit, or a family that legitimately
 		// recomputes to zero rows would re-probe as dirty forever.
 		c.store.CommitPushedSnapshots()
+		// A cursor can still have moved without a row to ship: the
+		// per-session rate-limit wire consumes snapshots that can never ship
+		// (no linked session, or out of scope). Persist that progress (same
+		// CAS as an accepted push) so an idle node does not re-scan the same
+		// unshippable rows every tick, and a long unshippable run cannot pin
+		// the wire below a later shippable window. Nothing was delivered, so
+		// nothing is acknowledged. Best-effort: a failure only re-scans.
+		if batch.Cursor != cur {
+			if _, err := c.store.SavePushCursorIfUnchanged(ctx, cur, batch.Cursor); err != nil {
+				c.logger.Warn("org push: saving the cursor past unshippable rows failed; they will be re-scanned", "err", err)
+			}
+		}
 		return PushResult{Empty: true}, nil
 	}
 
@@ -991,13 +1039,23 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		// stays byte-identical to the pre-feature shape. Reusing the SAME
 		// accessor PostPolicyState uses keeps one definition of "this node's
 		// machine identity" (the server keys on it across both rails).
-		MachineIdentity:           c.ManagedMachineIdentity(ctx),
-		CursorFrom:                maxCursor(cur),
-		CursorTo:                  maxCursor(batch.Cursor),
-		Sessions:                  batch.Sessions,
-		Actions:                   batch.Actions,
-		APITurns:                  batch.APITurns,
-		TokenUsage:                batch.TokenUsage,
+		MachineIdentity: c.ManagedMachineIdentity(ctx),
+		// Agent Access P4 W4e: the per-DEVICE source key, derived from the
+		// agent-access key slot when one is present (sourcenodekey.go);
+		// "" (omitempty) on a node without the slot, so its envelope stays
+		// byte-identical to the pre-P4 shape.
+		SourceNodeKey: c.sourceNodeKey(),
+		CursorFrom:    maxCursor(cur),
+		CursorTo:      maxCursor(batch.Cursor),
+		Sessions:      batch.Sessions,
+		Actions:       batch.Actions,
+		APITurns:      batch.APITurns,
+		TokenUsage:    batch.TokenUsage,
+		// Tombstones + resync manifests (agent migration 141, R2-TOMB):
+		// omitempty, so a node with nothing deleted pushes a byte-identical
+		// envelope, and a pre-R2-TOMB server ignores both keys.
+		Deletions:                 batch.Deletions,
+		SessionManifests:          batch.SessionManifests,
 		RoutingSummaries:          batch.RoutingSummaries,
 		CacheSummaries:            batch.CacheSummaries,
 		CodeintelSummaries:        batch.CodeintelSummaries,
@@ -1018,6 +1076,8 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		SessionNetworkEvents:   batch.SessionNetworkEvents,
 		SessionLOC:             batch.SessionLOC,
 		LOCDays:                batch.LOCDays,
+		SessionQuality:         batch.SessionQuality,
+		CommitOwnership:        batch.CommitOwnership,
 		AdvisorSuggestions:     batch.AdvisorSuggestions,
 		ProjectPatterns:        batch.ProjectPatterns,
 		BenchmarkRuns:          batch.BenchmarkRuns,
@@ -1032,10 +1092,26 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		GuardApprovals:         batch.GuardApprovals,
 		TerminalSummaries:      batch.TerminalSummaries,
 		RemoteAuditSummaries:   batch.RemoteAuditSummaries,
-		RoutingDetails:         batch.RoutingDetails,
-		LimitGauges:            batch.LimitGauges,
-		GuardEvents:            batch.GuardEvents,
-		OTelContent:            batch.OTelContent,
+		// Agent Access P4 W4e relay wires: the HMAC-only aggregate (individual
+		// mcp_activity opt-in, or enrolled capture posture) and the per-record
+		// L2 events (enrolled posture only). Both composed by
+		// store/mcprelaysummary.go under those gates; nil/empty otherwise.
+		MCPRelayActivity: batch.MCPRelayActivity,
+		MCPRelayEvents:   batch.MCPRelayEvents,
+		RoutingDetails:   batch.RoutingDetails,
+		LimitGauges:      batch.LimitGauges,
+		// Lane F-WIRE per-session rate-limit windows: the newest observation
+		// per (session, provider), composed by store/limitgauge.go under the
+		// limit_gauge opt-in or the enrolled full-capture posture; nil
+		// otherwise, so the omitempty key is absent.
+		SessionLimitSnapshots: batch.SessionLimitSnapshots,
+		GuardEvents:           batch.GuardEvents,
+		OTelContent:           batch.OTelContent,
+		// Agent Access P11 (c) shadow-MCP discovery inventory: FULL under the
+		// enrolled capture posture, REDUCED under the individual mcp_activity
+		// opt-in (store/mcpinventory.go); nil/empty otherwise. Its
+		// source_scope is stamped just below from this node's own key.
+		MCPInventory: batch.MCPInventory,
 		// Org-tier observability (obs-org-tier plan). Each slice is
 		// composed by orgpush.go::composeObsTiers only under its own
 		// [org_client.share] flag; nil/empty when the node hasn't opted
@@ -1081,6 +1157,12 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 	// push for a slow node (SF-19). Stamped here rather than plumbed into the
 	// provider seam so "this node's cadence" keeps exactly one definition:
 	// pushInterval(), the same resolver the loop itself uses.
+	// The inventory rows' source_scope is the node-computed identity the
+	// reduced shape must carry (R14.6): this node's own source key, which only
+	// the client owns. The server re-binds it to the key it verified.
+	for i := range env.MCPInventory {
+		env.MCPInventory[i].SourceScope = env.SourceNodeKey
+	}
 	if env.BudgetPosture != nil {
 		stamped := *env.BudgetPosture
 		stamped.PushIntervalSeconds = int(c.pushInterval() / time.Second)
@@ -1153,6 +1235,14 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		}
 		if !saved {
 			c.logger.Info("push cursor moved underneath this cycle (enrol or backfill); keeping the stored cursor")
+		}
+		// Re-send queue (agent migration 140): the rows this batch carried are
+		// now on the org at this batch's NodeRev, so their queued changes (up
+		// to that snapshot) are done. Best-effort: a failure only means those
+		// rows re-send once more, which the org absorbs (an equal NodeRev is a
+		// no-op).
+		if err := c.store.AckPushedChanges(ctx, batch.Acks); err != nil {
+			c.logger.Warn("org push: acknowledging re-sent rows failed; they will re-send", "err", err)
 		}
 		// Snapshot families are "delivered" only once the server has ACCEPTED
 		// the batch — every other exit path leaves them dirty so the next tick
@@ -2041,7 +2131,7 @@ func gzipBytes(raw []byte) ([]byte, error) {
 // locally; this scalar is a server-side progress hint only.
 func maxCursor(c store.PushCursor) int64 {
 	m := c.Sessions
-	for _, v := range []int64{c.Actions, c.APITurns, c.TokenUsage, c.GuardEvents, c.OTelContent} {
+	for _, v := range []int64{c.Actions, c.APITurns, c.TokenUsage, c.GuardEvents, c.OTelContent, c.MCPRelay, c.LimitSnapshots} {
 		if v > m {
 			m = v
 		}

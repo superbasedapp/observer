@@ -41,7 +41,7 @@ type SymbolMatch struct {
 }
 
 // Ref is one symbol reached via an edge traversal: a caller, a callee,
-// or a node reached by [Provider.Reachable]. It unifies the codegraph
+// or a node reached by [Provider.Reachable]. It unifies the
 // Caller and Reachable shapes — [Depth] and [ViaEdge] are populated
 // only by reachability traversals (zero/empty for direct
 // caller/callee lists).

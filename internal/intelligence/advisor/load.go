@@ -7,6 +7,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/sessionmsg"
 )
 
 // minSessionRows is the floor below which a session doesn't enter Facts at
@@ -15,21 +18,33 @@ const minSessionRows = 5
 
 // LoadFacts builds the Facts bundle for one engine run. The substrate is
 // the deduped proxy∪JSONL union (calibration §1: an api_turns-only loader
-// yields zero suggestions on a watcher-dominated corpus): api_turns rows
-// load first (high fidelity — fast flag, proxy timing), then token_usage
-// rows that duplicate a proxy turn are dropped by the same two-level rule
-// the cost engine applies (request_id == source_event_id, then the
-// minute-less session shape key — canonical semantics in
-// cost/summary.go::loadRows, mirrored here read-only).
+// yields zero suggestions on a watcher-dominated corpus). WHICH rows survive
+// is the one session rule, sessionmsg.DeriveVerdicts, applied per session
+// (sessionVerdicts) — the rule the node's session detail header, the cost
+// engine and the org use: every api_turns row counts (a twinned one with its
+// transcript twin's visible output / reasoning split and its fast tier), and
+// a token_usage row counts unless Derive claims it as a proxy twin, a
+// request-id duplicate or a paired output-only shadow row. It replaced a
+// set-membership rule on request id and a RAW-output shape key (lane
+// R2-PARITY-2) that missed every reasoning-split twin and dropped every
+// same-shape transcript row rather than one per proxy row.
 func LoadFacts(ctx context.Context, db *sql.DB, opts Options) (*Facts, error) {
 	now := opts.now()
 	since := now.AddDate(0, 0, -opts.WindowDays).UTC().Format(time.RFC3339)
 
 	sessions := map[string]*SessionFacts{}
+	pending := map[string]*pendingSession{}
+	var pendingOrder []string
+	pend := func(sid string) *pendingSession {
+		ps := pending[sid]
+		if ps == nil {
+			ps = &pendingSession{}
+			pending[sid] = ps
+			pendingOrder = append(pendingOrder, sid)
+		}
+		return ps
+	}
 
-	// Proxy rows first — they win dedup.
-	turnIDs := map[string]map[string]bool{}   // session → request_id set
-	shapeKeys := map[string]map[string]bool{} // session → shape-key set
 	// No ORDER BY: api_turns is large and un-indexed on (session_id,
 	// timestamp), so a DB-side sort would spill a temp B-tree (P1-C).
 	// Ordering is produced in Go below — every session's Rows is
@@ -41,31 +56,32 @@ func LoadFacts(ctx context.Context, db *sql.DB, opts Options) (*Facts, error) {
 		       COALESCE(at.input_tokens,0), COALESCE(at.output_tokens,0),
 		       COALESCE(at.cache_read_tokens,0), COALESCE(at.cache_creation_tokens,0),
 		       COALESCE(at.cache_creation_1h_tokens,0), 0 AS reasoning_tokens, COALESCE(at.fast,0),
-		       COALESCE(at.compression_original_bytes,0), COALESCE(at.compression_compressed_bytes,0)
+		       COALESCE(at.compression_original_bytes,0), COALESCE(at.compression_compressed_bytes,0),
+		       COALESCE(at.web_search_requests,0), COALESCE(at.cost_usd,0),
+		       '', '', '',
+		       COALESCE(at.time_to_first_token_ms,0), COALESCE(at.total_response_ms,0), COALESCE(at.stop_reason,'')
 		FROM api_turns at
 		JOIN sessions s ON s.id = at.session_id
 		LEFT JOIN projects p ON p.id = s.project_id
 		WHERE at.timestamp >= ?` + scopeFilter(opts)
-	if err := loadRows(ctx, db, proxyQ, since, opts, func(sid, tool, smodel, root, ts, model, eventID string, in, out, cr, cc, cc1, reasoning, fast, compOrig, compOut int64) {
-		s := ensureSession(sessions, sid, tool, smodel, root)
-		t, ok := parseTS(ts)
+	if err := loadRows(ctx, db, proxyQ, since, opts, func(r loadedRow) {
+		s := ensureSession(sessions, r.sid, r.tool, r.smodel, r.root)
+		t, ok := parseTS(r.ts)
 		if !ok {
 			return
 		}
-		row := TurnFact{TS: t, Model: model, Input: in, Output: out, CacheRead: cr, CacheCreation: cc, CacheCreation1h: cc1, Reasoning: reasoning, Fast: fast != 0, Source: "proxy"}
-		s.Rows = append(s.Rows, row)
-		s.CompressionOrig += compOrig
-		s.CompressionOut += compOut
-		if eventID != "" {
-			if turnIDs[sid] == nil {
-				turnIDs[sid] = map[string]bool{}
-			}
-			turnIDs[sid][eventID] = true
-		}
-		if shapeKeys[sid] == nil {
-			shapeKeys[sid] = map[string]bool{}
-		}
-		shapeKeys[sid][shapeKeyOf(model, in, out, cr, cc)] = true
+		s.Rows = append(s.Rows, TurnFact{TS: t, Model: r.model, Input: r.in, Output: r.out, CacheRead: r.cr, CacheCreation: r.cc, CacheCreation1h: r.cc1, Reasoning: r.reasoning, Fast: r.fast != 0, Source: "proxy"})
+		s.CompressionOrig += r.compOrig
+		s.CompressionOut += r.compOut
+		ps := pend(r.sid)
+		ps.tool, ps.model = r.tool, r.smodel
+		ps.proxyIdx = append(ps.proxyIdx, len(s.Rows)-1)
+		ps.proxies = append(ps.proxies, sessionmsg.ProxyRow{
+			RequestID: r.eventID, Timestamp: r.ts, Model: r.model,
+			Input: r.in, Output: r.out, CacheRead: r.cr, CacheCreation: r.cc,
+			CacheCreation1h: r.cc1, WebSearchRequests: r.ws, CostUSD: r.cost, Fast: r.fast != 0,
+			TTFBMs: r.ttfb, TotalMs: r.totalMS, StopReason: r.stop,
+		})
 	}); err != nil {
 		return nil, fmt.Errorf("advisor.LoadFacts: proxy rows: %w", err)
 	}
@@ -78,26 +94,51 @@ func LoadFacts(ctx context.Context, db *sql.DB, opts Options) (*Facts, error) {
 		       COALESCE(tu.input_tokens,0), COALESCE(tu.output_tokens,0),
 		       COALESCE(tu.cache_read_tokens,0), COALESCE(tu.cache_creation_tokens,0),
 		       COALESCE(tu.cache_creation_1h_tokens,0), COALESCE(tu.reasoning_tokens,0), COALESCE(tu.fast,0),
-		       0, 0
+		       0, 0,
+		       COALESCE(tu.web_search_requests,0), COALESCE(tu.estimated_cost_usd,0),
+		       COALESCE(tu.message_id,''), COALESCE(tu.turn_id,''), COALESCE(tu.source_file_hash,''),
+		       0, 0, ''
 		FROM token_usage tu
 		JOIN sessions s ON s.id = tu.session_id
 		LEFT JOIN projects p ON p.id = s.project_id
 		WHERE tu.timestamp >= ?` + scopeFilter(opts)
-	if err := loadRows(ctx, db, jsonlQ, since, opts, func(sid, tool, smodel, root, ts, model, eventID string, in, out, cr, cc, cc1, reasoning, fast, compOrig, compOut int64) {
-		if turnIDs[sid][eventID] {
-			return // level-1 dedup: proxy captured this exact turn id
-		}
-		if shapeKeys[sid][shapeKeyOf(model, in, out, cr, cc)] {
-			return // level-2 dedup: proxy twin by minute-less shape
-		}
-		s := ensureSession(sessions, sid, tool, smodel, root)
-		t, ok := parseTS(ts)
+	if err := loadRows(ctx, db, jsonlQ, since, opts, func(r loadedRow) {
+		t, ok := parseTS(r.ts)
 		if !ok {
 			return
 		}
-		s.Rows = append(s.Rows, TurnFact{TS: t, Model: model, Input: in, Output: out, CacheRead: cr, CacheCreation: cc, CacheCreation1h: cc1, Reasoning: reasoning, Fast: fast != 0, Source: "jsonl"})
+		ps := pend(r.sid)
+		ps.tool, ps.model = r.tool, r.smodel
+		ps.root = r.root
+		ps.tokenFacts = append(ps.tokenFacts, TurnFact{TS: t, Model: r.model, Input: r.in, Output: r.out, CacheRead: r.cr, CacheCreation: r.cc, CacheCreation1h: r.cc1, Reasoning: r.reasoning, Fast: r.fast != 0, Source: "jsonl"})
+		ps.tokens = append(ps.tokens, sessionmsg.TokenRow{
+			SourceEventID: r.eventID, MessageID: r.messageID, TurnID: r.turnID,
+			Timestamp: r.ts, Model: r.model,
+			Input: r.in, Output: r.out, CacheRead: r.cr, CacheCreation: r.cc,
+			CacheCreation1h: r.cc1, Reasoning: r.reasoning, WebSearchRequests: r.ws,
+			CostUSD: r.cost, Fast: r.fast != 0, SourceFileHash: r.fileHash,
+		})
 	}); err != nil {
 		return nil, fmt.Errorf("advisor.LoadFacts: jsonl rows: %w", err)
+	}
+
+	for _, sid := range pendingOrder {
+		ps := pending[sid]
+		if len(ps.tokens) == 0 {
+			continue
+		}
+		v := sessionVerdicts(ps.tool, ps.model, ps.proxies, ps.tokens)
+		s := ensureSession(sessions, sid, ps.tool, ps.model, ps.root)
+		for j, ri := range ps.proxyIdx {
+			s.Rows[ri].Output = v.ProxyOutput[j]
+			s.Rows[ri].Reasoning = v.ProxyReasoning[j]
+			s.Rows[ri].Fast = s.Rows[ri].Fast || v.ProxyInheritedFast[j]
+		}
+		for j, tf := range ps.tokenFacts {
+			if v.TokenCounted[j] {
+				s.Rows = append(s.Rows, tf)
+			}
+		}
 	}
 
 	f := &Facts{WindowDays: opts.WindowDays, Now: now}
@@ -116,6 +157,32 @@ func LoadFacts(ctx context.Context, db *sql.DB, opts Options) (*Facts, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+// pendingSession holds one session's proxy rows (as indexes into its
+// SessionFacts.Rows) and transcript rows until the dedup verdicts are known.
+type pendingSession struct {
+	tool, model, root string
+	proxyIdx          []int
+	proxies           []sessionmsg.ProxyRow
+	tokenFacts        []TurnFact
+	tokens            []sessionmsg.TokenRow
+}
+
+// sessionVerdicts runs sessionmsg.DeriveVerdicts over one session's rows,
+// shaped the way the node's session detail header hands them to Derive
+// (internal/store.NodeSessionVerdicts is the store-side twin; advisor cannot
+// import internal/store): a blank row model falls back to the session's, the
+// session's tool is stamped on each token row, and shadow pairing and the
+// session-cumulative reconciliation follow the tool's registry capabilities,
+// never its name.
+func sessionVerdicts(tool, sessionModel string, proxies []sessionmsg.ProxyRow, tokens []sessionmsg.TokenRow) sessionmsg.Verdicts {
+	ic, _ := integration.For(tool)
+	return sessionmsg.SessionVerdicts(proxies, tokens, sessionModel, tool, sessionmsg.Caps{
+		ShadowCapable:     ic.TokenTier.OutputOnlyShadow,
+		ReasoningDisjoint: ic.TokenTier.ReasoningDisjoint,
+		SessionCumulative: ic.TokenTier.SessionCumulative,
+	})
 }
 
 // scopeFilter appends the optional project + tool predicates; scopeArgs
@@ -142,11 +209,21 @@ func scopeArgs(opts Options) []any {
 	return args
 }
 
+// loadedRow is one scanned row of either union arm (fields a given arm
+// does not carry are zero).
+type loadedRow struct {
+	sid, tool, smodel, root, ts, model, eventID string
+	in, out, cr, cc, cc1, reasoning, fast       int64
+	compOrig, compOut, ws                       int64
+	cost                                        float64
+	messageID, turnID, fileHash                 string
+	ttfb, totalMS                               int64
+	stop                                        string
+}
+
 // loadRows runs one of the two union-arm queries, binding the optional
 // project filter, and feeds each row to fn.
-func loadRows(ctx context.Context, db *sql.DB, q, since string, opts Options,
-	fn func(sid, tool, smodel, root, ts, model, eventID string, in, out, cr, cc, cc1, reasoning, fast, compOrig, compOut int64),
-) error {
+func loadRows(ctx context.Context, db *sql.DB, q, since string, opts Options, fn func(loadedRow)) error {
 	args := append([]any{since}, scopeArgs(opts)...)
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -154,12 +231,13 @@ func loadRows(ctx context.Context, db *sql.DB, q, since string, opts Options,
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var sid, tool, smodel, root, ts, model, eventID string
-		var in, out, cr, cc, cc1, reasoning, fast, compOrig, compOut int64
-		if err := rows.Scan(&sid, &tool, &smodel, &root, &ts, &model, &eventID, &in, &out, &cr, &cc, &cc1, &reasoning, &fast, &compOrig, &compOut); err != nil {
+		var r loadedRow
+		if err := rows.Scan(&r.sid, &r.tool, &r.smodel, &r.root, &r.ts, &r.model, &r.eventID,
+			&r.in, &r.out, &r.cr, &r.cc, &r.cc1, &r.reasoning, &r.fast, &r.compOrig, &r.compOut,
+			&r.ws, &r.cost, &r.messageID, &r.turnID, &r.fileHash, &r.ttfb, &r.totalMS, &r.stop); err != nil {
 			return err
 		}
-		fn(sid, tool, smodel, root, ts, model, eventID, in, out, cr, cc, cc1, reasoning, fast, compOrig, compOut)
+		fn(r)
 	}
 	return rows.Err()
 }
@@ -171,13 +249,6 @@ func ensureSession(m map[string]*SessionFacts, sid, tool, smodel, root string) *
 		m[sid] = s
 	}
 	return s
-}
-
-// shapeKeyOf mirrors cost/summary.go's minute-less sessionShapeKey —
-// deliberately NO minute bucket (codex's rollout flush lands ~10s after the
-// proxy logs the request; ~15% of turns straddle a minute boundary).
-func shapeKeyOf(model string, in, out, cr, cc int64) string {
-	return fmt.Sprintf("%s|%d|%d|%d|%d", model, in, out, cr, cc)
 }
 
 func parseTS(s string) (time.Time, bool) {

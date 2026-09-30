@@ -60,6 +60,12 @@ var guiHosts = map[string]GUILaunchSpec{
 				{Name: "GOOGLE_GEMINI_BASE_URL", Suffix: ""},
 			},
 			ColdStartOnly: true,
+			// Grounded live 2026-09-27 (backlog item 8): inside a VS Code
+			// Remote / WSL integrated terminal `code` resolves to
+			// ~/.vscode-server/bin/<commit>/bin/remote-cli/code, which only
+			// asks the running Windows-side window (VSCODE_IPC_HOOK_CLI) to
+			// open the folder — no new process ever sees the injected env.
+			HandoffPathSegments: []string{"remote-cli"},
 			Reason: "cold start ONLY: `code <dir>` hands off to an already-running window, and that " +
 				"process never re-reads its environment (inventory §4.3 open question 1). The wrap reaches " +
 				"only the extensions that SPAWN a vendor CLI and inherit the process env (Claude Code " +

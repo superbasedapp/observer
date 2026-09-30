@@ -1,0 +1,652 @@
+/* SuperBased shared motion layer.
+ *
+ * ONE owner for every keyframe and composite motion class used by the
+ * application surfaces (web/, web2/, webcloud/). Each app's entry CSS imports
+ * this right after tokens.css. Timing comes from the motion tokens in
+ * tokens.css (--dur-*, --ease-*, --stagger); the JS mirror is
+ * shared/lib/motion.ts.
+ *
+ * Rules this file keeps (docs/app-design-system.md "Motion"):
+ *   - animate transform + opacity only (compositor-friendly; no width /
+ *     height / top / box-shadow animation, so no layout or paint thrash);
+ *   - never delay first paint: skeletons render instantly, and an enter
+ *     animation starts from a visible-enough state within one frame;
+ *   - prefers-reduced-motion collapses every token duration to 0 and stops
+ *     infinite loops (the block at the bottom).
+ */
+
+/* ---------------------------------------------------------------- keyframes */
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* Indeterminate sweep for the DataTable loading stripe. */
+@keyframes datatable-stripe {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+@keyframes sb-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sb-fade-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes sb-page-in {
+  from {
+    opacity: 0.001;
+    transform: translate3d(0, 6px, 0) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes sb-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes sb-slide-in-right {
+  from {
+    opacity: 0;
+    transform: translate3d(16px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Global "updating" bar: a short segment sweeping across the top edge. */
+@keyframes sb-progress {
+  0% {
+    transform: translateX(-100%) scaleX(0.35);
+  }
+  50% {
+    transform: translateX(60%) scaleX(0.6);
+  }
+  100% {
+    transform: translateX(260%) scaleX(0.35);
+  }
+}
+
+/* Aurora accent: two soft brand blobs drifting behind a hero surface. Only
+   transform animates; the gradients are painted once. */
+@keyframes sb-aurora-drift {
+  0% {
+    transform: translate3d(-8%, -6%, 0) rotate(0deg) scale(1);
+  }
+  50% {
+    transform: translate3d(6%, 4%, 0) rotate(8deg) scale(1.08);
+  }
+  100% {
+    transform: translate3d(-8%, -6%, 0) rotate(0deg) scale(1);
+  }
+}
+
+@keyframes sb-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  80%,
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+/* A number that just changed flashes a soft accent underline. */
+@keyframes sb-value-flash {
+  0% {
+    opacity: 0;
+    transform: scaleX(0.2);
+  }
+  30% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scaleX(1);
+  }
+}
+
+/* ------------------------------------------------------- loading placeholders */
+
+/* The shared Skeleton primitive emits `animate-shimmer`. The highlight comes
+   from --skel-hl so it is visible in BOTH themes. */
+/* The sweep is an absolutely placed ::after, so the host is its containing
+   block and clips it. A Tailwind `absolute` / `fixed` on the host still wins
+   (utilities come later in the cascade). */
+.animate-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.animate-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--skel-hl) 50%,
+    transparent 100%
+  );
+  animation: shimmer 1.6s var(--ease) infinite;
+}
+
+/* A horizontal bar grows to its inline transform: scaleX(pct) (no `to`
+   frame, so the element's own transform is the end state). Use with
+   origin-left. Width is never animated. */
+@keyframes sb-bar-grow {
+  from {
+    transform: scaleX(0);
+  }
+}
+.sb-bar-grow {
+  /* backwards (not both): once the grow ends nothing is filled forward, so
+     the transition below owns later data changes. */
+  animation: sb-bar-grow var(--dur-slower) var(--ease-out) backwards;
+  /* A data change eases the bar to its new length. */
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+
+/* ------------------------------------------------------------- enter motion */
+
+/* Route / page enter. No exit animation on purpose: the next page is never
+   held back waiting for the previous one to leave. */
+.sb-page-enter {
+  animation: sb-page-in var(--dur-slow) var(--ease-out) backwards;
+}
+
+/* Content that replaces a skeleton when data lands. */
+.sb-fade-in {
+  animation: sb-fade-in var(--dur) var(--ease-out) backwards;
+}
+
+.sb-fade-up {
+  animation: sb-fade-up var(--dur-slow) var(--ease-out) backwards;
+}
+
+.sb-scale-in {
+  animation: sb-scale-in var(--dur) var(--ease-out) backwards;
+}
+
+.sb-slide-in-right {
+  animation: sb-slide-in-right var(--dur-slow) var(--ease-out) backwards;
+}
+
+/* Nav-rail expand: the labels a collapsed sidebar hid fade in with a short
+   slide from the icon column. The rail's width switches in one frame (one
+   layout, never a width tween); this and the content column's FLIP slide
+   (shared/lib/motion.ts slideFromX) are the only visible motion. Applied only
+   after the viewer toggles, so a page load never replays it. */
+@keyframes sb-nav-reveal {
+  from {
+    opacity: 0;
+    transform: translate3d(-6px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.sb-nav-reveal {
+  animation: sb-nav-reveal var(--dur) var(--ease-out) backwards;
+}
+
+/* Staggered reveal: direct children fade up one after another. Capped at 12
+   steps so a long list never waits more than ~0.4 s for its last item. The
+   index can be overridden per child with style="--sb-i: N". */
+.sb-stagger > * {
+  animation: sb-fade-up var(--dur-slow) var(--ease-out) backwards;
+  animation-delay: calc(var(--sb-i, 0) * var(--stagger));
+}
+.sb-stagger > :nth-child(2) { --sb-i: 1; }
+.sb-stagger > :nth-child(3) { --sb-i: 2; }
+.sb-stagger > :nth-child(4) { --sb-i: 3; }
+.sb-stagger > :nth-child(5) { --sb-i: 4; }
+.sb-stagger > :nth-child(6) { --sb-i: 5; }
+.sb-stagger > :nth-child(7) { --sb-i: 6; }
+.sb-stagger > :nth-child(8) { --sb-i: 7; }
+.sb-stagger > :nth-child(9) { --sb-i: 8; }
+.sb-stagger > :nth-child(10) { --sb-i: 9; }
+.sb-stagger > :nth-child(11) { --sb-i: 10; }
+.sb-stagger > :nth-child(n + 12) { --sb-i: 11; }
+
+/* ---------------------------------------------------------- stale / updating */
+
+/* A panel whose data belongs to the PREVIOUS filter while the new response is
+   in flight: dimmed (opacity only) and inert to the pointer so a stale row is
+   not clicked by mistake. The transition-delay keeps a fast response from
+   flickering the panel at all. */
+.sb-stale-able {
+  transition: opacity var(--dur) var(--ease);
+}
+.sb-stale {
+  opacity: 0.5;
+  transition: opacity var(--dur) var(--ease) 180ms;
+  pointer-events: none;
+}
+
+/* Tiny "updating" chip dot. */
+.sb-updating-dot {
+  position: relative;
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+.sb-updating-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: sb-ping 1.2s var(--ease-out) infinite;
+}
+
+/* Global top progress bar (TopProgress primitive). Hidden until a foreground
+   fetch has run for 250 ms, so quick responses never flash it. */
+.sb-progress {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+.sb-progress[data-active="true"] {
+  opacity: 1;
+  transition-delay: 250ms;
+}
+.sb-progress::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  background: var(--brand-grad);
+  box-shadow: 0 0 8px var(--accent-ring);
+  animation: sb-progress 1.1s var(--ease-in-out) infinite;
+}
+.sb-progress[data-active="false"]::after {
+  animation-play-state: paused;
+}
+
+/* The flash under an AnimatedNumber whose value just changed. */
+.sb-value {
+  position: relative;
+  display: inline-block;
+}
+.sb-value[data-flash="true"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--brand-grad);
+  transform-origin: left center;
+  animation: sb-value-flash 900ms var(--ease-out) forwards;
+}
+
+/* ------------------------------------------------------- micro-interactions */
+
+/* Lift on hover, settle on press. transform only. */
+.sb-lift {
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
+  will-change: auto;
+}
+@media (hover: hover) {
+  .sb-lift:hover {
+    transform: translate3d(0, -2px, 0);
+  }
+}
+.sb-lift:active {
+  transform: translate3d(0, 0, 0) scale(0.99);
+}
+
+.sb-press {
+  transition: transform var(--dur-instant) var(--ease);
+}
+.sb-press:active {
+  transform: scale(0.97);
+}
+
+/* A soft spotlight that follows the pointer across a card. The position is
+   written to --sb-mx / --sb-my by the Spotlight helper (one rAF-throttled
+   pointermove listener); only the overlay's opacity transitions. */
+.sb-spotlight {
+  position: relative;
+  isolation: isolate;
+}
+.sb-spotlight::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    420px circle at var(--sb-mx, 50%) var(--sb-my, 0%),
+    var(--accent-soft),
+    transparent 45%
+  );
+  transition: opacity var(--dur) var(--ease);
+}
+@media (hover: hover) {
+  .sb-spotlight:hover::before {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------------ aurora */
+
+/* Signature accent behind a hero surface (the dashboard's first panel). The
+   host needs position:relative + overflow:hidden (the Aurora primitive sets
+   both). Pure decoration: aria-hidden, pointer-events none. */
+.sb-aurora {
+  position: absolute;
+  inset: -40%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.55;
+  background:
+    radial-gradient(40% 35% at 25% 30%, color-mix(in srgb, var(--brand-from) 28%, transparent), transparent 70%),
+    radial-gradient(35% 30% at 75% 65%, color-mix(in srgb, var(--brand-to) 24%, transparent), transparent 70%);
+  animation: sb-aurora-drift 18s var(--ease-in-out) infinite;
+  will-change: transform;
+}
+:root[data-theme="light"] .sb-aurora {
+  opacity: 0.35;
+}
+
+/* ------------------------------------------------ brand + live + illustration
+   (2026-09-28 dashboard visual upgrade). Brand loader: the SuperBased mark
+   (U+259E: two squares on the upper-right / lower-left diagonal) hops to the
+   other diagonal and back; the BrandLoader primitive. Uses --brand-blueprint
+   (tokens.css). */
+@keyframes sb-quad-a {
+  0%, 20%   { transform: translate(0, 0); }
+  35%, 70%  { transform: translate(-100%, 0); }
+  85%, 100% { transform: translate(0, 0); }
+}
+@keyframes sb-quad-b {
+  0%, 20%   { transform: translate(0, 0); }
+  35%, 70%  { transform: translate(100%, 0); }
+  85%, 100% { transform: translate(0, 0); }
+}
+.sb-brand-loader {
+  --sb-loader-size: 28px;
+  position: relative;
+  display: inline-block;
+  width: var(--sb-loader-size);
+  height: var(--sb-loader-size);
+  border-radius: calc(var(--sb-loader-size) * 0.22);
+  background: var(--brand-blueprint, #2647e8);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--brand-blueprint, #2647e8) 50%, transparent),
+    0 6px 24px -8px color-mix(in oklab, var(--brand-blueprint, #2647e8) 70%, transparent);
+}
+.sb-brand-loader::before,
+.sb-brand-loader::after {
+  content: "";
+  position: absolute;
+  width: 28%;
+  height: 28%;
+  border-radius: 1.5px;
+  background: var(--brand-blueprint-ink, #fff);
+  animation: sb-quad-a 1.6s var(--ease-in-out) infinite;
+}
+.sb-brand-loader::before { left: 50%; top: 22%; }
+.sb-brand-loader::after  { left: 22%; top: 50%; animation-name: sb-quad-b; }
+
+/* Stroke draw-in — for sparklines, trend lines and illustrations. Put it
+   on an SVG <path>/<polyline>; set pathLength="1" on the element so the
+   dash maths is size-independent. */
+@keyframes sb-draw {
+  from { stroke-dashoffset: 1; }
+  to   { stroke-dashoffset: 0; }
+}
+.sb-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  animation: sb-draw var(--dur-slower) var(--ease-out) both;
+}
+
+/* Area fill that fades in after the line finishes. */
+.sb-draw-fill {
+  animation: sb-fade-in var(--dur-slow) var(--ease-out) var(--dur-slower) both;
+}
+
+/* Illustration idle — empty-state art breathes very slowly (a 2px float
+   on the accent squares only; the line work stays still). */
+@keyframes sb-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-2px); }
+}
+.sb-float { animation: sb-float 4.8s var(--ease-in-out) infinite; }
+.sb-float-delay { animation-delay: -2.4s; }
+
+/* Blinking caret for terminal-flavoured empty states / "waiting for first
+   session" copy. */
+@keyframes sb-caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.sb-caret { animation: sb-caret 1.1s steps(1, end) infinite; }
+
+/* Live status dot with a halo — builds on the existing sb-ping keyframes.
+   <span class="sb-live-dot" data-tone="success|warn|danger|info"></span> */
+.sb-live-dot {
+  --tone: var(--success);
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--tone);
+}
+.sb-live-dot[data-tone="warn"]   { --tone: var(--warn); }
+.sb-live-dot[data-tone="danger"] { --tone: var(--danger); }
+.sb-live-dot[data-tone="info"]   { --tone: var(--info); }
+.sb-live-dot[data-tone="accent"] { --tone: var(--accent); }
+.sb-live-dot[data-tone="idle"]   { --tone: var(--fg-4); }
+.sb-live-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--tone);
+  animation: sb-ping 1.6s var(--ease-out) infinite;
+}
+.sb-live-dot[data-tone="idle"]::after { display: none; }
+.sb-live-dot[data-still]::after { display: none; }
+
+/* Tool stack — overlapping tool marks (like avatar stacks) for rows that
+   span several tools (projects, developers, teams). Hover fans them out. */
+.sb-tool-stack { display: inline-flex; align-items: center; }
+.sb-tool-stack > * {
+  margin-left: -5px;
+  box-shadow: 0 0 0 2px var(--bg-2);
+  transition: margin var(--dur-fast) var(--ease-out);
+}
+.sb-tool-stack > :first-child { margin-left: 0; }
+@media (hover: hover) {
+  .sb-tool-stack:hover > * { margin-left: 2px; }
+  .sb-tool-stack:hover > :first-child { margin-left: 0; }
+}
+
+/* Hairline — a 1px brand top border for hero cards and
+   the KPI strip (static; no animation). */
+.sb-hairline { position: relative; }
+.sb-hairline::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--brand-blueprint, #2647e8), color-mix(in oklab, var(--brand-blueprint, #2647e8) 20%, transparent));
+  opacity: 0.9;
+  border-radius: inherit;
+}
+
+/* Success check — a checkmark that draws itself (approvals, "saved",
+   "all clear"). Use on a <path pathLength="1"> with .sb-draw-check. */
+.sb-draw-check {
+  stroke-dasharray: 1;
+  animation: sb-draw var(--dur-slow) var(--ease-out) var(--dur-fast) both;
+}
+
+/* ------------------------------------------------------------ reduced motion */
+
+/* ---------------------------------------------------------------------------
+   Live-signal additions (WS8). */
+
+/* Flowing edge dashes on a graph edge (<path class="sb-dash-flow">): the
+   dash pattern walks along the path in the direction it is drawn. */
+@keyframes sb-dash-flow {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+.sb-dash-flow {
+  stroke-dasharray: 4 8;
+  animation: sb-dash-flow 1.2s linear infinite;
+}
+
+/* Typing dots ("the assistant is thinking"): three <span>s that rise in turn
+   (shared/primitives/TypingDots.tsx). */
+@keyframes sb-typing {
+  0%,
+  70%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+.sb-typing > span {
+  animation: sb-typing 1.2s var(--ease-in-out) infinite;
+}
+.sb-typing > span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.sb-typing > span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+/* Attention pulse for a count that needs the viewer (an approvals badge):
+   a soft warn-tone halo, no movement. */
+@keyframes sb-attention {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 0%, transparent);
+  }
+}
+.sb-attention {
+  animation: sb-attention 2s var(--ease-in-out) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-instant: 0ms;
+    --dur-fast: 0ms;
+    --dur: 0ms;
+    --dur-slow: 0ms;
+    --dur-slower: 0ms;
+    --stagger: 0ms;
+  }
+  /* Catch-all for utilities that do not read the tokens (Tailwind's
+     transition-* / animate-spin, recharts, third-party widgets). animationend
+     still fires, so nothing waiting on it hangs. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .sb-aurora,
+  .sb-updating-dot::after,
+  .animate-shimmer::after {
+    animation: none !important;
+  }
+  /* A static full-width bar still says "updating" without movement. */
+  .sb-progress::after {
+    animation: none !important;
+    transform: none;
+    opacity: 0.6;
+  }
+  .sb-lift:hover,
+  .sb-lift:active,
+  .sb-press:active {
+    transform: none;
+  }
+  /* 2026-09-28 additions: loaders freeze, dots stop pinging, illustrations
+     and draw-ins render in their final state. */
+  .sb-brand-loader::before,
+  .sb-brand-loader::after,
+  .sb-float,
+  .sb-caret,
+  .sb-live-dot::after,
+  .sb-draw,
+  .sb-draw-fill,
+  .sb-draw-check,
+  .sb-dash-flow,
+  .sb-typing > span,
+  .sb-attention {
+    animation: none !important;
+  }
+  .sb-tool-stack > * {
+    transition: none;
+  }
+  /* Nav-rail collapse: labels appear in their final state. */
+  .sb-nav-reveal {
+    animation: none !important;
+  }
+}

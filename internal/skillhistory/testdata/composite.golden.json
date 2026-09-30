@@ -1,0 +1,366 @@
+{
+  "Skills": [
+    {
+      "Key": "project:.claude/skills/deploy",
+      "Scope": "project",
+      "Dir": ".claude/skills/deploy",
+      "Name": "deploy",
+      "Names": [
+        "deploy"
+      ],
+      "Present": true,
+      "Tools": [
+        "claude-code"
+      ],
+      "Ambiguous": false,
+      "Current": {
+        "InGit": "committed",
+        "Worktree": "",
+        "HeadVersion": "aaaaaaaa",
+        "CannotMatch": ""
+      },
+      "MovedFrom": null,
+      "Versions": [
+        {
+          "ID": "aaaaaaaa",
+          "BlobOID": "aaaaaaaa11111111111111111111111111111111",
+          "Ordinal": 1,
+          "FirstSeen": "2026-09-01T05:20:00Z",
+          "IntroducedBy": {
+            "SHA": "1111111111111111111111111111111111111111",
+            "CommittedAt": "2026-09-01T05:20:00Z",
+            "Subject": "add deploy skill",
+            "Reachable": true
+          },
+          "ReintroducedIn": [
+            "3333333333333333333333333333333333333333"
+          ],
+          "InCommits": true,
+          "ObservedFirst": "2026-09-01T08:20:00Z",
+          "ObservedLast": "2026-09-01T12:03:00Z",
+          "SessionsAvailable": 1,
+          "Invocations": 1
+        },
+        {
+          "ID": "bbbbbbbb",
+          "BlobOID": "bbbbbbbb22222222222222222222222222222222",
+          "Ordinal": 2,
+          "FirstSeen": "2026-09-01T07:00:00Z",
+          "IntroducedBy": {
+            "SHA": "2222222222222222222222222222222222222222",
+            "CommittedAt": "2026-09-01T07:00:00Z",
+            "Subject": "tighten deploy",
+            "Reachable": true
+          },
+          "ReintroducedIn": null,
+          "InCommits": true,
+          "ObservedFirst": "2026-09-01T07:50:00Z",
+          "ObservedLast": "2026-09-01T07:50:00Z",
+          "SessionsAvailable": 1,
+          "Invocations": 0
+        }
+      ],
+      "Commits": [
+        {
+          "SHA": "1111111111111111111111111111111111111111",
+          "CommittedAt": "2026-09-01T05:20:00Z",
+          "Subject": "add deploy skill",
+          "Reachable": true,
+          "IsMerge": false,
+          "Status": "A",
+          "SkillMDChanged": true,
+          "Files": 1,
+          "Version": "aaaaaaaa"
+        },
+        {
+          "SHA": "2222222222222222222222222222222222222222",
+          "CommittedAt": "2026-09-01T07:00:00Z",
+          "Subject": "tighten deploy",
+          "Reachable": true,
+          "IsMerge": false,
+          "Status": "M",
+          "SkillMDChanged": true,
+          "Files": 1,
+          "Version": "bbbbbbbb"
+        },
+        {
+          "SHA": "3333333333333333333333333333333333333333",
+          "CommittedAt": "2026-09-01T08:40:00Z",
+          "Subject": "revert",
+          "Reachable": true,
+          "IsMerge": false,
+          "Status": "M",
+          "SkillMDChanged": true,
+          "Files": 1,
+          "Version": "aaaaaaaa"
+        }
+      ],
+      "Invocations": {
+        "Measurable": true,
+        "Count": 1,
+        "Last": "2026-09-01T12:03:00Z"
+      }
+    },
+    {
+      "Key": "user:~/.claude/skills/tidy",
+      "Scope": "user",
+      "Dir": "~/.claude/skills/tidy",
+      "Name": "tidy",
+      "Names": [
+        "tidy"
+      ],
+      "Present": true,
+      "Tools": [
+        "claude-code"
+      ],
+      "Ambiguous": false,
+      "Current": {
+        "InGit": "not_in_project_git",
+        "Worktree": "",
+        "HeadVersion": "",
+        "CannotMatch": ""
+      },
+      "MovedFrom": null,
+      "Versions": [
+        {
+          "ID": "cccccccc",
+          "BlobOID": "cccccccc33333333333333333333333333333333",
+          "Ordinal": 1,
+          "FirstSeen": "2026-09-01T07:50:00Z",
+          "IntroducedBy": null,
+          "ReintroducedIn": null,
+          "InCommits": false,
+          "ObservedFirst": "2026-09-01T07:50:00Z",
+          "ObservedLast": "2026-09-01T12:00:00Z",
+          "SessionsAvailable": 2,
+          "Invocations": 0
+        }
+      ],
+      "Commits": [],
+      "Invocations": {
+        "Measurable": true,
+        "Count": 0,
+        "Last": "0001-01-01T00:00:00Z"
+      }
+    }
+  ],
+  "Sessions": [
+    {
+      "ID": "now",
+      "Tool": "claude-code",
+      "StartedAt": "2026-09-01T12:00:00Z",
+      "Relation": "",
+      "ParentID": "",
+      "ParentInWindow": false
+    },
+    {
+      "ID": "cx",
+      "Tool": "codex",
+      "StartedAt": "2026-09-01T09:30:00Z",
+      "Relation": "",
+      "ParentID": "",
+      "ParentInWindow": false
+    },
+    {
+      "ID": "mid",
+      "Tool": "claude-code",
+      "StartedAt": "2026-09-01T07:50:00Z",
+      "Relation": "",
+      "ParentID": "",
+      "ParentInWindow": false
+    },
+    {
+      "ID": "old",
+      "Tool": "claude-code",
+      "StartedAt": "2026-09-01T04:30:00Z",
+      "Relation": "",
+      "ParentID": "",
+      "ParentInWindow": false
+    }
+  ],
+  "Spans": [
+    {
+      "SkillKey": "project:.claude/skills/deploy",
+      "FromSession": "old",
+      "ToSession": "old",
+      "From": "2026-09-01T04:30:00Z",
+      "To": "2026-09-01T04:30:00Z",
+      "Sessions": 1,
+      "Observed": {
+        "State": "not_captured",
+        "Version": "",
+        "Changed": null,
+        "LineEndings": false,
+        "Source": "",
+        "Reason": ""
+      },
+      "Head": {
+        "State": "reflog_unavailable",
+        "Version": "",
+        "SHA": "",
+        "Candidates": null,
+        "Reason": ""
+      }
+    },
+    {
+      "SkillKey": "project:.claude/skills/deploy",
+      "FromSession": "mid",
+      "ToSession": "mid",
+      "From": "2026-09-01T07:50:00Z",
+      "To": "2026-09-01T07:50:00Z",
+      "Sessions": 1,
+      "Observed": {
+        "State": "changed_during_session",
+        "Version": "bbbbbbbb",
+        "Changed": [
+          "bbbbbbbb",
+          "aaaaaaaa"
+        ],
+        "LineEndings": false,
+        "Source": "",
+        "Reason": ""
+      },
+      "Head": {
+        "State": "committed",
+        "Version": "bbbbbbbb",
+        "SHA": "",
+        "Candidates": null,
+        "Reason": ""
+      }
+    },
+    {
+      "SkillKey": "project:.claude/skills/deploy",
+      "FromSession": "now",
+      "ToSession": "now",
+      "From": "2026-09-01T12:00:00Z",
+      "To": "2026-09-01T12:00:00Z",
+      "Sessions": 1,
+      "Observed": {
+        "State": "observed",
+        "Version": "aaaaaaaa",
+        "Changed": null,
+        "LineEndings": true,
+        "Source": "",
+        "Reason": ""
+      },
+      "Head": {
+        "State": "committed",
+        "Version": "aaaaaaaa",
+        "SHA": "",
+        "Candidates": null,
+        "Reason": ""
+      }
+    },
+    {
+      "SkillKey": "user:~/.claude/skills/tidy",
+      "FromSession": "old",
+      "ToSession": "old",
+      "From": "2026-09-01T04:30:00Z",
+      "To": "2026-09-01T04:30:00Z",
+      "Sessions": 1,
+      "Observed": {
+        "State": "not_captured",
+        "Version": "",
+        "Changed": null,
+        "LineEndings": false,
+        "Source": "",
+        "Reason": ""
+      },
+      "Head": {
+        "State": "not_in_project_git",
+        "Version": "",
+        "SHA": "",
+        "Candidates": null,
+        "Reason": ""
+      }
+    },
+    {
+      "SkillKey": "user:~/.claude/skills/tidy",
+      "FromSession": "mid",
+      "ToSession": "now",
+      "From": "2026-09-01T07:50:00Z",
+      "To": "2026-09-01T12:00:00Z",
+      "Sessions": 2,
+      "Observed": {
+        "State": "observed",
+        "Version": "cccccccc",
+        "Changed": null,
+        "LineEndings": false,
+        "Source": "",
+        "Reason": ""
+      },
+      "Head": {
+        "State": "not_in_project_git",
+        "Version": "",
+        "SHA": "",
+        "Candidates": null,
+        "Reason": ""
+      }
+    }
+  ],
+  "Cells": [
+    {
+      "SkillKey": "project:.claude/skills/deploy",
+      "SessionID": "mid",
+      "Observed": {
+        "State": "changed_during_session",
+        "Version": "bbbbbbbb",
+        "Changed": [
+          "bbbbbbbb",
+          "aaaaaaaa"
+        ],
+        "LineEndings": false,
+        "Source": "",
+        "Reason": ""
+      },
+      "Head": {
+        "State": "committed",
+        "Version": "bbbbbbbb",
+        "SHA": "2222222222222222222222222222222222222222",
+        "Candidates": null,
+        "Reason": ""
+      },
+      "Invoked": null
+    },
+    {
+      "SkillKey": "project:.claude/skills/deploy",
+      "SessionID": "now",
+      "Observed": {
+        "State": "observed",
+        "Version": "aaaaaaaa",
+        "Changed": null,
+        "LineEndings": true,
+        "Source": "",
+        "Reason": ""
+      },
+      "Head": {
+        "State": "committed",
+        "Version": "aaaaaaaa",
+        "SHA": "3333333333333333333333333333333333333333",
+        "Candidates": null,
+        "Reason": ""
+      },
+      "Invoked": [
+        {
+          "At": "2026-09-01T12:03:00Z",
+          "State": "version",
+          "Version": "aaaaaaaa"
+        }
+      ]
+    }
+  ],
+  "Unmatched": [
+    {
+      "Tool": "claude-code",
+      "Name": "superpowers:plan",
+      "Count": 1
+    }
+  ],
+  "Ambiguous": [],
+  "Truncated": false,
+  "ObservedSince": "2026-09-01T07:50:00Z",
+  "SnapshotCapabilities": {
+    "claude-code": true,
+    "codex": false
+  }
+}

@@ -1,155 +1,151 @@
-import { useEffect, useRef, useState } from "react";
-import { fetchJSON, type QueryParams } from "./api";
+import { useCallback } from "react";
+import { createQueryCache } from "@shared/lib/queryCache";
+import { useQuery, useQueryActivity } from "@shared/lib/useQuery";
+import { buildUrl, fetchJSON, type QueryParams } from "./api";
+import { describeApiFailure } from "./apiFailure";
 
-// Window-level CustomEvent emitted by the TopBar's Refresh button.
-// Every useApi instance listens and bumps its tick — gives the
-// operator a single "reload everything" affordance without
-// per-hook plumbing.
+// Window-level CustomEvent emitted by the TopBar's Refresh button (and a few
+// settings flows). One module-level listener refetches every key that has a
+// mounted subscriber - one request per key, not one per component.
 const REFRESH_EVENT = "dashboard-refresh";
+
+/**
+ * apiCache is the node dashboard's single query cache (shared/lib/queryCache).
+ * Every useApi call reads through it, so N components polling the same
+ * endpoint share one request and one timer (the old per-component hook sent
+ * 3-4 identical /api/status requests per 5 s tick), and a page you navigate
+ * back to paints its last response immediately while it revalidates.
+ */
+export const apiCache = createQueryCache();
+
+if (typeof window !== "undefined") {
+  window.addEventListener(REFRESH_EVENT, () => apiCache.refetchActive());
+}
+
+/** Number of foreground requests in flight (drives the TopBar progress bar). */
+export function useApiActivity(): number {
+  return useQueryActivity(apiCache);
+}
 
 export type ApiState<T> = {
   data: T | null;
   loading: boolean;
   error: Error | null;
   reload: () => void;
+  /**
+   * The data on screen belongs to the previous filter / page (same endpoint)
+   * and the new response is in flight. Dim it (staleClass / the `stale`
+   * prop on StatCard, ChartShell, Card) instead of pretending it is current.
+   */
+  isStale: boolean;
+  /** The data on screen is being revalidated in the background. */
+  isRefreshing: boolean;
+  /** Epoch ms of the response on screen (0 = none yet). */
+  updatedAt: number;
+  /**
+   * True when `error` is a denial (HTTP 403): pass it to ChartState's
+   * `denied` so the panel renders the shared permission-denied state, never
+   * the failed-to-load card. False while there is no error. `error` stays
+   * set alongside it, so a caller that does not read `denied` renders
+   * exactly as before. Classified by lib/apiFailure.ts.
+   */
+  denied: boolean;
+  /** HTTP status of the failure on screen, or null (none, or no response). */
+  status: number | null;
+  /** The permission key the server's 403 named, when it named one. */
+  deniedPermission: string | null;
 };
 
 // UseApiOptions configures optional refetch behaviour. Both fields
 // default to "no auto refresh" — callers explicitly opt in for pages
 // where the underlying data evolves while the user watches (live
 // Antigravity-CLI capture, Session Detail mid-conversation).
-export type UseApiOptions = {
+export type UseApiOptions<T = unknown, S = T> = {
   // Keep a failed read visible until a later read succeeds. Consent-sensitive
   // controls must not re-enable merely because a refresh has started.
   retainErrorOnRefresh?: boolean;
   // refreshMs polls the endpoint every N milliseconds. <=0 disables
   // (default). Pauses while the document is hidden unless
-  // refreshWhenHidden is set — saves the proxy / dashboard server
-  // from doing pointless work for a backgrounded tab.
+  // refreshWhenHidden is set. Pollers of the same endpoint share one timer
+  // at the fastest requested interval.
   refreshMs?: number;
   // refreshWhenHidden keeps the timer running while the tab is in
   // the background. Default false; the visible-only behaviour is the
   // right call for browser UI, but the option exists for headless
   // smoke tests.
   refreshWhenHidden?: boolean;
+  // select narrows the reader to a slice of the payload: `data` becomes the
+  // selected value, and the reader re-renders only when that slice changes
+  // by value (shared/lib/useQuery.ts). Use it wherever a page or a large
+  // component reads a few fields of a payload that changes on every poll
+  // (/api/status stamps uptime per request), so the poll does not re-render
+  // the whole page. With select, isRefreshing / updatedAt are not re-render
+  // triggers.
+  select?: (data: T) => S;
 };
 
-// useApi fetches `path` with `params` on mount and whenever `deps`
-// changes. Pages typically pass [win, tool, project] from useFilters
-// so a filter change re-fires every query.
+function pathOf(key: string): string {
+  const q = key.indexOf("?");
+  return q < 0 ? key : key.slice(0, q);
+}
+
+// Keep the previous response on screen (flagged isStale) only while the
+// SAME endpoint is re-queried with different params - a filter change. A
+// different path is a different resource (another session id): show its
+// skeleton rather than the previous entity's data.
+function samePath(prevKey: string, nextKey: string): boolean {
+  return pathOf(prevKey) === pathOf(nextKey);
+}
+
+// useApi fetches `path` with `params` on mount and whenever the resulting
+// URL or an entry of `deps` changes. Pages typically pass [win, tool,
+// project] from useFilters so a filter change re-fires every query.
 //
-// Aborts in-flight requests on unmount + on rapid filter changes so
-// stale responses can't clobber fresh ones. No caching — the dashboard
-// is point-in-time enough that re-fetching on filter change is the
-// right call.
-//
-// When opts.refreshMs > 0, the hook also self-polls on that interval
-// so pages observing live capture (Sessions, Session Detail, status
-// surfaces) pick up new rows without operator interaction.
-export function useApi<T>(
+// Reads go through the shared query cache: concurrent requests for the same
+// URL are deduplicated, polling is shared per URL, a remount paints the
+// cached response at once (stale-while-revalidate), and in-flight requests
+// are aborted when their last reader unmounts. The returned `loading` is
+// true only when there is nothing to show; a filter change keeps the old
+// data with isStale=true so the page can dim it.
+export function useApi<T, S = T>(
   path: string | null,
   params?: QueryParams,
   deps: unknown[] = [],
-  opts?: UseApiOptions,
-): ApiState<T> {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(path != null);
-  const [error, setError] = useState<Error | null>(null);
-  const [tick, setTick] = useState(0);
-  const abortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    function onRefresh() {
-      setTick((t) => t + 1);
-    }
-    window.addEventListener(REFRESH_EVENT, onRefresh);
-    return () => window.removeEventListener(REFRESH_EVENT, onRefresh);
-  }, []);
-
-  // Auto-refetch loop. Off by default; opts.refreshMs > 0 turns it
-  // on. The timer fires setTick which re-runs the fetch effect via
-  // the [tick, ...deps] dependency list below. Tab-visibility gating
-  // is applied at fire-time rather than via visibilitychange listeners
-  // so the user-facing surface is one tick latency, not zero.
-  const refreshMs = opts?.refreshMs ?? 0;
-  const refreshWhenHidden = opts?.refreshWhenHidden ?? false;
-  const retainErrorOnRefresh = opts?.retainErrorOnRefresh ?? false;
-  useEffect(() => {
-    if (refreshMs <= 0 || path == null) return;
-    const id = window.setInterval(() => {
-      if (!refreshWhenHidden && typeof document !== "undefined" && document.visibilityState === "hidden") {
-        return;
-      }
-      setTick((t) => t + 1);
-    }, refreshMs);
-    return () => window.clearInterval(id);
-  }, [refreshMs, refreshWhenHidden, path]);
-
-  // hasDataRef tracks whether we've ever populated data for the
-  // CURRENT path, so background refetches (auto-refresh ticks,
-  // REFRESH_EVENT bumps) don't toggle loading=true and cause
-  // skeleton/spinner flicker on top of valid already-rendered
-  // content. Resets when path changes (different resource → user
-  // expects a brief loading state on the new one).
-  const hasDataRef = useRef(false);
-  useEffect(() => {
-    hasDataRef.current = false;
-  }, [path]);
-  useEffect(() => {
-    if (!path) {
-      setLoading(false);
-      return;
-    }
-    abortRef.current?.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
-    if (!hasDataRef.current) {
-      setLoading(true);
-    }
-    if (!retainErrorOnRefresh) setError(null);
-    fetchJSON<T>(path, params, { signal: ac.signal })
-      .then((v) => {
-        if (ac.signal.aborted) return;
-        setError(null);
-        // Skip setData when the response is byte-identical to what
-        // we already have. Auto-refresh tickers fire every N seconds
-        // even on idle sessions; without this guard, every tick
-        // creates a new object reference and forces React to
-        // reconcile every descendant — visible as flicker even when
-        // nothing actually changed. JSON.stringify is reliable for
-        // structured API payloads (no circular refs, key order is
-        // stable for plain objects) and cheap enough at the scale
-        // of a single API response.
-        setData((prev) => {
-          if (prev !== null) {
-            try {
-              if (JSON.stringify(prev) === JSON.stringify(v)) {
-                return prev;
-              }
-            } catch {
-              // Fall through to replace on any stringify failure.
-            }
-          }
-          return v;
-        });
-        hasDataRef.current = true;
-      })
-      .catch((err: unknown) => {
-        if (ac.signal.aborted) return;
-        const e = err instanceof Error ? err : new Error(String(err));
-        if (e.name === "AbortError") return;
-        setError(e);
-      })
-      .finally(() => {
-        if (!ac.signal.aborted) setLoading(false);
-      });
-    return () => ac.abort();
-    // path is in the dep list so callers can omit it from deps when
-    // it's a literal string. params is serialized by callers into deps
-    // (e.g. [win, tool] over passing the whole params object) because
-    // a stable identity isn't guaranteed.
+  opts?: UseApiOptions<T, S>,
+): ApiState<S> {
+  const key = path == null ? null : buildUrl(path, params);
+  const fetcher = useCallback(
+    (signal: AbortSignal) => fetchJSON<T>(path as string, params, { signal }),
+    // The fetcher is read through a ref inside useQuery; identity is moot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, tick, retainErrorOnRefresh, ...deps]);
-
-  return { data, loading, error, reload: () => setTick((t) => t + 1) };
+    [key],
+  );
+  const q = useQuery<T, S>(apiCache, key, fetcher, deps, {
+    refreshMs: opts?.refreshMs,
+    refreshWhenHidden: opts?.refreshWhenHidden,
+    keepPrevious: samePath,
+    select: opts?.select,
+  });
+  const retain = opts?.retainErrorOnRefresh ?? false;
+  const raw = q.error;
+  const err =
+    raw == null ? null : raw instanceof Error ? raw : new Error(String(raw));
+  // Without retainErrorOnRefresh a refetch hides the old error while it runs
+  // (the previous hook cleared it at request start).
+  const error = retain || !(q.isRefreshing || q.loading) ? err : null;
+  // The denial reading follows the error's visibility: no error on screen,
+  // no denial either.
+  const failure = error == null ? null : describeApiFailure(raw);
+  return {
+    data: q.data,
+    loading: q.loading,
+    error,
+    denied: failure?.denied ?? false,
+    status: failure?.status ?? null,
+    deniedPermission: failure?.permission ?? null,
+    reload: q.reload,
+    isStale: q.isStale,
+    isRefreshing: q.isRefreshing,
+    updatedAt: q.updatedAt,
+  };
 }

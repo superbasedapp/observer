@@ -1,3 +1,4 @@
+import type { LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   Button,
@@ -6,6 +7,7 @@ import {
   Select,
   SettingRow,
   Toggle,
+  SuccessCheck,
 } from "@/components/primitives";
 import type { ConfigResponse } from "@/lib/types";
 import { markRestartPending } from "@/lib/restartPending";
@@ -48,8 +50,11 @@ export function StructuredConfigSection({
   badge,
   footer,
   readOnly,
+  icon,
 }: {
   spec: SectionSpec;
+  /** The section glyph from the Settings SECTIONS table (card title). */
+  icon?: LucideIcon;
   config: ConfigResponse | null;
   description?: string;
   badge?: React.ReactNode;
@@ -190,6 +195,7 @@ export function StructuredConfigSection({
           {badge}
         </span>
       }
+      icon={icon}
       sub={description ?? spec.description}
     >
       <div className="space-y-4">
@@ -256,7 +262,7 @@ export function StructuredConfigSection({
             Reset
           </Button>
           {savedMsg && (
-            <span className="text-[11.5px] text-success">{savedMsg}</span>
+            <SuccessCheck label={savedMsg} className="!text-[11.5px]" />
           )}
           {err && <span className="text-[11.5px] text-danger">{err}</span>}
         </div>

@@ -308,6 +308,18 @@ func buildProxy(ctx context.Context, configPath, recipeName string, portOverride
 	// feature is off: opts.Guard stays nil and the proxy is
 	// byte-identical to the pre-guard baseline.
 	wireGuardProxy(ctx, cfg, s, &opts, logger)
+	// Agent Access P4 (mcprelay_wire.go): the ONE production binding of the
+	// node MCP relay handle. Under [mcp_relay].enabled this stores the
+	// process-wide processMCPRelay handle (which the tools.mcp_access
+	// policy-resource publisher, the policy-state point reader and the
+	// daemon's relay runtime goroutine in start.go all read), binds the
+	// proxy tools[] seam on opts and the MCP-access lookup on the SAME
+	// per-process Guard wireGuardProxy just composed (nil when guard is off:
+	// the lookup is then simply not bound). ngov is nil here by design:
+	// `observer start` builds the node-governance handle after buildProxy
+	// and attaches it via processMCPRelay.Load().SetGovernance. With
+	// [mcp_relay].enabled=false this is a no-op that binds nothing.
+	wireMCPRelay(cfg, s, nil, &opts, lookupProcessGuard(cfg.Observer.DBPath), logger)
 	// P1-10: construct the self-obs sink once for the proxy lifetime.
 	// Handed to wireRouting for Decide sampling; Shutdown on cleanup.
 	selfObsSink, selfObsCleanup, serr := buildSelfObsSink(cfg, logger)
@@ -428,6 +440,11 @@ func wireCacheTrack(cfg config.Config, s *store.Store, opts *proxy.Options, logg
 		logger.Info("cachetrack: disabled by config")
 		return
 	}
+	// Install the PUBLISHED min-cacheable prefixes before the engine starts
+	// observing, so the very first turn is graded against the same thresholds
+	// every later one will be (mincacheable_wire.go). No-op when neither the
+	// embedded snapshot nor a node-local feed names a model.
+	applyMinCacheableOverrides(context.Background(), s, logger)
 	engine := cachetrack.NewEngine(cfg.CacheTrack.MaxTrackedSessions)
 	opts.CacheEngine = engine
 	opts.CacheSink = s
@@ -699,9 +716,8 @@ func (a authCacheAdapter) Set(sessionID string, creds proxy.AuthCredentials) {
 }
 
 // buildCodeIntelProvider returns the code-intelligence provider for the
-// proxy + MCP layers. The NATIVE engine is the only implementation (the
-// external codegraph dependency was decommissioned in Phase 4 — see
-// docs/codeintel/migration-from-codegraph.md). The engine is returned
+// proxy + MCP layers. The NATIVE in-process engine is the only
+// implementation (docs/codeintel/architecture.md). The engine is returned
 // even when its index is still empty: it self-heals as `observer start`
 // indexes projects, flipping Available() true mid-run without a restart.
 // Never returns nil — an unavailable provider degrades enrichment

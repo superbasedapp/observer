@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"sort"
 	"time"
-
-	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 )
 
 // Live session view (usability arc P6.1 / review §8.2): the "now
@@ -130,8 +128,23 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = rows.Err()
 
+		// One deduped spend load for every active session (the one session
+		// dedup rule, sessionmsg.DeriveVerdicts, applied by the cost engine),
+		// so a card's rollup agrees with the session detail header.
+		ids := make([]string, 0, len(active))
+		for _, ls := range active {
+			ids = append(ids, ls.SessionID)
+		}
+		bySession := map[string][]spendTurn{}
+		if len(ids) > 0 {
+			if turns, err := s.spendTurns(r.Context(), time.Time{}, time.Time{}, "", "", ids); err == nil {
+				for _, t := range turns {
+					bySession[t.SessionID] = append(bySession[t.SessionID], t)
+				}
+			}
+		}
 		for i := range active {
-			s.attachLiveRollup(r, &active[i])
+			attachLiveRollup(&active[i], bySession[active[i].SessionID])
 			s.attachLiveRecent(r, &active[i])
 		}
 	}
@@ -143,77 +156,25 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// attachLiveRollup fills one session's lifetime token/cost/model
-// rollup. Same proxy-dedup as the cost engine surfaces (top-sessions,
-// headline): api_turns rows win; token_usage rows whose
-// source_event_id matches a proxy turn's request_id are skipped so
-// proxied traffic isn't double-counted.
-func (s *Server) attachLiveRollup(r *http.Request, ls *liveSession) {
-	rows, err := s.db().QueryContext(r.Context(),
-		`WITH proxy_turn_ids AS (
-			SELECT request_id FROM api_turns
-			 WHERE session_id = ? AND request_id IS NOT NULL AND request_id != ''
-		),
-		combined AS (
-			SELECT at.model, at.input_tokens, at.output_tokens, at.cache_read_tokens,
-			       at.cache_creation_tokens, at.cache_creation_1h_tokens,
-			       0 AS reasoning_tokens, at.web_search_requests, at.cost_usd, at.timestamp
-			FROM api_turns at
-			WHERE at.session_id = ?
-			UNION ALL
-			SELECT tu.model, tu.input_tokens, tu.output_tokens, tu.cache_read_tokens,
-			       tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-			       tu.reasoning_tokens, tu.web_search_requests, tu.estimated_cost_usd, tu.timestamp
-			FROM token_usage tu
-			WHERE tu.session_id = ?
-			  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-			       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-		)
-		SELECT COALESCE(model, ''),
-		       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-		       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
-		       COALESCE(cache_creation_1h_tokens, 0), COALESCE(reasoning_tokens, 0),
-		       COALESCE(web_search_requests, 0), COALESCE(cost_usd, 0), COALESCE(timestamp, '')
-		FROM combined`,
-		ls.SessionID, ls.SessionID, ls.SessionID)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
+// attachLiveRollup fills one session's lifetime token/cost/model rollup
+// from its deduped spend rows (spendTurns), the substrate the session
+// detail header and the Sessions list also sum.
+func attachLiveRollup(ls *liveSession, turns []spendTurn) {
 	models := map[string]bool{}
-	for rows.Next() {
-		var (
-			model  string
-			bundle cost.TokenBundle
-			rec    float64
-			tsStr  string
-		)
-		if rows.Scan(&model, &bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning, &bundle.WebSearchRequests, &rec, &tsStr) != nil {
-			continue
-		}
+	for _, t := range turns {
+		bundle := t.Bundle
 		ls.Turns++
 		ls.Tokens.Input += bundle.Input
 		ls.Tokens.Output += bundle.Output
 		ls.Tokens.CacheRead += bundle.CacheRead
 		ls.Tokens.CacheWrite += bundle.CacheCreation + bundle.CacheCreation1h
-		if model != "" {
-			models[model] = true
+		if t.Model != "" {
+			models[t.Model] = true
 		}
-		// Date-effective pricing ladder: recorded cost wins; otherwise
-		// price at the rate in force on the row's own timestamp.
-		switch {
-		case rec > 0:
-			ls.CostUSD += rec
-		case s.opts.CostEngine != nil:
-			ts, _ := time.Parse(time.RFC3339Nano, tsStr)
-			if p, ok := s.opts.CostEngine.LookupAt(model, ts); ok {
-				ls.CostUSD += cost.Compute(p, bundle)
-			}
-		}
+		// The engine's price: recorded cost wins; otherwise the rate in
+		// force on the row's own timestamp.
+		ls.CostUSD += t.CostUSD
 	}
-	_ = rows.Err()
 	for m := range models {
 		ls.Models = append(ls.Models, m)
 	}

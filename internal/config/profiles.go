@@ -157,12 +157,9 @@ func ResolveCompression(master CompressionConfig, profileName string) (Compressi
 		return CompressionConfig{}, fmt.Errorf("config: profile %q: %w", profileName, err)
 	}
 	out := overlay.Compression
-	// Master-owned switches survive the overlay:
-	// the one conversation on/off gate (the product's compression
-	// switch — profiles must never auto-enable compression), and the
-	// code-graph integration block, which is an install-level
-	// capability (binaries, graph.db paths), not a tuning parameter.
+	// The master-owned switch survives the overlay: the one
+	// conversation on/off gate (the product's compression switch —
+	// profiles must never auto-enable compression).
 	out.Conversation.Enabled = master.Conversation.Enabled
-	out.CodeGraph = master.CodeGraph
 	return out, nil
 }

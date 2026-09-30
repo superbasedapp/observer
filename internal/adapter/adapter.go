@@ -188,6 +188,21 @@ type FileCursorSemantics struct {
 	// the total-size gate every adapter had before this field existed.
 	// Set it true only with the seek verified at a file:line.
 	StreamsFromCursor bool
+	// RewindsOnTruncate declares that the file's WRITER truncates or
+	// replaces it in place (log rotation: the old bytes move to a
+	// sibling and the same path restarts empty). For such a file a
+	// persisted cursor past EOF means "this is a new file", not "the
+	// adapter regressed": the parse re-reads from 0, the watcher stores
+	// the parse's NewOffset as-is instead of MAX-merging it with the
+	// stale cursor, and the poller re-processes the file even though its
+	// size sits at or below that stale cursor.
+	//
+	// Meaningful only for a byte-count cursor (CursorByteOffset or
+	// CursorNoActions). The zero value keeps the monotonic cursor every
+	// adapter had before this field existed. A rotation that regrows the
+	// new file PAST the stale cursor between two passes is not
+	// detectable from sizes alone; the adapter's own backfill covers it.
+	RewindsOnTruncate bool
 }
 
 // DeltaGateMeaningful reports whether the watcher's oversize DoS guard
@@ -195,12 +210,26 @@ type FileCursorSemantics struct {
 // cursor) instead of the file's total size.
 //
 // True only when the adapter declared StreamsFromCursor AND the cursor
-// is an actual byte offset — a watermark/encrypted/no-actions cursor is
-// not a byte count, so subtracting it from a size is a category error
-// (and watermark files are exempt from the guard entirely via
-// SizeGateMeaningful).
+// is a byte count into the file it tails: CursorByteOffset, or
+// CursorNoActions (a tailed token/usage/replay log — its cursor is the
+// same byte offset, only the zero-action fingerprint differs). A
+// watermark or encrypted cursor is not a streamed byte count, so
+// subtracting it from a size is a category error (and watermark files
+// are exempt from the guard entirely via SizeGateMeaningful).
 func (s FileCursorSemantics) DeltaGateMeaningful() bool {
-	return s.StreamsFromCursor && s.Kind == CursorByteOffset
+	return s.StreamsFromCursor && s.Kind.isByteCount()
+}
+
+// RewindMeaningful reports whether the watcher may store a LOWER cursor
+// than the persisted one for this file (see RewindsOnTruncate).
+func (s FileCursorSemantics) RewindMeaningful() bool {
+	return s.RewindsOnTruncate && s.Kind.isByteCount()
+}
+
+// isByteCount reports whether the cursor is a byte offset into a tailed
+// text file (as opposed to a watermark or an undecodable store).
+func (k CursorKind) isByteCount() bool {
+	return k == CursorByteOffset || k == CursorNoActions
 }
 
 // CursorSemantics is an OPTIONAL interface an adapter implements when
@@ -298,7 +327,8 @@ type ParseResult struct {
 	// transcript top-level `version`, ...) into a free-form semver
 	// string. The watcher plumbs them into store.IngestOptions; the
 	// store persists them node-local via Store.SetSessionToolVersion
-	// (migration 125) — never on the org-push wire. Additive: adapters
+	// (migration 125) and, since 2026-09-22, ship it to the org as
+	// unconditional metadata (server migration 161). Additive: adapters
 	// with no version field leave it nil and every stop on the path
 	// silently no-ops. The store write is first-wins-unless-empty so
 	// re-stamps are idempotent, and a malformed value is skipped.

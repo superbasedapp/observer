@@ -1,5 +1,7 @@
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useState } from "react";
+import { usePortalQuery } from "../lib/query";
+import { CardSkeleton, ErrorPanel } from "../components/LoadState";
 import { useNavigate } from "react-router-dom";
 import {
   ApiError,
@@ -27,11 +29,64 @@ import type {
   GrantsResult,
 } from "../api";
 import type { ConsentChoices } from "../api";
-import { copyFor, getConsentState, submitConsent } from "../consent";
+import { copyFor, getConsentState, loadConsent, submitConsent } from "../consent";
 import { Pill } from "@shared/primitives/Pill";
 import { CopyOnClick } from "@shared/primitives/CopyOnClick";
 import { fmtDateTime, fmtRelative, fmtShortId } from "@shared/lib/format";
 import { DELETION_STATE_LABELS, RETENTION_STATE_LABELS, labelFor } from "../lib/labels";
+import { Button } from "@shared/primitives/Button";
+import { ConfirmButton } from "@shared/primitives/ConfirmButton";
+import { Input } from "@shared/primitives/Input";
+import { SectionNav } from "@shared/primitives/SectionNav";
+import { RawIdHint } from "../components/RawIdHint";
+import { ErrorState } from "@shared/primitives/ErrorState";
+import { InlineLoading } from "@shared/primitives/Spinner";
+import { SuccessCheck } from "@shared/primitives/SuccessCheck";
+import { Card } from "@shared/primitives/Card";
+import { Toggle } from "@shared/primitives/Toggle";
+import { DisclosureChip, DisclosureChips, DisclosureMark } from "../components/Disclosure";
+import { byDisclosure, CONSENT_PURPOSE, orderPurposes } from "../lib/vocab";
+import { vocabIcon } from "@shared/lib/vocabIcons";
+import { PageHeader } from "@shared/primitives/PageHeader";
+import { CardHeader } from "@shared/primitives/CardHeader";
+import {
+  Ban,
+  Download,
+  FileCheck,
+  KeyRound,
+  LogIn,
+  LogOut,
+  MonitorSmartphone,
+  Share2,
+  Trash2,
+  type LucideIcon,
+} from "lucide-react";
+import { routeIcon } from "../lib/nav";
+
+// PRIVACY_SECTIONS: the in-page navigation for the long Privacy page (the
+// shared SectionNav), one row per section card. The same row gives the card
+// title its glyph and the jump chip its label, so the two never drift. The
+// destructive section is last; its card is the danger zone.
+type PrivacySectionId =
+  | "devices"
+  | "sessions"
+  | "sharing"
+  | "consents"
+  | "grants"
+  | "export"
+  | "delete";
+const PRIVACY_SECTIONS: { id: PrivacySectionId; label: string; icon: LucideIcon; tone?: "danger" }[] = [
+  { id: "devices", label: "Devices", icon: MonitorSmartphone },
+  { id: "sessions", label: "Signed-in sessions", icon: LogIn },
+  { id: "sharing", label: "Cloud sharing", icon: Share2 },
+  { id: "consents", label: "Consents", icon: FileCheck },
+  { id: "grants", label: "Standing grants", icon: KeyRound },
+  { id: "export", label: "Export", icon: Download },
+  { id: "delete", label: "Delete my data", icon: Trash2, tone: "danger" },
+];
+const SECTION_ICONS = Object.fromEntries(
+  PRIVACY_SECTIONS.map((sec) => [sec.id, sec.icon]),
+) as Record<PrivacySectionId, LucideIcon>;
 
 // The full-page navigation that kicks off WorkOS re-authentication for a
 // deletion request. The browser returns to return_to with a single-use
@@ -70,30 +125,22 @@ function takeStepUpIntent(): "deletion" | "export" {
 }
 
 function DevicesSection() {
-  const [data, setData] = useState<DevicesResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const q = usePortalQuery<DevicesResult>("privacy:devices", getDevices);
+  const data = q.data;
+  const load = q.reload;
+  const [actionError, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // The device whose revoke just succeeded: its row draws the success check.
+  const [revokedId, setRevokedId] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    setError(null);
-    getDevices()
-      .then(setData)
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : "failed to load"),
-      );
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
+  // Called by the ConfirmButton's second click: the in-place confirm step
+  // replaces the old window.confirm.
   async function onRevoke(id: string) {
-    if (!window.confirm("Revoke this device? It will no longer be able to sync.")) {
-      return;
-    }
     setBusyId(id);
+    setRevokedId(null);
     try {
       await revokeDevice(id);
+      setRevokedId(id);
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "revoke failed");
@@ -103,10 +150,13 @@ function DevicesSection() {
   }
 
   return (
-    <div className="card">
-      <h2>Devices</h2>
-      {error && <div className="banner banner-error">{error}</div>}
-      {!data && !error && <p className="muted">Loading devices...</p>}
+    <Card className="mb-4" id="devices">
+      <CardHeader icon={SECTION_ICONS.devices} title="Devices" />
+      {actionError && <div className="banner banner-error">{actionError}</div>}
+      {q.error && !data && (
+        <ErrorPanel what="devices" error={q.error} onRetry={q.reload} />
+      )}
+      {q.loading && <CardSkeleton lines={3} />}
       {data && data.devices.length === 0 && (
         <p className="muted small">No devices enrolled.</p>
       )}
@@ -124,21 +174,30 @@ function DevicesSection() {
                 </div>
               </div>
               {d.revoked ? (
-                <Pill variant="danger">Revoked</Pill>
+                <span className="inline-flex items-center gap-2">
+                  {revokedId === d.id && <SuccessCheck label="Device revoked" />}
+                  <Pill variant="danger">Revoked</Pill>
+                </span>
+              ) : revokedId === d.id ? (
+                <SuccessCheck label="Device revoked" />
               ) : (
-                <button
-                  className="btn btn-danger btn-sm"
-                  disabled={busyId === d.id}
-                  onClick={() => onRevoke(d.id)}
+                <ConfirmButton
+                  variant="danger-outline"
+                  size="sm"
+                  iconLeft={Ban}
+                  loading={busyId === d.id}
+                  confirmLabel="Revoke device?"
+                  armedNote="It will no longer be able to sync."
+                  onConfirm={() => void onRevoke(d.id)}
                 >
-                  {busyId === d.id ? "Revoking..." : "Revoke"}
-                </button>
+                  {busyId === d.id ? "Revoking" : "Revoke"}
+                </ConfirmButton>
               )}
             </li>
           ))}
         </ul>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -149,32 +208,19 @@ function DevicesSection() {
 // myself signed in somewhere else."
 function BrowserSessionsSection() {
   const navigate = useNavigate();
-  const [data, setData] = useState<BrowserSessionsResult | null>(null);
+  const q = usePortalQuery<BrowserSessionsResult>(
+    "privacy:browser-sessions",
+    getBrowserSessions,
+  );
+  const data = q.data;
+  const load = q.reload;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    setError(null);
-    getBrowserSessions()
-      .then(setData)
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : "failed to load"),
-      );
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
+  // Both sign-outs run on their ConfirmButton's second click (the in-place
+  // confirm step replaces the old window.confirm).
   async function onSignOutEverywhere() {
-    if (
-      !window.confirm(
-        "Sign out every other session on this account? This session stays signed in.",
-      )
-    ) {
-      return;
-    }
     setBusy(true);
     setError(null);
     setResult(null);
@@ -194,9 +240,6 @@ function BrowserSessionsSection() {
   }
 
   async function onSignOutThisDevice() {
-    if (!window.confirm("Sign out of this session too? You will need to sign in again.")) {
-      return;
-    }
     setBusy(true);
     setError(null);
     try {
@@ -214,11 +257,19 @@ function BrowserSessionsSection() {
     : 0;
 
   return (
-    <div className="card">
-      <h2>Signed-in sessions</h2>
+    <Card className="mb-4" id="sessions">
+      <CardHeader icon={SECTION_ICONS.sessions} title="Signed-in sessions" />
       {error && <div className="banner banner-error">{error}</div>}
-      {result && <div className="banner">{result}</div>}
-      {!data && !error && <p className="muted">Loading sessions...</p>}
+      {result && (
+        <div className="banner inline-flex items-center gap-2" role="status">
+          <SuccessCheck />
+          {result}
+        </div>
+      )}
+      {q.error && !data && (
+        <ErrorPanel what="sessions" error={q.error} onRetry={q.reload} />
+      )}
+      {q.loading && <CardSkeleton lines={3} />}
       {data && (
         <ul className="device-list">
           {data.sessions.map((s) => (
@@ -240,68 +291,67 @@ function BrowserSessionsSection() {
         </ul>
       )}
       <div className="action-row">
-        <button
-          className="btn btn-danger btn-sm"
-          type="button"
-          disabled={busy || otherCount === 0}
-          onClick={onSignOutEverywhere}
+        <ConfirmButton
+          variant="danger-outline"
+          size="sm"
+          iconLeft={LogOut}
+          disabled={otherCount === 0}
+          loading={busy}
+          confirmLabel="Sign out the other sessions?"
+          armedNote="This session stays signed in."
+          onConfirm={() => void onSignOutEverywhere()}
         >
-          {busy ? "Working..." : "Sign out everywhere else"}
-        </button>
-        <button
-          className="btn btn-ghost btn-sm"
-          type="button"
+          {busy ? "Working" : "Sign out everywhere else"}
+        </ConfirmButton>
+        <ConfirmButton
+          variant="ghost"
+          size="sm"
+          iconLeft={LogOut}
           disabled={busy}
-          onClick={onSignOutThisDevice}
+          confirmLabel="Sign out here too?"
+          armedNote="You will need to sign in again."
+          onConfirm={() => void onSignOutThisDevice()}
         >
           Sign out everywhere, including this session
-        </button>
+        </ConfirmButton>
       </div>
       {data && otherCount === 0 && (
         <p className="muted small">
           This is the only signed-in session on this account.
         </p>
       )}
-    </div>
+    </Card>
   );
 }
 
 function ConsentsSection() {
-  const [data, setData] = useState<ConsentsResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    getConsents()
-      .then((d) => {
-        if (live) setData(d);
-      })
-      .catch((err: unknown) => {
-        if (live) setError(err instanceof Error ? err.message : "failed to load");
-      });
-    return () => {
-      live = false;
-    };
-  }, []);
+  const q = usePortalQuery<ConsentsResult>("privacy:consents", getConsents);
+  const data = q.data;
 
   return (
-    <div className="card">
-      <h2>Consents</h2>
-      {error && <div className="banner banner-error">{error}</div>}
-      {!data && !error && <p className="muted">Loading consents...</p>}
+    <Card className="mb-4" id="consents">
+      <CardHeader icon={SECTION_ICONS.consents} title="Consents" />
+      {q.error && !data && (
+        <ErrorPanel what="consents" error={q.error} onRetry={q.reload} />
+      )}
+      {q.loading && <CardSkeleton lines={2} />}
       {data && data.purposes.length === 0 && (
         <p className="muted small">No purposes granted.</p>
       )}
       {data && data.purposes.length > 0 && (
         <ul className="breakdown">
-          {data.purposes.map((p) => (
+          {byDisclosure(CONSENT_PURPOSE, data.purposes).map((p) => (
             <li key={p}>
-              <span title={p}>{copyFor(p).label}</span>
+              <RawIdHint id={p} className="inline-flex items-center gap-2">
+                <DisclosureMark kind="purpose" id={p} />
+                {copyFor(p).label}
+              </RawIdHint>
+              <DisclosureChip kind="purpose" id={p} />
             </li>
           ))}
         </ul>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -318,10 +368,28 @@ function ConsentsSection() {
 // The scope line is the server's own `notice`: these are portal-plane
 // preferences, NOT the grant that lets a device upload. That grant is made and
 // withdrawn on the device.
+
 function CloudSharingSection() {
   const [state, setState] = useState<ConsentChoices | null>(getConsentState);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
+  // The purpose whose Grant / Revoke was just saved server-side: its row draws
+  // the success check beside the new On / Off state.
+  const [savedId, setSavedId] = useState<string | null>(null);
+
+  // Retry for a failed boot-time consent read: re-read the server state and
+  // adopt whatever it now says (loadConsent never rejects; a failure leaves
+  // the cache empty, so the error stays).
+  async function onReload() {
+    setReloading(true);
+    try {
+      await loadConsent();
+      setState(getConsentState());
+    } finally {
+      setReloading(false);
+    }
+  }
 
   async function setPurpose(id: string, granted: boolean) {
     if (state === null || state.choices === null) {
@@ -329,12 +397,14 @@ function CloudSharingSection() {
     }
     setError(null);
     setBusyId(id);
+    setSavedId(null);
     try {
       // Submit the WHOLE set with this one purpose changed: the endpoint
       // stores a complete choice set, so a partial body would read as
       // "everything else declined".
       const next: Record<string, boolean> = { ...state.choices, [id]: granted };
       setState(await submitConsent(next));
+      setSavedId(id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "could not save the change");
     } finally {
@@ -343,15 +413,19 @@ function CloudSharingSection() {
   }
 
   return (
-    <div className="card">
-      <h2>Cloud sharing</h2>
+    <Card className="mb-4" id="sharing">
+      <CardHeader icon={SECTION_ICONS.sharing} title="Cloud sharing" />
       {error && <div className="banner banner-error">{error}</div>}
-      {state === null && (
-        <p className="muted small">
-          Your cloud-sharing choices could not be loaded. Reload the page to try
-          again.
-        </p>
-      )}
+      {state === null &&
+        (reloading ? (
+          <InlineLoading block label="Loading your cloud-sharing choices" />
+        ) : (
+          <ErrorState
+            title="Could not load your cloud-sharing choices"
+            onRetry={() => void onReload()}
+            className="py-5"
+          />
+        ))}
       {state !== null && state.choices === null && (
         <p className="muted small">
           You have not been through the cloud-sharing setup screen yet.
@@ -359,33 +433,41 @@ function CloudSharingSection() {
       )}
       {state !== null &&
         state.choices !== null &&
-        state.purposes.map((p) => {
+        orderPurposes(state.purposes).map((p) => {
           const text = copyFor(p.id);
           const granted = state.choices?.[p.id] === true;
           return (
             <div key={p.id} className="grant-block">
               <div className="grant-head">
                 <span className="grant-title">
-                  {text.label}{" "}
+                  <DisclosureMark kind="purpose" id={p.id} /> {text.label}{" "}
                   {granted ? (
-                    <Pill variant="success">On</Pill>
+                    <Pill variant="success" icon={vocabIcon("featureState", "on")}>
+                      On
+                    </Pill>
                   ) : (
-                    <Pill variant="neutral">Off</Pill>
+                    <Pill variant="neutral" icon={vocabIcon("featureState", "off")}>
+                      Off
+                    </Pill>
+                  )}
+                  {savedId === p.id && busyId !== p.id && (
+                    <SuccessCheck label={granted ? "Granted" : "Revoked"} className="ml-1" />
                   )}
                 </span>
                 {!p.mandatory && (
-                  <button
-                    className={granted ? "btn btn-danger btn-sm" : "btn btn-sm"}
+                  <Button
+                    variant={granted ? "danger-outline" : "secondary"}
+                    size="sm"
                     type="button"
-                    disabled={busyId === p.id}
+                    loading={busyId === p.id}
                     onClick={() => setPurpose(p.id, !granted)}
                   >
                     {busyId === p.id
-                      ? "Saving..."
+                      ? "Saving"
                       : granted
                         ? "Revoke"
                         : "Grant"}
-                  </button>
+                  </Button>
                 )}
               </div>
               <p className="muted small grant-desc">{text.description}</p>
@@ -402,7 +484,7 @@ function CloudSharingSection() {
       {state !== null && state.notice && (
         <p className="disclosure">{state.notice}</p>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -413,29 +495,16 @@ function CloudSharingSection() {
 // inferred in the browser: every value is the server restating its own
 // registration row.
 function StandingGrantsSection() {
-  const [data, setData] = useState<GrantsResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    getGrants()
-      .then((d) => {
-        if (live) setData(d);
-      })
-      .catch((err: unknown) => {
-        if (live)
-          setError(err instanceof Error ? err.message : "failed to load");
-      });
-    return () => {
-      live = false;
-    };
-  }, []);
+  const q = usePortalQuery<GrantsResult>("privacy:grants", getGrants);
+  const data = q.data;
 
   return (
-    <div className="card">
-      <h2>Standing grants</h2>
-      {error && <div className="banner banner-error">{error}</div>}
-      {!data && !error && <p className="muted">Loading standing grants...</p>}
+    <Card className="mb-4" id="grants">
+      <CardHeader icon={SECTION_ICONS.grants} title="Standing grants" />
+      {q.error && !data && (
+        <ErrorPanel what="standing grants" error={q.error} onRetry={q.reload} />
+      )}
+      {q.loading && <CardSkeleton lines={3} />}
       {data && data.grants.length === 0 && (
         <p className="muted small">
           No standing grant has been registered on this account yet. One is
@@ -448,18 +517,23 @@ function StandingGrantsSection() {
           <div key={g.purpose} className="grant-block">
             <div className="grant-head">
               <span className="grant-title">
-                <span title={g.purpose}>{copyFor(g.purpose).label}</span>{" "}
+                <DisclosureMark kind="purpose" id={g.purpose} />{" "}
+                <RawIdHint id={g.purpose}>{copyFor(g.purpose).label}</RawIdHint>{" "}
                 {g.state === "revoked" ? (
-                  <Pill variant="danger">Revoked</Pill>
+                  <Pill variant="danger" icon={vocabIcon("credentialStatus", "revoked")}>
+                    Revoked
+                  </Pill>
                 ) : (
-                  <Pill variant="success">Active</Pill>
+                  <Pill variant="success" icon={vocabIcon("credentialStatus", "active")}>
+                    Active
+                  </Pill>
                 )}
               </span>
             </div>
             <ul className="breakdown">
               <li>
                 <span>Field classes</span>
-                <span>{g.field_classes.join(", ") || "none recorded"}</span>
+                <DisclosureChips kind="fieldClass" ids={g.field_classes} empty="none recorded" />
               </li>
               <li>
                 <span>Schema version</span>
@@ -527,15 +601,15 @@ function StandingGrantsSection() {
             </li>
             <li>
               <span>Retention</span>
-              <span title={data.retention_state}>
+              <RawIdHint id={data.retention_state}>
                 {labelFor(RETENTION_STATE_LABELS, data.retention_state)}
-              </span>
+              </RawIdHint>
             </li>
           </ul>
           <p className="disclosure">{data.retention_detail}</p>
         </>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -558,6 +632,9 @@ function ExportSection({
   const [busy, setBusy] = useState(false);
   const [exports, setExports] = useState<ExportResult[]>([]);
   const [downloading, setDownloading] = useState<string | null>(null);
+  // Set when an assembly request just succeeded (the new row is listed and
+  // its download starts): the section draws the success check.
+  const [assembled, setAssembled] = useState(false);
 
   const load = useCallback(() => {
     listExports()
@@ -570,6 +647,7 @@ function ExportSection({
   useEffect(load, [load]);
 
   function onAssembled(res: ExportResult) {
+    setAssembled(true);
     setExports((prev) => [res, ...prev.filter((e) => e.export_id !== res.export_id)]);
     // Offer the download immediately.
     void onDownload(res.export_id);
@@ -595,6 +673,7 @@ function ExportSection({
       return;
     }
     setBusy(true);
+    setAssembled(false);
     try {
       onAssembled(await requestExport(subject.trim()));
     } catch (err) {
@@ -615,6 +694,7 @@ function ExportSection({
     }
     setError(null);
     setBusy(true);
+    setAssembled(false);
     try {
       onAssembled(await requestExportWithStepUp(stepUpId));
       onConsumeStepUp();
@@ -634,14 +714,15 @@ function ExportSection({
     <ul className="export-list">
       {exports.map((e) => (
         <li key={e.export_id}>
-          <button
-            className="btn btn-ghost"
+          <Button
+            variant="ghost"
+            size="sm"
             type="button"
-            disabled={downloading === e.export_id}
+            loading={downloading === e.export_id}
             onClick={() => void onDownload(e.export_id)}
           >
-            {downloading === e.export_id ? "Downloading…" : "Download"}
-          </button>
+            {downloading === e.export_id ? "Downloading" : "Download"}
+          </Button>
           <span className="muted small">
             {" "}
             {Math.round(e.size_bytes / 1024)} KB · expires{" "}
@@ -653,8 +734,8 @@ function ExportSection({
   );
 
   return (
-    <div className="card">
-      <h2>Download your data</h2>
+    <Card className="mb-4" id="export">
+      <CardHeader icon={SECTION_ICONS.export} title="Download your data" />
       <p className="muted">
         Assemble a portable copy of your account data - your enrichment results
         and corrections, consent receipts, usage summary, and activity
@@ -663,26 +744,29 @@ function ExportSection({
         unrecoverable</strong>.
       </p>
       {error && <div className="banner banner-error">{error}</div>}
+      {assembled && <SuccessCheck label="Export assembled" className="mb-2" />}
       {existing}
       {authMode === "workos" ? (
         stepUpId === null ? (
-          <button className="btn" type="button" onClick={onReauthClick}>
+          <Button size="sm" type="button" onClick={onReauthClick}>
             Re-authenticate to export
-          </button>
+          </Button>
         ) : (
-          <button
-            className="btn"
+          <Button
+            size="sm"
             type="button"
-            disabled={busy}
+            loading={busy}
             onClick={onConfirmStepUp}
           >
-            {busy ? "Assembling…" : "Re-authentication confirmed - assemble export"}
-          </button>
+            {busy ? "Assembling" : "Re-authentication confirmed - assemble export"}
+          </Button>
         )
       ) : (
         <form onSubmit={onExportDev}>
-          <label htmlFor="exp-subject">Re-enter developer subject</label>
-          <input
+          <label htmlFor="exp-subject" className="field-label">
+            Re-enter developer subject
+          </label>
+          <Input
             id="exp-subject"
             type="text"
             autoComplete="off"
@@ -691,12 +775,12 @@ function ExportSection({
             onChange={(ev) => setSubject(ev.target.value)}
             disabled={busy}
           />
-          <button className="btn" type="submit" disabled={busy}>
-            {busy ? "Assembling…" : "Assemble export"}
-          </button>
+          <Button size="sm" type="submit" loading={busy} className="mt-3">
+            {busy ? "Assembling" : "Assemble export"}
+          </Button>
         </form>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -729,22 +813,30 @@ function DeleteSection({
     window.setTimeout(() => navigate("/"), 2500);
   }
 
-  async function onDeleteDev(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
+  // devFormError is the dev form's own validation, checked BEFORE the confirm
+  // step: an incomplete form fires on the first click (showing its error), a
+  // complete one arms the ConfirmButton, and the request goes out only on the
+  // second click. Enter in the field validates but never deletes.
+  function devFormError(): string | null {
     if (subject.trim().length === 0) {
-      setError("Re-enter your developer subject to confirm.");
-      return;
+      return "Re-enter your developer subject to confirm.";
     }
     if (!understood) {
-      setError("You must acknowledge the consequences.");
-      return;
+      return "You must acknowledge the consequences.";
     }
-    if (
-      !window.confirm(
-        "This permanently requests deletion of your data, cancels jobs, and revokes devices. Continue?",
-      )
-    ) {
+    return null;
+  }
+
+  function onSubmitDev(e: FormEvent) {
+    e.preventDefault();
+    setError(devFormError());
+  }
+
+  async function onDeleteDev() {
+    setError(null);
+    const invalid = devFormError();
+    if (invalid !== null) {
+      setError(invalid);
       return;
     }
     setBusy(true);
@@ -787,70 +879,74 @@ function DeleteSection({
 
   if (result) {
     return (
-      <div className="card card-danger">
-        <h2>Deletion requested</h2>
+      <Card className="mb-4" tone="danger" id="delete">
+        <CardHeader icon={SECTION_ICONS.delete} title="Deletion requested" />
         <div className="banner">
           Deletion request{" "}
           <CopyOnClick value={result.id} className="mono">
             {fmtShortId(result.id)}
           </CopyOnClick>{" "}
           is now{" "}
-          <strong title={result.state}>
+          <RawIdHint id={result.state} className="font-semibold">
             {labelFor(DELETION_STATE_LABELS, result.state)}
-          </strong>
+          </RawIdHint>
           .
           Jobs canceled: {result.jobs_canceled}. Devices revoked:{" "}
           {result.devices_revoked}. Tokens revoked: {result.tokens_revoked}.
         </div>
-        <p className="muted small">Signing you out…</p>
-      </div>
+        <InlineLoading size="sm" label="Signing you out" className="mt-2" />
+      </Card>
     );
   }
 
   if (authMode === "workos") {
     return (
-      <div className="card card-danger">
-        <h2>Delete my data</h2>
+      <Card className="mb-4" tone="danger" id="delete">
+        <CardHeader icon={SECTION_ICONS.delete} title="Delete my data" />
         <p className="muted">
           This cancels your enrichment jobs and revokes your devices. It
           requires re-authentication and a double confirmation.
         </p>
         {error && <div className="banner banner-error">{error}</div>}
         {stepUpId === null ? (
-          <button
-            className="btn btn-danger"
+          <Button
+            variant="danger-outline"
+            size="sm"
             type="button"
             onClick={onReauthClick}
           >
             Re-authenticate to delete
-          </button>
+          </Button>
         ) : (
-          <button
-            className="btn btn-danger"
+          <Button
+            variant="danger-outline"
+            size="sm"
             type="button"
-            disabled={busy}
+            loading={busy}
             onClick={onConfirmStepUp}
           >
             {busy
-              ? "Requesting..."
+              ? "Requesting"
               : "Re-authentication confirmed - permanently delete account"}
-          </button>
+          </Button>
         )}
-      </div>
+      </Card>
     );
   }
 
   return (
-    <div className="card card-danger">
-      <h2>Delete my data</h2>
+    <Card className="mb-4" tone="danger" id="delete">
+      <CardHeader icon={SECTION_ICONS.delete} title="Delete my data" />
       <p className="muted">
         This cancels your enrichment jobs and revokes your devices. It requires
         re-authentication and a double confirmation.
       </p>
       {error && <div className="banner banner-error">{error}</div>}
-      <form onSubmit={onDeleteDev}>
-        <label htmlFor="del-subject">Re-enter developer subject</label>
-        <input
+      <form onSubmit={onSubmitDev}>
+        <label htmlFor="del-subject" className="field-label">
+          Re-enter developer subject
+        </label>
+        <Input
           id="del-subject"
           type="text"
           autoComplete="off"
@@ -859,20 +955,32 @@ function DeleteSection({
           onChange={(e) => setSubject(e.target.value)}
           disabled={busy}
         />
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={understood}
-            onChange={(e) => setUnderstood(e.target.checked)}
+        <div className="mb-1.5 mt-3.5">
+          <Toggle
+            on={understood}
+            onChange={setUnderstood}
             disabled={busy}
+            label={
+              <span className="block text-left text-body leading-snug text-fg-1">
+                I understand this cancels jobs and revokes devices
+              </span>
+            }
           />
-          <span>I understand this cancels jobs and revokes devices</span>
-        </label>
-        <button className="btn btn-danger" type="submit" disabled={busy}>
-          {busy ? "Requesting..." : "Request deletion"}
-        </button>
+        </div>
+        <ConfirmButton
+          variant="danger-outline"
+          size="sm"
+          iconLeft={Trash2}
+          loading={busy}
+          requireConfirm={devFormError() === null}
+          confirmLabel="Permanently delete?"
+          armedNote="This requests deletion of your data, cancels jobs, and revokes devices."
+          onConfirm={() => void onDeleteDev()}
+        >
+          {busy ? "Requesting" : "Request deletion"}
+        </ConfirmButton>
       </form>
-    </div>
+    </Card>
   );
 }
 
@@ -907,12 +1015,13 @@ export function Privacy() {
 
   return (
     <div>
-      <h1>Privacy &amp; devices</h1>
-      <p className="muted small page-intro">
-        This portal runs no analytics and no third-party scripts of its own -
-        the only exception is Paddle.js, loaded on the Billing page and only
-        at the moment you open a checkout.
-      </p>
+      <PageHeader
+        title="Privacy & devices"
+        icon={routeIcon("/privacy")}
+        sub="This portal runs no analytics and no third-party scripts of its own - the only exception is Paddle.js, loaded on the Billing page and only at the moment you open a checkout."
+        className="mb-6"
+      />
+      <SectionNav items={PRIVACY_SECTIONS} className="mb-4" />
       <DevicesSection />
       <BrowserSessionsSection />
       <CloudSharingSection />

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -104,4 +105,29 @@ func emitBatch(w interface{ Write([]byte) (int, error) }, res scoring.BatchResul
 		return errors.New("some sessions failed to score — rerun with --session <id> for details")
 	}
 	return nil
+}
+
+// sessionScoreLoop is the daemon-lifetime driver for scoring.AutoScorer
+// (spec §15.2 "computed when session ends"). Same shape as commitScanLoop:
+// open its own config+DB, bail out quietly when [intelligence.scoring].auto is
+// off, and run the scorer for the rest of the daemon's life. Fail-soft: a
+// failed pass is logged and retried, never cancels proxy/watcher/dashboard.
+func sessionScoreLoop(ctx context.Context, configPath string) {
+	cfg, database, cleanup, err := loadConfigAndDB(ctx, configPath)
+	if err != nil {
+		return
+	}
+	defer cleanup()
+	sc := cfg.Intelligence.Scoring
+	if !sc.Auto {
+		return
+	}
+	scoring.NewAuto(scoring.New(database), scoring.AutoOptions{
+		Interval:   sc.Interval(),
+		Idle:       sc.Idle(),
+		MaxPerTick: sc.PassLimit(),
+		Lookback:   scoring.DefaultAutoLookback,
+		StartDelay: scoring.DefaultAutoStartDelay,
+		Logger:     newLogger(cfg.Observer.LogLevel),
+	}).Run(ctx)
 }

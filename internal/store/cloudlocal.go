@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/dataauthority"
+	"github.com/marmutapp/superbased-observer/internal/spendverdict"
 )
 
 // cloudlocal.go is the ONE store seam over the node-local cloud-intelligence
@@ -1601,23 +1603,22 @@ type CloudKindCount struct {
 // summed token usage plus the session row's own recorded scores. All of it is
 // already-aggregated counts — no content.
 type CloudSessionMetrics struct {
-	// TokensIn is SUM(token_usage.input_tokens). Adapters emit NET input (the
-	// cached portion lives in CacheReadTokens), so this needs no further
-	// netting here — see internal/intelligence/cost's TokenBundle contract.
-	TokensIn int
-	// TokensOut is SUM(token_usage.output_tokens).
-	TokensOut int
-	// CacheReadTokens is SUM(token_usage.cache_read_tokens).
-	CacheReadTokens int
-	// CacheCreationTokens is SUM(token_usage.cache_creation_tokens).
+	// TokensIn / TokensOut / CacheReadTokens / CacheCreationTokens /
+	// ReasoningTokens sum the session's counted rows - api_turns and
+	// token_usage deduplicated by the one session rule (loadCloudTokenMetrics),
+	// the session header's figures. Input is NET (the cached portion lives in
+	// CacheReadTokens); a twinned proxy row's output is its transcript twin's
+	// visible output, its reasoning the twin's.
+	TokensIn            int
+	TokensOut           int
+	CacheReadTokens     int
 	CacheCreationTokens int
-	// ReasoningTokens is SUM(token_usage.reasoning_tokens).
-	ReasoningTokens int
-	// CostUSD is SUM(token_usage.estimated_cost_usd) + SUM(api_turns.cost_usd).
-	// It is 0 for the many adapters that record no per-turn cost; the caller
-	// decides whether to fall back to a priced estimate.
+	ReasoningTokens     int
+	// CostUSD sums the counted rows' own recorded cost. It is 0 for the many
+	// adapters that record no per-turn cost; the caller decides whether to
+	// fall back to a priced estimate.
 	CostUSD float64
-	// RecordedRows is how many token_usage rows the sums covered (0 ⇒ the
+	// RecordedRows is how many counted rows the sums covered (0 => the
 	// session carried no billable usage at all).
 	RecordedRows int
 	// QualityScore / RedundancyRatio / ErrorRate come from the sessions row and
@@ -1626,7 +1627,7 @@ type CloudSessionMetrics struct {
 	RedundancyRatio float64
 	ErrorRate       float64
 	// Turns is the PER-ROW token substrate, in time order: one entry per
-	// token_usage row with that row's OWN model, timestamp and token bundle.
+	// counted row with that row's OWN model, timestamp and token bundle.
 	//
 	// It exists because a session's cost cannot be computed from the sums above.
 	// Pricing is per model AND date-effective, and several models price input in
@@ -1636,13 +1637,12 @@ type CloudSessionMetrics struct {
 	// prices each turn and sums the money; the engine's own contract says
 	// "aggregate AFTER pricing, not before".
 	//
-	// It is empty for a proxy-only session (no token_usage rows); see
-	// ProxyTurns.
+	// It carries every counted row, proxy and transcript alike.
 	Turns []CloudTokenTurn
-	// ProxyTurns is the same per-row substrate read from api_turns, used ONLY
-	// when the session has no token_usage rows at all. The two are never summed
-	// — a proxied session writes both, which is why the sums above pick one
-	// substrate rather than adding them.
+	// ProxyTurns is always empty: Turns carries the proxy rows the one
+	// session rule counts. It is kept so a caller of the older
+	// token_usage-else-api_turns split still compiles (it priced ProxyTurns
+	// only when Turns was empty).
 	ProxyTurns []CloudTokenTurn
 }
 
@@ -2073,128 +2073,91 @@ func loadCloudActionAggregates(ctx context.Context, db cloudReader, sessionID st
 	return nil
 }
 
-// loadCloudTokenMetrics reads the session's recorded token usage and cost from
-// the two substrates that can carry it: token_usage (the watcher/JSONL path)
-// and api_turns (the proxy path).
+// loadCloudTokenMetrics reads the session's token usage and recorded cost
+// from BOTH substrates that can carry it - token_usage (the watcher/JSONL
+// path) and api_turns (the proxy path) - deduplicated by the ONE session
+// rule, sessionmsg.Derive (over spendverdict.LoadSession's rows, the loader
+// every node reader of a session uses). A proxied session writes both an
+// api_turns row and its token_usage twin; the rule counts that turn once (the
+// proxy row, carrying its twin's visible output and reasoning), keeps a turn
+// only one side captured, pairs output-only shadow rows, and reconciles a
+// session-cumulative running total - so the sums, the per-row substrate and
+// the recorded cost here are the session header's figures.
 //
-// They are NOT summed. A proxied session writes BOTH — an api_turns row and its
-// token_usage twin — which is exactly why the dashboard's own cost read carries
-// a dedup CTE. Without that machinery here, summing would double-count every
-// proxied session. So: token_usage wins when it has rows (it is the broader
-// substrate), api_turns fills in when it is the only one, and the cost is the
-// MAX of the two sums rather than their total — an honest floor instead of an
-// inflated figure.
+// It replaced a substrate CHOICE (lane R2-ONERULE): token_usage when it had
+// rows, api_turns only when it was the whole story, and the recorded cost as
+// MAX of the two sums. That dropped every proxied turn the transcript missed
+// (and vice versa) and counted Copilot-family shadow rows twice.
+//
+// Turns carries every counted row, proxy and transcript alike, in time
+// order; ProxyTurns is always empty now (kept so a reader of the older split
+// still compiles - it only ever priced it when Turns was empty).
 func loadCloudTokenMetrics(ctx context.Context, db cloudReader, sessionID string, facts *CloudSessionFacts) error {
-	var (
-		rowsN                                     int
-		in, out, cacheRead, cacheCreate, reasonin sql.NullInt64
-		cost                                      sql.NullFloat64
-	)
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*), SUM(COALESCE(input_tokens, 0)), SUM(COALESCE(output_tokens, 0)),
-		        SUM(COALESCE(cache_read_tokens, 0)), SUM(COALESCE(cache_creation_tokens, 0)),
-		        SUM(COALESCE(reasoning_tokens, 0)), SUM(COALESCE(estimated_cost_usd, 0))
-		   FROM token_usage WHERE session_id = ?`, sessionID).
-		Scan(&rowsN, &in, &out, &cacheRead, &cacheCreate, &reasonin, &cost); err != nil {
-		return fmt.Errorf("store.LoadCloudEvidenceFacts: token metrics: %w", err)
+	rows, err := spendverdict.LoadSession(ctx, db, sessionID)
+	if err != nil {
+		return fmt.Errorf("store.LoadCloudEvidenceFacts: token rows: %w", err)
 	}
+	v := rows.Verdicts()
+	type stamped struct {
+		ts   string
+		turn CloudTokenTurn
+	}
+	var counted []stamped
+	for i, p := range rows.Proxies {
+		if !v.ProxyCounted[i] {
+			continue
+		}
+		counted = append(counted, stamped{p.Timestamp, CloudTokenTurn{
+			Model: p.Model, Timestamp: cloudParseTime(p.Timestamp),
+			Input: int(p.Input), Output: int(v.ProxyOutput[i]), CacheRead: int(p.CacheRead),
+			CacheCreation: int(p.CacheCreation), Reasoning: int(v.ProxyReasoning[i]),
+			CacheCreation1h: int(p.CacheCreation1h), WebSearchRequests: int(p.WebSearchRequests),
+			Fast:            p.Fast || v.ProxyInheritedFast[i],
+			RecordedCostUSD: proxyRecordedCost(p.CostUSD, p.Fast, v.ProxyInheritedFast[i]),
+		}})
+	}
+	for i, t := range rows.Tokens {
+		if !v.TokenCounted[i] {
+			continue
+		}
+		counted = append(counted, stamped{t.Timestamp, CloudTokenTurn{
+			Model: t.Model, Timestamp: cloudParseTime(t.Timestamp),
+			Input: int(t.Input), Output: int(t.Output), CacheRead: int(t.CacheRead),
+			CacheCreation: int(t.CacheCreation), Reasoning: int(t.Reasoning),
+			CacheCreation1h: int(t.CacheCreation1h), WebSearchRequests: int(t.WebSearchRequests),
+			Fast: t.Fast, RecordedCostUSD: t.CostUSD,
+		}})
+	}
+	// Time order with a deterministic tie-break (the two-digest protocol
+	// needs an unchanged session to rebuild identical bytes).
+	sort.SliceStable(counted, func(i, j int) bool { return counted[i].ts < counted[j].ts })
 	m := &facts.Metrics
-	m.RecordedRows = rowsN
-	m.TokensIn = int(in.Int64)
-	m.TokensOut = int(out.Int64)
-	m.CacheReadTokens = int(cacheRead.Int64)
-	m.CacheCreationTokens = int(cacheCreate.Int64)
-	m.ReasoningTokens = int(reasonin.Int64)
-	m.CostUSD = cost.Float64
-
-	var (
-		turnRows  int
-		turnCost  sql.NullFloat64
-		tIn, tOut sql.NullInt64
-	)
-	if err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*), SUM(COALESCE(cost_usd, 0)),
-		        SUM(COALESCE(input_tokens, 0)), SUM(COALESCE(output_tokens, 0))
-		   FROM api_turns WHERE session_id = ?`, sessionID).
-		Scan(&turnRows, &turnCost, &tIn, &tOut); err != nil {
-		return fmt.Errorf("store.LoadCloudEvidenceFacts: api_turns metrics: %w", err)
-	}
-	if turnRows > 0 && rowsN == 0 {
-		// Proxy-only session: api_turns is the whole token substrate.
-		m.TokensIn = int(tIn.Int64)
-		m.TokensOut = int(tOut.Int64)
-		m.RecordedRows = turnRows
-	}
-	if turnCost.Float64 > m.CostUSD {
-		m.CostUSD = turnCost.Float64
-	}
-
-	// The PER-ROW substrate, for date- and model-correct pricing (F5). Same
-	// substrate choice as the sums: token_usage when it has rows, api_turns only
-	// when it is the whole story — never both, or a proxied session double-counts.
-	if rowsN > 0 {
-		turns, err := loadCloudTokenTurns(ctx, db, `
-			SELECT COALESCE(model, ''), timestamp,
-			       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-			       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
-			       COALESCE(reasoning_tokens, 0), COALESCE(cache_creation_1h_tokens, 0),
-			       COALESCE(web_search_requests, 0), COALESCE(fast, 0),
-			       COALESCE(estimated_cost_usd, 0)
-			  FROM token_usage WHERE session_id = ?
-			 ORDER BY timestamp ASC, id ASC`, sessionID)
-		if err != nil {
-			return err
+	m.Turns = nil
+	for _, c := range counted {
+		t := c.turn
+		m.TokensIn += t.Input
+		m.TokensOut += t.Output
+		m.CacheReadTokens += t.CacheRead
+		m.CacheCreationTokens += t.CacheCreation
+		m.ReasoningTokens += t.Reasoning
+		if t.RecordedCostUSD > 0 {
+			m.CostUSD += t.RecordedCostUSD
 		}
-		m.Turns = turns
-		return nil
+		m.Turns = append(m.Turns, t)
 	}
-	if turnRows > 0 {
-		turns, err := loadCloudTokenTurns(ctx, db, `
-			SELECT COALESCE(model, ''), timestamp,
-			       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-			       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
-			       0, COALESCE(cache_creation_1h_tokens, 0),
-			       COALESCE(web_search_requests, 0), COALESCE(fast, 0),
-			       COALESCE(cost_usd, 0)
-			  FROM api_turns WHERE session_id = ?
-			 ORDER BY timestamp ASC, id ASC`, sessionID)
-		if err != nil {
-			return err
-		}
-		m.ProxyTurns = turns
-	}
+	m.RecordedRows = len(counted)
 	return nil
 }
 
-// loadCloudTokenTurns runs one per-turn token query and scans it into the
-// content-free CloudTokenTurn shape. Both substrates share it so their column
-// order can never drift apart.
-func loadCloudTokenTurns(ctx context.Context, db cloudReader, query, sessionID string) ([]CloudTokenTurn, error) {
-	rows, err := db.QueryContext(ctx, query, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("store.LoadCloudEvidenceFacts: token turns: %w", err)
+// proxyRecordedCost is a counted proxy row's recorded cost: its own, unless
+// its fast transcript twin lifted it to the fast tier, in which case the
+// recorded figure (priced at the standard wire tier) no longer stands and
+// the caller prices the row (the cost engine's rule).
+func proxyRecordedCost(cost float64, fast, inheritedFast bool) float64 {
+	if inheritedFast && !fast {
+		return 0
 	}
-	defer func() { _ = rows.Close() }()
-	var out []CloudTokenTurn
-	for rows.Next() {
-		var (
-			t    CloudTokenTurn
-			ts   string
-			fast int
-		)
-		if err := rows.Scan(&t.Model, &ts, &t.Input, &t.Output, &t.CacheRead,
-			&t.CacheCreation, &t.Reasoning, &t.CacheCreation1h, &t.WebSearchRequests,
-			&fast, &t.RecordedCostUSD); err != nil {
-			return nil, fmt.Errorf("store.LoadCloudEvidenceFacts: scan token turn: %w", err)
-		}
-		t.Fast = fast != 0
-		t.Timestamp = cloudParseTime(ts)
-		out = append(out, t)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store.LoadCloudEvidenceFacts: token turns: %w", err)
-	}
-	return out, nil
+	return cost
 }
 
 // cloudDefaultActionSample is the sample size used when a caller passes 0. It

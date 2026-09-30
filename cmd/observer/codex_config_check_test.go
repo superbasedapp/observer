@@ -258,7 +258,7 @@ func TestCodexConfigsRoutingToProxy_ProfileOverlay(t *testing.T) {
 // create-config-toml instruction so they know what to add.
 func TestCheckCodexConfigTOML_NoFileWarns(t *testing.T) {
 	f := newConfigCheckFixture(t)
-	warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL)
+	warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL, "")
 	if !strings.Contains(warn, "does not exist") {
 		t.Errorf("warn should name the missing file: %s", warn)
 	}
@@ -275,7 +275,7 @@ func TestCheckCodexConfigTOML_NoFileWarns(t *testing.T) {
 func TestCheckCodexConfigTOML_MissingKeyWarns(t *testing.T) {
 	f := newConfigCheckFixture(t)
 	f.writeConfigTOML(`model = "gpt-5-codex"` + "\n")
-	warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL)
+	warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL, "")
 	if !strings.Contains(warn, "no openai_base_url") {
 		t.Errorf("warn should name the missing key: %s", warn)
 	}
@@ -289,7 +289,7 @@ func TestCheckCodexConfigTOML_MissingKeyWarns(t *testing.T) {
 func TestCheckCodexConfigTOML_WrongURLWarns(t *testing.T) {
 	f := newConfigCheckFixture(t)
 	f.writeConfigTOML(`openai_base_url = "https://api.openai.com/v1"` + "\n")
-	warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL)
+	warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL, "")
 	if !strings.Contains(warn, `openai_base_url="https://api.openai.com/v1"`) {
 		t.Errorf("warn should show current value: %s", warn)
 	}
@@ -304,7 +304,7 @@ func TestCheckCodexConfigTOML_WrongURLWarns(t *testing.T) {
 func TestCheckCodexConfigTOML_CorrectURLSilent(t *testing.T) {
 	f := newConfigCheckFixture(t)
 	f.writeConfigTOML(`openai_base_url = "http://127.0.0.1:8820/v1"` + "\n")
-	if warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL); warn != "" {
+	if warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL, ""); warn != "" {
 		t.Errorf("expected silent success, got warning: %s", warn)
 	}
 }
@@ -323,7 +323,7 @@ func TestCheckCodexConfigTOML_TrailingSlashTolerated(t *testing.T) {
 		t.Run(tc, func(t *testing.T) {
 			f := newConfigCheckFixture(t)
 			f.writeConfigTOML(tc + "\n")
-			if warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL); warn != "" {
+			if warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL, ""); warn != "" {
 				t.Errorf("expected silent, got: %s", warn)
 			}
 		})
@@ -337,7 +337,7 @@ func TestCheckCodexConfigTOML_TrailingSlashTolerated(t *testing.T) {
 func TestCheckCodexConfigTOML_UnreadableFileSilentBestEffort(t *testing.T) {
 	f := newConfigCheckFixture(t)
 	f.writeConfigTOML("this is not valid toml = [\nbroken")
-	if warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL); warn != "" {
+	if warn := checkCodexConfigTOMLBaseURL([]string{f.codexHome}, testProxyURL, ""); warn != "" {
 		t.Errorf("expected silent best-effort, got: %s", warn)
 	}
 }
@@ -352,7 +352,7 @@ func TestCheckCodexConfigTOML_MultiRootIteration(t *testing.T) {
 	a.writeConfigTOML(`model = "gpt-5-codex"` + "\n")
 	b.writeConfigTOML(`openai_base_url = "https://api.openai.com/v1"` + "\n")
 
-	warn := checkCodexConfigTOMLBaseURL([]string{a.codexHome, b.codexHome}, testProxyURL)
+	warn := checkCodexConfigTOMLBaseURL([]string{a.codexHome, b.codexHome}, testProxyURL, "")
 	if !strings.Contains(warn, "no openai_base_url") {
 		t.Errorf("missing-key warn for first root absent: %s", warn)
 	}
@@ -367,7 +367,7 @@ func TestCheckCodexConfigTOML_MultiRootIteration(t *testing.T) {
 // TestCheckCodexConfigTOML_EmptyRootsListSilent pins the trivial
 // guard: zero roots → zero warnings, no panic.
 func TestCheckCodexConfigTOML_EmptyRootsListSilent(t *testing.T) {
-	if warn := checkCodexConfigTOMLBaseURL(nil, testProxyURL); warn != "" {
+	if warn := checkCodexConfigTOMLBaseURL(nil, testProxyURL, ""); warn != "" {
 		t.Errorf("expected silent for empty roots, got: %s", warn)
 	}
 }

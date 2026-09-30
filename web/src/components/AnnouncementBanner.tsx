@@ -5,6 +5,8 @@ import {
   useReleaseAnnouncement,
   type ReleaseAnnouncement,
 } from "@/lib/version";
+import { Icon, Tooltip } from "@/components/primitives";
+import { X } from "lucide-react";
 
 // AnnouncementBanner — the single banner surface for every announcement
 // rail (docs/plans/dashboard-announcements-banner-plan-2026-07-31.md §1).
@@ -158,15 +160,16 @@ export function AnnouncementBanner() {
           Details →
         </a>
       )}
-      <button
-        type="button"
-        onClick={dismiss}
-        aria-label="Dismiss announcement"
-        title="Dismiss"
-        className="shrink-0 rounded-2 border border-line-2 bg-bg-2 px-2 py-0.5 text-fg-2 hover:bg-bg-3"
-      >
-        ×
-      </button>
+      <Tooltip content="Dismiss">
+        <button
+          type="button"
+          onClick={dismiss}
+          aria-label="Dismiss announcement"
+          className="inline-flex shrink-0 items-center rounded-2 border border-line-2 bg-bg-2 px-1.5 py-1 text-fg-2 hover:bg-bg-3"
+        >
+          <Icon icon={X} size="xs" />
+        </button>
+      </Tooltip>
     </div>
   );
 }

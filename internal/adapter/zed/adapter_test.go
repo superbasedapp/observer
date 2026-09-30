@@ -15,6 +15,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/tooltax"
 )
 
 // buildTestDB creates a fresh threads.db at dir/threads.db containing one
@@ -449,19 +450,64 @@ func TestUnknownBlockKindIsSkippedNotFatal(t *testing.T) {
 
 func TestMapZedTool(t *testing.T) {
 	cases := map[string]string{
-		"read_file":        models.ActionReadFile,
-		"write_file":       models.ActionWriteFile,
-		"edit_file":        models.ActionEditFile,
-		"delete_path":      models.ActionEditFile,
-		"list_directory":   models.ActionSearchFiles,
-		"find_path":        models.ActionSearchFiles,
-		"terminal":         models.ActionRunCommand,
+		"read_file":      models.ActionReadFile,
+		"write_file":     models.ActionWriteFile,
+		"edit_file":      models.ActionEditFile,
+		"delete_path":    models.ActionEditFile,
+		"list_directory": models.ActionSearchFiles,
+		"find_path":      models.ActionSearchFiles,
+		"terminal":       models.ActionRunCommand,
+		// Grounded 2026-09-28 in zed-industries/zed
+		// crates/agent/src/tools/*_tool.rs (`const NAME`).
+		"grep":             models.ActionSearchText,
+		"diagnostics":      models.ActionReadFile,
+		"fetch":            models.ActionWebFetch,
+		"search_web":       models.ActionWebSearch,
+		"copy_path":        models.ActionWriteFile,
+		"move_path":        models.ActionEditFile,
+		"create_directory": models.ActionWriteFile,
+		"skill":            models.ActionSkillInvoke,
+		"spawn_agent":      models.ActionSpawnSubagent,
 		"some_future_tool": models.ActionUnknown,
 	}
 	for name, want := range cases {
 		if got := mapZedTool(name); got != want {
 			t.Errorf("mapZedTool(%q) = %q, want %q", name, got, want)
 		}
+		// mapZedTool and internal/tooltax must agree on every name the
+		// adapter classifies (zed has no separate conformance file).
+		if want == models.ActionUnknown {
+			continue
+		}
+		if e, ok := tooltax.Resolve(models.ToolZed, name); !ok || e.Tool != models.ToolZed || e.ActionType != want {
+			t.Errorf("tooltax.Resolve(zed, %q) = %+v (ok=%v), want a zed-specific %q row", name, e, ok, want)
+		}
+	}
+}
+
+// TestTargetFromRawInput pins the per-tool target key for the tools
+// whose input has no generic path/glob/command/query key, grounded in
+// each tool's *ToolInput struct.
+func TestTargetFromRawInput(t *testing.T) {
+	cases := []struct{ name, tool, raw, want string }{
+		{"copy names the written path", "copy_path", `{"source_path":"a/x.txt","destination_path":"b/y.txt"}`, "b/y.txt"},
+		{"move names the existing path", "move_path", `{"source_path":"a/x.txt","destination_path":"a/z.txt"}`, "a/x.txt"},
+		{"create_directory", "create_directory", `{"path":"src/new"}`, "src/new"},
+		{"diagnostics with path", "diagnostics", `{"path":"proj/main.rs"}`, "proj/main.rs"},
+		{"diagnostics project-wide", "diagnostics", `{}`, ""},
+		{"grep regex", "grep", `{"regex":"fn main","include_pattern":"**/*.rs"}`, "fn main"},
+		{"fetch url", "fetch", `{"url":"https://example.com/doc"}`, "https://example.com/doc"},
+		{"search_web query", "search_web", `{"query":"zed agent tools"}`, "zed agent tools"},
+		{"skill name", "skill", `{"name":"pdf"}`, "pdf"},
+		{"spawn_agent label", "spawn_agent", `{"label":"Researching","message":"look into X"}`, "Researching"},
+		{"generic path unchanged", "read_file", `{"path":"a/b.go"}`, "a/b.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := targetFromRawInput(tc.tool, tc.raw); got != tc.want {
+				t.Errorf("targetFromRawInput(%q, %s) = %q, want %q", tc.tool, tc.raw, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import {
   Bar,
   BarChart,
@@ -11,28 +12,42 @@ import {
 import { ChartTooltip } from "./ChartTooltip";
 import { ChartLegend } from "./ChartLegend";
 import { fmtCompact } from "../lib/format";
+import type { Granularity } from "../lib/granularity";
 import type { CostPoint } from "../lib/types";
-import { CHART_AXIS, CHART_GRID } from "./common";
+import { bucketTooltipLabel, categoryAxis, CHART_AXIS, CHART_GRID } from "./common";
+import { useChartMotion } from "./useChartMotion";
 
-// Per-day stacked bars across the 4 Anthropic billing buckets.
+// Per-bucket stacked bars across the 4 Anthropic billing buckets.
 // Sibling to CostAreaChart on the Overview but in bar form, which
 // the brief flags as the right call for the Cost tab's "Token
 // volume per day" panel (read as totals, not trends).
-export function TokensByDayChart({
+export const TokensByDayChart = memo(function TokensByDayChart({
   data,
   height = 240,
+  granularity = "1d",
 }: {
   data: CostPoint[];
   height?: number;
+  /** Bucket granularity the rows were served at (the response `bucket`); drives the axis/tooltip labels. */
+  granularity?: Granularity;
 }) {
+  const motion = useChartMotion(data, "bucket", "", 4);
   return (
     <ResponsiveContainer width="100%" height={height + 28}>
       <BarChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
         <Legend
           verticalAlign="top"
           align="left"
-          height={28}
-          content={<ChartLegend />}
+          content={
+            <ChartLegend
+              colors={{
+                "Net Input": "var(--tok-net)",
+                "Cache Write": "var(--tok-write)",
+                "Cache Read": "var(--tok-read)",
+                Output: "var(--tok-out)",
+              }}
+            />
+          }
         />
         <defs>
           {(["net", "write", "read", "out"] as const).map((k) => (
@@ -58,19 +73,20 @@ export function TokensByDayChart({
           ))}
         </defs>
         <CartesianGrid {...CHART_GRID} />
-        <XAxis dataKey="bucket" {...CHART_AXIS} tickFormatter={shortDate} />
+        <XAxis {...CHART_AXIS} {...categoryAxis(data, granularity)} />
         <YAxis {...CHART_AXIS} tickFormatter={fmtCompact} />
         <Tooltip
           content={
             <ChartTooltip
               labelKey="bucket"
-              labelFormatter={shortDate}
+              labelFormatter={bucketTooltipLabel(granularity)}
               formatItem={(name, value) => `${name}: ${fmtCompact(value)}`}
             />
           }
           cursor={{ fill: "var(--bg-4)", opacity: 0.4 }}
         />
         <Bar
+          {...motion}
           dataKey="input"
           name="Net Input"
           stackId="tok"
@@ -78,18 +94,21 @@ export function TokensByDayChart({
           radius={[0, 0, 0, 0]}
         />
         <Bar
+          {...motion}
           dataKey="cache_creation"
           name="Cache Write"
           stackId="tok"
           fill="url(#tokens-by-day-write)"
         />
         <Bar
+          {...motion}
           dataKey="cache_read"
           name="Cache Read"
           stackId="tok"
           fill="url(#tokens-by-day-read)"
         />
         <Bar
+          {...motion}
           dataKey="output"
           name="Output"
           stackId="tok"
@@ -99,10 +118,4 @@ export function TokensByDayChart({
       </BarChart>
     </ResponsiveContainer>
   );
-}
-
-function shortDate(s: string): string {
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return s;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
+});

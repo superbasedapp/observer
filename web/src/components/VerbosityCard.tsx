@@ -1,6 +1,7 @@
 import { useApi } from "@/lib/useApi";
 import { fmtBytes, fmtUSD } from "@/lib/format";
 import { HelpInd } from "@/components/HelpInd";
+import { ModelId, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import type { VerbosityResponse } from "@/lib/types";
 import { Link } from "react-router-dom";
@@ -22,7 +23,7 @@ export function VerbosityCard({ sessionId }: { sessionId: string }) {
   const has = data && data.total_bytes > 0;
 
   return (
-    <section className="mt-5 rounded-3 border bg-bg-2 px-4 py-3">
+    <section className="mt-5 rounded-3 border border-line-2 bg-bg-2 px-4 py-3">
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">
           Output composition
@@ -45,6 +46,8 @@ export function VerbosityCard({ sessionId }: { sessionId: string }) {
       <ChartState
         loading={v.loading && !v.data}
         error={v.error}
+        denied={v.denied}
+        deniedPermission={v.deniedPermission}
         empty={!has}
         emptyHint="No assistant output captured yet."
         height={80}
@@ -75,14 +78,16 @@ function VerbosityBody({ data }: { data: VerbosityResponse }) {
   return (
     <div className="space-y-2.5">
       {/* stacked category bar */}
-      <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-bg-1">
+      {/* Segment hover detail; the legend below carries the same numbers
+          for keyboard and touch readers. */}
+      <div className="flex h-2.5 w-full overflow-hidden rounded-pill bg-bg-3">
         {cats.map(([cat, b]) => (
-          <div
-            key={cat}
-            className={CAT_COLOR[cat] ?? "bg-fg-3"}
-            style={{ width: `${(b / total) * 100}%` }}
-            title={`${cat}: ${fmtBytes(b)} (${((b / total) * 100).toFixed(1)}%)`}
-          />
+          <Tooltip key={cat} content={`${cat}: ${fmtBytes(b)} (${((b / total) * 100).toFixed(1)}%)`}>
+            <div
+              className={CAT_COLOR[cat] ?? "bg-fg-3"}
+              style={{ width: `${(b / total) * 100}%` }}
+            />
+          </Tooltip>
         ))}
       </div>
 
@@ -90,7 +95,7 @@ function VerbosityBody({ data }: { data: VerbosityResponse }) {
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px]">
         {cats.map(([cat, b]) => (
           <span key={cat} className="flex items-center gap-1 text-fg-2">
-            <span className={`size-2 rounded-sm ${CAT_COLOR[cat] ?? "bg-fg-3"}`} />
+            <span className={`size-2 rounded-pill ${CAT_COLOR[cat] ?? "bg-fg-3"}`} />
             {cat} {Math.round((b / total) * 100)}%
           </span>
         ))}
@@ -110,7 +115,7 @@ function VerbosityBody({ data }: { data: VerbosityResponse }) {
           {data.code_by_language.slice(0, 10).map((l) => (
             <span
               key={l.language}
-              className="rounded-2 bg-bg-1 px-1.5 py-0.5 text-[10px] text-fg-2"
+              className="rounded-2 bg-bg-3 px-1.5 py-0.5 text-micro text-fg-2"
             >
               {l.language}{" "}
               <span className="tabular-nums text-fg-3">
@@ -171,9 +176,14 @@ function VerbosityCost({ data }: { data: VerbosityResponse }) {
   return (
     <div className="border-t border-border pt-2 text-[10.5px]">
       <div className="flex items-center justify-between text-fg-3">
-        <span>
+        <span className="inline-flex min-w-0 items-center gap-1">
           est. cost
-          {data.model && <span className="text-fg-3/70"> · {data.model}</span>}
+          {data.model && (
+            <>
+              <span className="text-fg-3/70">·</span>
+              <ModelId model={data.model} markSize={11} mono={false} className="min-w-0" />
+            </>
+          )}
         </span>
         <span className="tabular-nums text-fg-2">
           {fmtUSD(data.est_total_usd, true)} total

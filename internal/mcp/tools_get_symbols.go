@@ -19,7 +19,7 @@ import (
 // get_symbols — V7-12 retrieval-surface MCP tool (v1.7.9, second of four).
 //
 // Batched symbol lookup. One MCP turn returns N symbol bodies across
-// M files via the codegraph index, bypassing codex's shell tool so
+// M files via the codeintel index, bypassing codex's shell tool so
 // the response isn't re-fed to LogsCompressor.
 //
 // Pairs with v1.7.7 marker enrichment + v1.7.8 get_file: marker tells
@@ -225,11 +225,11 @@ type symbolMatch struct {
 	// minimal metadata (no body) — agent re-issues a focused
 	// get_symbols call for the bodies it wants.
 	NearbySymbols []symbolNearby `json:"nearby_symbols,omitempty"`
-	// V7-17 drift signal: emitted only when codegraph index disagrees
+	// V7-17 drift signal: emitted only when the codeintel index disagrees
 	// with the live file's regex-parsed positions (Stale path). When
-	// populated, IndexLines holds the codegraph numbers and LiveLines
+	// populated, IndexLines holds the index numbers and LiveLines
 	// holds the regex numbers — the agent sees the divergence
-	// explicitly. Omitted when codegraph and file agree (steady state).
+	// explicitly. Omitted when the index and file agree (steady state).
 	IndexLines *lineSpan `json:"index_lines,omitempty"`
 	LiveLines  *lineSpan `json:"live_lines,omitempty"`
 }
@@ -469,7 +469,7 @@ func (t *getSymbolsTool) handleOne(ctx context.Context, args getSymbolsArgs, req
 // → id ASC.
 //
 // `is_exported` ranking factor from V7-15 design is DEFERRED — the
-// codegraph schema doesn't carry it. Documented in the operator
+// codeintel schema doesn't carry it. Documented in the operator
 // reference + plan §10 risks.
 func rankMatches(matches []codeintel.SymbolMatch) {
 	sort.SliceStable(matches, func(i, j int) bool {
@@ -637,14 +637,14 @@ func nearbySymbolsAround(pool []codeintel.Symbol, anchorStart int, anchorName st
 	return out
 }
 
-// attachDriftSignal pairs each codegraph match with its live regex
+// attachDriftSignal pairs each index match with its live regex
 // counterpart (by name+kind) and surfaces IndexLines + LiveLines
 // when they disagree. Matches without a live counterpart get just
 // IndexLines; the agent reads this as "live file no longer has this
 // symbol — likely renamed or deleted."
 //
 // V7-17 item 4: the agent sees the drift instead of trusting stale
-// numbers. Pairs with the codegraph_stale warning emitted at the
+// numbers. Pairs with the index_stale warning emitted at the
 // envelope level.
 func attachDriftSignal(rel, abs string, idx []codeintel.SymbolMatch, live []livesym.Symbol) []symbolMatch {
 	out := make([]symbolMatch, 0, len(idx))
@@ -681,7 +681,7 @@ func attachDriftSignal(rel, abs string, idx []codeintel.SymbolMatch, live []live
 // matchLiveSymbols filters live regex symbols against the request's
 // name/kind and converts them to symbolMatch records. The agent gets
 // approximate positions; the degraded flag tells it the matches are
-// regex-derived (no body, no end_line). Used by the V7-17 codegraph-
+// regex-derived (no body, no end_line). Used by the V7-17 index-
 // unavailable fallback (commit 3) and the drift signal (commit 4).
 //
 // Discovery mode (empty name AND empty fqn) returns all symbols.
@@ -712,7 +712,7 @@ func matchLiveSymbols(rel, abs string, syms []livesym.Symbol, req getSymbolsRequ
 			Language:            s.Language,
 			StartLine:           s.StartLine,
 			// EndLine stays at 0 — same as the existing
-			// "codegraph didn't record an end" sentinel. Combined with
+			// "index didn't record an end" sentinel. Combined with
 			// Degraded=true on the response, the agent sees this is
 			// regex-derived without a wire-shape change.
 		})

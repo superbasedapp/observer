@@ -96,6 +96,24 @@ const (
 	// token governs only whose number wins, never what the node discloses.
 	AuthorityEnforceBudget = "enforce.budget"
 
+	// AuthorityEnforceMCPAccess is the fifth enforce.* sibling (Agent Access
+	// doc3 §12.8 "enforce.<mcp_access>", parking decision B9, 2026-09-24). It
+	// makes the ORG's `tools.mcp_access` policy AUTHORITATIVE on a managed
+	// node: the node MCP relay treats the org mode as the gateway posture
+	// (every remote MCP route goes via the org gateway, an unknown server is
+	// refused) instead of local-stricter-wins. Without it — on an individual
+	// node, or on a managed node whose grant does not carry it — the family
+	// stays local-stricter-wins with break-glass always available, exactly as
+	// doc3 §12.8 states for the individual plane.
+	//
+	// It is managed-only exactly like its four siblings: HonoredAuthority
+	// strips it on an individual / BYO node, so an org cannot make an
+	// individual developer's relay org-authoritative by putting the token in
+	// an individual token's authority list. Like enforce.budget it governs a
+	// MODE, not data: it names no content-bearing column and never authorizes
+	// the share directive class (ExtractionAuthority excludes it).
+	AuthorityEnforceMCPAccess = "enforce.mcp_access"
+
 	// The HIGH-SENSITIVITY per-tier extraction authorities (Arc 4 P5f-h).
 	// Unlike the umbrella extract.managed (which raises the headline tiers —
 	// tool bodies, full traces, project folders, cache, routing, predictions),
@@ -245,7 +263,7 @@ func KnownAuthority(tok string) bool {
 	case AuthorityDashboardVisibility, AuthoritySettingsPin,
 		AuthorityCaptureRaise, AuthorityCapturePin, AuthorityFeatureLock,
 		AuthorityEnforceRouting, AuthorityEnforceAdmission, AuthorityEnforceEgress,
-		AuthorityEnforceBudget,
+		AuthorityEnforceBudget, AuthorityEnforceMCPAccess,
 		AuthorityExtractManaged, AuthorityExtractCodeintel,
 		AuthorityExtractProcess, AuthorityExtractTerminal,
 		AuthorityExtractTasks, AuthorityExtractToolAccounts,
@@ -268,7 +286,8 @@ func KnownAuthority(tok string) bool {
 func ManagedAuthority(tok string) bool {
 	switch tok {
 	case AuthorityEnforceRouting, AuthorityEnforceAdmission,
-		AuthorityEnforceEgress, AuthorityEnforceBudget, AuthorityExtractManaged,
+		AuthorityEnforceEgress, AuthorityEnforceBudget,
+		AuthorityEnforceMCPAccess, AuthorityExtractManaged,
 		AuthorityExtractCodeintel, AuthorityExtractProcess,
 		AuthorityExtractTerminal, AuthorityExtractTasks,
 		AuthorityExtractToolAccounts, AuthorityExtractIntel,
@@ -350,6 +369,17 @@ func RetiredAuthority(tok string) bool { return tok == AuthorityCaptureRaise }
 // to, exactly like dashboard.visibility and capture.pin — so it is offered on
 // both planes, as it already was.
 //
+// AuthorityEnforceMCPAccess is the THIRD governing token (Agent Access
+// parking decision B9, 2026-09-24, under the Arc-4 managed-tenancy ruling:
+// enforce ON, org-authoritative on managed nodes). An enterprise-posture org
+// that publishes a `tools.mcp_access` policy expects the gateway posture on
+// every managed node — doc3 §12.8 — and, exactly as with enforce.budget, a
+// fleet that signed up for managed governance and then found its MCP policy
+// applied local-stricter-wins on every node would be the 2026-09-13 shape
+// again. Teams-posture orgs are offered nothing (orgserver/posture's teams
+// row stays nil) and ASK for it per mint; it is managed-only, so the
+// individual plane is untouched.
+//
 // The set is otherwise exactly the tokens ExtractionAuthority recognises (the
 // extract.* family, umbrella included). It still omits the other three
 // enforce.* tokens (routing/admission/egress), which switch an enforcement
@@ -365,9 +395,10 @@ func RetiredAuthority(tok string) bool { return tok == AuthorityCaptureRaise }
 // rail pulls nothing until the org turns the feature on.
 func EnterpriseAuthoritySet() []string {
 	set := []string{
-		// The two governing tokens (see above): the org's numbers win, and
-		// the pins that carry them are honoured rather than dropped.
-		AuthoritySettingsPin, AuthorityEnforceBudget,
+		// The three governing tokens (see above): the org's numbers win,
+		// the pins that carry them are honoured rather than dropped, and the
+		// org's MCP-access policy is the gateway posture.
+		AuthoritySettingsPin, AuthorityEnforceBudget, AuthorityEnforceMCPAccess,
 
 		AuthorityExtractManaged, AuthorityExtractCodeintel,
 		AuthorityExtractProcess, AuthorityExtractTerminal,
@@ -822,28 +853,60 @@ func (e Effective) GrantsObsEgressExtraction() bool {
 	return e.grantsExtractionOrManaged(AuthorityExtractObsEgress)
 }
 
-// GrantsEnterpriseContent reports whether this resolved posture's grant is
-// broad enough to count as the Enterprise-Managed-Tenancy equivalent of a
-// node operator's own full_content / admin_managed opt-in (design §5.4's
-// enterpriseGranted disjunct). It composes four EXISTING strict predicates
-// rather than introducing a new token: a grant must authorize the umbrella
-// AND all three highest-sensitivity tiers (codeintel, process, terminal)
-// before shipsRawContent() honors it. This is deliberately a HIGH bar —
-// narrower than any single extraction tier — because shipsRawContent()
-// governs raw content columns tree-wide, not one tier.
+// GrantsEnterpriseContent reports whether this resolved posture's grant
+// counts as the Enterprise-Managed-Tenancy equivalent of a node operator's
+// own full_content / admin_managed opt-in (design §5.4's enterpriseGranted
+// disjunct): the node is MANAGED and the org-signed grant carries the
+// extract.managed umbrella. That grant is the sanctioned raise of an
+// already-enrolled teams/enterprise node to full content (L2) — Agent Access
+// rulings R9.5 / R11.10, robustness finding PR-014 — so a node enrolled
+// before `observer org enroll` wrote full_content = true for managed
+// enrolments is raised by the grant the org signs, never by a silent
+// rewrite of its config file.
+//
+// History: until 2026-09-24 this composed FOUR strict predicates (the
+// umbrella plus the codeintel/process/terminal tiers) as a deliberately high
+// bar. That bar was the live defect the 2026-09-21 demo-estate check found —
+// enrolment grants carrying only extract.managed left every managed node
+// hash-only — and it contradicted the standing operator ruling that a
+// managed node shipping hashes is a defect, never a posture. The three
+// highest-sensitivity DETAIL tiers keep their own strict tokens
+// (GrantsCodeintelExtraction / GrantsProcessExtraction /
+// GrantsTerminalExtraction gate codeintel_detail / process_detail /
+// terminal_detail, which are different tables from the raw content columns
+// shipsRawContent() governs); a grant that carried all four still satisfies
+// this predicate, so nothing that was raised is lowered by the change.
 //
 // Invariant (mirrors the CLAUDE.md posture): raw content ships ONLY under a
 // node operator's own local opt-in (FullContent / AdminManaged) OR this
 // enterprise grant. There is still no remote toggle that forces it — the org
 // can only ever RAISE what a managed node's own resolver already agreed sits
 // under Enterprise-Managed Tenancy (e.Managed, ManagedConsent), exactly like
-// every other Raise* lift in this package.
+// every other Raise* lift in this package; an INDIVIDUAL node is
+// structurally excluded (HonoredAuthority strips extract.managed and Managed
+// is false there). Callers deciding what actually SHIPS use
+// EnterpriseContentInForce, which additionally honours an admin lowering.
 func (e Effective) GrantsEnterpriseContent() bool {
-	return e.Managed &&
-		e.GrantsManagedExtraction() &&
-		e.GrantsCodeintelExtraction() &&
-		e.GrantsProcessExtraction() &&
-		e.GrantsTerminalExtraction()
+	return e.Managed && e.GrantsManagedExtraction()
+}
+
+// EnterpriseContentInForce reports whether the enterprise-content grant is
+// LIVE on this node: GrantsEnterpriseContent holds AND the org has not
+// deliberately lowered full_content through its signed governance body (a
+// `share.full_content = false` directive under capture.pin, the one remote
+// lowering lever). It is the single predicate the push seam
+// (store.ShareOptions.EnterpriseGranted) and every developer-facing surface
+// (`observer org status`, `observer org grant show`) read, so what the
+// developer is shown can never disagree with what ships.
+//
+// The lowering half is what preserves an intentional post-migration admin
+// LOWERING (doc3 §11.7 W4f): an org that wants one cohort at metadata-only
+// publishes the directive and the grant's raise yields to it, while a grant
+// alone — the R9.5 default for teams/enterprise — raises. LowerBool with a
+// local of true answers exactly "did the org say no": an absent, malformed
+// or true directive leaves the raise in force.
+func (e Effective) EnterpriseContentInForce() bool {
+	return e.GrantsEnterpriseContent() && e.LowerBool("full_content", true)
 }
 
 // The MANAGED-ENFORCE predicates (Arc 4 P3, the §R23 lift). Each authorizes
@@ -890,10 +953,49 @@ func (e Effective) GrantsBudgetEnforcement() bool {
 	return e.grantsExtraction(AuthorityEnforceBudget)
 }
 
+// GrantsMCPAccessEnforcement authorizes treating the org's `tools.mcp_access`
+// policy as AUTHORITATIVE on this node — the gateway posture of Agent Access
+// doc3 §12.8 (every remote MCP route via the org gateway, an unknown server
+// refused) rather than local-stricter-wins. Requires managed +
+// enforce.mcp_access; inert on the individual plane like every sibling.
+func (e Effective) GrantsMCPAccessEnforcement() bool {
+	return e.grantsExtraction(AuthorityEnforceMCPAccess)
+}
+
+// EnforcementAuthorities is the closed enforce.* family — the ONE owner of
+// "which tokens switch an enforcement MODE" (CLAUDE.md #4). GrantsAnyEnforcement
+// walks it, and the org server's replacement-authority table is pinned
+// against it (one broadcast row per token), so a sixth sibling added here
+// without its per-family predicate, its family row and its broadcast verdict
+// fails loudly in three places instead of landing half-wired. Returned
+// sorted so callers that print or sign it are stable.
+func EnforcementAuthorities() []string {
+	set := []string{
+		AuthorityEnforceRouting, AuthorityEnforceAdmission,
+		AuthorityEnforceEgress, AuthorityEnforceBudget,
+		AuthorityEnforceMCPAccess,
+	}
+	sort.Strings(set)
+	return set
+}
+
+// EnforcementAuthority reports whether tok is one of the enforce.* tokens
+// (EnforcementAuthorities). It is deliberately disjoint from
+// ExtractionAuthority: an enforce token governs a MODE and never authorizes
+// the share directive class.
+func EnforcementAuthority(tok string) bool {
+	for _, a := range EnforcementAuthorities() {
+		if a == tok {
+			return true
+		}
+	}
+	return false
+}
+
 // GrantsAnyEnforcement reports whether this node is MANAGED and holds any of
-// the four enforce.* authorities — i.e. whether the organization is
-// authoritative over some enforcement point on this machine, rather than
-// merely advisory.
+// the enforce.* authorities (EnforcementAuthorities) — i.e. whether the
+// organization is authoritative over some enforcement point on this machine,
+// rather than merely advisory.
 //
 // It is a capability question, not an authority-token question: the callers
 // that need it (Track C item 2's route-drift posture) do not care WHICH
@@ -901,10 +1003,12 @@ func (e Effective) GrantsBudgetEnforcement() bool {
 // what makes "this developer's AI tool is no longer routed through the
 // managed proxy" a finding rather than a configuration choice.
 func (e Effective) GrantsAnyEnforcement() bool {
-	return e.GrantsRoutingEnforcement() ||
-		e.GrantsAdmissionEnforcement() ||
-		e.GrantsEgressEnforcement() ||
-		e.GrantsBudgetEnforcement()
+	for _, tok := range EnforcementAuthorities() {
+		if e.grantsExtraction(tok) {
+			return true
+		}
+	}
+	return false
 }
 
 // grantsExtractionOrManaged is the shared gate behind every HEADLINE
@@ -915,7 +1019,7 @@ func (e Effective) GrantsAnyEnforcement() bool {
 // grantsExtraction WITHOUT the umbrella clause on purpose — the umbrella must
 // never unlock them (operator ruling).
 func (e Effective) grantsExtractionOrManaged(tok string) bool {
-	if !e.Managed {
+	if !e.Managed || e.GrantRefused() {
 		return false
 	}
 	for _, a := range e.Authority {
@@ -926,15 +1030,45 @@ func (e Effective) grantsExtractionOrManaged(tok string) bool {
 	return false
 }
 
-// grantsExtraction is the shared STRICT gate behind the high-sensitivity
-// GrantsXxxExtraction predicates AND the GrantsXxxEnforcement predicates
-// (Arc 4 P3): managed tenancy (Effective.Managed) AND the specific managed
-// authority token present in the grant, with NO umbrella clause. HonoredAuthority
-// has already stripped any managed authority from an individual grant, so the
-// Managed guard is a second, independent belt-and-braces against the individual
-// plane.
+// refusedGrantStates is the closed set of resolver verdicts under which the
+// grant is NOT live — the resolver refused it (resolve.go's loud rows) — so
+// nothing it names may be acted on. It is a deny-list table rather than an
+// allow-list so a synthetic Effective built by a test with the zero State
+// still counts as live, and so a future live state cannot be forgotten into
+// refusal by omission.
+//
+// Why this exists (found by W4f's tampered-grant test, 2026-09-24):
+// Effective.normalize copies Managed and Authority from the grant onto EVERY
+// resolved posture, including the loud ones, because the developer-facing
+// surfaces must still be able to show what the machine handed over. But the
+// Grants* predicates read exactly those two fields, so a managed grant whose
+// signature no longer verified, whose key pin no longer matched, whose
+// enrolment identity had changed, or which had EXPIRED still answered "yes"
+// to every extraction and enforcement question — including
+// GrantsBudgetEnforcement and GrantsEnterpriseContent. The existing loader
+// test did not catch it because its fixture records no consent mode, so
+// Managed was false for a different reason. This gate sits at the ONE
+// shared predicate every Grants* method funnels through, so the fix is
+// systemic rather than per-predicate.
+var refusedGrantStates = map[State]bool{
+	StateNoGrant:               true,
+	StateGrantExpired:          true,
+	StateIdentityChanged:       true,
+	StateKeyPinMismatch:        true,
+	StateGrantSignatureInvalid: true,
+}
+
+// GrantRefused reports whether the resolver refused this posture's grant
+// (refusedGrantStates): the grant is absent, expired, bound to a different
+// enrolment identity or signing key, or its stored document does not verify.
+// Under any of these, every Grants* predicate answers false regardless of
+// what Managed and Authority — kept populated for display — say.
+func (e Effective) GrantRefused() bool {
+	return refusedGrantStates[e.State]
+}
+
 func (e Effective) grantsExtraction(tok string) bool {
-	if !e.Managed {
+	if !e.Managed || e.GrantRefused() {
 		return false
 	}
 	for _, a := range e.Authority {

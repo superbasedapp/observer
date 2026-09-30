@@ -239,10 +239,22 @@ func buildEvents(
 	//     post_api_request rows already carry the session's usage;
 	//     adding the aggregate on top double-counts every token
 	//     (H1, observed live 2026-06-11)
+	//   - auxiliary-call rows (session_model_usage, task != '') - one
+	//     per (task, model, route). NOT hook-gated: Hermes fires
+	//     auxiliary calls through the distinct post_auxiliary_call
+	//     plugin event (agent/auxiliary_hooks.py), never
+	//     post_api_request, and the observer plugin subscribes only to
+	//     the latter, so neither the hook path nor the session
+	//     aggregate carries this spend (see auxTokenEvent).
 	for sid := range emittedSessions {
 		sess := sessions[sid]
 		if strings.TrimSpace(sess.SystemPrompt) != "" {
 			toolEvents = append(toolEvents, sessionSystemPromptEvent(sess, sourceFile, sc))
+		}
+		for _, aux := range sess.AuxUsage {
+			if ev, ok := auxTokenEvent(sess, aux, sourceFile); ok {
+				tokenEvents = append(tokenEvents, ev)
+			}
 		}
 		if sess.InputTokens == 0 && sess.OutputTokens == 0 &&
 			sess.CacheReadTokens == 0 && sess.CacheWriteTokens == 0 &&
@@ -256,6 +268,61 @@ func buildEvents(
 	}
 
 	return toolEvents, tokenEvents, warnings
+}
+
+// auxTokenEvent maps one session_model_usage auxiliary row (vision,
+// compression, title_generation, background_review, ...) onto a
+// TokenEvent. ok is false for an all-zero row (observationally vacant).
+//
+// Identity: the SourceEventID folds the table's whole primary key
+// (task + model + billing route) so two routes for the same task never
+// collide, and it is stable across scans - the counters only grow, so
+// the store's MAX-upgrade conflict path keeps the row correct on every
+// re-emit. The model is Hermes's own per-call value; an aux call whose
+// model Hermes could not resolve is stored as the literal "unknown",
+// which this maps to "" (unknown to the cost engine) rather than a
+// fabricated model id. Counters are NET input like the session
+// aggregate (the same update path writes both), so no cache netting.
+func auxTokenEvent(sess sessionRow, aux auxUsageRow, sourceFile string) (models.TokenEvent, bool) {
+	if aux.InputTokens == 0 && aux.OutputTokens == 0 && aux.CacheReadTokens == 0 &&
+		aux.CacheWriteTokens == 0 && aux.ReasoningTokens == 0 {
+		return models.TokenEvent{}, false
+	}
+	model := stripProviderPrefix(strings.TrimSpace(aux.Model))
+	if strings.EqualFold(model, "unknown") {
+		model = ""
+	}
+	ts := unixFloatToTime(sess.StartedAt)
+	if aux.LastSeen.Valid {
+		if t := unixFloatToTime(aux.LastSeen.Float64); !t.IsZero() {
+			ts = t
+		}
+	}
+	cost := aux.ActualCostUSD
+	if cost <= 0 {
+		cost = aux.EstimatedCostUSD
+	}
+	if cost < 0 {
+		cost = 0
+	}
+	key := strings.Join([]string{aux.Model, aux.BillingProvider, aux.BillingBaseURL, aux.BillingMode}, "\x1f")
+	return models.TokenEvent{
+		SourceFile:          sourceFile,
+		SourceEventID:       fmt.Sprintf("tk-aux:%s:%s:%s", sess.ID, aux.Task, hashHex12(key)),
+		SessionID:           sess.ID,
+		ProjectRoot:         normalizeProjectRoot(sess.CWD),
+		Timestamp:           ts,
+		Tool:                models.ToolHermes,
+		Model:               model,
+		InputTokens:         aux.InputTokens,
+		OutputTokens:        aux.OutputTokens,
+		CacheReadTokens:     aux.CacheReadTokens,
+		CacheCreationTokens: aux.CacheWriteTokens,
+		ReasoningTokens:     aux.ReasoningTokens,
+		EstimatedCostUSD:    cost,
+		Source:              models.TokenSourceJSONL,
+		Reliability:         models.ReliabilityApproximate,
+	}, true
 }
 
 // userPromptEvent maps a role='user' message into an ActionUserPrompt

@@ -1,27 +1,36 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import clsx from "clsx";
 import {
   Button,
   Card,
   ChartShell,
+  ConfirmButton,
+  ErrorState,
+  Icon,
+  InlineLoading,
   Input,
   PageHeader,
   Pill,
+  ReadOnlyBanner,
   Select,
   SettingRow,
   SlideOver,
   Table,
   Textarea,
-  Toggle,
   Tooltip,
+  SuccessCheck,
 } from "@/components/primitives";
 import { HelpInd } from "@/components/HelpInd";
+import { Summary } from "@/components/Summary";
+import type { Tone } from "@shared/lib/tone";
 import { BUILTIN_PROFILE_NAMES, SECTION_SPECS, type SectionSpec } from "./settings/sectionSpecs";
 import { StructuredConfigSection } from "./settings/StructuredConfigSection";
 import { SchemaSection } from "./settings/SchemaSection";
 import { AntigravityHelperCard } from "./settings/AntigravityHelperCard";
 import { ETWCapturerCard } from "./settings/ETWCapturerCard";
+import { ShellWrapCard } from "./settings/ShellWrapCard";
+import { RepriceCard } from "./settings/RepriceCard";
 import { ConnectedToolsSection } from "./settings/ConnectedToolsSection";
 import { CloudIntelligenceSection } from "./settings/CloudIntelligenceSection";
 import { EnrolmentSection } from "./settings/EnrolmentSection";
@@ -30,23 +39,46 @@ import { StorageSection } from "./settings/StorageSection";
 import { ChartState } from "@/components/ChartState";
 import { CommunityLinksMini } from "@/components/CommunityCard";
 import {
-  BoltIcon,
-  CalendarIcon,
-  ClockIcon,
-  CoinsIcon,
-  CompassIcon,
-  CompressIcon,
-  DatabaseIcon,
-  DropletIcon,
-  EyeIcon,
-  LayersIcon,
-  LightningIcon,
-  ListIcon,
-  SearchIcon,
-  ShieldIcon,
-  SparklesIcon,
-  WrenchIcon,
-} from "@/components/icons";
+  ArrowRightLeft,
+  BrainCircuit,
+  Cable,
+  CalendarClock,
+  Clock,
+  Cloud,
+  Coins,
+  Cpu,
+  DatabaseBackup,
+  DatabaseZap,
+  Eye,
+  FolderSearch,
+  Gauge,
+  Globe,
+  HardDrive,
+  KeyRound,
+  Lightbulb,
+  ListTodo,
+  Lock,
+  Minimize2,
+  MonitorCog,
+  Orbit,
+  Plug,
+  Plus,
+  ScanEye,
+  Share2,
+  ShieldCheck,
+  SlidersHorizontal,
+  Split,
+  SquareTerminal,
+  Stethoscope,
+  Table2,
+  Telescope,
+  Trash2,
+  TriangleAlert,
+  Users,
+  Webhook,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
 
 import { fetchJSON } from "@/lib/api";
 import { markRestartPending } from "@/lib/restartPending";
@@ -55,6 +87,7 @@ import { useConfigSchema, type ConfigSchemaDescriptor } from "@/lib/configSchema
 import {
   isSettingsHidden,
   isSettingsReadOnly,
+  governedOrgLabel,
   useGovernance,
   type Governance,
 } from "@/lib/governance";
@@ -76,6 +109,10 @@ import type {
   ToolsStatusResponse,
 } from "@/lib/types";
 import { costPricingToConfig } from "@/lib/types";
+import type { VocabTable } from "@shared/lib/vocabEntry";
+import { VocabPill } from "@shared/lib/vocabPill";
+import { JOB_STATUS } from "@shared/lib/sessionVocab";
+import { navIcon } from "@/lib/nav";
 
 type SectionId =
   | "pricing"
@@ -127,10 +164,12 @@ type SectionDef = {
   // soft = consumed lazily by the next job, no restart needed.
   // restart = daemon must restart to bind the new value.
   status: "hot" | "soft" | "restart";
-  // Inline glyph rendered in the SectionNav row + page header to
-  // match design/page-settings.jsx — every section carries a single
-  // identifying icon so the nav reads at a glance.
-  icon: ReactNode;
+  // The section's lucide glyph, rendered through <Icon> in the SectionNav
+  // row. Every section carries its OWN icon (no two share one, pinned by
+  // lib/settingsIcons.test.ts) so the nav reads at a glance; where a
+  // section configures a page that has a nav entry (Compression, Routing,
+  // Cache, Suggestions) it reuses that page's nav glyph.
+  icon: LucideIcon;
   about: {
     summary: string;
     whenModified: string;
@@ -144,7 +183,7 @@ const SECTIONS: SectionDef[] = [
     label: "Pricing",
     group: "edit",
     status: "hot",
-    icon: <CoinsIcon size={13} />,
+    icon: Coins,
     about: {
       summary:
         "Per-model pricing overrides. The cost engine ships with baked-in defaults for every common Anthropic / OpenAI / xAI model; overrides let you correct a contract rate or add a new SKU before observer's defaults catch up.",
@@ -159,7 +198,7 @@ const SECTIONS: SectionDef[] = [
     label: "Backfill",
     group: "edit",
     status: "soft",
-    icon: <DatabaseIcon size={13} />,
+    icon: DatabaseBackup,
     about: {
       summary:
         "Run schema-fill jobs against your DB. Useful after a schema upgrade or when a new derived column lands and needs back-population.",
@@ -174,7 +213,7 @@ const SECTIONS: SectionDef[] = [
     label: "Connected tools",
     group: "edit",
     status: "soft",
-    icon: <CompassIcon size={13} />,
+    icon: Cable,
     about: {
       summary:
         "Per-tool integration matrix: every AI tool observer supports, with live detected / capturing / hooks / MCP / proxied state. All probes are read-only - nothing on this panel writes AI-client config.",
@@ -189,7 +228,7 @@ const SECTIONS: SectionDef[] = [
     label: "Health",
     group: "edit",
     status: "soft",
-    icon: <BoltIcon size={13} />,
+    icon: Stethoscope,
     about: {
       summary:
         "The `observer doctor` checks in the dashboard - database integrity, hook checksums and binary paths, MCP registrations, pidbridge, concurrent daemons, codex hook trust, proxy routing gap, org enrolment - plus the recent-failures card (failed commands grouped, recovered vs not, session deep-links).",
@@ -204,7 +243,7 @@ const SECTIONS: SectionDef[] = [
     label: "Storage",
     group: "edit",
     status: "soft",
-    icon: <DatabaseIcon size={13} />,
+    icon: HardDrive,
     about: {
       summary:
         "Where the database's bytes live: per-table size breakdown (indexes and FTS shadow tables folded into their owners), vacuum, and one-click backup with restore instructions. Backups are consistent snapshots written next to the live DB via VACUUM INTO - capture keeps running while one is taken.",
@@ -219,7 +258,7 @@ const SECTIONS: SectionDef[] = [
     label: "Enrolment",
     group: "edit",
     status: "soft",
-    icon: <OrgSectionIcon />,
+    icon: Users,
     about: {
       summary:
         "Teams & Org Visibility. When enrolled, this agent shares content-free activity rollups (counts, costs, timings, paths - never prompt text or tool output) with your organisation's SuperBased server. View exactly what was last shared, or unenrol.",
@@ -234,7 +273,7 @@ const SECTIONS: SectionDef[] = [
     label: "Cloud Intelligence",
     group: "edit",
     status: "soft",
-    icon: <SparklesIcon size={13} />,
+    icon: Cloud,
     about: {
       summary:
         "Optional signed-in personal enrichment (Signed-in Free). The Cloud account card at the top is where you sign in and out - the daemon itself never touches the network: Sign in runs the same consent-gated `observer cloud login` you would type, as a subprocess, and the credential stays in the local keychain. The card also carries the two egress preferences (auto-sync, auto-enrich). Below it: consent receipts, the send outbox by state, and any synced enrichment results. Deployment knobs (client id, base URL, callback port) live under an Advanced fold - most people never touch them.",
@@ -249,12 +288,12 @@ const SECTIONS: SectionDef[] = [
     label: "Intelligence",
     group: "edit",
     status: "restart",
-    icon: <SparklesIcon size={13} />,
+    icon: BrainCircuit,
     about: {
       summary:
-        "Summary model, monthly budget cap, code-graph integration. These power the Analysis tab's headline KPIs and the MCP `get_session_summary` tool.",
+        "Summary model, monthly budget cap, and the in-process code index ([codeintel]). These power the Analysis tab's headline KPIs and the MCP `get_session_summary` tool.",
       whenModified:
-        "Switching to a cheaper Haiku for summaries, raising/lowering the budget cap, or enabling/disabling the code-graph backend.",
+        "Switching to a cheaper Haiku for summaries, raising/lowering the budget cap, or enabling/disabling the code index (codeintel.enabled).",
       behavior:
         "Save writes config.toml; consumers bind the value at daemon startup, so a `observer serve` restart is required for the new value to take effect.",
     },
@@ -264,7 +303,7 @@ const SECTIONS: SectionDef[] = [
     label: "Observer",
     group: "config",
     status: "restart",
-    icon: <EyeIcon size={13} />,
+    icon: Eye,
     about: {
       summary: "Top-level observer settings (db path, log level) plus every [observer] key the sub-sections do not own, rendered from the config schema.",
       whenModified: "Adding/removing a watched root, tweaking retention, etc.",
@@ -276,7 +315,7 @@ const SECTIONS: SectionDef[] = [
     label: "Watcher",
     group: "config",
     status: "restart",
-    icon: <SearchIcon size={13} />,
+    icon: FolderSearch,
     about: {
       summary: "Filesystem watcher - watch_paths, ignore_globs. Defines what observer scans for new session files.",
       whenModified: "Onboarding a new AI client, or moving session files to a non-default location.",
@@ -288,7 +327,7 @@ const SECTIONS: SectionDef[] = [
     label: "Freshness",
     group: "config",
     status: "restart",
-    icon: <ClockIcon size={13} />,
+    icon: Clock,
     about: {
       summary: "Freshness classifier - how observer scores whether a file read is stale vs fresh.",
       whenModified: "Tuning the staleness threshold or hashing rules.",
@@ -300,7 +339,7 @@ const SECTIONS: SectionDef[] = [
     label: "Retention",
     group: "config",
     status: "restart",
-    icon: <CalendarIcon size={13} />,
+    icon: CalendarClock,
     about: {
       summary: "How long observer keeps each table's data. Trims the DB on schedule.",
       whenModified: "Disk pressure or compliance retention windows.",
@@ -312,7 +351,7 @@ const SECTIONS: SectionDef[] = [
     label: "Hooks",
     group: "config",
     status: "restart",
-    icon: <BoltIcon size={13} />,
+    icon: Webhook,
     about: {
       summary: "Per-tool hook configuration (Claude Code, Codex, Cursor, etc).",
       whenModified: "Adding a new tool integration or fixing a broken envelope.",
@@ -324,7 +363,7 @@ const SECTIONS: SectionDef[] = [
     label: "Proxy",
     group: "config",
     status: "restart",
-    icon: <CompassIcon size={13} />,
+    icon: ArrowRightLeft,
     about: {
       summary: "API proxy port + compression knobs.",
       whenModified: "Changing the proxy port or compression toggles.",
@@ -336,7 +375,7 @@ const SECTIONS: SectionDef[] = [
     label: "Dashboard",
     group: "config",
     status: "restart",
-    icon: <CompassIcon size={13} />,
+    icon: MonitorCog,
     about: {
       summary: "Durable dashboard listen address.",
       whenModified: "Setting a fixed host:port for the dashboard listener.",
@@ -349,7 +388,7 @@ const SECTIONS: SectionDef[] = [
     label: "Compression",
     group: "config",
     status: "restart",
-    icon: <CompressIcon size={13} />,
+    icon: Minimize2,
     about: {
       summary: "Per-mechanism compression configuration - drop / dedup / stash thresholds.",
       whenModified: "Tuning the compression pipeline.",
@@ -361,7 +400,7 @@ const SECTIONS: SectionDef[] = [
     label: "Profiles",
     group: "config",
     status: "hot",
-    icon: <WrenchIcon size={13} />,
+    icon: SlidersHorizontal,
     about: {
       summary:
         "Which compression profile each traffic class runs. Profiles are named parameter sets (the embedded recipes + `default` = master config) resolved per request at the proxy, so Claude Code and codex each get their tuned parameters from one daemon. The master compression switch stays the only on/off gate - profiles never enable compression.",
@@ -376,10 +415,10 @@ const SECTIONS: SectionDef[] = [
     label: "Org sharing",
     group: "config",
     status: "restart",
-    icon: <EyeIcon size={13} />,
+    icon: Share2,
     about: {
       summary:
-        "What this node shares with an org server when enrolled: share mode (metadata-only by default - hashes and counts, never raw content), per-action target exceptions, project scope lists, push cadence. Raw-content sharing (full_content/admin_managed) is node opt-in only, never server-forced; the reporting-tier shares (e.g. routing_summary, obs_summary) are node opt-in, or can be raised by the org on a managed node via node governance policy.",
+        "What this node shares with an org server when enrolled: share mode (metadata-only by default - hashes and counts, never raw content), per-action target exceptions, project scope lists, push cadence. Raw-content sharing (full_content/admin_managed) is node opt-in only, never server-forced; the reporting-tier shares (e.g. routing_summary, obs.summary) are node opt-in, or can be raised by the org on a managed node via node governance policy.",
       whenModified:
         "Opting into (or out of) full-content sharing, scoping which projects push, or tuning push cadence. Enrolment itself stays with `observer enroll` / the Enrolment section.",
       behavior:
@@ -391,7 +430,7 @@ const SECTIONS: SectionDef[] = [
     label: "Guard",
     group: "config",
     status: "restart",
-    icon: <ShieldIcon size={13} />,
+    icon: ShieldCheck,
     about: {
       summary:
         "The security guard layer - posture (enabled / observe vs enforce / strict), rule disables, boundary allowlists, taint tracking, proxy egress + response scans, MCP pinning, budget limits, alerts, and native-dialect compilation. Cloud features ([guard.cloud] - LLM judge, reputation, webhooks) are deliberately NOT editable here: network egress stays a hand-written config decision.",
@@ -406,7 +445,7 @@ const SECTIONS: SectionDef[] = [
     label: "Routing",
     group: "config",
     status: "restart",
-    icon: <CompassIcon size={13} />,
+    icon: Split,
     about: {
       summary:
         "Model routing - the opt-in layer that picks (advise) or rewrites (enforce) the model per turn based on a policy template, with session stickiness, outcome calibration, and subscription-window headroom. Custom [[routing.rules]], tier overrides, budget scopes, privacy rules, key pools, and local upstreams are deliberately NOT editable here: complex shapes and secrets stay hand-written config decisions, preserved on every save.",
@@ -421,7 +460,7 @@ const SECTIONS: SectionDef[] = [
     label: "OTel export",
     group: "config",
     status: "restart",
-    icon: <LightningIcon size={13} />,
+    icon: Telescope,
     about: {
       summary:
         "Agent-side OpenTelemetry exporter - one gen_ai.client span per proxied API turn to your own OTLP/HTTP collector. Disabled by default; prompt content and user email are separate, off-by-default opt-ins.",
@@ -436,7 +475,7 @@ const SECTIONS: SectionDef[] = [
     label: "MCP tools",
     group: "config",
     status: "soft",
-    icon: <SearchIcon size={13} />,
+    icon: Plug,
     about: {
       summary:
         "The on-demand MCP retrieval tools (get_file / get_symbols / get_relations / retrieve_stashed), their shared audit log, and the value meter - what the tools actually got called vs their ~1,900-token-per-turn schema overhead.",
@@ -451,7 +490,7 @@ const SECTIONS: SectionDef[] = [
     label: "Advisor",
     group: "config",
     status: "restart",
-    icon: <LightningIcon size={13} />,
+    icon: Lightbulb,
     about: {
       summary:
         "The suggestions engine - evidence window, confidence/savings visibility floors, and the opt-in session-start digest that injects top advisories into Claude Code.",
@@ -466,7 +505,7 @@ const SECTIONS: SectionDef[] = [
     label: "Cache tracking",
     group: "config",
     status: "restart",
-    icon: <LayersIcon size={13} />,
+    icon: DatabaseZap,
     about: {
       summary:
         "Anthropic prompt-cache observation + forecasting - the Cache tab's data source. Hash-only and node-local; cache rows never leave this machine.",
@@ -481,7 +520,7 @@ const SECTIONS: SectionDef[] = [
     label: "Task tracking",
     group: "config",
     status: "restart",
-    icon: <ListIcon size={13} />,
+    icon: ListTodo,
     about: {
       summary:
         "Session-level todo/plan checklist tracking — decodes TaskCreate/TodoWrite/update_plan/manage_todo_list and similar tool calls already captured into a per-task lifecycle + cost report (the session detail Tasks tab, and Analysis's Tasks section).",
@@ -497,7 +536,7 @@ const SECTIONS: SectionDef[] = [
     group: "config",
     plane: "admin",
     status: "restart",
-    icon: <EyeIcon size={13} />,
+    icon: ScanEye,
     about: {
       summary:
         "Generalized observability (admin plane) - the OTLP /v1/traces receiver, trajectory capture, and the eval plane for an admin/org-hosted LLM app whose END-USER requests route through SuperBased. This is NOT your own coding-agent usage (every other section is); the captured traces + evals are viewed on the admin/org dashboard, not this node dashboard. Opt-in and node-local: trace data never leaves this machine unless you opt into an obs share tier under Org sharing.",
@@ -512,7 +551,7 @@ const SECTIONS: SectionDef[] = [
     label: "Secrets scrubbing",
     group: "config",
     status: "restart",
-    icon: <DropletIcon size={13} />,
+    icon: KeyRound,
     about: {
       summary:
         "Regex scrubbing applied to captured tool output before anything is stored. Built-in patterns cover common API-key and token shapes; extra patterns append your own.",
@@ -526,7 +565,7 @@ const SECTIONS: SectionDef[] = [
     label: "Antigravity",
     group: "config",
     status: "restart",
-    icon: <AntigravitySectionIcon />,
+    icon: Orbit,
     about: {
       summary: "Antigravity (Google) adapter config - bridge ports, decrypt keys, etc.",
       whenModified: "Onboarding the Antigravity adapter.",
@@ -538,7 +577,7 @@ const SECTIONS: SectionDef[] = [
     label: "Process capture",
     group: "config",
     status: "restart",
-    icon: <LayersIcon size={13} />,
+    icon: Cpu,
     about: {
       summary:
         "OS-level process observability - capture toggle, backend, and the poll rate that controls how often the process table is sampled.",
@@ -552,7 +591,7 @@ const SECTIONS: SectionDef[] = [
     label: "Browser capture",
     group: "config",
     status: "restart",
-    icon: <EyeIcon size={13} />,
+    icon: Globe,
     about: {
       summary:
         "Browser-chat capture granularity ceiling - the daemon-side clamp on how much of a captured ChatGPT/Claude.ai/Perplexity/Gemini/Copilot web turn is stored (usage_only / redacted / full).",
@@ -567,7 +606,7 @@ const SECTIONS: SectionDef[] = [
     label: "Session attach",
     group: "config",
     status: "restart",
-    icon: <LayersIcon size={13} />,
+    icon: SquareTerminal,
     about: {
       summary:
         "Session attach ([terminal.attach]) - serve the owner-only attach socket so `observer <tool> --attach` sessions become joinable from the dashboard, route attach sessions through the observer proxy, and control whether the launchers attach by default.",
@@ -579,60 +618,30 @@ const SECTIONS: SectionDef[] = [
   },
 ];
 
+/**
+ * sectionIcon returns a Settings section's glyph from the SECTIONS table, so
+ * a section's card title and its SectionNav row show the same icon and
+ * cannot drift.
+ */
+function sectionIcon(id: SectionId): LucideIcon | undefined {
+  return SECTIONS.find((s) => s.id === id)?.icon;
+}
+
 const STATUS_LABEL: Record<SectionDef["status"], string> = {
   hot: "hot",
   soft: "soft",
   restart: "restart",
 };
 
-const STATUS_CLASS: Record<SectionDef["status"], string> = {
-  hot: "border-success/40 bg-success-soft text-success",
-  soft: "border-line-3 bg-bg-3 text-fg-2",
-  restart: "border-danger/40 bg-danger-soft text-danger",
+// STATUS_TONE: each section's reload behaviour as a Pill tone.
+const STATUS_TONE: Readonly<Record<SectionDef["status"], Tone>> = {
+  hot: "success",
+  soft: "neutral",
+  restart: "danger",
 };
 
 function sectionAt(id: SectionId): SectionDef {
   return SECTIONS.find((s) => s.id === id)!;
-}
-
-// Small inline glyph for the Antigravity section — mirrors the
-// per-tool antigravity ToolGlyph (upward triangle floating above a
-// baseline) at the section-nav size. Sized to match the other 13px
-// icon set rather than reach into ToolGlyph + its tinted frame.
-function AntigravitySectionIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      fill="none"
-      aria-hidden
-    >
-      <path d="M12 5 L18 14 L6 14 Z" fill="currentColor" stroke="none" />
-      <line
-        x1="5"
-        y1="18"
-        x2="19"
-        y2="18"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        opacity="0.5"
-      />
-    </svg>
-  );
-}
-
-// Small inline glyph for the Enrolment (Teams) section — two stacked
-// people, sized to match the 13px section-nav icon set.
-function OrgSectionIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 16 16" stroke="currentColor" fill="none" aria-hidden>
-      <circle cx="6" cy="5" r="2.2" strokeWidth="1.3" />
-      <path d="M2 13a4 4 0 0 1 8 0" strokeWidth="1.3" strokeLinecap="round" />
-      <path d="M10.5 3.2a2.2 2.2 0 0 1 0 3.6M11 9.2a4 4 0 0 1 3 3.8" strokeWidth="1.3" strokeLinecap="round" />
-    </svg>
-  );
 }
 
 export function SettingsPage() {
@@ -713,27 +722,38 @@ export function SettingsPage() {
           <CommunityLinksMini />
         </aside>
 
-        <main className="min-w-0 overflow-y-auto p-6">
+        <main className="min-w-0 overflow-y-auto p-4 sm:p-6">
+          {readOnly && (
+            <ReadOnlyBanner className="mb-4">
+              Managed by {governedOrgLabel(gov.data)} - changes to this section cannot be saved from
+              this machine.
+            </ReadOnlyBanner>
+          )}
           {active === "pricing" && (
             <PricingSection
               config={config.data}
               loading={config.loading}
               error={config.error}
+              denied={config.denied}
+              deniedPermission={config.deniedPermission}
               onReload={config.reload}
               readOnly={readOnly}
             />
           )}
+          {active === "pricing" && <RepriceCard />}
           {active === "backfill" && <BackfillSection />}
-          {active === "tools" && <ConnectedToolsSection />}
-          {active === "health" && <HealthSection />}
-          {active === "storage" && <StorageSection />}
-          {active === "enrolment" && <EnrolmentSection />}
-          {active === "cloud" && <CloudIntelligenceSection />}
+          {active === "tools" && <ConnectedToolsSection icon={sectionIcon("tools")} />}
+          {active === "health" && <HealthSection icon={sectionIcon("health")} />}
+          {active === "storage" && <StorageSection icon={sectionIcon("storage")} />}
+          {active === "enrolment" && <EnrolmentSection icon={sectionIcon("enrolment")} />}
+          {active === "cloud" && <CloudIntelligenceSection icon={sectionIcon("cloud")} />}
           {active === "intelligence" && (
             <IntelligenceSection
               config={config.data}
               loading={config.loading}
               error={config.error}
+              denied={config.denied}
+              deniedPermission={config.deniedPermission}
               onReload={config.reload}
               readOnly={readOnly}
             />
@@ -774,6 +794,7 @@ function SettingsHeader({
   return (
     <div className="border-b border-line-1 bg-bg-1 px-6 py-4">
       <PageHeader
+        icon={navIcon("settings")}
         title="Settings"
         helpId="tab.settings"
         sub={
@@ -813,26 +834,14 @@ function AboutSectionRail({ def }: { def: SectionDef }) {
         <h2 className="text-[12.5px] font-semibold text-fg-1">
           About this section
         </h2>
-        <span
-          className={clsx(
-            "rounded-pill border px-1.5 py-px text-[9.5px] font-medium uppercase tracking-[0.04em]",
-            STATUS_CLASS[def.status],
-          )}
-        >
-          {STATUS_LABEL[def.status]}
-        </span>
+        <Pill variant={STATUS_TONE[def.status]}>{STATUS_LABEL[def.status]}</Pill>
         {def.plane === "admin" && (
-          <Tooltip
-            content="Plane A - governs an admin/org-hosted app's end-users, not this node's own coding-agent. See docs/deployment-models.md."
-            maxWidth={340}
+          <Pill
+            variant="accent"
+            title="Plane A - governs an admin/org-hosted app's end-users, not this node's own coding-agent. See docs/deployment-models.md."
           >
-            <span
-              tabIndex={0}
-              className="cursor-help rounded-pill border border-accent/40 bg-accent-soft px-1.5 py-px text-[9.5px] font-medium uppercase tracking-[0.04em] text-accent focus:outline-none"
-            >
-              admin plane
-            </span>
-          </Tooltip>
+            admin plane
+          </Pill>
         )}
       </div>
       <AboutBlock label={def.label.toUpperCase()} body={def.about.summary} />
@@ -920,37 +929,19 @@ function SectionNav({
                   )}
                   aria-hidden
                 >
-                  {s.icon}
+                  <Icon icon={s.icon} size={13} />
                 </span>
                 <span className="min-w-0 flex-1 truncate">{s.label}</span>
                 {isSettingsReadOnly(gov, s.id) && (
-                  <span
-                    className="shrink-0 text-fg-3"
-                    title="Managed by your organization"
-                    aria-label="Managed by your organization"
-                  >
-                    <svg
-                      width="11"
-                      height="11"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      aria-hidden
-                    >
-                      <rect x="3" y="11" width="18" height="10" rx="2" />
-                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                    </svg>
-                  </span>
+                  <Tooltip content="Managed by your organization">
+                    <span className="shrink-0 text-fg-3" aria-label="Managed by your organization">
+                      <Icon icon={Lock} size={11} />
+                    </span>
+                  </Tooltip>
                 )}
-                <span
-                  className={clsx(
-                    "shrink-0 rounded-pill border px-1.5 py-px text-[9.5px] font-medium uppercase tracking-[0.04em]",
-                    STATUS_CLASS[s.status],
-                  )}
-                >
+                <Pill variant={STATUS_TONE[s.status]} className="shrink-0">
                   {STATUS_LABEL[s.status]}
-                </span>
+                </Pill>
               </button>
             ))}
           </div>
@@ -966,12 +957,16 @@ function PricingSection({
   config,
   loading,
   error,
+  denied,
+  deniedPermission,
   onReload,
   readOnly,
 }: {
   config: ConfigResponse | null;
   loading: boolean;
   error: Error | null;
+  denied?: boolean;
+  deniedPermission?: string | null;
   onReload: () => void;
   readOnly?: boolean;
 }) {
@@ -1072,11 +1067,12 @@ function PricingSection({
   return (
     <ChartShell
       title="Pricing overrides"
+      icon={sectionIcon("pricing")}
       sub="Per-million-token rates that shadow the baked-in defaults. Save triggers an in-place cost engine reload - Cost / Analysis / Session-detail pages reflect the new rates on next query (no daemon restart)."
       right={
-        <div className="flex items-center gap-2 text-[11px]">
+        <div className="flex flex-wrap items-center gap-2 text-[11px]">
           {save.state === "ok" && (
-            <span className="text-success">{save.message}</span>
+            <SuccessCheck label={save.message} className="!text-[11px]" />
           )}
           {save.state === "err" && (
             <Tooltip content={save.message} maxWidth={360}>
@@ -1095,8 +1091,8 @@ function PricingSection({
             </Button>
           </Tooltip>
           <Tooltip content="Pick a default model and add a pricing override">
-            <Button size="sm" onClick={() => setShowDefaults(true)}>
-              + Add override
+            <Button size="sm" iconLeft={Plus} onClick={() => setShowDefaults(true)}>
+              Add override
             </Button>
           </Tooltip>
           <Button
@@ -1114,6 +1110,8 @@ function PricingSection({
       <ChartState
         loading={loading && !config}
         error={error}
+        denied={denied}
+        deniedPermission={deniedPermission}
         empty={false}
         height={120}
       >
@@ -1145,19 +1143,19 @@ function PricingSection({
         )}
 
         <details
-          className="mt-4 rounded-2 border border-line-1 bg-bg-2"
+          className="mt-4 rounded-2 border border-line-2 bg-bg-2"
           open={showDefaults}
           onToggle={(e) =>
             setShowDefaults((e.target as HTMLDetailsElement).open)
           }
         >
-          <summary className="cursor-pointer px-3 py-2 text-[11.5px] text-fg-2">
+          <Summary className="px-3 py-2 text-[11.5px] text-fg-2">
             Baked-in defaults ·{" "}
             <span className="font-mono">{defaultKeys.length}</span> models
-          </summary>
+          </Summary>
           <div className="border-t border-line-1 p-3">
             {defaults.loading && (
-              <div className="text-[11px] text-fg-3">loading…</div>
+              <InlineLoading label="Loading defaults" />
             )}
             {defaults.data && (
               <DefaultsTable
@@ -1183,9 +1181,7 @@ function PricingSection({
 function PricingWarningsBanner({ warnings }: { warnings: string[] }) {
   return (
     <div className="mb-4 flex items-start gap-3 rounded-3 border border-warn/30 bg-warn-soft/60 px-4 py-2.5 text-[11.5px]">
-      <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border border-warn/40 text-warn">
-        !
-      </span>
+      <Icon icon={TriangleAlert} size={14} className="mt-0.5 shrink-0 text-warn" />
       <div className="min-w-0 flex-1 text-fg-2">
         <b className="text-fg-1">
           Saved, but the dated-rate table has {warnings.length === 1 ? "a problem" : `${warnings.length} problems`}.
@@ -1438,9 +1434,9 @@ function RateHistoryBadge({ periods }: { periods: DatedCostPricing[] }) {
       <span
         tabIndex={0}
         aria-label={`Rate history - ${sorted.length} period${sorted.length === 1 ? "" : "s"}`}
-        className="inline-grid h-4 w-4 shrink-0 cursor-help place-items-center rounded-full border border-line-3 text-fg-3 hover:border-accent/50 hover:text-accent focus:outline-none"
+        className="inline-grid h-4 w-4 shrink-0 cursor-help place-items-center rounded-pill border border-line-3 text-fg-3 hover:border-accent/50 hover:text-accent focus:outline-none"
       >
-        <ClockIcon size={9} />
+        <Icon icon={Clock} size={9} />
       </span>
     </Tooltip>
   );
@@ -1556,7 +1552,7 @@ function PeakBadge({
   );
   return (
     <Pill variant="accent" title={content}>
-      <LightningIcon size={9} />
+      <Icon icon={Zap} size={9} />
       peak
     </Pill>
   );
@@ -1720,6 +1716,7 @@ function BackfillSection() {
   return (
     <ChartShell
       title="Backfill jobs"
+      icon={sectionIcon("backfill")}
       sub="Each mode re-fills a column or row class added in a later migration. SQL-checkable modes show a candidate count; file-walking modes mark `-1` (only the run itself can count). Jobs spawn the observer CLI subprocess with the current config path."
       right={
         status.data && status.data.modes.length > 0 ? (
@@ -1795,6 +1792,8 @@ function BackfillSection() {
       <ChartState
         loading={status.loading && !status.data}
         error={status.error}
+        denied={status.denied}
+        deniedPermission={status.deniedPermission}
         empty={!status.data?.modes.length}
         emptyHint="No backfill modes registered."
         height={160}
@@ -1838,14 +1837,14 @@ function BackfillSection() {
                   </div>
 
                   {job && (job.status === "done" || job.status === "failed") && (
-                    <details className="mt-2 rounded-1 border border-line-1 bg-bg-1">
-                      <summary className="cursor-pointer px-2 py-1 text-[11px] text-fg-3">
+                    <details className="mt-2 rounded-1 border border-line-2 bg-bg-3">
+                      <Summary className="px-2 py-1 text-caption text-fg-3">
                         Output · exit {job.exit_code ?? "?"} ·{" "}
                         {job.output.length.toLocaleString()}B
                         {job.error && (
                           <span className="ml-2 text-danger">{job.error}</span>
                         )}
-                      </summary>
+                      </Summary>
                       <pre className="m-0 max-h-[200px] overflow-auto whitespace-pre-wrap break-all px-2 py-1.5 font-mono text-[11px] text-fg-2">
                         {job.output || "(no output captured)"}
                       </pre>
@@ -2001,17 +2000,10 @@ function CandidatesPill({
   );
 }
 
+// JobStatusPill renders a background job's status from the ONE JOB_STATUS
+// table (@shared/lib/sessionVocab); running spins.
 function JobStatusPill({ status }: { status: string }) {
-  switch (status) {
-    case "running":
-      return <Pill variant="accent">running</Pill>;
-    case "done":
-      return <Pill variant="success">done</Pill>;
-    case "failed":
-      return <Pill variant="danger">failed</Pill>;
-    default:
-      return <Pill>{status}</Pill>;
-  }
+  return <VocabPill vocab="jobStatus" table={JOB_STATUS} value={status} />;
 }
 
 // ============================================================ Intelligence
@@ -2020,12 +2012,16 @@ function IntelligenceSection({
   config,
   loading,
   error,
+  denied,
+  deniedPermission,
   onReload,
   readOnly,
 }: {
   config: ConfigResponse | null;
   loading: boolean;
   error: Error | null;
+  denied?: boolean;
+  deniedPermission?: string | null;
   onReload: () => void;
   readOnly?: boolean;
 }) {
@@ -2033,7 +2029,6 @@ function IntelligenceSection({
   const [summaryModel, setSummaryModel] = useState("");
   const [apiKeyEnv, setApiKeyEnv] = useState("");
   const [monthlyBudget, setMonthlyBudget] = useState(0);
-  const [codeGraphEnabled, setCodeGraphEnabled] = useState(false);
   const [save, setSave] = useState<{
     state: "idle" | "saving" | "ok" | "err";
     message?: string;
@@ -2044,7 +2039,6 @@ function IntelligenceSection({
     setSummaryModel(intel.SummaryModel ?? "");
     setApiKeyEnv(intel.APIKeyEnv ?? "");
     setMonthlyBudget(intel.MonthlyBudgetUSD ?? 0);
-    setCodeGraphEnabled(intel.CodeGraph?.Enabled ?? false);
   }, [intel]);
 
   async function saveSection() {
@@ -2060,7 +2054,6 @@ function IntelligenceSection({
             SummaryModel: summaryModel,
             APIKeyEnv: apiKeyEnv,
             MonthlyBudgetUSD: monthlyBudget,
-            CodeGraph: { Enabled: codeGraphEnabled },
           }),
         },
       );
@@ -2084,11 +2077,12 @@ function IntelligenceSection({
   return (
     <ChartShell
       title="Intelligence"
-      sub="Summary model + monthly budget + code-graph toggle. Saving writes config.toml and surfaces a Restart-required banner - these consumers bind config at startup, unlike pricing."
+      icon={sectionIcon("intelligence")}
+      sub="Summary model + monthly budget. Saving writes config.toml and surfaces a Restart-required banner - these consumers bind config at startup, unlike pricing."
       right={
         <div className="flex items-center gap-2 text-[11px]">
           {save.state === "ok" && (
-            <span className="text-success">{save.message}</span>
+            <SuccessCheck label={save.message} className="!text-[11px]" />
           )}
           {save.state === "err" && (
             <Tooltip content={save.message} maxWidth={360}>
@@ -2112,6 +2106,8 @@ function IntelligenceSection({
       <ChartState
         loading={loading && !config}
         error={error}
+        denied={denied}
+        deniedPermission={deniedPermission}
         empty={!intel}
         emptyHint="Intelligence section unavailable."
         height={200}
@@ -2150,16 +2146,6 @@ function IntelligenceSection({
             <div className="mt-1 text-[11px] text-fg-3">
               Current: <strong>{fmtUSD(monthlyBudget)}</strong>
             </div>
-          </Field>
-          <Field
-            label="Code graph"
-            hint="Enable codebase-memory-mcp queries for richer MCP responses."
-          >
-            <Toggle
-              on={codeGraphEnabled}
-              onChange={setCodeGraphEnabled}
-              label={codeGraphEnabled ? "Enabled" : "Disabled"}
-            />
           </Field>
         </div>
       </ChartState>
@@ -2214,6 +2200,7 @@ function SectionView({
     return (
       <StructuredConfigSection
         spec={spec}
+        icon={sectionIcon(section)}
         config={config}
         readOnly={readOnly}
         footer={
@@ -2233,6 +2220,8 @@ function SectionView({
               <MCPValueMeterCard />
             ) : section === "routing" ? (
               <RoutingRulesEditorCard readOnly={readOnly} />
+            ) : section === "terminal" ? (
+              <ShellWrapCard readOnly={readOnly} />
             ) : null}
             <div className="mt-4">
               <SchemaSection
@@ -2254,6 +2243,7 @@ function SectionView({
     <SchemaSection
       section={section}
       title={SECTIONS.find((s) => s.id === section)?.label ?? section}
+      icon={sectionIcon(section)}
       config={config}
       schema={schema}
       readOnly={readOnly}
@@ -2449,6 +2439,15 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
   );
 }
 
+// MCP_TOOL_VERDICT - the MCP value meter's verdict (tone + wording); glyph
+// from VOCAB_ICONS.mcpToolVerdict. An unrecognized verdict reads as no data.
+const MCP_TOOL_VERDICT: VocabTable = {
+  active: { tone: "success", label: "earning its overhead" },
+  low_use: { tone: "warn", label: "low use for the tax" },
+  unused: { tone: "warn", label: "paying tax, zero calls" },
+  no_data: { tone: "neutral", label: "no usage data" },
+};
+
 // MCPValueMeterCard - the P4.10 value meter under the MCP section:
 // what the retrieval tools actually got called vs the per-turn schema
 // overhead MCP registration costs. Same numbers as the advisor's
@@ -2457,26 +2456,20 @@ function RoutingRulesEditorCard({ readOnly }: { readOnly?: boolean }) {
 function MCPValueMeterCard() {
   const meter = useApi<MCPValueResponse>("/api/mcp/value");
   const m = meter.data;
-  const verdictPill = (v: MCPValueResponse["verdict"]) => {
-    switch (v) {
-      case "active":
-        return <Pill variant="success">earning its overhead</Pill>;
-      case "low_use":
-        return <Pill variant="warn">low use for the tax</Pill>;
-      case "unused":
-        return <Pill variant="warn">paying tax, zero calls</Pill>;
-      default:
-        return <Pill variant="neutral">no usage data</Pill>;
-    }
-  };
+  const verdictPill = (v: MCPValueResponse["verdict"]) => (
+    <VocabPill vocab="mcpToolVerdict" table={MCP_TOOL_VERDICT} value={v in MCP_TOOL_VERDICT ? v : "no_data"} />
+  );
   return (
     <ChartShell
       title="Value meter"
+      icon={Gauge}
       sub="Are the MCP tools worth their per-turn schema overhead? Computed from your own last 30 days."
     >
       <ChartState
         loading={meter.loading}
         error={meter.error}
+        denied={meter.denied}
+        deniedPermission={meter.deniedPermission}
         empty={!meter.loading && !m}
         emptyHint="No data."
       >
@@ -2656,6 +2649,7 @@ function CustomProfilesCard({
                 <Button
                   size="sm"
                   variant={confirmDelete === name ? "danger" : "secondary"}
+                  iconLeft={Trash2}
                   onClick={() => remove(name)}
                   disabled={busy}
                 >
@@ -2693,7 +2687,7 @@ function CustomProfilesCard({
           className="!w-auto"
           options={names}
         />
-        <Button variant="primary" onClick={create} disabled={!validName || busy}>
+        <Button variant="primary" iconLeft={Plus} onClick={create} disabled={!validName || busy}>
           Create
         </Button>
         {newName && !validName && (
@@ -2812,8 +2806,15 @@ function ProfileEditor({ name }: { name: string }) {
   }
 
   if (!data) {
-    return (
-      <p className="mt-2 text-[11px] text-fg-3">{err ?? "Loading…"}</p>
+    return err ? (
+      <ErrorState
+        className="mt-2"
+        title="Couldn't load this profile"
+        error={err}
+        onRetry={() => void load()}
+      />
+    ) : (
+      <InlineLoading label="Loading profile" className="mt-2" />
     );
   }
   return (
@@ -2862,7 +2863,7 @@ function ProfileEditor({ name }: { name: string }) {
           </code>
         </span>
         {savedMsg && (
-          <span className="text-[11px] text-success">{savedMsg}</span>
+          <SuccessCheck label={savedMsg} className="!text-[11px]" />
         )}
         {err && <span className="text-[11px] text-danger">{err}</span>}
       </div>
@@ -2900,7 +2901,7 @@ function ProfilesReferenceCard() {
     },
   ];
   return (
-    <Card title="Built-in profiles" className="mt-4">
+    <Card title="Built-in profiles" icon={Table2} className="mt-4">
       <Table
         minWidth={520}
         head={
@@ -3046,14 +3047,18 @@ function PruneNowCard() {
             permanent; the thresholds decide what counts as old.
           </p>
         </div>
-        <Button
+        {/* Permanent deletion: the in-place two-step confirm (first click
+            arms, the second runs the prune), never a first-click delete. */}
+        <ConfirmButton
           variant="primary"
           className="shrink-0"
-          onClick={run}
+          onConfirm={run}
           disabled={busy || job?.status === "running"}
+          confirmLabel="Prune now?"
+          armedNote="Deletes every row older than the thresholds above. This cannot be undone."
         >
           {job?.status === "running" ? "Pruning…" : "Run retention now"}
-        </Button>
+        </ConfirmButton>
       </div>
       {err && <p className="m-0 mt-2 text-danger">{err}</p>}
       {job && job.status !== "running" && (
@@ -3062,7 +3067,7 @@ function PruneNowCard() {
         </p>
       )}
       {outputTail && (
-        <pre className="m-0 mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-2 border border-line-1 bg-bg-1 px-3 py-2 font-mono text-[11px] text-fg-3">
+        <pre className="m-0 mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-2 border border-line-2 bg-bg-3 px-3 py-2 font-mono text-caption text-fg-3">
           {outputTail}
         </pre>
       )}

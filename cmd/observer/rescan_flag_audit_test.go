@@ -18,12 +18,12 @@ func TestRescanPassesTable(t *testing.T) {
 	var (
 		cowork, codex, antigravity, antigravityCli bool
 		geminiCli, copilotCli, hermes, clinecli    bool
-		cache, zed                                 bool
+		cache, zed, crush                          bool
 	)
 	passes := buildRescanPasses(
 		&cowork, &codex, &antigravity, &antigravityCli,
 		&geminiCli, &copilotCli, &hermes, &clinecli,
-		&cache, &zed,
+		&cache, &zed, &crush,
 	)
 
 	type want struct {
@@ -44,6 +44,7 @@ func TestRescanPassesTable(t *testing.T) {
 		{&clinecli, "--clinecli-rescan", "cline-cli", "cline-cli", "~/.cline/data/db/sessions.db only"},
 		{&cache, "--cache-rescan", "claude-code", "cache", "claude-code transcripts through the Tier-2 cache engine; idempotent via CacheEventExistsForMessage"},
 		{&zed, "--zed-rescan", "zed", "zed", "threads.db only; watermark reset (fromOffset=0) re-reads every thread regardless of updated_at"},
+		{&crush, "--crush-rescan", "crush", "crush", "crush.db only; followed by the token-row correction pass"},
 	}
 
 	if len(passes) != len(wants) {

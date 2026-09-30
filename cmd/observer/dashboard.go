@@ -67,15 +67,28 @@ func newDashboardCmd() *cobra.Command {
 			loadNodeGovernanceLKG(cmd.Context(), cfg, govStore, ngov, slog.Default())
 			processArchive, closeArchive := openProcessArchiveReader(cmd.Context(), cfg)
 			defer closeArchive()
+			// Projects-page ROI + commit-alignment arc (docs/plans/
+			// projects-page-roi-and-commit-alignment-plan-2026-09-21.md
+			// §4 W3) — same wiring as `observer start`.
+			projectsJudgeGrade, projectsJudgeGradeReason := projectsDashboardOptions(&cfg)
 			server, err := dashboard.New(dashboard.Options{
 				ProcessArchive: processArchive,
 				Governance:     ngov.Effective,
 				DB:             database,
 				DBPath:         cfg.Observer.DBPath,
 				CostEngine:     acquireProcessCostEngine(cmd.Context(), cfg, database, slog.Default()),
-				Predict:        cfg.Predict,
-				CacheWarm:      cfg.CacheWarm,
-				Tasks:          cfg.Tasks,
+				// Production read caches: page loads fan several spend panels out at
+				// once and share one row read; watcher health is served SWR
+				// (optimization review 2026-09-27, findings N4/N5).
+				ReadCaches:             true,
+				Predict:                cfg.Predict,
+				Scoring:                cfg.Intelligence.Scoring,
+				CacheWarm:              cfg.CacheWarm,
+				Tasks:                  cfg.Tasks,
+				Projects:               cfg.Projects,
+				CloudGradeAvailability: CommitAlignmentAvailability,
+				JudgeGrade:             projectsJudgeGrade,
+				JudgeGradeReason:       projectsJudgeGradeReason,
 				// LOC editor endpoint credential — same resolution as
 				// `observer start`, so a developer running the dashboard
 				// standalone gets the identical posture.
@@ -123,6 +136,12 @@ func newDashboardCmd() *cobra.Command {
 				ToolPreflight:    toolPreflightSeam(resolvedConfigPath, allowToolInstallSeam(resolvedConfigPath)),
 				AllowToolInstall: allowToolInstallSeam(resolvedConfigPath),
 				ToolInstallHint:  toolInstallHintSeam(),
+				// Command wrapping (backlog item 7): the one shim / start-up-file
+				// applier, behind the Settings -> Terminal card.
+				ShellWrap: newShellWrapService(resolvedConfigPath, dashResolveEnv),
+				// Re-pricing stored costs (PRICE-REPRICE-1): the one plan/apply/
+				// revert service `observer reprice` also uses, behind the Settings card.
+				Reprice: newRepriceService(cmd.Context(), cfg, database, slog.Default(), ngov.Effective),
 				// New Terminal model picker (B5): same seam `observer start`
 				// wires — recent token_usage history + registry Known examples.
 				RecentModels: recentModelsSeam(database),
@@ -171,6 +190,10 @@ func newDashboardCmd() *cobra.Command {
 			}
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
+			// Same default-off, loopback-only profiling knob as `observer
+			// start` (pprof.go), so a standalone dashboard can be profiled
+			// against a copy of the DB without touching a live daemon.
+			maybeServePprof(ctx, os.Getenv(pprofEnvVar), cmd.OutOrStdout(), cmd.ErrOrStderr())
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"dashboard listening on http://%s — ctrl-c to stop\n", listen)
 			// Phase 2 (plan §4.4): when [remote] is armed in tailscale mode,

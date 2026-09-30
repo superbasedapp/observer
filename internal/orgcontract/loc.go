@@ -90,11 +90,22 @@ type SessionLOCRow struct {
 	// 47% of edit/write rows on the reference node are subagent work; a
 	// panel that folds them together is lying about what the developer's own
 	// agent turn produced (plan §0 row 27 / acceptance criterion 8). Only the
-	// three code buckets ship: the comment/whitespace/blank detail is a
-	// session-card concern, not an org one.
+	// three code buckets and the added-comment bucket ship: the
+	// whitespace/blank detail is a session-card concern, not an org one.
 	AISidechainAddedCode    int64 `json:"ai_sidechain_added_code"`
 	AISidechainModifiedCode int64 `json:"ai_sidechain_modified_code"`
 	AISidechainDeletedCode  int64 `json:"ai_sidechain_deleted_code"`
+	// AISidechainAddedComment is the subagent line's added COMMENT lines in
+	// category=code files - the comment half of the code-vs-comment split
+	// (internal/loc.SplitAuthored) for the sidechain, beside the main line's
+	// AIAddedComment. A POINTER because presence is the signal: an agent
+	// that predates the field omits the key, the server stores NULL ("not
+	// reported"), and the org rollup then withholds the sidechain split
+	// rather than rendering an older node's subagent lines as 0% comments.
+	// The node composer always sets it (a pointer to the value, zero
+	// included). An older server ignores the unknown key. Server migration
+	// 185 / PostgreSQL 0051.
+	AISidechainAddedComment *int64 `json:"ai_sidechain_added_comment,omitempty"`
 
 	// --- Human (actor=human): editor-reported saves ONLY. Never inferred,
 	// never derived from "changed outside the agent" (which is not a human
@@ -178,6 +189,16 @@ type LOCDayRow struct {
 	AICodeLines     int64 `json:"ai_code_lines"`
 	HumanCodeLines  int64 `json:"human_code_lines"`
 	SystemCodeLines int64 `json:"system_code_lines"`
+	// AICommentLines is the AI actor's ADDED comment lines in category=code
+	// files on that day - the same actor scope as AICodeLines (main line AND
+	// sidechain together, which is what AICodeLines counts), so the pair is
+	// the comment half of internal/loc.SplitAuthored for the day. Pointer =
+	// presence, exactly like SessionLOCRow.AISidechainAddedComment: nil from
+	// an agent that predates the field (stored NULL, "not reported", and the
+	// trend then says comments are not reported rather than drawing zero);
+	// always set by the current node composer. Server migration 185 /
+	// PostgreSQL 0051.
+	AICommentLines *int64 `json:"ai_comment_lines,omitempty"`
 
 	// Files is the distinct file count for the bucket.
 	Files int64 `json:"files"`

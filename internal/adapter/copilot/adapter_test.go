@@ -191,6 +191,13 @@ func TestParseSessionFile_DebugLogMainJSONL(t *testing.T) {
 	if res.TokenEvents[0].InputTokens != 11136 || res.TokenEvents[0].OutputTokens != 56 {
 		t.Fatalf("token counts mismatch: %#v", res.TokenEvents[0])
 	}
+	// The llm_request line's own "dur":42356 is already milliseconds
+	// (same scale as "ts") and covers exactly this call, so it stamps
+	// verbatim.
+	if res.TokenEvents[0].GenMs != 42356 || res.TokenEvents[0].GenBasis != models.GenBasisNative || res.TokenEvents[0].GenTimingV != 1 {
+		t.Fatalf("token GenMs/GenBasis/GenTimingV = %d/%q/%d, want 42356/native/1",
+			res.TokenEvents[0].GenMs, res.TokenEvents[0].GenBasis, res.TokenEvents[0].GenTimingV)
+	}
 
 	stat, _ := os.Stat(path)
 	if res.NewOffset != stat.Size() {
@@ -220,6 +227,47 @@ func TestParseSessionFile_MalformedLineSkipped(t *testing.T) {
 	}
 	if len(res.Warnings) != 1 {
 		t.Fatalf("Warnings: got %d want 1", len(res.Warnings))
+	}
+}
+
+// TestParseSessionFile_LLMRequestGenMs is table-driven over the legacy
+// debug-log llm_request line's "dur" field (rawLine.DurationMS, adapter.go
+// ~L122) -> TokenEvent.GenMs, covering the zero/missing negative shapes
+// the happy-path test doesn't exercise.
+func TestParseSessionFile_LLMRequestGenMs(t *testing.T) {
+	llmLine := func(dur string) string {
+		return `{"ts":1776928112610,` + dur + `"sid":"sess-1","type":"llm_request","name":"chat:m","spanId":"llm-1","attrs":{"model":"m","inputTokens":10,"outputTokens":5}}`
+	}
+	tests := []struct {
+		name      string
+		durField  string // e.g. `"dur":42356,` or "" to omit
+		wantStamp bool
+		wantGenMs int64
+	}{
+		{"positive stamps verbatim (already ms)", `"dur":42356,`, true, 42356},
+		{"field omitted leaves unset", "", false, 0},
+		{"zero leaves unset", `"dur":0,`, false, 0},
+		{"negative leaves unset", `"dur":-5,`, false, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeFixture(t, []string{llmLine(tt.durField)})
+			res, err := New().ParseSessionFile(context.Background(), path, 0)
+			if err != nil {
+				t.Fatalf("ParseSessionFile: %v", err)
+			}
+			if len(res.TokenEvents) != 1 {
+				t.Fatalf("TokenEvents: got %d want 1", len(res.TokenEvents))
+			}
+			ev := res.TokenEvents[0]
+			if tt.wantStamp {
+				if ev.GenMs != tt.wantGenMs || ev.GenBasis != models.GenBasisNative || ev.GenTimingV != 1 {
+					t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want %d/native/1", ev.GenMs, ev.GenBasis, ev.GenTimingV, tt.wantGenMs)
+				}
+			} else if ev.GenMs != 0 || ev.GenBasis != "" || ev.GenTimingV != 0 {
+				t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want zero value (no stamp)", ev.GenMs, ev.GenBasis, ev.GenTimingV)
+			}
+		})
 	}
 }
 

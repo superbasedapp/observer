@@ -1,6 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { ChartShell, Pill } from "@/components/primitives";
+import { LayoutGrid, SlidersHorizontal, Swords } from "lucide-react";
+import {
+  ChartShell,
+  EmptyState,
+  ErrorState,
+  InlineLoading,
+  PageHeader,
+  Pill,
+  SegmentedControl,
+  type Segment,
+  SuccessCheck,
+  ConfirmButton,
+  Table,
+  Tooltip,
+} from "@/components/primitives";
+import type { ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "@/components/DataTable";
+import { Summary } from "@/components/Summary";
+import { navIcon } from "@/lib/nav";
 import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
 import { fmtClock, fmtRelative, fmtShortId } from "@/lib/format";
@@ -14,6 +32,7 @@ import { unwatchedAllowedToolsMsg } from "@/lib/toolInstall";
 import {
   useTerminalStatuses,
   AgentStatusBadge,
+  type AgentStatusInfo,
 } from "@/components/useTerminalStatuses";
 import { WorkspaceGrid } from "@/components/workspace/WorkspaceGrid";
 import { ArenaTab } from "@/components/arena/ArenaTab";
@@ -121,6 +140,24 @@ async function putPolicy(
   });
 }
 
+type TerminalsTab = "workspace" | "settings" | "arena";
+
+// The page's three views, each with its own glyph, and the one-line
+// description the header shows for the active view.
+const TERMINALS_TABS: Segment<TerminalsTab>[] = [
+  { value: "workspace", label: "Workspace", icon: LayoutGrid },
+  { value: "settings", label: "Settings", icon: SlidersHorizontal },
+  { value: "arena", label: "Arena", icon: Swords },
+];
+
+const TERMINALS_TAB_SUBS: Record<TerminalsTab, string> = {
+  workspace: "Your terminal workspace - run and arrange multiple live terminals on one grid.",
+  arena:
+    "Run one prompt against several agent harnesses in isolated worktrees, compare judged scorecards, keep the winner.",
+  settings:
+    "Launch policy, live agent status, and run history for the embedded terminal. Launch policy is an owner-local setting - it only saves from this machine.",
+};
+
 export function TerminalsPage() {
   const policy = useApi<TerminalPolicy>("/api/terminal/policy");
   const runs = useApi<{ runs: RunRow[] }>("/api/terminal/runs", undefined, [], {
@@ -140,7 +177,7 @@ export function TerminalsPage() {
 
   // Workspace vs Settings tab (dock-grid design D1): the grid IS the page;
   // the policy/remote/standing/status/history content moves behind Settings.
-  const [tab, setTab] = useState<"workspace" | "settings" | "arena">("workspace");
+  const [tab, setTab] = useState<TerminalsTab>("workspace");
   // Deep-link: /terminals?tab=workspace|settings (the provider's requestDock
   // navigates here so a queued "Add to grid" always lands on the grid, even
   // if this page was left on the Settings tab).
@@ -317,54 +354,19 @@ export function TerminalsPage() {
   }
 
   return (
-    <div className="space-y-4 p-5">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <h1 className="text-[15px] font-semibold text-fg-1">Terminals</h1>
-          <p className="mt-0.5 text-[12px] text-fg-3">
-            {tab === "workspace"
-              ? "Your terminal workspace - run and arrange multiple live terminals on one grid."
-              : tab === "arena"
-                ? "Run one prompt against several agent harnesses in isolated worktrees, compare judged scorecards, keep the winner."
-                : "Launch policy, live agent status, and run history for the embedded terminal. Launch policy is an owner-local setting - it only saves from this machine."}
-          </p>
-        </div>
-        <div className="flex gap-1 rounded-2 border border-line-2 bg-bg-1 p-0.5 text-[12px]">
-          <button
-            type="button"
-            onClick={() => setTab("workspace")}
-            className={
-              tab === "workspace"
-                ? "rounded-[6px] bg-bg-3 px-3 py-1 text-fg-1"
-                : "rounded-[6px] px-3 py-1 text-fg-3 hover:text-fg-1"
-            }
-          >
-            Workspace
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("settings")}
-            className={
-              tab === "settings"
-                ? "rounded-[6px] bg-bg-3 px-3 py-1 text-fg-1"
-                : "rounded-[6px] px-3 py-1 text-fg-3 hover:text-fg-1"
-            }
-          >
-            Settings
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("arena")}
-            className={
-              tab === "arena"
-                ? "rounded-[6px] bg-bg-3 px-3 py-1 text-fg-1"
-                : "rounded-[6px] px-3 py-1 text-fg-3 hover:text-fg-1"
-            }
-          >
-            Arena
-          </button>
-        </div>
-      </div>
+    <div className="space-y-6 p-4 sm:p-6">
+      <PageHeader
+        title="Terminals"
+        icon={navIcon("terminals")}
+        sub={TERMINALS_TAB_SUBS[tab]}
+        right={
+          <SegmentedControl<TerminalsTab>
+            options={TERMINALS_TABS}
+            value={tab}
+            onChange={setTab}
+          />
+        }
+      />
 
       {tab === "workspace" && (
         <WorkspaceGrid
@@ -519,7 +521,7 @@ export function TerminalsPage() {
             >
               {busy ? "saving…" : "Save launch policy"}
             </button>
-            {saved && <span className="text-[11px] text-ok">Saved.</span>}
+            {saved && <SuccessCheck label="Saved" className="!text-[11px]" />}
             {p?.restart_required_on_save && (
               <span className="text-[11px] text-fg-3">
                 Takes effect on the next daemon restart (the policy is read at start-up).
@@ -567,7 +569,7 @@ export function TerminalsPage() {
             <div className="space-y-1">
               {roots.map((r) => (
                 <div key={r} className="flex items-center gap-2">
-                  <code className="flex-1 break-all rounded-2 border border-line-2 bg-bg-1 px-2 py-1 font-mono text-[11px] text-fg-2">
+                  <code className="flex-1 break-all rounded-2 border border-line-2 bg-bg-3 px-2 py-1 font-mono text-[11px] text-fg-2">
                     {r}
                   </code>
                   <button
@@ -599,7 +601,7 @@ export function TerminalsPage() {
                     if (e.key === "Enter") addRoot();
                   }}
                   placeholder="/absolute/path/to/project"
-                  className="flex-1 rounded-2 border border-line-2 bg-bg-1 px-2 py-1 font-mono text-[11px] text-fg-1 outline-none focus:border-accent disabled:opacity-40"
+                  className="flex-1 rounded-2 border border-line-2 bg-bg-3 px-2 py-1 font-mono text-[11px] text-fg-1 outline-none focus:border-accent disabled:opacity-40"
                 />
                 <button
                   type="button"
@@ -618,7 +620,7 @@ export function TerminalsPage() {
                 and rejects stale/foreign/symlink-mismatched ones with a reason
                 (surfaced inline near Save below). */}
             {rootSuggestions.length > 0 && (
-              <div className="mt-3 rounded-2 border border-line-1 bg-bg-1 p-2">
+              <div className="mt-3 rounded-2 border border-line-2 bg-bg-3 p-2">
                 <div className="mb-1.5 text-[11px] text-fg-3">
                   Suggested from observed projects - add one to allow-list it. Roots are validated on save; a
                   foreign (Windows/UNC), stale, or symlink-mismatched root is rejected there, not here.
@@ -640,23 +642,30 @@ export function TerminalsPage() {
                         <span className="hidden whitespace-nowrap text-[10px] text-fg-3 sm:inline">
                           {rootSeenHint(proj)}
                         </span>
-                        <button
-                          type="button"
-                          disabled={!p?.config_writable || added}
-                          title={
+                        {/* The wrapper carries the tooltip so it still shows
+                            while the button is disabled ("added"). */}
+                        <Tooltip
+                          content={
                             foreign
                               ? `${proj.root_path} - looks like a foreign path; it will likely be rejected on save`
                               : proj.root_path
                           }
-                          onClick={() => addRootValue(proj.root_path)}
-                          className={`shrink-0 rounded-2 border px-2 py-1 text-[11px] disabled:opacity-40 ${
-                            added
-                              ? "border-line-2 bg-bg-2 text-fg-3"
-                              : "border-accent/50 bg-accent/15 text-accent hover:bg-accent/25"
-                          }`}
                         >
-                          {added ? "added" : "add"}
-                        </button>
+                          <span className="inline-flex shrink-0">
+                            <button
+                              type="button"
+                              disabled={!p?.config_writable || added}
+                              onClick={() => addRootValue(proj.root_path)}
+                              className={`shrink-0 rounded-2 border px-2 py-1 text-caption disabled:opacity-40 ${
+                                added
+                                  ? "border-line-2 bg-bg-2 text-fg-3"
+                                  : "border-accent/50 bg-accent/15 text-accent hover:bg-accent/25"
+                              }`}
+                            >
+                              {added ? "added" : "add"}
+                            </button>
+                          </span>
+                        </Tooltip>
                       </div>
                     );
                   })}
@@ -680,7 +689,7 @@ export function TerminalsPage() {
             >
               {busy ? "saving…" : "Save folder allow-list"}
             </button>
-            {saved && <span className="text-[11px] text-ok">Saved.</span>}
+            {saved && <SuccessCheck label="Saved" className="!text-[11px]" />}
             {p?.restart_required_on_save && (
               <span className="text-[11px] text-fg-3">
                 Takes effect on the next daemon restart (the policy is read at start-up).
@@ -711,7 +720,7 @@ export function TerminalsPage() {
               value={maxConcurrent}
               disabled={!p?.config_writable}
               onChange={(e) => setMaxConcurrent(e.target.value)}
-              className="w-32 rounded-2 border border-line-2 bg-bg-1 px-2 py-1 text-[12px] text-fg-1 disabled:opacity-50"
+              className="w-32 rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-[12px] text-fg-1 disabled:opacity-50"
             />
             <p className="text-[11px] text-fg-3">
               How many embedded/attach terminals can run at once. The Workspace
@@ -729,7 +738,7 @@ export function TerminalsPage() {
               placeholder="0"
               disabled={!p?.config_writable}
               onChange={(e) => setIdleTimeout(e.target.value)}
-              className="w-32 rounded-2 border border-line-2 bg-bg-1 px-2 py-1 text-[12px] text-fg-1 disabled:opacity-50"
+              className="w-32 rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-[12px] text-fg-1 disabled:opacity-50"
             />
             <p className="text-[11px] text-fg-3">
               0 = never (default): live sessions stay until the agent exits. Set
@@ -753,7 +762,7 @@ export function TerminalsPage() {
             >
               {limitsBusy ? "saving…" : "Save limits"}
             </button>
-            {limitsMsg && <span className="text-[11px] text-ok">{limitsMsg}</span>}
+            {limitsMsg && <SuccessCheck label={limitsMsg} className="!text-[11px]" />}
           </div>
         </div>
       </ChartShell>
@@ -765,30 +774,20 @@ export function TerminalsPage() {
       >
         <div className="p-1 text-[12px]">
           {liveStatuses.length === 0 ? (
-            <div className="text-fg-3">No live terminal agents.</div>
+            <EmptyState
+              variant="inline"
+              illustration="sessions"
+              illustrationSize={96}
+              title="No live terminal agents"
+              body="Launch a terminal from New Terminal and its agent status appears here."
+            />
           ) : (
-            <table className="w-full text-left">
-              <thead className="text-[11px] text-fg-3">
-                <tr>
-                  <th className="py-1">handle</th>
-                  <th className="py-1">status</th>
-                  <th className="py-1">evidence</th>
-                  <th className="py-1">age</th>
-                </tr>
-              </thead>
-              <tbody className="font-mono text-fg-2">
-                {liveStatuses.map((st) => (
-                  <tr key={st.handle} className="border-t border-line-1">
-                    <td className="py-1" title={st.handle}>{fmtShortId(st.handle, 12)}</td>
-                    <td className="py-1">
-                      <AgentStatusBadge info={st} />
-                    </td>
-                    <td className="py-1 font-sans text-fg-3">{st.evidence}</td>
-                    <td className="py-1">{Math.round(st.age_seconds)}s</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataTable<AgentStatusInfo>
+              data={liveStatuses}
+              columns={LIVE_STATUS_COLUMNS}
+              rowKey={(st) => st.handle}
+              minWidth={480}
+            />
           )}
         </div>
       </ChartShell>
@@ -798,50 +797,66 @@ export function TerminalsPage() {
         title="Run history"
         sub="Every dashboard terminal launch (metadata only - project roots and correlation tokens are stored hashed, never in the clear). Correlated session appears once the launch produces one."
       >
-        <div className="max-h-[320px] overflow-auto p-1 text-[11px]">
-          {(runs.data?.runs.length ?? 0) === 0 ? (
-            <div className="text-fg-3">No terminal runs yet.</div>
+        <div className="p-1 text-[11px]">
+          {runs.loading && !runs.data ? (
+            <InlineLoading label="Loading run history" block />
+          ) : (runs.data?.runs.length ?? 0) === 0 ? (
+            <EmptyState
+              variant="inline"
+              illustration="sessions"
+              illustrationSize={96}
+              title="No terminal runs yet"
+            />
           ) : (
-            <table className="w-full text-left font-mono">
-              <thead className="text-fg-3">
+            <Table
+              maxHeight={320}
+              stickyHead
+              size="sm"
+              minWidth={520}
+              tableClassName="font-mono"
+              head={
                 <tr>
-                  <th className="py-1">launched</th>
-                  <th className="py-1">tool</th>
-                  <th className="py-1">kind</th>
-                  <th className="py-1">state</th>
-                  <th className="py-1">session</th>
-                  <th className="py-1">cmds</th>
+                  <th className="py-1 pr-2 font-medium">Launched</th>
+                  <th className="py-1 pr-2 font-medium">Tool</th>
+                  <th className="py-1 pr-2 font-medium">Kind</th>
+                  <th className="py-1 pr-2 font-medium">State</th>
+                  <th className="py-1 pr-2 font-medium">Session</th>
+                  <th className="py-1 font-medium">Cmds</th>
                 </tr>
-              </thead>
-              <tbody className="text-fg-2">
-                {runs.data?.runs.map((r) => (
-                  <tr key={r.run_id} className="border-t border-line-1">
-                    <td className="py-1 pr-2">{fmtClock(r.launched_at)}</td>
-                    <td className="py-1 pr-2">{r.tool}</td>
-                    <td className="py-1 pr-2">{r.kind}</td>
-                    <td className="py-1 pr-2">
-                      {r.running ? (
-                        <Pill variant="success">running</Pill>
-                      ) : r.exit_code === 0 || r.exit_code === undefined ? (
-                        <span className="text-fg-3">exited</span>
-                      ) : (
-                        <Pill variant="danger">exit {r.exit_code}</Pill>
-                      )}
-                    </td>
-                    <td className="py-1 pr-2">
-                      {r.best_session_id ? (
-                        <span title={`${r.best_session_id} · confidence ${(r.best_confidence ?? 0).toFixed(2)}`}>
+              }
+            >
+              {runs.data?.runs.map((r) => (
+                <tr key={r.run_id} className="border-t border-line-1 text-fg-2">
+                  <td className="whitespace-nowrap py-1 pr-2">{fmtClock(r.launched_at)}</td>
+                  <td className="py-1 pr-2">{r.tool}</td>
+                  <td className="py-1 pr-2">{r.kind}</td>
+                  <td className="py-1 pr-2">
+                    {r.running ? (
+                      <Pill variant="success">running</Pill>
+                    ) : r.exit_code === 0 || r.exit_code === undefined ? (
+                      <span className="text-fg-3">exited</span>
+                    ) : (
+                      <Pill variant="danger">exit {r.exit_code}</Pill>
+                    )}
+                  </td>
+                  <td className="py-1 pr-2">
+                    {r.best_session_id ? (
+                      <Tooltip content={`${r.best_session_id} · confidence ${(r.best_confidence ?? 0).toFixed(2)}`}>
+                        <span
+                          tabIndex={0}
+                          className="cursor-help focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-ring"
+                        >
                           {fmtShortId(r.best_session_id, 10)}
                         </span>
-                      ) : (
-                        <span className="text-fg-3">-</span>
-                      )}
-                    </td>
-                    <td className="py-1">{r.command_count}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      </Tooltip>
+                    ) : (
+                      <span className="text-fg-3">-</span>
+                    )}
+                  </td>
+                  <td className="py-1">{r.command_count}</td>
+                </tr>
+              ))}
+            </Table>
           )}
         </div>
       </ChartShell>
@@ -850,6 +865,39 @@ export function TerminalsPage() {
     </div>
   );
 }
+
+// LIVE_STATUS_COLUMNS: the live agent list (F4 statuses). Status and age
+// sort; the handle is an opaque id.
+const LIVE_STATUS_COLUMNS: ColumnDef<AgentStatusInfo, unknown>[] = [
+  {
+    id: "handle",
+    header: "Handle",
+    enableSorting: false,
+    meta: { mono: true },
+    cell: ({ row }) => (
+      <span title={row.original.handle}>{fmtShortId(row.original.handle, 12)}</span>
+    ),
+  },
+  {
+    id: "status",
+    header: "Status",
+    accessorKey: "status",
+    cell: ({ row }) => <AgentStatusBadge info={row.original} />,
+  },
+  {
+    id: "evidence",
+    header: "Evidence",
+    enableSorting: false,
+    cell: ({ row }) => <span className="text-fg-3">{row.original.evidence}</span>,
+  },
+  {
+    id: "age",
+    header: "Age",
+    accessorFn: (st) => st.age_seconds,
+    meta: { align: "right", mono: true },
+    cell: ({ row }) => `${Math.round(row.original.age_seconds)}s`,
+  },
+];
 
 type TerminalSandboxConfig = {
   enabled: boolean;
@@ -865,7 +913,17 @@ type TerminalSandboxConfig = {
   extra_ro_binds: string[];
   extra_rw_binds: string[];
   prep_timeout_seconds: number;
+  // SR27-SBX-1 network tier + executed-state protection. Optional so an
+  // older daemon (which omits them) still round-trips; the server keeps a
+  // saved value when a save omits the field.
+  egress?: SandboxEgress;
+  allow_tool_config_writes?: boolean;
+  // Private-destination allow-list for the internet tier's egress gateway
+  // (SR27-SBX-2). Optional for the same round-trip reason.
+  egress_allow_cidrs?: string[];
 };
+
+type SandboxEgress = "internet" | "proxy_only" | "none" | "host";
 
 type TerminalSandboxConfigResponse = {
   confirm_token: ConfirmToken;
@@ -909,6 +967,7 @@ function sandboxConfigEqual(
     mask_paths: c.mask_paths.filter((s) => s.trim() !== ""),
     extra_ro_binds: c.extra_ro_binds.filter((s) => s.trim() !== ""),
     extra_rw_binds: c.extra_rw_binds.filter((s) => s.trim() !== ""),
+    egress_allow_cidrs: (c.egress_allow_cidrs ?? []).filter((s) => s.trim() !== ""),
   });
   return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
 }
@@ -960,6 +1019,11 @@ function SandboxSettingsCard() {
 
   const localOnly = isLocalRouteRefusal(settings.error);
   const dirty = !!draft && !sandboxConfigEqual(draft, settings.data?.sandbox);
+  const expandsAuthority =
+    !!draft &&
+    (draft.allow_remote_clone ||
+      draft.extra_rw_binds.some((p) => p.trim() !== "") ||
+      (draft.egress_allow_cidrs ?? []).some((p) => p.trim() !== ""));
 
   function update<K extends keyof TerminalSandboxConfig>(
     key: K,
@@ -974,14 +1038,8 @@ function SandboxSettingsCard() {
       setErr("Sandbox settings are not ready - reload the page.");
       return;
     }
-    if (
-      (draft.allow_remote_clone || draft.extra_rw_binds.some((p) => p.trim() !== "")) &&
-      !window.confirm(
-        "This sandbox configuration expands authority: remote clone lets the daemon make a network git request with your ambient credentials, and read-write binds expose host paths inside the sandbox. Save these settings?",
-      )
-    ) {
-      return;
-    }
+    // An authority-expanding config is confirmed in place by the Save
+    // ConfirmButton (requireConfirm={expandsAuthority}), never window.confirm.
     setBusy(true);
     setErr(null);
     setSaved(false);
@@ -1058,7 +1116,7 @@ function SandboxSettingsCard() {
         >
           <span className="font-medium">Running daemon: </span>
           {live?.available
-            ? `${live.backend ?? "bwrap"} ${live.backend_version ?? ""} available; home is ${live.home_mode ?? "isolated"}.`
+            ? `${live.backend ?? "bwrap"} ${live.backend_version ?? ""} available; home is ${live.home_mode ?? "isolated"}; network is ${live.egress ?? "internet"}.`
             : live?.reason ?? "Sandbox probe has not returned yet."}
           {/* Three different "not available" stories, three different next
               steps. A saved enable switch rebinds the daemon's sandbox seam
@@ -1083,16 +1141,19 @@ function SandboxSettingsCard() {
           // genuinely failed load are different facts, and neither is
           // "still fetching".
           localOnly ? null : settings.error ? (
-            <div className="rounded-2 border border-danger/40 bg-danger/10 px-3 py-2 text-danger">
-              Could not load the sandbox configuration: {settings.error.message}
-            </div>
+            <ErrorState
+              className="py-4"
+              title="Could not load the sandbox configuration"
+              error={settings.error}
+              onRetry={settings.reload}
+            />
           ) : (
-            <div className="text-fg-3">Loading sandbox configuration…</div>
+            <InlineLoading label="Loading sandbox configuration" />
           )
         ) : (
           <>
             <div className="grid gap-3 md:grid-cols-2">
-              <label className="flex items-start gap-2 rounded-2 border border-line-2 bg-bg-1 p-3">
+              <label className="flex items-start gap-2 rounded-2 border border-line-2 bg-bg-3 p-3">
                 <input
                   type="checkbox"
                   className="mt-0.5"
@@ -1107,7 +1168,7 @@ function SandboxSettingsCard() {
                   </span>
                 </span>
               </label>
-              <label className="flex items-start gap-2 rounded-2 border border-line-2 bg-bg-1 p-3">
+              <label className="flex items-start gap-2 rounded-2 border border-line-2 bg-bg-3 p-3">
                 <input
                   type="checkbox"
                   className="mt-0.5"
@@ -1131,7 +1192,7 @@ function SandboxSettingsCard() {
                   value={draft.home_mode}
                   disabled={!writable}
                   onChange={(e) => update("home_mode", e.target.value as "tmpfs" | "readonly")}
-                  className="w-full rounded-2 border border-line-2 bg-bg-1 px-2 py-1 text-fg-1 disabled:opacity-50"
+                  className="w-full rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-fg-1 disabled:opacity-50"
                 >
                   <option value="tmpfs">tmpfs - hide the real home (recommended)</option>
                   <option value="readonly">readonly - expose the real home read-only</option>
@@ -1147,6 +1208,50 @@ function SandboxSettingsCard() {
                 <span className="block text-[11px] text-fg-3">bwrap is the only v1 backend.</span>
               </label>
             </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="space-y-1">
+                <span className="font-medium text-fg-1">Network</span>
+                <select
+                  value={draft.egress ?? "internet"}
+                  disabled={!writable}
+                  onChange={(e) => update("egress", e.target.value as SandboxEgress)}
+                  className="w-full rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-fg-1 disabled:opacity-50"
+                >
+                  <option value="internet">internet - own network; model API via the proxy, internet via the egress gateway (recommended)</option>
+                  <option value="proxy_only">proxy_only - own network; only the model API proxy</option>
+                  <option value="none">none - own network; nothing reachable</option>
+                  <option value="host">host - share the host network (the dashboard stays reachable from inside)</option>
+                </select>
+                <span className="block text-[11px] text-fg-3">
+                  Every mode except host keeps a sandboxed agent away from this dashboard and other local services. The internet mode also refuses private addresses (your LAN, the Windows host on WSL2, Docker containers) unless you list them below.
+                </span>
+              </label>
+              <label className="flex items-start gap-2 rounded-2 border border-warn/30 bg-warn/5 p-3">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={draft.allow_tool_config_writes ?? false}
+                  disabled={!writable}
+                  onChange={(e) => update("allow_tool_config_writes", e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium text-fg-1">Allow tool config writes</span>
+                  <span className="block text-[11px] text-fg-3">
+                    Off: the daemon config, guard policy, tool hook and MCP config, and the workspace git config and hooks are read-only inside the sandbox, so an agent cannot plant a command a later unsandboxed session runs.
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            <SandboxListField
+              label="Allowed private networks (internet mode)"
+              hint="Authority-expanding: CIDRs inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 or fc00::/7 the egress gateway may reach, one per line (for example a registry at 10.20.0.0/16). Loopback, link-local and this machine's own addresses can never be listed."
+              value={draft.egress_allow_cidrs ?? []}
+              disabled={!writable}
+              warn
+              onChange={(v) => update("egress_allow_cidrs", v)}
+            />
 
             <div className="grid gap-3 md:grid-cols-2">
               <label className="flex items-start gap-2 rounded-2 border border-warn/30 bg-warn/5 p-3">
@@ -1189,10 +1294,10 @@ function SandboxSettingsCard() {
               onChange={(v) => update("remote_allowed_hosts", v)}
             />
 
-            <details className="rounded-2 border border-line-2 bg-bg-1 p-3">
-              <summary className="cursor-pointer font-medium text-fg-1">
+            <details className="rounded-2 border border-line-2 bg-bg-3 p-3">
+              <Summary className="font-medium text-fg-1">
                 Workspace lifecycle and advanced binds
-              </summary>
+              </Summary>
               <div className="mt-3 space-y-3">
                 <label className="block space-y-1">
                   <span className="font-medium text-fg-2">Workspaces directory</span>
@@ -1263,20 +1368,23 @@ function SandboxSettingsCard() {
               </div>
             )}
             <div className="flex flex-wrap items-center gap-3 pt-1">
-              <button
-                type="button"
+              <ConfirmButton
+                variant="soft"
+                armedVariant="danger"
                 disabled={busy || !writable}
-                onClick={saveSandbox}
-                className="rounded-2 border border-accent/50 bg-accent/15 px-3 py-1 text-accent hover:bg-accent/25 disabled:opacity-50"
+                requireConfirm={expandsAuthority}
+                onConfirm={() => void saveSandbox()}
+                confirmLabel="Save anyway?"
+                armedNote="This configuration expands authority: remote clone lets the daemon make a network git request with your ambient credentials, and read-write binds expose host paths inside the sandbox."
               >
                 {busy ? "saving…" : "Save sandbox configuration"}
-              </button>
+              </ConfirmButton>
               {dirty && (
                 <span className="text-[11px] text-warn">
                   Unsaved changes - nothing above is in effect until you save.
                 </span>
               )}
-              {saved && !dirty && <span className="text-[11px] text-ok">Saved.</span>}
+              {saved && !dirty && <SuccessCheck label="Saved" className="!text-[11px]" />}
               <span className="text-[11px] text-fg-3">
                 A saved enable switch binds on the next launch; a changed workspaces
                 directory needs a daemon restart. Active terminals are never

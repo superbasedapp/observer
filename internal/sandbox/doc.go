@@ -13,7 +13,12 @@
 //     workspace, and masks foreign-OS mounts (the WSL /mnt/c-class amendment
 //     A1). The order is load-bearing and mutation-proofed: the home tmpfs must
 //     precede every under-home bind, and the ~/.observer/workspaces tmpfs must
-//     precede the workspace rw bind.
+//     precede the workspace rw bind. Every plan also runs in a private PID
+//     namespace, drops the host sockets and interop the read-only root would
+//     expose (SocketSweepDirs, HostSocketPaths, GuestUnsetEnv), and applies
+//     the protective overlays last, including placeholders for protected
+//     paths that do not exist yet, which Plan.HostArgv hands to the host
+//     helper to create before bwrap runs (security ledger SR27-SBX-2).
 //
 // The package is PURE (CLAUDE.md "Module Boundaries" #1): all I/O — bwrap
 // lookup, version read, and the canary smoke run — is injected through the Env

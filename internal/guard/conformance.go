@@ -32,6 +32,21 @@ type ConformanceEntry struct {
 	Channel string
 	// Caps are the channel's enforcement capabilities.
 	Caps policy.Capabilities
+	// AskOnceKeyless is true when Caps.CanAsk is structurally true (the
+	// wire dialect DOCUMENTS an ask-capable reply verb) but the
+	// operational ask-once/reconsider bookkeeping can never actually use
+	// it, because the vendor's own hook payload carries no session/
+	// conversation id anywhere for the guard engine to key a resend
+	// override on (the engine's own documented empty-session-id rule
+	// then fails every finding closed to a hard, unconditional block).
+	// This is a STRUCTURAL fact about the wire shape — read from the
+	// vendor's own docs, same as Caps itself — not a per-tool exception:
+	// a consumer degrading CanAsk to "block only" reads THIS field
+	// rather than naming the tool (2026-09-22 review finding 12;
+	// CLAUDE.md #3, branch on capabilities, never on tool identity).
+	// Today only ToolCommandCode sets it; see its row's Notes for the
+	// grounding.
+	AskOnceKeyless bool
 	// Notes documents coverage caveats and degradation behavior —
 	// rendered verbatim on status surfaces.
 	Notes string
@@ -157,10 +172,11 @@ func ConformanceMatrix() []ConformanceEntry {
 			Notes:   "Part B item 2, phase-3a — live-fetched 2026-09-07 (zcode.z.ai/en/docs/hooks): Claude-Code-shaped continue:false reply, ~/.zcode/cli/config.json registration. The dialect/receiver is built and tested, but registration is DELIBERATELY NOT auto-wired (HookZcodeJSON, AutoWired:false) — zai-org/feedback#32 reports configured hooks may not fire on the native agent at all; a live liveness probe (observer doctor --probe-hook) should gate turning auto-registration on",
 		},
 		{
-			Client:  models.ToolCommandCode,
-			Channel: "hook:transformInput",
-			Caps:    policy.Capabilities{PreExecution: true, CanBlock: true, CanAsk: true},
-			Notes:   "Part B item 2, phase-3a — live-fetched 2026-09-07 (commandcode.ai/docs/mods): a Mods-SDK TypeScript module (cmd.hooks({transformInput({text}){...}})), not a shell hook — registered as ~/.commandcode/mods/observer-guard.ts (go:embed template, hermesplugin precedent) that shells out to `observer hook command-code transformInput`. The ONLY documented field is `text` — there is no session/conversation id anywhere in the signature, so every ask-once/redact finding here fails closed to a HARD, unconditional block (no resend override) per the engine's own documented empty-session-id rule; action:'transform' (the genuine redact lane) stays unpopulated",
+			Client:         models.ToolCommandCode,
+			Channel:        "hook:transformInput",
+			Caps:           policy.Capabilities{PreExecution: true, CanBlock: true, CanAsk: true},
+			AskOnceKeyless: true,
+			Notes:          "Part B item 2, phase-3a — live-fetched 2026-09-07 (commandcode.ai/docs/mods): a Mods-SDK TypeScript module (cmd.hooks({transformInput({text}){...}})), not a shell hook — registered as ~/.commandcode/mods/observer-guard.ts (go:embed template, hermesplugin precedent) that shells out to `observer hook command-code transformInput`. The ONLY documented field is `text` — there is no session/conversation id anywhere in the signature, so every ask-once/redact finding here fails closed to a HARD, unconditional block (no resend override) per the engine's own documented empty-session-id rule; action:'transform' (the genuine redact lane) stays unpopulated",
 		},
 		{
 			Client:  models.ToolDevin,

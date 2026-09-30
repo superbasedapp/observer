@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import type { CloudStatusWithDigestPlan } from "@/lib/cloud";
 import { fmtDateTime, fmtInt } from "@/lib/format";
+import { Summary } from "@/components/Summary";
 
 // Shared explanation of session selection. Reading it never changes consent.
 export function CloudEnrichmentSummary({ data }: { data: CloudStatusWithDigestPlan }) {
@@ -30,7 +31,7 @@ export function CloudEnrichmentSummary({ data }: { data: CloudStatusWithDigestPl
         </p>
       )}
       <details className="mt-2 text-[11px] leading-relaxed text-fg-3">
-        <summary className="w-fit cursor-pointer font-medium text-fg-2">Which sessions, and when?</summary>
+        <Summary className="w-fit font-medium text-fg-2">Which sessions, and when?</Summary>
         <ul className="mt-1.5 list-disc space-y-1 pl-4">
           <li>Automatic selection requires at least 3 recorded actions and a quiet period after the latest action. Organization-owned sessions are excluded.</li>
           <li>Only sessions started after Cloud Intelligence was enabled are selected automatically{data.policy?.since ? ` (${fmtDateTime(data.policy.since)})` : ""}. Older sessions can be chosen manually.</li>

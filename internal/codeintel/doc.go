@@ -1,8 +1,7 @@
 // Package codeintel is Observer's self-contained, CGO-free code-
-// intelligence module. It is the in-process replacement for the
-// external code-graph ("codegraph") companion: Observer owns
-// the parser, schema, store, and (eventually) the embedder, so there
-// is no third-party binary download and no foreign graph.db read.
+// intelligence module: Observer owns the parser, schema, store, and
+// embedder in-process, so there is no third-party binary download and
+// no foreign database read.
 //
 // # What & why
 //
@@ -29,10 +28,6 @@
 //
 // [Provider] is the single seam every consumer depends on; the native
 // engine ([NewEngine]) is its sole implementation, answering from
-// codeintel's own store. The module was built strangler-fig: [Provider]
-// first wrapped the external code-graph client so consumers could
-// repoint with zero behaviour change, the native engine grew behind the
-// seam, and the external dependency was deleted last (Phase 4). See
-// docs/codeintel/architecture.md, docs/codeintel/decisions.md, and
-// docs/codeintel/migration-from-codegraph.md.
+// codeintel's own store. See docs/codeintel/architecture.md and
+// docs/codeintel/decisions.md.
 package codeintel

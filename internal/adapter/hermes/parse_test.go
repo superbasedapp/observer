@@ -233,6 +233,12 @@ func TestSessionTokenEventCost(t *testing.T) {
 			if ev.EstimatedCostUSD != tc.want {
 				t.Errorf("EstimatedCostUSD = %v, want %v", ev.EstimatedCostUSD, tc.want)
 			}
+			// The SQLite (session-cumulative) path has no per-call
+			// duration to attribute to a single generation, so it must
+			// never stamp gen-timing fields.
+			if ev.GenMs != 0 || ev.GenBasis != "" || ev.GenTimingV != 0 {
+				t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want zero (SQLite path never stamps)", ev.GenMs, ev.GenBasis, ev.GenTimingV)
+			}
 		})
 	}
 }

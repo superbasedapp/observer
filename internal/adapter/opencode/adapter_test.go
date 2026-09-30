@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -256,6 +257,78 @@ func TestParseSessionFile_NewToolNamesMappedCorrectly(t *testing.T) {
 			at, _, _, _ := mapTool(part)
 			if at != tc.want {
 				t.Errorf("mapTool(%q): got %q, want %q", tc.tool, at, tc.want)
+			}
+		})
+	}
+}
+
+// TestMapTool_VendorGroundedNames pins the 2026-09-28 (R2-TOOLMAP)
+// mappings for OpenCode tool ids that used to land in `unknown`. Each
+// id is grounded in the OpenCode source (packages/opencode/src/tool/*.ts
+// Tool.define(<id>), 1.18.32; codesearch from the pre-#27019 tree) and
+// seen in live stores. One case per new mapping.
+func TestMapTool_VendorGroundedNames(t *testing.T) {
+	cases := []struct {
+		name       string
+		partJSON   string // a tool part's `data` column, as OpenCode writes it
+		wantAction string
+		wantTarget string
+		wantOK     bool
+		wantErr    string
+	}{
+		{
+			name:       "question",
+			partJSON:   `{"type":"tool","tool":"question","state":{"status":"completed","title":"Asked 2 questions","input":{"questions":[{"header":"h","question":"q?"}]}}}`,
+			wantAction: models.ActionAskUser, wantTarget: "Asked 2 questions", wantOK: true,
+		},
+		{
+			name:       "plan_exit",
+			partJSON:   `{"type":"tool","tool":"plan_exit","state":{"status":"completed","title":"Switching to build agent","input":{}}}`,
+			wantAction: models.ActionPermissionMode, wantTarget: "Switching to build agent", wantOK: true,
+		},
+		{
+			name:       "skill",
+			partJSON:   `{"type":"tool","tool":"skill","state":{"status":"completed","title":"Loaded skill: pdf","input":{"name":"pdf"}}}`,
+			wantAction: models.ActionSkillInvoke, wantTarget: "Loaded skill: pdf", wantOK: true,
+		},
+		{
+			name:       "lsp",
+			partJSON:   `{"type":"tool","tool":"lsp","state":{"status":"completed","title":"goToDefinition","input":{"operation":"goToDefinition","filePath":"src/a.ts","line":3,"character":5}}}`,
+			wantAction: models.ActionSearchText, wantTarget: "src/a.ts", wantOK: true,
+		},
+		{
+			name:       "codesearch",
+			partJSON:   `{"type":"tool","tool":"codesearch","state":{"status":"completed","title":"Code search: react useState","input":{"query":"react useState"}}}`,
+			wantAction: models.ActionWebSearch, wantTarget: "Code search: react useState", wantOK: true,
+		},
+		{
+			// The pseudo-tool itself "completed", but the model's call
+			// failed: Success must be false and Target the attempted tool
+			// (live shape, win store 2026-09-27).
+			name:       "invalid",
+			partJSON:   `{"type":"tool","tool":"invalid","state":{"status":"completed","title":"Invalid Tool","input":{"tool":"task","error":"Model tried to call unavailable tool 'task'."},"output":"The arguments provided to the tool are invalid: Model tried to call unavailable tool 'task'."}}`,
+			wantAction: models.ActionToolFailure, wantTarget: "task", wantOK: false,
+			wantErr: "Model tried to call unavailable tool 'task'.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var part toolPartData
+			if err := json.Unmarshal([]byte(tc.partJSON), &part); err != nil {
+				t.Fatalf("fixture: %v", err)
+			}
+			at, target, ok, errMsg := mapTool(part)
+			if at != tc.wantAction {
+				t.Errorf("action = %q, want %q", at, tc.wantAction)
+			}
+			if target != tc.wantTarget {
+				t.Errorf("target = %q, want %q", target, tc.wantTarget)
+			}
+			if ok != tc.wantOK {
+				t.Errorf("success = %v, want %v", ok, tc.wantOK)
+			}
+			if errMsg != tc.wantErr {
+				t.Errorf("errMsg = %q, want %q", errMsg, tc.wantErr)
 			}
 		})
 	}

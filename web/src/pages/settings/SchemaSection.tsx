@@ -4,12 +4,15 @@ import {
   Button,
   ChartShell,
   ConfirmButton,
+  Icon,
   Input,
   JsonPreview,
+  Pill,
   Select,
   Textarea,
   Toggle,
   Tooltip,
+  SuccessCheck,
 } from "@/components/primitives";
 import type { ConfigResponse } from "@/lib/types";
 import { markRestartPending } from "@/lib/restartPending";
@@ -28,6 +31,21 @@ import {
   type ConfigSchemaLeaf,
   type LeafGroup,
 } from "@/lib/configSchema";
+import {
+  ChevronDown,
+  ChevronRight,
+  RefreshCw,
+  type LucideIcon,
+} from "lucide-react";
+import type { Tone } from "@shared/lib/tone";
+
+// CHIP_TONE: a restart chip's tone (restartChip in @/lib/configSchema) as a
+// Pill variant.
+const CHIP_TONE: Readonly<Record<"ok" | "info" | "warn", Tone>> = {
+  ok: "success",
+  info: "neutral",
+  warn: "warn",
+};
 
 // SchemaSection — the schema-driven settings renderer
 // (docs/plans/dashboard-config-management-plan-2026-08-28.md §1.5 / P1-7).
@@ -62,9 +80,12 @@ export function SchemaSection({
   excludeFieldPaths,
   onSaved,
   compact,
+  icon,
 }: {
   section: string;
   title?: string;
+  /** The section glyph from the Settings SECTIONS table (card title). */
+  icon?: LucideIcon;
   config: ConfigResponse | null;
   schema: ConfigSchemaDescriptor | null;
   readOnly?: boolean;
@@ -291,7 +312,7 @@ export function SchemaSection({
               show expert settings
             </label>
           )}
-          {savedMsg && <span className="text-[11.5px] text-success">{savedMsg}</span>}
+          {savedMsg && <SuccessCheck label={savedMsg} className="!text-[11.5px]" />}
           {err && !conflict && <span className="text-[11.5px] text-danger">{err}</span>}
         </div>
       )}
@@ -312,6 +333,7 @@ export function SchemaSection({
           <Button
             variant="soft"
             size="sm"
+            iconLeft={RefreshCw}
             onClick={() => onSaved()}
             className="mt-2"
           >
@@ -347,6 +369,7 @@ export function SchemaSection({
   return (
     <ChartShell
       title={title ?? section}
+      icon={icon}
       sub="Rendered from the daemon's config schema. Scalar edits keep your comments and formatting; each key says whether it applies now, to new sessions, or on restart."
     >
       {body}
@@ -402,9 +425,10 @@ function GroupCard({
             <button
               type="button"
               onClick={() => setAdvancedOpen((o) => !o)}
-              className="text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3 hover:text-fg-1"
+              aria-expanded={advancedOpen}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3 hover:text-fg-1"
             >
-              {advancedOpen ? "▾" : "▸"} Advanced ({advanced.length})
+              <Icon icon={advancedOpen ? ChevronDown : ChevronRight} size="xs" /> Advanced ({advanced.length})
             </button>
             {advancedOpen && (
               <div className="mt-3 space-y-3">
@@ -462,13 +486,8 @@ function LeafRow({
           <span className="font-mono text-[11.5px] font-semibold text-fg-1" title={leaf.path}>
             {key}
           </span>
-          <span
-            className={clsx(
-              "rounded-pill border px-1.5 py-px text-[9px] font-medium uppercase tracking-[0.04em]",
-              chip.tone === "ok" && "border-success/40 text-success",
-              chip.tone === "info" && "border-line-2 text-fg-3",
-              chip.tone === "warn" && "border-warn/40 text-warn",
-            )}
+          <Pill
+            variant={CHIP_TONE[chip.tone]}
             title={
               leaf.restart === "restart"
                 ? "Binds at daemon start - the running daemon keeps the old value until restarted"
@@ -478,17 +497,13 @@ function LeafRow({
             }
           >
             {chip.label}
-          </span>
+          </Pill>
           {leaf.tier === "sensitive" && (
-            <span className="rounded-pill border border-line-2 px-1.5 py-px text-[9px] font-medium uppercase tracking-[0.04em] text-fg-3" title="Sensitive: saving needs the page's confirm token and writes an audit row">
+            <Pill title="Sensitive: saving needs the page's confirm token and writes an audit row">
               confirm
-            </span>
+            </Pill>
           )}
-          {leaf.deprecated && (
-            <span className="rounded-pill border border-warn/40 px-1.5 py-px text-[9px] font-medium uppercase tracking-[0.04em] text-warn">
-              deprecated
-            </span>
-          )}
+          {leaf.deprecated && <Pill variant="warn">deprecated</Pill>}
         </div>
         {leaf.doc && (
           <div className="mt-1 text-[11px] leading-snug text-fg-3" title={leaf.doc}>
@@ -519,14 +534,7 @@ function LeafRow({
 function SecretState({ hasValue }: { hasValue: boolean }) {
   return (
     <div className="flex items-center gap-2 lg:pt-1">
-      <span
-        className={clsx(
-          "rounded-pill border px-2 py-px text-[10.5px] font-medium",
-          hasValue ? "border-success/40 text-success" : "border-line-2 text-fg-3",
-        )}
-      >
-        {hasValue ? "set" : "not set"}
-      </span>
+      <Pill variant={hasValue ? "success" : "neutral"}>{hasValue ? "set" : "not set"}</Pill>
       <span className="text-[10.5px] text-fg-4">credential - never shown; edit config.toml to change</span>
     </div>
   );

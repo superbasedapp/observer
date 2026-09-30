@@ -312,6 +312,55 @@ func TestTokenEventsNetBothGrossFields(t *testing.T) {
 	}
 }
 
+// TestTokenEventGenMs is table-driven over model_completed.duration_ms
+// (sessionEvent.DurationMs, records.go ~L99) -> TokenEvent.GenMs. It's
+// already-milliseconds per the emitTokens comment (verified against
+// simple-session.jsonl's per-call durations summing under that turn's own
+// turn_duration_ms), covering exactly the one model_completed call's own
+// tokens, so no unit conversion applies.
+func TestTokenEventGenMs(t *testing.T) {
+	modelCompletedLine := func(durationField string) string {
+		return `{"schema_version":1,"id":"00000000-0000-0000-0000-000000000009",` +
+			`"sequence":9,"recorded_at":1785962820009000,"record_type":"event",` +
+			`"payload_type":"runtime.session","payload":{"run_id":"r1","event":{` +
+			`"kind":"model_completed","model":"muse-spark-1.2-contributor",` +
+			durationField +
+			`"usage":{"input_tokens":100,"output_tokens":40,"cache_read_tokens":0,` +
+			`"cache_write_tokens":0,"cached_tokens":0,"reasoning_tokens":0}}}}`
+	}
+	tests := []struct {
+		name       string
+		durationMs string // raw JSON field text incl. trailing comma, or "" to omit
+		wantStamp  bool
+		wantGenMs  int64
+	}{
+		{"positive stamps verbatim (already ms)", `"duration_ms":1200,`, true, 1200},
+		{"field omitted leaves unset", "", false, 0},
+		{"zero leaves unset", `"duration_ms":0,`, false, 0},
+		{"negative leaves unset", `"duration_ms":-5,`, false, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root, logPath := writeLog(t, fixtureHeader, modelCompletedLine(tt.durationMs))
+			res, err := NewWithOptions(nil, root).ParseSessionFile(context.Background(), logPath, 0)
+			if err != nil {
+				t.Fatalf("ParseSessionFile: %v", err)
+			}
+			if len(res.TokenEvents) != 1 {
+				t.Fatalf("got %d token events, want 1", len(res.TokenEvents))
+			}
+			ev := res.TokenEvents[0]
+			if tt.wantStamp {
+				if ev.GenMs != tt.wantGenMs || ev.GenBasis != models.GenBasisNative || ev.GenTimingV != 1 {
+					t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want %d/native/1", ev.GenMs, ev.GenBasis, ev.GenTimingV, tt.wantGenMs)
+				}
+			} else if ev.GenMs != 0 || ev.GenBasis != "" || ev.GenTimingV != 0 {
+				t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want zero value (no stamp)", ev.GenMs, ev.GenBasis, ev.GenTimingV)
+			}
+		})
+	}
+}
+
 // rawUsagesFromFixture re-reads the fixture's model_completed usage
 // envelopes independently of the adapter, so the netting test compares
 // against the file rather than against the adapter's own view.

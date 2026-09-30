@@ -1,0 +1,71 @@
+{
+  "name": "abac (P11(e), R10.9): server-side team roster + relay-attested project hash + vserver-declared project scope; fail-closed when the trusted context is absent",
+  "spec": {
+    "registry": {
+      "issuer": "https://auth.acme.superbased.app",
+      "org": "acme",
+      "gateway_base_uri": "https://mcp-gw.acme.superbased.app",
+      "policy_gen": 41,
+      "vservers": [
+        {"id": "vs-gh", "slug": "gh", "sender_constraint": "bearer",
+         "servers": [{"id": "gh", "target": "gh", "credential_mode": "service"}]},
+        {"id": "vs-proj", "slug": "proj", "sender_constraint": "bearer", "projects": ["1111111111111111"],
+         "servers": [{"id": "pj", "target": "pj", "credential_mode": "service"}]}
+      ]
+    },
+    "grants": [
+      {"id": "g-team-allow", "ord": 1, "subject": {"kind": "team", "value": "team-eng"},
+       "resource": {"vserver": "vs-gh", "name": "create_issue"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "g-team-deny", "ord": 2, "subject": {"kind": "team", "value": "team-contractors"},
+       "resource": {"vserver": "vs-gh", "name": "delete_repo"}, "action": "call", "effect": "deny", "enabled": true},
+      {"id": "g-any-dr", "ord": 3, "subject": {"kind": "any"},
+       "resource": {"vserver": "vs-gh", "name": "delete_repo"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "g-proj-allow", "ord": 4, "subject": {"kind": "project", "value": "1111111111111111"},
+       "resource": {"vserver": "vs-gh", "name": "merge_pr"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "g-proj-deny", "ord": 5, "subject": {"kind": "project", "value": "2222222222222222"},
+       "resource": {"vserver": "vs-gh", "name": "force_push"}, "action": "call", "effect": "deny", "enabled": true},
+      {"id": "g-any-fp", "ord": 6, "subject": {"kind": "any"},
+       "resource": {"vserver": "vs-gh", "name": "force_push"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "g-proj-ask", "ord": 7, "subject": {"kind": "project", "value": "1111111111111111"},
+       "resource": {"vserver": "vs-gh", "name": "deploy"}, "action": "call", "effect": "ask", "enabled": true},
+      {"id": "g-vp-allow", "ord": 8, "subject": {"kind": "project", "value": "1111111111111111"},
+       "resource": {"vserver": "vs-proj", "name": "run"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "g-vp-allow-undeclared", "ord": 9, "subject": {"kind": "project", "value": "2222222222222222"},
+       "resource": {"vserver": "vs-proj", "name": "run2"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "g-vp-deny-undeclared", "ord": 10, "subject": {"kind": "project", "value": "2222222222222222"},
+       "resource": {"vserver": "vs-proj", "name": "run3"}, "action": "call", "effect": "deny", "enabled": true},
+      {"id": "g-vp-any-run3", "ord": 11, "subject": {"kind": "any"},
+       "resource": {"vserver": "vs-proj", "name": "run3"}, "action": "call", "effect": "allow", "enabled": true}
+    ]
+  },
+  "principal_defaults": {
+    "issuer": "https://auth.acme.superbased.app", "org": "acme",
+    "audience": ["https://mcp-gw.acme.superbased.app/mcp/gh"], "policy_gen": 42,
+    "subject": "usr_1", "client_id": "agent:claude-code",
+    "product": "claude-code", "agent_kind": "coding_agent", "env": "dev",
+    "cred_assurance": "node_enrolled", "client_attestation": "ipc_bound"
+  },
+  "rows": [
+    {"name": "team: member of team-eng is allowed", "principal": {"teams_known": true, "team_ids": ["team-eng", "team-docs"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue", "server": "gh"}, "want": "allow", "want_grant": "g-team-allow"},
+    {"name": "team: known empty roster is not in team-eng", "principal": {"teams_known": true, "team_ids": []}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "team: absent roster never satisfies a team allow (fail closed)", "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "team: a GROUP named like the team is not the team (no client-side team label)", "principal": {"groups": ["team-eng"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "team: team-contractors member is denied delete_repo", "principal": {"teams_known": true, "team_ids": ["team-contractors"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "delete_repo"}, "want": "deny", "want_grant": "g-team-deny"},
+    {"name": "team: known roster without the team falls to the any-allow", "principal": {"teams_known": true, "team_ids": ["team-eng"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "delete_repo"}, "want": "allow", "want_grant": "g-any-dr"},
+    {"name": "team: absent roster hits the team deny (fail closed)", "input": {"vserver": "vs-gh", "action": "call", "name": "delete_repo"}, "want": "deny", "want_grant": "g-team-deny"},
+    {"name": "project: attested P1 is allowed merge_pr", "principal": {"project_hash": "1111111111111111"}, "input": {"vserver": "vs-gh", "action": "call", "name": "merge_pr"}, "want": "allow", "want_grant": "g-proj-allow"},
+    {"name": "project: attested P2 is not P1", "principal": {"project_hash": "2222222222222222"}, "input": {"vserver": "vs-gh", "action": "call", "name": "merge_pr"}, "want": "deny"},
+    {"name": "project: no attested project and no declared scope -> allow fails closed", "input": {"vserver": "vs-gh", "action": "call", "name": "merge_pr"}, "want": "deny"},
+    {"name": "project: attested P2 is denied force_push", "principal": {"project_hash": "2222222222222222"}, "input": {"vserver": "vs-gh", "action": "call", "name": "force_push"}, "want": "deny", "want_grant": "g-proj-deny"},
+    {"name": "project: attested P1 escapes the P2 deny", "principal": {"project_hash": "1111111111111111"}, "input": {"vserver": "vs-gh", "action": "call", "name": "force_push"}, "want": "allow", "want_grant": "g-any-fp"},
+    {"name": "project: withholding the project cannot slip past a project deny (fail closed)", "input": {"vserver": "vs-gh", "action": "call", "name": "force_push"}, "want": "deny", "want_grant": "g-proj-deny"},
+    {"name": "project: attested P1 ask parks", "principal": {"project_hash": "1111111111111111"}, "input": {"vserver": "vs-gh", "action": "call", "name": "deploy"}, "want": "ask", "want_grant": "g-proj-ask"},
+    {"name": "project: absent context escalates a project ask (fail closed)", "input": {"vserver": "vs-gh", "action": "call", "name": "deploy"}, "want": "ask", "want_grant": "g-proj-ask"},
+    {"name": "project: attested P2 is outside the P1 ask", "principal": {"project_hash": "2222222222222222"}, "input": {"vserver": "vs-gh", "action": "call", "name": "deploy"}, "want": "deny"},
+    {"name": "declared: a direct client gets the vserver-declared P1 scope", "principal": {"audience": ["https://mcp-gw.acme.superbased.app/mcp/proj"]}, "input": {"vserver": "vs-proj", "action": "call", "name": "run"}, "want": "allow", "want_grant": "g-vp-allow"},
+    {"name": "declared: a relay-attested P2 is not widened by the declared P1", "principal": {"audience": ["https://mcp-gw.acme.superbased.app/mcp/proj"], "project_hash": "2222222222222222"}, "input": {"vserver": "vs-proj", "action": "call", "name": "run"}, "want": "deny"},
+    {"name": "declared: a direct client gets ONLY the declared scope (P2 allow unmatched)", "principal": {"audience": ["https://mcp-gw.acme.superbased.app/mcp/proj"]}, "input": {"vserver": "vs-proj", "action": "call", "name": "run2"}, "want": "deny"},
+    {"name": "declared: a P2 deny does not hit a direct client scoped to P1", "principal": {"audience": ["https://mcp-gw.acme.superbased.app/mcp/proj"]}, "input": {"vserver": "vs-proj", "action": "call", "name": "run3"}, "want": "allow", "want_grant": "g-vp-any-run3"},
+    {"name": "declared: a relay-attested P2 hits the P2 deny", "principal": {"audience": ["https://mcp-gw.acme.superbased.app/mcp/proj"], "project_hash": "2222222222222222"}, "input": {"vserver": "vs-proj", "action": "call", "name": "run3"}, "want": "deny", "want_grant": "g-vp-deny-undeclared"}
+  ]
+}

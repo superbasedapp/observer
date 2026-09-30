@@ -12,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/commitlog"
+	"github.com/marmutapp/superbased-observer/internal/guard/mcpsec"
 	"github.com/marmutapp/superbased-observer/internal/loc"
+	"github.com/marmutapp/superbased-observer/internal/mcprelay/record"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/processobs"
@@ -59,12 +62,24 @@ import (
 //     on the next push.
 var envelopeWireFamilies = map[string]string{
 	// --- cursor wires (bounded by the fits() guard, id-ordered ASC) ---
-	"Sessions":    "sessions JOIN projects; truncation defers the highest rowids",
-	"Actions":     "actions; truncation defers the highest ids",
-	"APITurns":    "api_turns; truncation defers the highest ids",
-	"TokenUsage":  "token_usage; truncation defers the highest ids",
-	"GuardEvents": "guard_events; truncation defers the highest ids",
-	"OTelContent": "otel_content bodies; truncation defers the highest ids",
+	"Sessions":       "sessions JOIN projects; truncation defers the highest rowids",
+	"Actions":        "actions; truncation defers the highest ids",
+	"APITurns":       "api_turns; truncation defers the highest ids",
+	"TokenUsage":     "token_usage; truncation defers the highest ids",
+	"GuardEvents":    "guard_events; truncation defers the highest ids",
+	"OTelContent":    "otel_content bodies; truncation defers the highest ids",
+	"MCPRelayEvents": "mcp relay chain records via internal/mcprelay/record; truncation defers the highest seqs (PushCursor.MCPRelay)",
+	// Coalesced cursor wire (lane F-WIRE): one row per (session, provider).
+	// A NEW key that does not fit stops the walk unconsumed, so truncation
+	// defers the highest snapshot ids (PushCursor.LimitSnapshots).
+	"SessionLimitSnapshots": "limit snapshots via SelectSessionLimitSnapshots in limitgauge.go; truncation defers the highest ids (PushCursor.LimitSnapshots)",
+
+	// --- control lanes (agent migration 141, R2-TOMB): queue-driven, bounded
+	// with the re-send lane by controlFits (half the envelope); an item that
+	// does not fit stays queued and ships on a later push, acknowledged only
+	// after a 200 ---
+	"Deletions":        "org_push_deletions tombstones via orgpushtomb.go; truncation defers the newest (highest seq) tombstones",
+	"SessionManifests": "org_push_manifests resync heal via orgpushtomb.go; a manifest ships whole or is deferred",
 
 	// --- teams-tier aggregates (fitRows, key-ordered buckets) ---
 	"RoutingSummaries":     "SelectRoutingSummaries; drops trailing (day,tier,reason,mode) buckets",
@@ -75,6 +90,9 @@ var envelopeWireFamilies = map[string]string{
 	"RemoteAuditSummaries": "SelectRemoteAuditSummaries; drops trailing buckets",
 	"RoutingDetails":       "SelectRoutingDetail; drops trailing (day,model,turn_kind) buckets",
 	"LimitGauges":          "SelectLimitGauges; drops trailing (day,provider) buckets",
+	"MCPRelayActivity":     "SelectMCPRelayActivity; drops trailing (day,vserver,tool_hmac,decision,attestation) buckets",
+	// Agent Access P11 (c) discovery inventory (fitSnapshot, fingerprint-ordered).
+	"MCPInventory": "SelectMCPInventory; drops trailing configured servers in locator_fingerprint order",
 
 	// --- session-scoped enterprise wires (fitRows) ---
 	"SessionVerbositySummaries": "SelectSessionVerbositySummaries; drops trailing sessions in id order",
@@ -94,6 +112,11 @@ var envelopeWireFamilies = map[string]string{
 	// shipsRawContent-gated) ---
 	"SessionLOC": "SelectSessionLOCSummaries; drops trailing (session,project root) rows in session-id order",
 	"LOCDays":    "SelectLOCDaySummaries; drops trailing (day,project root) buckets in day order",
+	// BL2-ORG session quality score (fitSnapshot; DEFAULT posture).
+	"SessionQuality": "SelectSessionQualityRows; oldest score first, drops the most recently scored sessions",
+	// Commit ownership (lane F-PROJ; fitSnapshot; DEFAULT posture, subject
+	// gated on shipsRawContent inside the row).
+	"CommitOwnership": "SelectCommitOwnershipRows; newest committed first, drops the oldest commits",
 
 	// --- wave-3 per-developer enterprise wires (fitRows) ---
 	"AdvisorSuggestions": "advisor provider snapshot; drops trailing suggestions",
@@ -487,6 +510,38 @@ func seedEveryWireFamily(t *testing.T, s *Store) {
 		t.Fatalf("seed file_changes: %v", err)
 	}
 
+	// prompt + AI edit + the commit that carried it → CommitOwnership. Its own
+	// project root so the fold's inputs are exactly these rows; the subject is
+	// padded so the family is budget-hungry like the rest.
+	coRoot := "/repo/envelope-commits"
+	coBase := now.Add(-2 * time.Hour).Truncate(time.Second)
+	if _, err := s.Ingest(ctx, []models.ToolEvent{
+		promptEvent("s-co", coRoot, "ship the parser", "co-p1", coBase),
+		editEvent("s-co", coRoot, coRoot+"/a.go", "co-e1", "a := 1", "a := 2", coBase.Add(time.Minute)),
+	}, nil, IngestOptions{}); err != nil {
+		t.Fatalf("seed commit-ownership session: %v", err)
+	}
+	coPID, err := s.ProjectIDForRoot(ctx, coRoot)
+	if err != nil {
+		t.Fatalf("seed commit-ownership project: %v", err)
+	}
+	if _, err := s.UpsertCommits(ctx, coPID, []commitlog.Commit{{
+		SHA: "co-sha-1", AuthorHash: "au", AuthoredAt: coBase.Add(5 * time.Minute), CommittedAt: coBase.Add(5 * time.Minute),
+		Subject: "feat: " + pad[:1024],
+		Files:   []commitlog.CommitFile{{RelPath: "a.go", PathHash: loc.PathHash(coRoot, coRoot+"/a.go"), Added: 1}},
+	}}, now); err != nil {
+		t.Fatalf("seed commits: %v", err)
+	}
+
+	// sessions score columns → SessionQuality (one row per scored session).
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET quality_score = 0.8, redundancy_ratio = 0.1, error_rate = 0.05,
+		        exploration_efficiency = 0.5, continuity_score = 0.9,
+		        scored_at = ?, scored_action_count = 40 WHERE id = ?`,
+		now.Format(time.RFC3339Nano), sessionID); err != nil {
+		t.Fatalf("seed session quality: %v", err)
+	}
+
 	// task_items + task_transitions → SessionTaskItems + SessionTaskTransitions.
 	// Written directly rather than through applyTaskEvents so the seed does not
 	// depend on the taskflow decoder's own tool vocabulary; the wire Select
@@ -526,7 +581,8 @@ func seedEveryWireFamily(t *testing.T, s *Store) {
 		}
 	}
 
-	// limit_snapshots → LimitGauges.
+	// limit_snapshots → LimitGauges (aggregate) + SessionLimitSnapshots (the
+	// per-session cursor wire: linked to s1, one row per provider).
 	util := 0.42
 	for i := 0; i < 10; i++ {
 		if err := s.InsertLimitSnapshot(ctx, models.LimitSnapshot{
@@ -551,8 +607,57 @@ func seedEveryWireFamily(t *testing.T, s *Store) {
 		return out, nil
 	})
 
+	// mcp_relay_record (via the record seam) → MCPRelayActivity (aggregate)
+	// + MCPRelayEvents (cursor wire, shipsRawContent). L2 rows with padded
+	// args so the family is as budget-hungry as the others.
+	relay := record.NewSQLStore(s.db, "envelope-node")
+	for i := 0; i < 20; i++ {
+		res, err := relay.Append(ctx, record.Record{
+			Kind: record.KindDecision, TS: now.Unix(), VServer: "vs-1", ServerRefHMAC: "hs", ToolRefHMAC: fmt.Sprintf("ht-%d", i),
+			Server: "github", Tool: "create_issue", CallID: fmt.Sprintf("call-%d", i), CorrConfidence: record.CorrExact,
+			Method: "tools/call", EventKind: record.EventCall, Decision: record.DecisionAllow,
+			ClientAttestation: record.AttestProcess, CredentialAssurance: "node_enrolled",
+			CaptureLevel: record.CaptureL2, ArgsFull: pad, ArgsScrubStatus: record.ScrubStructured,
+		})
+		if err != nil {
+			t.Fatalf("seed relay decision: %v", err)
+		}
+		if _, err := relay.Append(ctx, record.Record{
+			Kind: record.KindCompletion, TS: now.Unix(), CallID: fmt.Sprintf("call-%d", i), DecisionSeq: record.Int(res.Record.Seq),
+			CaptureLevel: record.CaptureL2, ResultStatus: "ok", ResultFull: pad, ResultScrubStatus: record.ScrubStructured,
+		}); err != nil {
+			t.Fatalf("seed relay completion: %v", err)
+		}
+	}
+
+	// MCP inventory provider seam → MCPInventory (P11 (c)); padded args so the
+	// family is budget-hungry too. The probe falls back to the stable content
+	// hash, so an unchanged inventory skips like every other family.
+	var inv []MCPInventoryEntry
+	for i := 0; i < 20; i++ {
+		inv = append(inv, MCPInventoryEntry{Server: mcpsec.Server{
+			Client: "claude-code", Name: fmt.Sprintf("srv-%d", i),
+			Transport: "stdio", Command: "npx", Args: []string{pad},
+		}, ConfigPath: "/home/dev/.claude.json"})
+	}
+	s.SetMCPInventoryProviders(MCPInventoryProviders{Inventory: func(context.Context) ([]MCPInventoryEntry, error) { return inv, nil }})
+
 	// obs provider seam → the eight Obs* tiers.
 	s.SetObsOrgProviders(stubEnvelopeObsProviders())
+
+	// Control lanes (agent migration 141): arm tracking for sessions only
+	// (so no seeded update queues a re-send) and queue one tombstone plus one
+	// resync manifest directly.
+	for _, q := range []string{
+		`INSERT INTO schema_meta (key, value) VALUES ('org_push_floor_sessions', '0')`,
+		`UPDATE org_push_rev SET rev = rev + 1 WHERE k = 1`,
+		`INSERT INTO org_push_deletions (seq, tbl, row_id, k1) VALUES ((SELECT rev FROM org_push_rev WHERE k = 1), 'sessions', 999999, 'gone-session')`,
+		`INSERT INTO org_push_manifests (session_id, seq, not_before) VALUES ('s1', (SELECT rev FROM org_push_rev WHERE k = 1), '2026-01-01T00:00:00Z')`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("seed control lanes: %v", err)
+		}
+	}
 }
 
 // TestSelectUnpushedSince_ComposedEnvelopeRespectsBudget is the behavioural half

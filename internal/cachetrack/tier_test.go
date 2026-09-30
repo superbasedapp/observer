@@ -262,6 +262,13 @@ func TestMinCacheableTokens(t *testing.T) {
 		// the shadow guard for the 512 rows: a sloppier Match (e.g.
 		// "-5") would capture it.
 		{"claude-sonnet-5", 1024},
+		// Claude Sonnet 5.5 is a 512 model (Anthropic models overview,
+		// 2026-09-28) with its own "sonnet-5-5" row; the decorated forms
+		// resolve to it too, and "-5-5" is not captured by the Opus /
+		// Fable / Mythos 512 rows or the haiku-4-5 row.
+		{"claude-sonnet-5-5", 512},
+		{"anthropic.claude-sonnet-5-5", 512},
+		{"CLAUDE-SONNET-5-5", 512},
 		{"claude-opus-4-8", 1024},
 		{"claude-sonnet-4-6", 1024},
 		{"claude-sonnet-4-5", 1024},

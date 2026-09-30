@@ -145,6 +145,13 @@ type Pricing struct {
 type Table struct {
 	exact map[string]Pricing
 	dated map[string][]DatedPricing
+	// builtAt is the instant the table was composed at (the engine's clock at
+	// rebuild; time.Now for a bare NewTable). It decides which period of a
+	// timeline is the FLAT, current rate when a timeline carries a period that
+	// has not started yet (a stated future price change from the price
+	// database), and it is the "now" ValidateDated checks against. The zero
+	// value means time.Now.
+	builtAt time.Time
 	// enrollmentBinding is immutable provenance for the published table. It
 	// is set by Engine.rebuild before the pointer is atomically published; a
 	// caller that holds this Table therefore holds the exact rates and the
@@ -233,13 +240,39 @@ func (t *Table) markOrg(keys map[string]bool) {
 // providers last synced 2026-04-29). Callers should then Merge() user
 // overrides from config.toml on top.
 func NewTable() *Table {
-	t := &Table{exact: map[string]Pricing{}}
+	return newTableAt(time.Now().UTC())
+}
+
+// newTableAt is NewTable composed as of `now` (see Table.builtAt). The engine
+// builds with its own clock so a test can pin which period is current.
+func newTableAt(now time.Time) *Table {
+	t := newLiteralTableAt(now)
+	// The GENERATED half of the seed (snapshot.go): a versioned projection of
+	// the Tokenomics database, embedded at build time and folded onto the hand
+	// literal AND its dated timelines, with presence semantics. It is applied
+	// HERE, inside the seed rung and before any Merge, because that is what it
+	// is: the seed, generated rather than typed. It runs after MergeDated so a
+	// dated snapshot row can extend a literal timeline instead of being
+	// shadowed by it. An empty snapshot (the committed zero state) is a no-op.
+	applySnapshot(t)
+	return t
+}
+
+// newLiteralTableAt is the HAND-AUTHORED half of the seed alone: the
+// defaultPricing literal plus any datedPricing timeline, composed as of `now`,
+// with NO generated snapshot folded in. newTableAt builds on it; tests use it
+// to exercise the snapshot fold (applySnapshotRows) against the literal floor
+// itself, so a test's premise about "the literal's rate" does not silently
+// change whenever the embedded snapshot is regenerated.
+func newLiteralTableAt(now time.Time) *Table {
+	t := &Table{exact: map[string]Pricing{}, builtAt: now.UTC()}
 	for k, v := range defaultPricing {
 		t.exact[k] = v
 	}
-	// Baked-in historical rate timelines (dated.go). Verified entries only
-	// (e.g. the GPT-5.6 Terra/Luna 2026-07-30 price cut); a model with no
-	// verified rate change stays on the pre-dated lookup code path.
+	// Hand-authored historical rate timelines (dated.go). Empty once the
+	// generated snapshot carries the price database's history (Tokenomics
+	// observer_price_history); a model with no timeline stays on the
+	// pre-dated lookup code path.
 	t.MergeDated(datedPricing)
 	return t
 }
@@ -330,7 +363,7 @@ func (t *Table) LookupWithSourceAt(model string, at time.Time) (Pricing, Pricing
 		return Pricing{}, PricingSourceMiss, false
 	}
 	if _, ok := t.exact[model]; ok {
-		return t.rate(model, at), t.sourceFor(model, PricingSourceExact), true
+		return t.priced(model, at, PricingSourceExact)
 	}
 	// `:free` suffix guard: every open-weight free tier on OpenRouter /
 	// Kilo Gateway / first-party portals costs $0 regardless of family
@@ -348,7 +381,7 @@ func (t *Table) LookupWithSourceAt(model string, at time.Time) (Pricing, Pricing
 	stripped := stripDateSuffix(model)
 	if stripped != model {
 		if _, ok := t.exact[stripped]; ok {
-			return t.rate(stripped, at), t.sourceFor(stripped, PricingSourceDateStripped), true
+			return t.priced(stripped, at, PricingSourceDateStripped)
 		}
 	}
 	// Longest-prefix fallback: try progressively shorter family prefixes.
@@ -357,7 +390,7 @@ func (t *Table) LookupWithSourceAt(model string, at time.Time) (Pricing, Pricing
 	lower := strings.ToLower(model)
 	for _, family := range familyKeys(t.exact) {
 		if strings.HasPrefix(lower, family) {
-			return t.rate(family, at), t.sourceFor(family, PricingSourceFamily), true
+			return t.priced(family, at, PricingSourceFamily)
 		}
 	}
 	// Last-resort normalization: strip router/provider prefixes the family
@@ -370,12 +403,12 @@ func (t *Table) LookupWithSourceAt(model string, at time.Time) (Pricing, Pricing
 	// they correctly fall through to MISS (their cure is adapter-side).
 	if norm := normalizeUnpricedModel(model); norm != "" {
 		if _, ok := t.exact[norm]; ok {
-			return t.rate(norm, at), t.sourceFor(norm, PricingSourceFamily), true
+			return t.priced(norm, at, PricingSourceFamily)
 		}
 		lnorm := strings.ToLower(norm)
 		for _, family := range familyKeys(t.exact) {
 			if strings.HasPrefix(lnorm, family) {
-				return t.rate(family, at), t.sourceFor(family, PricingSourceFamily), true
+				return t.priced(family, at, PricingSourceFamily)
 			}
 		}
 	}
@@ -697,17 +730,125 @@ func familyKeys(exact map[string]Pricing) []string {
 	return out
 }
 
-// BakedInDefaults returns a fresh copy of the baked-in pricing table.
-// The dashboard's Settings page uses this to render a "defaults"
-// reference list alongside the user's overrides — clicking a default
-// pre-fills an override row with that model's baked-in rates so users
-// can tweak from a known-good starting point.
+// BakedInDefaults returns a fresh copy of the EFFECTIVE compiled seed: the
+// hand-authored literal with the embedded generated snapshot folded in
+// (snapshot.go), i.e. exactly the flat table [NewTable] starts from. The
+// dashboard's Settings page uses this to render a "defaults" reference list
+// alongside the user's overrides - clicking a default pre-fills an override
+// row with that model's rates so users can tweak from a known-good starting
+// point.
 //
-// The returned map is a copy; mutating it has no effect on engine state.
+// It must be the literal PLUS the snapshot, not the literal alone (review
+// finding 10): a surface that pre-filled from the bare literal would offer an
+// obsolete rate the snapshot had already corrected, and saving it would
+// create a local override that then beats the accurate seed and feed.
+//
+// Rates are RAW (fillDefaults is a lookup-time step), as before. The returned
+// map is a copy; mutating it has no effect on engine state.
 func BakedInDefaults() map[string]Pricing {
-	out := make(map[string]Pricing, len(defaultPricing))
-	for k, v := range defaultPricing {
+	return bakedInDefaultsOf(NewTable())
+}
+
+// bakedInDefaultsOf copies a seed table's flat rates. Split from
+// BakedInDefaults so a test can prove the defaults surface carries snapshot
+// rows without shipping a non-zero embedded snapshot.
+func bakedInDefaultsOf(t *Table) map[string]Pricing {
+	out := make(map[string]Pricing, len(t.exact))
+	for k, v := range t.exact {
 		out[k] = v
+	}
+	return out
+}
+
+// grokBuild01 is xAI Grok Build 0.1's card (docs.x.ai/developers/pricing,
+// re-grounded 2026-09-23): $1 / $2 with a $0.20 cached-input rate, and the
+// >=200K long-context tier at $2 / $4 / $0.40. It is ONE shared value because
+// three keys carry it - grok-build-0.1 itself, and grok-code-fast-1 plus the
+// grok-code family, which xAI auto-routes (and bills) to Build 0.1 since the
+// 2026-05-15 retirement. The dated timelines for those two keys end on this
+// SAME value, which is what keeps ValidateDated's flat == newest check exact.
+var grokBuild01 = Pricing{
+	Input: 1, Output: 2, CacheRead: 0.20,
+	LongContextThreshold: 200_000,
+	LongContextInput:     2, LongContextOutput: 4, LongContextCacheRead: 0.40,
+}
+
+// grok-code-fast-1's own pre-retirement card ($0.20 / $1.50 / $0.02 cached,
+// x.ai/news/grok-code-fast-1) and its 2026-05-15T19:00Z retirement instant
+// ("Effective May 15, 2026 at 12:00 PM PT", docs.x.ai/developers/migration/
+// may-15-retirement) are DATABASE history now: Tokenomics migration 0028's
+// observer_price_history rows for grok-code-fast-1 and grok-code, compiled in
+// through the generated snapshot (the hand timeline in dated.go was retired
+// 2026-09-28 once the snapshot carried it).
+
+// cacheReadRule names one resolved pricing key whose vendor rate card
+// publishes NO cache-read rate, so fillDefaults' universal 10%-of-input
+// cache-read default must not fire for it.
+type cacheReadRule struct {
+	// Key is the resolved pricing-table key, matched exactly (the key the
+	// Lookup ladder landed on, so a decorated live id that resolves to it by
+	// family prefix is covered too).
+	Key string
+	// Source records the evidence that the vendor quotes no cache-read rate.
+	Source string
+}
+
+// cacheReadNotQuoted is the table of keys whose cache-read rate is honestly
+// UNQUOTED (review finding 5). It is deliberately narrow and evidence-bound:
+// add a row ONLY when the vendor's own rate card is observed to state input
+// and output but no cache-read rate for that SKU. A row here means cached-read
+// tokens on that key contribute $0 - an unpriced dimension, surfaced in
+// docs/pricing-reference.md - rather than an invented 10%-of-input number. An
+// explicit CacheRead on the row, a config override or an org/feed rate still
+// wins, because only a ZERO field is left alone.
+var cacheReadNotQuoted = []cacheReadRule{
+	{
+		Key:    "swe-1-7-medium",
+		Source: "docs.devin.ai/desktop/models live pricing JSON (Enterprise-SaaS), fetched 2026-09-23: SWE-1.7 Medium quotes input $0.50 and output $2.50 only, with no cache_read_cost_per_million_usd, while every other current SWE SKU quotes one",
+	},
+	// grok-code-fast-1 and grok-code were listed here until 2026-09-27: xAI's
+	// launch post quotes their cached-input rate ($0.02 / 1M,
+	// x.ai/news/grok-code-fast-1), carried by the price database's history.
+}
+
+// cacheReadIsUnquoted reports whether key is listed in cacheReadNotQuoted.
+func cacheReadIsUnquoted(key string) bool {
+	lower := strings.ToLower(key)
+	for _, r := range cacheReadNotQuoted {
+		if r.Key == lower {
+			return true
+		}
+	}
+	return false
+}
+
+// CacheReadUnpricedAt reports whether cached-read tokens for model at `at`
+// bill against an UNQUOTED cache-read rate: the resolved key is listed in
+// cacheReadNotQuoted and the rate in force carries no cache-read price. Cost
+// accounting uses it to record an unknown-price signal for those tokens
+// instead of a silent exact $0 (round-2 review finding 4). False for a model
+// the table does not price at all (that is a whole-row MISS, reported
+// separately).
+func (e *Engine) CacheReadUnpricedAt(model string, at time.Time) bool {
+	t := e.Table()
+	if t == nil {
+		return false
+	}
+	key, ok := t.ResolveModelKey(model)
+	if !ok || !cacheReadIsUnquoted(key) {
+		return false
+	}
+	p, ok := t.LookupAt(model, at)
+	return ok && p.CacheRead == 0
+}
+
+// fillDefaultsFor is fillDefaults for a RESOLVED key: identical, except that a
+// key the vendor quotes no cache-read rate for keeps CacheRead at 0 instead
+// of receiving the universal 10%-of-input default.
+func fillDefaultsFor(key string, p Pricing) Pricing {
+	out := fillDefaults(p)
+	if p.CacheRead == 0 && cacheReadIsUnquoted(key) {
+		out.CacheRead = 0
 	}
 	return out
 }
@@ -727,10 +868,12 @@ var (
 // dimension during two recurring UTC windows on weekdays (weekends and CN
 // public holidays stay off-peak — the holiday exclusion is a documented v1
 // limitation, not modeled). These are declared as shared package-level
-// values so the SAME *PeakRates pointer is used in BOTH the flat
-// defaultPricing row and the newest dated.go timeline entry — Pricing is a
-// comparable struct, so ValidateDated's flat==newest check needs pointer
-// identity, not just equal contents.
+// values so every flat defaultPricing row of the family shares ONE
+// *PeakRates pointer. The dated history (the 2026-08-16 every-day peak
+// period and the earlier flat cards) is DATABASE data now: Tokenomics
+// migration 0028's observer_price_history, compiled in through the generated
+// snapshot, whose history REPLACES a key's flat row with the period in force
+// (setSnapshotHistory), so flat==newest holds by construction.
 var deepseekPeakWeekdays = []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday}
 
 var deepseekPeakSchedule = PeakSchedule{Windows: []PeakWindow{
@@ -751,10 +894,8 @@ var deepseekV4ProPeak = &PeakRates{
 // post-2026-09-10 off-peak base ($0.15/$0.60/$0.003 → $0.30/$1.20/$0.006).
 // No long-context tier and no cache-write charge (auto-cache, OpenAI-shape),
 // matching the base row. Reuses the SHARED deepseekPeakSchedule (same
-// weekday UTC windows as v4-pro). This SAME pointer anchors BOTH the flat
-// defaultPricing flash rows AND the newest dated.go timeline entry for each
-// flash key, so ValidateDated's flat==newest struct comparison — which is
-// pointer identity for the Peak field — holds and Lookup/LookupAt agree.
+// weekday UTC windows as v4-pro). This SAME pointer anchors every flat
+// defaultPricing flash row.
 var deepseekFlashPeak = &PeakRates{
 	RateSet:  RateSet{Input: 0.30, Output: 1.20, CacheRead: 0.006},
 	Schedule: deepseekPeakSchedule,
@@ -820,6 +961,58 @@ var defaultPricing = map[string]Pricing{
 	// Pricing struct carries no batch field and one must not be invented
 	// here.
 	"claude-opus-5": {Input: 5, Output: 25, CacheRead: 0.50, CacheCreation: 6.25, CacheCreation1h: 10, WebSearchPerRequest: 0.01, FastMultiplier: 2},
+
+	// Anthropic — Claude Opus 5.5, released 2026-09-22 and the current Opus
+	// flagship. Verified 2026-09-23 against
+	// platform.claude.com/docs/en/models/opus-5-5/overview and
+	// platform.claude.com/docs/en/about-claude/pricing:
+	// $4 in / $20 out / $0.20 cached read / $5 5m write / $8 1h write,
+	// 1M context, 128K max output. Batch is $2/$10 (context only — the
+	// struct carries no batch field and one must not be invented).
+	//
+	// THIS ROW IS A CORRECTION, NOT AN ADDITION. Without it
+	// `claude-opus-5-5` still resolved — through the family ladder onto
+	// `claude-opus-5` — and billed at $5/$25/$0.50, a silent 25% over-bill
+	// on input and output and a 150% over-bill on cache reads. That is the
+	// quieter half of the 2026-07-25 Opus-5 incident: a MISS is loud once
+	// somebody looks at a $0.00 total, but a WRONG FAMILY is a plausible
+	// number nobody questions.
+	//
+	// Cache read is 0.05x input here, not the 0.10x every other Anthropic
+	// row carries — that ratio change is the whole basis of Anthropic's own
+	// "costs 40% less to run than Opus 5" claim on a cached workload, so it
+	// is quoted explicitly rather than left to fillDefaults' 10% default,
+	// which would have billed $0.40 (2x the real rate).
+	//
+	// FastMultiplier=2: fast mode is $8 in / $40 out — exactly 2x every
+	// per-token dimension, the same shape as Opus 5/4.8. Set on the explicit
+	// SKU only.
+	//
+	// NO long-context tier, deliberately. The vendor pricing page states
+	// that "Claude 4.6 and later models ... include the full 1M token
+	// context window at standard pricing. (A 900k-token request is billed at
+	// the same per-token rate as a 9k-token request.)" Carrying a threshold
+	// here would invent a repricing Anthropic does not perform.
+	"claude-opus-5-5": {Input: 4, Output: 20, CacheRead: 0.20, CacheCreation: 5, CacheCreation1h: 8, WebSearchPerRequest: 0.01, FastMultiplier: 2},
+	// Dot-form alias — the same convention as claude-fable-5.1 /
+	// claude-haiku-4.5 above: some surfaces (Copilot CLI, several IDE
+	// pickers) spell the minor version with a dot, and the family ladder
+	// cannot bridge dash-vs-dot, so without this row `claude-opus-5.5`
+	// would fall through to `claude-opus` at legacy rates.
+	"claude-opus-5.5": {Input: 4, Output: 20, CacheRead: 0.20, CacheCreation: 5, CacheCreation1h: 8, WebSearchPerRequest: 0.01, FastMultiplier: 2},
+	// `claude-opus-5-5-fast` is the id Cursor emits for Opus 5.5 in fast
+	// mode (cursor.com/docs/models, fetched 2026-09-27: "Fast mode
+	// (`claude-opus-5-5-fast`)"). Without this row it prefix-matched the
+	// standard `claude-opus-5-5` row and billed $4/$20 - a 2x under-bill,
+	// since the suffix carries the fast selection and no TokenBundle.Fast
+	// flag accompanies it. Rates are Anthropic's fast card
+	// (platform.claude.com/docs/en/about-claude/pricing, fetched
+	// 2026-09-27): $8 in / $40 out, and "prompt caching multipliers apply
+	// on top of fast mode pricing", so cache read 0.05x = $0.40 and cache
+	// writes 1.25x / 2x = $10 / $16. FastMultiplier stays 0 on purpose: the
+	// suffix already selected the fast rate and must never be multiplied
+	// again (the cursor-grok-*-fast precedent).
+	"claude-opus-5-5-fast": {Input: 8, Output: 40, CacheRead: 0.40, CacheCreation: 10, CacheCreation1h: 16, WebSearchPerRequest: 0.01},
 	// Anthropic — Claude Opus 4.5 / 4.6 / 4.7 / 4.8 (current generation,
 	// $5/$25 input/output — 1/3 of Opus 4.x legacy rates). Web search billed
 	// at $10/1000 calls ($0.01 per call) on top of token costs.
@@ -918,11 +1111,10 @@ var defaultPricing = map[string]Pricing{
 	// scopes OUT of the 0.025× discount, so this stays at the universal
 	// 0.10× ($1) cache-read, not 0.025×. Base input/output/cache-write
 	// unchanged (mirrors claude-fable's family row exactly).
-	"claude-mythos":            {Input: 10, Output: 50, CacheRead: 1, CacheCreation: 12.50, CacheCreation1h: 20, WebSearchPerRequest: 0.01},
-	"claude-opus-4-7":          {Input: 5, Output: 25, CacheRead: 0.50, CacheCreation: 6.25, CacheCreation1h: 10, WebSearchPerRequest: 0.01},
-	"claude-opus-4-6":          {Input: 5, Output: 25, CacheRead: 0.50, CacheCreation: 6.25, CacheCreation1h: 10, WebSearchPerRequest: 0.01},
-	"claude-opus-4-6-20251001": {Input: 5, Output: 25, CacheRead: 0.50, CacheCreation: 6.25, CacheCreation1h: 10, WebSearchPerRequest: 0.01},
-	"claude-opus-4-5":          {Input: 5, Output: 25, CacheRead: 0.50, CacheCreation: 6.25, CacheCreation1h: 10, WebSearchPerRequest: 0.01},
+	"claude-mythos":   {Input: 10, Output: 50, CacheRead: 1, CacheCreation: 12.50, CacheCreation1h: 20, WebSearchPerRequest: 0.01},
+	"claude-opus-4-7": {Input: 5, Output: 25, CacheRead: 0.50, CacheCreation: 6.25, CacheCreation1h: 10, WebSearchPerRequest: 0.01},
+	"claude-opus-4-6": {Input: 5, Output: 25, CacheRead: 0.50, CacheCreation: 6.25, CacheCreation1h: 10, WebSearchPerRequest: 0.01},
+	"claude-opus-4-5": {Input: 5, Output: 25, CacheRead: 0.50, CacheCreation: 6.25, CacheCreation1h: 10, WebSearchPerRequest: 0.01},
 	// claude-opus-4 (no minor) — family prefix set to LATEST so new SKUs
 	// (claude-opus-4-8, claude-opus-4-9...) inherit current pricing rather
 	// than legacy.
@@ -1128,9 +1320,10 @@ var defaultPricing = map[string]Pricing{
 	// service_tier (watcher path) and the proxy's served service_tier
 	// (api_turns path); see internal/adapter/codex/adapter.go +
 	// internal/proxy/provider.go.
-	// OpenAI — GPT-5.6 family. Launched 2026-06-25 as a LIMITED PREVIEW
-	// (API + Codex only, ~20 approved orgs; preview rates may change at
-	// GA). SKUs follow the family convention gpt-5.6-{sol,terra,luna};
+	// OpenAI — GPT-5.6 family. Released in the API 2026-07-09
+	// (developers.openai.com/api/docs/changelog, "Released the GPT-5.6 model
+	// family"); an earlier limited preview (API + Codex only, ~20 approved
+	// orgs) is not in the changelog. SKUs follow the family convention gpt-5.6-{sol,terra,luna};
 	// no primary source lists literal ID strings, so the family prefix
 	// (→ Sol flagship rates) backstops any as-yet-unseen variant.
 	//
@@ -1154,9 +1347,10 @@ var defaultPricing = map[string]Pricing{
 	// PRICE CUT, effective 2026-07-30 (developers.openai.com/api/docs/
 	// changelog: "Starting July 30, GPT-5.6 Luna costs 80% less, while
 	// GPT-5.6 Terra costs 20% less"). Terra/Luna's OLD rates are
-	// preserved as the first entry of their datedPricing timeline
-	// (dated.go) — see TestDatedSeedIsSelfConsistent. Sol is UNCHANGED
-	// by this cut.
+	// preserved as the first period of their history in the price database
+	// (Tokenomics observer_price_history, reaching this binary through the
+	// generated snapshot; dated.go's hand copy was retired 2026-09-28). Sol
+	// is UNCHANGED by this cut.
 	//
 	// Long-context + Fast tiers, added alongside the 2026-07-30 cut
 	// (developers.openai.com/api/docs/pricing): threshold 272K tokens,
@@ -1165,15 +1359,35 @@ var defaultPricing = map[string]Pricing{
 	// 2026-07-30) bills at 2× standard. "Sol Ultra" is a high-effort
 	// mode of Sol, not a separate rate card. WebSearchPerRequest stays
 	// 0.01 like the other OpenAI rows.
+	// REPRICED 2026-09-23. developers.openai.com/api/docs/models/gpt-5.6-sol
+	// now quotes $4 in / $0.40 cached / $20 out (cache write 1.25x input =
+	// $5), with the >272K tier at 2x input/cache and 1.5x output → $8 /
+	// $0.80 / $30 / $10. The row previously held $5/$30, which over-billed
+	// every Sol turn by 25% on input and 50% on output.
+	//
+	// The page flags this as "promotional pricing available at least through
+	// November 21, 2026" and states NO post-promotional standard rate. Two
+	// consequences, both deliberate:
+	//   - the EXACT SKU carries the promotional number, because cost is
+	//     stamped at capture (R8) and a turn billed today is billed at
+	//     today's published rate;
+	//   - the FAMILY rows below (`gpt-5.6`, `gpt-5-6`, `gpt-5-6-thinking`)
+	//     deliberately stay at the last known NON-promotional $5/$30. A
+	//     family fallback outlives the promotion by construction — it is
+	//     what an as-yet-unseen SKU of this generation inherits — and
+	//     carrying a rate with a known expiry there would silently
+	//     under-bill from 2026-11-22 onwards. Same standing rule that keeps
+	//     Sonnet 5's intro rate off the Anthropic family rows.
+	// RE-VERIFY BEFORE 2026-11-21.
 	"gpt-5.6-sol": {
-		Input: 5, Output: 30, CacheRead: 0.50, CacheCreation: 6.25, CacheCreation1h: 6.25, WebSearchPerRequest: 0.01,
+		Input: 4, Output: 20, CacheRead: 0.40, CacheCreation: 5.00, CacheCreation1h: 5.00, WebSearchPerRequest: 0.01,
 		LongContextThreshold: 272_000,
-		LongContextInput:     10.00, LongContextOutput: 45.00, LongContextCacheRead: 1.00,
-		LongContextCacheCreation: 12.50, LongContextCacheCreation1h: 12.50,
+		LongContextInput:     8.00, LongContextOutput: 30.00, LongContextCacheRead: 0.80,
+		LongContextCacheCreation: 10.00, LongContextCacheCreation1h: 10.00,
 		FastMultiplier: 2,
 	},
 	// Terra — NEW rate post-2026-07-30 cut (20% less). OLD rate ($2.50 /
-	// $15 / $0.25 / $3.125) is dated.go's timeline entry 1.
+	// $15 / $0.25 / $3.125) is the price database history's first period.
 	"gpt-5.6-terra": {
 		Input: 2.00, Output: 12.00, CacheRead: 0.20, CacheCreation: 2.50, CacheCreation1h: 2.50, WebSearchPerRequest: 0.01,
 		LongContextThreshold: 272_000,
@@ -1182,7 +1396,7 @@ var defaultPricing = map[string]Pricing{
 		FastMultiplier: 2,
 	},
 	// Luna — NEW rate post-2026-07-30 cut (80% less). OLD rate ($1 / $6
-	// / $0.10 / $1.25) is dated.go's timeline entry 1.
+	// / $0.10 / $1.25) is the price database history's first period.
 	"gpt-5.6-luna": {
 		Input: 0.20, Output: 1.20, CacheRead: 0.02, CacheCreation: 0.25, CacheCreation1h: 0.25, WebSearchPerRequest: 0.01,
 		LongContextThreshold: 272_000,
@@ -1267,9 +1481,53 @@ var defaultPricing = map[string]Pricing{
 		LongContextCacheCreation: 25, LongContextCacheCreation1h: 25,
 		FastMultiplier: 2,
 	},
+	// OpenAI — GPT-6 Sol and GPT-6 Luna, the other two SKUs of the GPT-6
+	// generation (launched alongside Astra 2026-09-03). Verified 2026-09-23
+	// against developers.openai.com/api/docs/models/gpt-6-sol and
+	// .../gpt-6-luna plus the aggregate pricing page:
+	//   Sol  $2 in / $0.20 cached / $10 out, cache write $2.50 (1.25x input)
+	//   Luna $0.10 in / $0.01 cached / $0.50 out, cache write $0.125
+	// Both 1,050,000 context / 128,000 max output, both with the same >272K
+	// whole-request repricing (2x input, 2x cached, 2x write, 1.5x output)
+	// and the same flat 2x Fast mode as Astra.
+	//
+	// THESE TWO ROWS ARE THE MOST EXPENSIVE OMISSION IN THIS TABLE'S
+	// HISTORY, in the literal sense. Without them both ids resolved through
+	// the `gpt-6` family prefix onto ASTRA's $10/$50 — a 5x over-bill on
+	// Sol and a 100x over-bill on Luna, on a generation that shipped three
+	// weeks ago. A family prefix pinned to the flagship is the right default
+	// for an UNSEEN SKU and exactly the wrong answer for a known cheap one,
+	// which is why every named SKU gets its own row the day it is grounded.
+	//
+	// Naming trap worth stating once: the tier words do NOT carry the same
+	// meaning across generations. In GPT-5.6, Sol is the top general tier;
+	// in GPT-6, ASTRA is the flagship and Sol is the coding/agentic tier at
+	// a fifth of the price. There is no gpt-6-terra. Sol/Luna are distinct
+	// API model ids, not reasoning-effort settings — each exposes its own
+	// `reasoning.effort` separately.
+	"gpt-6-sol": {
+		Input: 2, Output: 10, CacheRead: 0.20, CacheCreation: 2.50, CacheCreation1h: 2.50, WebSearchPerRequest: 0.01,
+		LongContextThreshold: 272_000,
+		LongContextInput:     4, LongContextOutput: 15, LongContextCacheRead: 0.40,
+		LongContextCacheCreation: 5, LongContextCacheCreation1h: 5,
+		FastMultiplier: 2,
+	},
+	"gpt-6-luna": {
+		Input: 0.10, Output: 0.50, CacheRead: 0.01, CacheCreation: 0.125, CacheCreation1h: 0.125, WebSearchPerRequest: 0.01,
+		LongContextThreshold: 272_000,
+		LongContextInput:     0.20, LongContextOutput: 0.75, LongContextCacheRead: 0.02,
+		LongContextCacheCreation: 0.25, LongContextCacheCreation1h: 0.25,
+		FastMultiplier: 2,
+	},
 	// gpt-6 family prefix → Astra (flagship) rates, same convention as the
 	// "gpt-5.6" bare family row: a future gpt-6-x SKU with no row of its
 	// own inherits the current flagship's shape rather than MISSing to $0.
+	//
+	// KNOWN AND ACCEPTED: this makes the family row the EXPENSIVE end of a
+	// generation whose named SKUs span 100x. That is the deliberate
+	// direction for an unknown id (over-estimating a turn is recoverable;
+	// under-estimating a budget is not), and it is why gpt-6-sol and
+	// gpt-6-luna above exist as explicit rows rather than being left to it.
 	"gpt-6": {
 		Input: 10, Output: 50, CacheRead: 1, CacheCreation: 12.50, CacheCreation1h: 12.50, WebSearchPerRequest: 0.01,
 		LongContextThreshold: 272_000,
@@ -1301,14 +1559,19 @@ var defaultPricing = map[string]Pricing{
 	"gpt-5.2-codex":       {Input: 1.75, Output: 14, CacheRead: 0.175, WebSearchPerRequest: 0.01},
 	"gpt-5.2-pro":         {Input: 21, Output: 168, WebSearchPerRequest: 0.01}, // no cache tier
 	"gpt-5.1":             {Input: 1.07, Output: 8.50, CacheRead: 0.107, WebSearchPerRequest: 0.01},
-	"gpt-5.1-codex":       {Input: 1.07, Output: 8.50, CacheRead: 0.107, WebSearchPerRequest: 0.01},
-	"gpt-5.1-codex-max":   {Input: 1.25, Output: 10, CacheRead: 0.125, WebSearchPerRequest: 0.01},
-	"gpt-5.1-codex-mini":  {Input: 0.25, Output: 2, CacheRead: 0.025, WebSearchPerRequest: 0.01},
-	"gpt-5":               {Input: 1.07, Output: 8.50, CacheRead: 0.107, WebSearchPerRequest: 0.01},
-	"gpt-5-codex":         {Input: 1.07, Output: 8.50, CacheRead: 0.107, WebSearchPerRequest: 0.01},
-	"gpt-5-mini":          {Input: 0.25, Output: 2, CacheRead: 0.025, WebSearchPerRequest: 0.01},
-	"gpt-5-nano":          {Input: 0, Output: 0, CacheRead: 0, WebSearchPerRequest: 0.01}, // Free per OpenAI 2026-04-29 catalog
-	"gpt-5-pro":           {Input: 15, Output: 120, WebSearchPerRequest: 0.01},            // legacy; no cache tier
+	// gpt-5.1-codex / gpt-5-codex: $1.25 in / $0.125 cached / $10 out, each
+	// model's own page (developers.openai.com/api/docs/models/gpt-5.1-codex
+	// and .../gpt-5-codex, fetched 2026-09-27: "Input $1.25 Cached input
+	// $0.125 Output $10.00"). They held $1.07 / $0.107 / $8.50, a number no
+	// OpenAI page states (lane R2-RECONCILE, 2026-09-28).
+	"gpt-5.1-codex":      {Input: 1.25, Output: 10, CacheRead: 0.125, WebSearchPerRequest: 0.01},
+	"gpt-5.1-codex-max":  {Input: 1.25, Output: 10, CacheRead: 0.125, WebSearchPerRequest: 0.01},
+	"gpt-5.1-codex-mini": {Input: 0.25, Output: 2, CacheRead: 0.025, WebSearchPerRequest: 0.01},
+	"gpt-5":              {Input: 1.07, Output: 8.50, CacheRead: 0.107, WebSearchPerRequest: 0.01},
+	"gpt-5-codex":        {Input: 1.25, Output: 10, CacheRead: 0.125, WebSearchPerRequest: 0.01},
+	"gpt-5-mini":         {Input: 0.25, Output: 2, CacheRead: 0.025, WebSearchPerRequest: 0.01},
+	"gpt-5-nano":         {Input: 0, Output: 0, CacheRead: 0, WebSearchPerRequest: 0.01}, // Free per OpenAI 2026-04-29 catalog
+	"gpt-5-pro":          {Input: 15, Output: 120, WebSearchPerRequest: 0.01},            // legacy; no cache tier
 	// Codex cloud auto-review. Codex's automated PR/code-review runs bill under
 	// the alias `codex-auto-review` (LIVE on the org estate at 12.9M tokens); the
 	// exact backing SKU is not published, so no fresh number is invented — the
@@ -1382,7 +1645,18 @@ var defaultPricing = map[string]Pricing{
 		LongContextInput:     4, LongContextOutput: 18, LongContextCacheRead: 0.40,
 	},
 	"gemini-3.1-flash-lite-preview": {Input: 0.25, Output: 1.50, CacheRead: 0.025},
-	"gemini-3-flash-preview":        {Input: 0.50, Output: 3, CacheRead: 0.05},
+	// Flash-Lite GA ids (added 2026-09-27, ai.google.dev/gemini-api/docs/
+	// pricing fetched 2026-09-27). Both were silent over-bills through the
+	// family ladder before this: `gemini-3.1-flash-lite` (the GA id, no
+	// -preview) is NOT prefixed by "gemini-3.1-flash-lite-preview", so it
+	// fell to the `gemini-3.1` PRO family ($2/$12 + a 200K LC tier, ~8x),
+	// and `gemini-3.5-flash-lite` prefix-matched `gemini-3.5-flash`
+	// ($1.50/$9, 5x input / 3.6x output). Text/image/video input rate;
+	// 3.1 Flash-Lite's $0.50 AUDIO input rate is not modelled (no modality
+	// dimension on this struct). Flat rate, no LC tier, like every Flash.
+	"gemini-3.1-flash-lite":  {Input: 0.25, Output: 1.50, CacheRead: 0.025},
+	"gemini-3.5-flash-lite":  {Input: 0.30, Output: 2.50, CacheRead: 0.03},
+	"gemini-3-flash-preview": {Input: 0.50, Output: 3, CacheRead: 0.05},
 	// Gemini 3.5 Flash — Google's speed-focused 3.5 SKU. Standard-tier
 	// rates per ai.google.dev/gemini-api/docs/pricing (2026-05-19 user
 	// research): $1.50 / $9.00 / $0.15 per 1M tokens. Output rate
@@ -1554,7 +1828,7 @@ var defaultPricing = map[string]Pricing{
 	// / grok-build-0.1, so CacheRead is left unset on those two and
 	// fillDefaults' universal 10%-of-input default applies ($0.20 /
 	// $0.10). `grok-code-fast-1` was retired 2026-05-15 and redirects to
-	// grok-4.3 pricing. The `grok` family prefix follows the current
+	// grok-build-0.1 (see its row below). The `grok` family prefix follows the current
 	// flagship (grok-4.6's <200K tier — numerically identical to 4.5's
 	// $2/$6, but now carries the real $0.50 cached rate rather than the
 	// 10%-of-input default), same precedent as the kimi-k2-6 family
@@ -1562,26 +1836,164 @@ var defaultPricing = map[string]Pricing{
 	// long-context tier — an unknown/future grok-* SKU that falls
 	// through to this row is priced at the base tier, never the
 	// doubled one.
+	// RE-GROUNDED 2026-09-23 against docs.x.ai/developers/pricing and the
+	// per-model pages. Two corrections beyond the new flagship, both of
+	// which had been UNDER-billing:
+	//
+	//  1. The 200K long-context tier is NOT a grok-4.6 novelty — xAI now
+	//     publishes a >=200K repricing for EVERY text SKU (4.7, 4.6, 4.5,
+	//     4.3, the 4.20 line and Build 0.1). Only 4.6 carried it here, so a
+	//     300K-token 4.5 or 4.3 prompt billed at the base tier: a flat 2x
+	//     under-bill on the whole request.
+	//  2. xAI DOES now publish cached-input rates for 4.5 ($0.30), 4.3 /
+	//     4.20 ($0.20) and Build 0.1 ($0.20). The in-repo note that it
+	//     published none for 4.5 and Build 0.1 was true when written and is
+	//     no longer. Leaving them blank let fillDefaults' universal
+	//     10%-of-input default answer $0.20 / $0.125 / $0.10 against real
+	//     rates of $0.30 / $0.20 / $0.20 — a 1.5x to 2x under-bill on every
+	//     cached read.
+	//
+	// Still deliberately absent: a cache-WRITE rate (xAI publishes none for
+	// any SKU, so CacheCreation stays 0 and fillDefaults does not fabricate
+	// one for non-Anthropic rows), and a max-output figure (grok-4.7's page
+	// says "no text output limit"). xAI's tool surcharges are priced per
+	// 1,000 calls across several different tool kinds (web/X search and code
+	// exec $5, X profile search and file attachments $10, collections search
+	// $2.50) and do NOT collapse onto the single flat WebSearchPerRequest
+	// fee this struct models, so none of them is carried — an invented
+	// blended rate would be worse than the honest zero.
+	//
+	// grok-4.7 (released 2026-09-21) is the CURRENT flagship. It is Grok
+	// 4.7, not Grok 5: Grok 5 is unreleased and has no id and no price, and
+	// the "Grok 4.8/4.9" material circulating is rumour with no vendor page.
+	// Note 4.7 needed this row for the TIER, not the base rate — the `grok`
+	// family prefix already answered $2/$6/$0.50 correctly; what it could
+	// not answer was the >=200K repricing, because a family row must never
+	// carry the doubled tier (an unknown future grok-* SKU would then be
+	// billed at the expensive tier on a large prompt it may not even
+	// reprice).
+	"grok-4.7": {
+		Input: 2, Output: 6, CacheRead: 0.50,
+		LongContextThreshold: 200_000,
+		LongContextInput:     4, LongContextOutput: 12, LongContextCacheRead: 1.00,
+	},
 	"grok-4.6": {
 		Input: 2, Output: 6, CacheRead: 0.50,
 		LongContextThreshold: 200_000,
 		LongContextInput:     4, LongContextOutput: 12, LongContextCacheRead: 1.00,
 	},
-	"grok-4.5":         {Input: 2, Output: 6}, // flagship since 2026-07 (500k ctx), superseded by grok-4.6 2026-08; was silently falling to the `grok` family row at 4.3 rates
-	"grok-build-0.1":   {Input: 1, Output: 2}, // agentic-coding model, early access (256k ctx)
-	"grok-build":       {Input: 1, Output: 2}, // family prefix for future build-x SKUs
-	"grok-4.3":         {Input: 1.25, Output: 2.50},
-	"grok-4.20":        {Input: 1.25, Output: 2.50},            // covers grok-4.20-0309-* family
-	"grok-4-20":        {Input: 1.25, Output: 2.50},            // historical alias
-	"grok-code-fast-1": {Input: 1.25, Output: 2.50},            // retired 2026-05-15 → redirects to grok-4.3 pricing
-	"grok-code":        {Input: 1.25, Output: 2.50},            // family prefix
-	"grok":             {Input: 2, Output: 6, CacheRead: 0.50}, // family prefix → grok-4.6's base (<200K) tier
+	// Flagship 2026-07 through 2026-08, superseded by 4.6 then 4.7; still
+	// served and still priced. Cached input is $0.30 here, NOT the $0.50 the
+	// 4.6/4.7 rows carry — the one place the three flagship generations'
+	// rate cards differ.
+	"grok-4.5": {
+		Input: 2, Output: 6, CacheRead: 0.30,
+		LongContextThreshold: 200_000,
+		LongContextInput:     4, LongContextOutput: 12, LongContextCacheRead: 0.60,
+	},
+	// Agentic-coding model (256k ctx). It is the REPLACEMENT for the
+	// retired grok-code-fast-1 and is roughly 5x its price. xAI auto-routes
+	// the old id here and bills it at this card, so the retired id's CURRENT
+	// row shares this value; a turn captured under the old id from before
+	// the 2026-05-15 retirement still bills at the old card through the
+	// price database's history (migration 0028, via the generated snapshot).
+	"grok-build-0.1": grokBuild01,
+	"grok-build":     {Input: 1, Output: 2, CacheRead: 0.20}, // family prefix for future build-x SKUs; no LC tier on a family row
+	"grok-4.3": {
+		Input: 1.25, Output: 2.50, CacheRead: 0.20,
+		LongContextThreshold: 200_000,
+		LongContextInput:     2.50, LongContextOutput: 5.00, LongContextCacheRead: 0.40,
+	},
+	// covers the grok-4.20-0309-* family (reasoning / non-reasoning /
+	// multi-agent), which shares 4.3's rate card exactly.
+	"grok-4.20": {
+		Input: 1.25, Output: 2.50, CacheRead: 0.20,
+		LongContextThreshold: 200_000,
+		LongContextInput:     2.50, LongContextOutput: 5.00, LongContextCacheRead: 0.40,
+	},
+	"grok-4-20": {
+		Input: 1.25, Output: 2.50, CacheRead: 0.20,
+		LongContextThreshold: 200_000,
+		LongContextInput:     2.50, LongContextOutput: 5.00, LongContextCacheRead: 0.40,
+	},
+	// grok-code-fast-1 was RETIRED 2026-05-15 and xAI now auto-routes the id
+	// to grok-build-0.1, billing it at the REPLACEMENT's rate
+	// (docs.x.ai/developers/migration/may-15-retirement). So the flat
+	// (current) row is grok-build-0.1's card, and the historical $0.20 /
+	// $1.50 card lives on the price database's history (migration 0028,
+	// via the generated snapshot), in force until the
+	// retirement instant (review finding 6). The earlier $1.25/$2.50 here was
+	// grok-4.3's card and matched neither side of the retirement. The
+	// `grok-code` family row follows the same timeline: grok-code-fast-1 is
+	// the only grok-code-* SKU xAI ever priced.
+	"grok-code-fast-1": grokBuild01,
+	"grok-code":        grokBuild01,
+	"grok":             {Input: 2, Output: 6, CacheRead: 0.50}, // family prefix → grok-4.7's base (<200K) tier; NO LC tier by design
+
+	// Cognition AI — the SWE family, which Observer sees through the `devin`
+	// adapter (Devin Web / Desktop / CLI / Fusion) and the Windsurf lineage.
+	// Grounded 2026-09-23 against docs.devin.ai/desktop/models (the live
+	// per-model pricing table, Enterprise-SaaS tier) and each model's
+	// announcement post under cognition.ai/blog.
+	//
+	// BEFORE THESE ROWS EVERY SWE MODEL WAS A MISS, i.e. $0.00 silently, with
+	// reliability "unknown" — the exact 2026-07-25 Opus-5 failure mode, on a
+	// vendor nobody had priced at all. There is no `swe` prefix anywhere else
+	// in this table, so nothing accidentally caught them either.
+	//
+	// Two honesty notes that are structural, not cosmetic:
+	//
+	//  1. THE PRO TIER IS NOT THE PRICE. The same live table shows $0 for
+	//     SWE-2 and SWE-1.7 on Cognition's Pro tier — a promotion ("free
+	//     SWE-2 access through October 10, 2026"). The Enterprise-SaaS
+	//     column is the non-promotional rate and is what is recorded here,
+	//     on the same standing rule that keeps intro rates off family rows.
+	//  2. THERE IS NO PUBLIC INFERENCE API. Devin's REST API is a
+	//     task/session automation API with no `model` parameter; SWE models
+	//     are reachable only inside Cognition's own products. That does not
+	//     make the rates academic — the devin adapter captures per-message
+	//     token metrics locally, so these turns are billed on this table.
+	//
+	// Cache WRITE is unpublished for every SWE SKU, so CacheCreation stays 0
+	// (fillDefaults does not fabricate one for a non-Anthropic row). Context
+	// window and max output are unpublished for every SWE model.
+	//
+	// SWE-1, SWE-1-lite, SWE-1-mini and SWE-1.5 have NO published per-token
+	// price at all and have dropped out of the live table. They are
+	// deliberately ABSENT and there is deliberately NO `swe-1` family row:
+	// an earlier draft carried one at SWE-1.6/1.7's card as a "floor", which
+	// billed an unpriced swe-1-mini turn at a rate Cognition never stated for
+	// it (review finding 4). A MISS is loud and honest (reliability
+	// "unknown"); a plausible borrowed number is neither. The longest-prefix
+	// ladder cannot catch them either: no remaining key is a prefix of
+	// "swe-1-mini", "swe-1-lite", "swe-1-5" or bare "swe-1".
+	//
+	// SWE-1.7 Medium's CACHE READ is also unpublished: Cognition's live
+	// pricing JSON quotes input and output only for that SKU (every other
+	// current SWE SKU carries a cache_read rate). So its row leaves CacheRead
+	// at 0 AND the key is listed in cacheReadNotQuoted, which stops
+	// fillDefaults' universal 10%-of-input default from inventing $0.05 for it
+	// (review finding 5). Its cached-read tokens therefore contribute $0: an
+	// unpriced dimension, not a claim that cached reads are free.
+	"swe-2-high":               {Input: 0.75, Output: 3.75, CacheRead: 0.075},
+	"swe-2-medium":             {Input: 0.75, Output: 3.75, CacheRead: 0.075},
+	"swe-2-max":                {Input: 0.75, Output: 3.75, CacheRead: 0.075},
+	"swe-2":                    {Input: 0.75, Output: 3.75, CacheRead: 0.075}, // family prefix - all three SWE-2 efforts share one rate card
+	"swe-1-7-lightning":        {Input: 2.50, Output: 12.50, CacheRead: 1.00},
+	"swe-1-7-lightning-medium": {Input: 2.50, Output: 12.50, CacheRead: 1.00},
+	"swe-1-7-medium":           {Input: 0.50, Output: 2.50}, // cache read NOT quoted by the vendor - see cacheReadNotQuoted
+	"swe-1-7":                  {Input: 0.50, Output: 2.50, CacheRead: 0.20},
+	"swe-1-6-fast":             {Input: 0.50, Output: 2.50, CacheRead: 0.20},
+	"swe-1-6":                  {Input: 0.50, Output: 2.50, CacheRead: 0.20},
 
 	// Moonshot.
 	"kimi-k2-5": {Input: 0.60, Output: 3, CacheRead: 0.10},
-	// Kimi K2.6 — newer than K2.5; OpenRouter price (matches first-party
-	// per the 2026-06-06 catalog cross-check).
-	"kimi-k2-6": {Input: 0.684, Output: 3.42, CacheRead: 0.144},
+	// Kimi K2.6 — Moonshot's own card (platform.kimi.ai/docs/pricing/chat.md,
+	// fetched 2026-09-27: `["kimi-k2.6", "1M tokens", $0.16, $0.95, $4.00,
+	// "262,144 tokens"]`, columns cache hit / cache miss / output), the same
+	// rate the dotted "kimi-k2.6" row below carries. It held OpenRouter's
+	// $0.684 / $3.42 / $0.144 until lane R2-RECONCILE (2026-09-28).
+	"kimi-k2-6": {Input: 0.95, Output: 4, CacheRead: 0.16},
 	// Kimi K3 — flagship, released 2026-07-16 (2.8T-param open-weight
 	// multimodal reasoning, 1M ctx, reasoning_effort=max only). First-party
 	// rate card platform.kimi.ai/docs/pricing/chat-k3 (fetched 2026-07-17):
@@ -1599,12 +2011,32 @@ var defaultPricing = map[string]Pricing{
 	// $3/$15/$0.30 is confirmed directly against
 	// platform.kimi.ai/docs/pricing/chat-k3 (re-fetched 2026-08-15).
 	"kimi-k3": {Input: 3, Output: 15, CacheRead: 0.30},
+	// Moonshot's own API ids for the K2.6 / K2.7-Code generation (dotted,
+	// exactly as platform.kimi.ai/docs/models lists them), added
+	// 2026-09-27 from platform.kimi.ai/docs/pricing/chat (fetched
+	// 2026-09-27): cache-miss input / cache-hit input / output per 1M.
+	// Before this they had no exact row and fell to the `kimi` family
+	// below ($0.684/$3.42, the OpenRouter-era K2.6 figure) - a ~28%
+	// input / ~15% output under-bill on first-party traffic. The dash
+	// spelling `kimi-k2-6` above and the `kimi` family are deliberately
+	// left as they were (no dated effective date for the change could be
+	// verified; see the follow-up in the 2026-09-27 R2-PRICING report).
+	//
+	// NOT PRICED: `kimi-for-coding`, the Kimi Code subscription model id
+	// (K2.8 Preview since 2026-09-11). Moonshot publishes NO per-token rate
+	// for it - it is a membership model, absent from both the model list
+	// and the pricing page - so it has no row of its own and continues to
+	// resolve through the `kimi` family (PricingSourceFamily ->
+	// "approximate"), never an invented K2.8 number.
+	"kimi-k2.6":                {Input: 0.95, Output: 4, CacheRead: 0.16},
+	"kimi-k2.7-code":           {Input: 0.95, Output: 4, CacheRead: 0.19},
+	"kimi-k2.7-code-highspeed": {Input: 1.90, Output: 8, CacheRead: 0.38},
 	// kimi family prefix stays at K2.6 (the mainstream/cheaper generation:
 	// K2.6 and K2.7-Code both list ~$0.95/$4). NOT bumped to K3 on purpose
 	// — K3 is a 4.4× outlier, so a bare "kimi" fallback for an unknown
 	// K2.x SKU (e.g. kimi-k2-7) must NOT silently inherit K3 rates. K3
 	// variants land on the explicit "kimi-k3" prefix above instead.
-	"kimi": {Input: 0.684, Output: 3.42, CacheRead: 0.144}, // family prefix → K2.6 rates
+	"kimi": {Input: 0.95, Output: 4, CacheRead: 0.16}, // family prefix → K2.6 rates (Moonshot's card, see kimi-k2-6)
 
 	// Open-weight model families. Anchored to first-party / representative
 	// rates (the "single host" anchor per
@@ -1655,7 +2087,20 @@ var defaultPricing = map[string]Pricing{
 	"hermes":                  {Input: 1.00, Output: 1.00}, // family
 	// Alibaba Qwen — DashScope first-party; implicit cache = 20% of input.
 	// SKUs route via hermes/pi/opencode through OpenRouter (variants below).
-	"qwen3-max":   {Input: 0.78, Output: 3.90, CacheRead: 0.156},
+	// qwen3-max: Alibaba Cloud Model Studio, International
+	// (alibabacloud.com/help/en/model-studio/model-pricing, fetched
+	// 2026-09-27, "Last Updated:Sep 24, 2026"): "0<Token≤32K $1.2 $6 ...
+	// 32K<Token≤128K $2.4 $12 128K<Token≤256K $3 $15". Implicit cache hit =
+	// "20% of the input_token unit price" (model-studio/context-cache). ONE
+	// long-context tier fits this struct, so the 32K-128K tier is modelled
+	// and 128K-256K ($3/$15) bills at it (a 20% under-bill there). It held
+	// $0.78 / $3.90 / $0.156 until lane R2-RECONCILE (2026-09-28); the qwen3
+	// and qwen family rows below still carry that older anchor (unverified).
+	"qwen3-max": {
+		Input: 1.20, Output: 6, CacheRead: 0.24,
+		LongContextThreshold: 32_000,
+		LongContextInput:     2.40, LongContextOutput: 12, LongContextCacheRead: 0.48,
+	},
 	"qwen3-coder": {Input: 1.50, Output: 7.50, CacheRead: 0.30},
 	"qwen3":       {Input: 0.78, Output: 3.90, CacheRead: 0.156}, // family
 	"qwen":        {Input: 0.78, Output: 3.90, CacheRead: 0.156}, // family
@@ -1671,12 +2116,26 @@ var defaultPricing = map[string]Pricing{
 	// the page currently displays a 50%-off promo ($0.075/$0.25/$0.015,
 	// "ends 24:00 September 9, 2026 UTC+8") struck through against those
 	// list prices — using LIST per house policy (a promo is still a
-	// promo; see the minimax-m3 / glm-5.2 precedent above/below).
+	// promo; see the glm-5.2 precedent below. minimax-m3 left that policy
+	// in lane R2-RECONCILE because the price database publishes its
+	// "Permanent 50% off" card, which the literal floor now mirrors).
 	// CacheRead is set EXPLICITLY to the LIST cached-input rate: leaving
 	// it 0 would let fillDefaults' 10%-of-input floor derive $0.015 —
 	// which is the PROMO cache-read figure, not list — silently smuggling
 	// the promo back in through the one field this row didn't set.
 	"glm-5.3-flash": {Input: 0.15, Output: 0.50, CacheRead: 0.03},
+	// Xiaomi MiMo V2.6 (added 2026-09-27). Both ids were a MISS ($0.00)
+	// before this; MiMo V2.6 Flash is one of the new unpinned defaults in
+	// Cline's catalog. First-party rates from the vendor's own model pages
+	// mimo.mi.com/models/en-US/mimo-v2.6-flash and .../mimo-v2.6-pro
+	// (fetched 2026-09-27): cache-miss input / cache-hit input / output
+	// per 1M, no context tiers stated. CacheRead is set explicitly (the
+	// cache-hit rate is 2% of input on Flash, <1% on Pro - the universal
+	// 10%-of-input default would over-bill it 5x / 12x). No `mimo` family
+	// row on purpose: no generation other than 2.6 is grounded here, and a
+	// family floor would price unseen MiMo SKUs at a guess.
+	"mimo-v2.6-flash": {Input: 0.14, Output: 0.28, CacheRead: 0.0028},
+	"mimo-v2.6-pro":   {Input: 0.435, Output: 0.87, CacheRead: 0.0036},
 	// FIXED 2026-09-07: bare "glm" family prefix was still pinned to 5.1's
 	// rates even though 5.2 (2026-07-23) and now 5.3 (2026-08-14) have
 	// since superseded it as the actual latest generation — an oversight
@@ -1703,7 +2162,8 @@ var defaultPricing = map[string]Pricing{
 	// 2 / Medium 3 SKUs), so overwriting those rows risked silently
 	// repricing unrelated historical traffic. If a live capture ever shows
 	// an adapter emitting the bare "mistral-large" string post-Large-3, add
-	// a dated timeline (dated.go) rather than editing the row directly.
+	// a dated period in the price database (observer_price_history) rather
+	// than editing the row directly.
 	//
 	// "mistral-medium-3-5" bare row was previously registered ONLY as the
 	// OpenRouter-qualified "mistralai/mistral-medium-3-5" key below at this
@@ -1727,9 +2187,17 @@ var defaultPricing = map[string]Pricing{
 	"ministral-8b":  {Input: 0.15, Output: 0.15},
 	"ministral-14b": {Input: 0.2, Output: 0.2},
 	// MiniMax — family prefix → m2.7 (the latest).
-	"minimax-m2.7": {Input: 0.279, Output: 1.20},
-	"minimax-m2.5": {Input: 0.15, Output: 1.15},
-	"minimax":      {Input: 0.279, Output: 1.20}, // family → m2.7
+	// MiniMax's own pay-as-you-go card (platform.minimax.io/docs/guides/
+	// pricing-paygo.md, fetched 2026-09-27): "| **MiniMax-M2.7** | $0.3 / M
+	// tokens | $1.2 / M tokens | $0.06 / M tokens | $0.375 / M tokens |" and
+	// "| **MiniMax-M2.5** | $0.3 / M tokens | $1.2 / M tokens | $0.03 / M
+	// tokens | $0.375 / M tokens |" (input / output / cache read / cache
+	// write). The $0.375 cache WRITE is not carried: a non-zero CacheCreation
+	// would make fillDefaults invent an Anthropic-shape 1h write rate. They
+	// held $0.279/$1.20 and $0.15/$1.15 until lane R2-RECONCILE (2026-09-28).
+	"minimax-m2.7": {Input: 0.30, Output: 1.20, CacheRead: 0.06},
+	"minimax-m2.5": {Input: 0.30, Output: 1.20, CacheRead: 0.03},
+	"minimax":      {Input: 0.30, Output: 1.20, CacheRead: 0.06}, // family → m2.7
 	// Local — Ollama runs on user hardware → $0 per-token. Adapter strings
 	// arrive as `ollama/gemma4:e4b`, `ollama/gemma3:1b`, etc. via hermes /
 	// pi / openclaw. Explicit family-prefix row so any `ollama/*` lookup
@@ -1755,8 +2223,10 @@ var defaultPricing = map[string]Pricing{
 	// pre-overhaul flat rate (the off-peak rate is itself higher than the
 	// old flat rate — DeepSeek signaled "a future overall increase" ahead
 	// of this rollout), so the old flat numbers are preserved as the
-	// pre-2026-08-16T16:00Z period of each key's dated.go timeline rather
-	// than being silently overwritten (see dated.go).
+	// pre-2026-08-16T16:00Z period of each key's history in the price
+	// database (migration 0028, reaching this binary through the generated
+	// snapshot; dated.go's hand copy was retired 2026-09-28) rather than
+	// being silently overwritten.
 	//
 	// The Pricing struct now carries a TIME-OF-DAY dimension (the Peak
 	// field / RateSet / PeakSchedule, see peak.go). The base rates below
@@ -1766,20 +2236,24 @@ var defaultPricing = map[string]Pricing{
 	// holiday exclusion is a documented v1 limitation, not modeled).
 	//
 	// PEAK IS MODELED for BOTH `deepseek-v4-pro` (Peak: deepseekV4ProPeak)
-	// AND the FLASH family (Peak: deepseekFlashPeak — the shared pointer
-	// also anchors each flash key's newest dated entry). The flash off-peak
+	// AND the FLASH family (Peak: deepseekFlashPeak, one shared pointer
+	// across the flash keys). The flash off-peak
 	// base was ALSO corrected here: it dropped $0.22 → $0.15 (output
 	// $0.66 → $0.60, cache-read $0.007 → $0.003) when V4.1-Flash superseded
 	// V4-Flash and DeepSeek renamed the canonical model to `deepseek-flash`
 	// on 2026-09-10, REDUCING flash prices (peak = EXACTLY 2× that new
 	// base). A flash turn served in a peak window (01:00-04:00 and
 	// 06:00-10:00 UTC, Mon-Fri) now bills 2× via peakAdjusted, matching
-	// v4-pro's treatment. (This closes the Phase-1 caveat that left flash
-	// off-peak-only and 2×-under-billed in peak windows.)
+	// v4-pro's treatment. Flash had a peak variant from the 2026-08-16
+	// overhaul too (news260813: "introducing peak and off-peak rates"); that
+	// period's $0.44 / $1.32 / $0.014 lives in the price database's history
+	// (dated_test.go keeps it as the deepseekFlashPeakAug16 fixture).
 	//
 	// `deepseek-chat` / `deepseek-reasoner` are legacy aliases that
 	// DeepSeek still resolves; both map to flash and carry the same
-	// dated timeline. NOTE: neither alias is listed on the current
+	// dated timeline from the V4 launch (2026-04-24); before it they carry
+	// the DeepSeek-stated V3.1 (2025-09-05) and V3.2-Exp (2025-09-29) cards,
+	// and are UNPRICED before 2025-09-05 (price database history). NOTE: neither alias is listed on the current
 	// api-docs.deepseek.com/quick_start/pricing page any more (only the
 	// flash/v4-pro/v4-flash-vision-exp SKU names appear) — the → flash
 	// mapping below is INFERRED from the aliases' historical behavior, not
@@ -1895,14 +2369,36 @@ var defaultPricing = map[string]Pricing{
 	// row was ABSENT from the table and fell through to the generic
 	// "qwen3" family fallback ($0.78/$3.90 — wrong tier entirely).
 	//
-	// "qwen/qwen3.5-plus" deliberately uses the REAL OpenRouter list rate
-	// ($0.30/$1.80, no cache rate published — CacheRead left at 0 so
-	// fillDefaults' 10%-of-input floor applies) from the price catalog
-	// above, NOT a literal mirror of the first-party DashScope bare rate
-	// ($0.40/$2.40/$0.04) — OpenRouter's own price for this route is
-	// verified real data and takes precedence over an assumption that the
-	// two channels bill identically.
-	"qwen/qwen3.5-plus": {Input: 0.30, Output: 1.80},
+	// "qwen/qwen3.5-plus" carries the MAKER's card, Alibaba's own
+	// qwen3.5-plus-2026-04-20 row (alibabacloud.com/help/en/model-studio/
+	// model-pricing, re-fetched 2026-09-27: "qwen3.5-plus-2026-04-20 |
+	// International | 0<Token≤256K | $0.4 | $2.4 … 256K<Token≤1M | $0.5 |
+	// $3"; cache read 10% of input, the bare qwen3.5-plus derivation). It
+	// held OpenRouter's $0.30/$1.80 until lane R2-RECONCILE (2026-09-28):
+	// the id is served by more than one reseller (OpenRouter sells it for
+	// less, Novita published $0/$0), so no one reseller is the seller of
+	// record for all traffic under it; the price database curates the same
+	// card (migration 0029, orchestrator ruling "maker first").
+	"qwen/qwen3.5-plus": {
+		Input: 0.40, Output: 2.40, CacheRead: 0.04,
+		LongContextThreshold: 256_000,
+		LongContextInput:     0.50, LongContextOutput: 3.00, LongContextCacheRead: 0.05,
+	},
+	// "qwen/qwen3.5-plus-02-15" is OpenRouter's id for the EARLIER snapshot
+	// (openrouter.ai/api/v1/models, fetched 2026-09-27: $0.26 / $1.56,
+	// >=256K $0.325 / $1.95). Without its own row it resolved SILENTLY
+	// through "qwen/qwen3.5-plus" as a family prefix ("-02-15" is not a
+	// -YYYYMMDD suffix the date-strip rung removes). It is pinned exactly
+	// instead, to the maker's card for that snapshot: Alibaba prices
+	// qwen3.5-plus-2026-02-15 identically to 2026-04-20 on the same page
+	// ("qwen3.5-plus-2026-02-15 | International | 0<Token≤256K | $0.4 |
+	// $2.4 … 256K<Token≤1M | $0.5 | $3"). The rates match the family row by
+	// the maker's statement, not by accident of resolution.
+	"qwen/qwen3.5-plus-02-15": {
+		Input: 0.40, Output: 2.40, CacheRead: 0.04,
+		LongContextThreshold: 256_000,
+		LongContextInput:     0.50, LongContextOutput: 3.00, LongContextCacheRead: 0.05,
+	},
 	// "qwen/qwen3.5-flash" has no corresponding real OpenRouter data point
 	// in the catalog, so this one DOES mirror the bare DashScope rate for
 	// symmetry with the -plus alias above, per the original request.
@@ -1919,7 +2415,14 @@ var defaultPricing = map[string]Pricing{
 	// was not directly confirmed — the alias row below is carried
 	// forward from the original DashScope-mirroring rationale, not a
 	// freshly re-verified OpenRouter listing.
-	"qwen3.7-plus": {Input: 0.40, Output: 1.60, CacheRead: 0.04},
+	// Cache read is the IMPLICIT-cache rate, "20% of the input_token unit
+	// price" (alibabacloud.com/help/en/model-studio/context-cache, fetched
+	// 2026-09-27; qwen3.7-plus is on the Singapore implicit-cache list) =
+	// $0.08, the price database's rate too. It held $0.04 (the 10%
+	// explicit-cache-hit rate) until lane R2-RECONCILE (2026-09-28). Input
+	// and output are the page's "List price $0.4 / $1.6 (Limited-time 20%
+	// off)"; the discounted figure is not printed, so it is not modelled.
+	"qwen3.7-plus": {Input: 0.40, Output: 1.60, CacheRead: 0.08},
 	// OpenRouter alias — list price. OR currently runs a 20%-off promo on
 	// top of this (not modeled; promos are time-boxed and this is the
 	// standing list rate).
@@ -1981,19 +2484,28 @@ var defaultPricing = map[string]Pricing{
 	// rates (documented, not modeled — no long-context dimension wired
 	// for MiniMax the way Anthropic/OpenAI/Gemini have one).
 	//
-	// Uses the LIST rate ($0.60/$2.40), not the currently-running promo
-	// ($0.30/$1.20, described by MiniMax as "permanent" 50% off) —
-	// deliberate per repo convention that a "permanent" promo is still a
-	// promo and can revert without notice; the defensible standing rate
-	// is list. CacheRead scales with the list rate (20% of input, same
-	// ratio as the promo's $0.06/$0.30).
-	"minimax-m3":         {Input: 0.60, Output: 2.40, CacheRead: 0.12},
+	// The bare row carries the card MiniMax BILLS today:
+	// platform.minimax.io/docs/guides/pricing-paygo.md (fetched 2026-09-27)
+	// shows "Permanent 50% off | ~~$0.60~~ $0.30 / M tokens | ~~$2.40~~
+	// $1.20 / M tokens | ~~$0.12~~ $0.06 / M tokens" for ≤512K input. That is
+	// the price database's published rate too, and the R8 rule the
+	// gpt-5.6-sol row states (cost is stamped at capture, so an exact SKU
+	// carries the rate in force). It held the struck-through list rate
+	// ($0.60/$2.40/$0.12) until lane R2-RECONCILE (2026-09-28).
+	// "minimax/minimax-m3" is the OpenRouter route id and is NOT re-verified
+	// here: it keeps the list rate it was authored with.
+	"minimax-m3":         {Input: 0.30, Output: 1.20, CacheRead: 0.06},
 	"minimax/minimax-m3": {Input: 0.60, Output: 2.40, CacheRead: 0.12},
 
-	// Tencent Hunyuan — "hy3" GA'd 2026-07-06 on TokenHub. Rates are
-	// ¥1/¥4/¥0.25-cache per 1M converted at ~7.0 CNY/USD ($0.1429/
-	// $0.5714/$0.0357), cross-checked against the OpenRouter tencent/hy3
-	// listing and rounded to the published-precision figures below.
+	// Tencent Hunyuan — "hy3" GA'd 2026-07-06 on TokenHub. The bare row is
+	// Tencent's OWN USD card (tencentcloud.com/act/pro/tokenhub, fetched
+	// 2026-09-27: "Tencent Hunyuan Hy3 General · Coding $0.132 $0.528
+	// $0.033", input / output / cache hit, Singapore region; the page says
+	// "Promo pricing synced with official docs"). The China doc
+	// (cloud.tencent.com/document/product/1823/130055) states ¥1 / ¥4 /
+	// ¥0.25. It held a CNY conversion ($0.15/$0.59/$0.037), not a Tencent
+	// figure, until lane R2-RECONCILE (2026-09-28). "tencent/hy3" is the
+	// OpenRouter route id and is not re-verified here.
 	//
 	// KNOWN LIMITATION (2026-07-23 codex adversarial pass, P2): the bare
 	// "hy3" key is, like every other undated bare key in this whole
@@ -2004,7 +2516,7 @@ var defaultPricing = map[string]Pricing{
 	// a hypothetical "hy3d-turbo" from a different line. Documented, not
 	// redesigned, here — see
 	// TestTable_2026Q3UnboundedPrefixKnownLimitation in pricing_test.go.
-	"hy3":         {Input: 0.15, Output: 0.59, CacheRead: 0.037},
+	"hy3":         {Input: 0.132, Output: 0.528, CacheRead: 0.033},
 	"tencent/hy3": {Input: 0.15, Output: 0.59, CacheRead: 0.037},
 
 	// StepFun — openrouter.ai/stepfun/step-3.5-flash. No cache rate is
@@ -2137,8 +2649,15 @@ var defaultPricing = map[string]Pricing{
 	// unbounded family prefix that would also match an unrelated future
 	// ID like "inklinglabs-x". Documented in
 	// TestTable_2026Q3UnboundedPrefixKnownLimitation, not redesigned.
-	"thinkingmachines/inkling": {Input: 1, Output: 4.05},
-	"inkling":                  {Input: 1, Output: 4.05}, // bare alias
+	//
+	// Thinking Machines' OWN serverless card
+	// (tinker-docs.thinkingmachines.ai/tinker/models/, fetched 2026-09-27:
+	// "Inkling | thinkingmachines/Inkling:peft:262144:sampling-nvfp4 | 256K |
+	// $1.00 $0.17 (cached) | $4.05") matches OpenRouter's $1 / $4.05 and
+	// adds the $0.17 cached rate these rows lacked (fillDefaults billed 10%
+	// of input) until lane R2-RECONCILE (2026-09-28).
+	"thinkingmachines/inkling": {Input: 1, Output: 4.05, CacheRead: 0.17},
+	"inkling":                  {Input: 1, Output: 4.05, CacheRead: 0.17}, // bare alias
 
 	// AI21 — Jamba Mini 2 (docs.ai21.com/docs/jamba-foundation-models).
 	// 256K context. No cache pricing offered by AI21 for this line —
@@ -2193,6 +2712,19 @@ var defaultPricing = map[string]Pricing{
 	// Cursor model catalog (3.x, verified 2026-09-09) emits the provider
 	// namespace plus effort and, for Fast, a `-fast` suffix. Keep a family
 	// base for future effort labels, but pin every observed catalog ID.
+	// Grok 4.7 on Cursor (added 2026-09-27, cursor.com/docs/models fetched
+	// 2026-09-27): $2 / $0.50 cached / $6, "Long context (>256k input
+	// tokens) is billed at 2x standard rates, up to 500k". FAMILY KEY ONLY:
+	// unlike 4.5/4.6, no Cursor 4.7 wire id has been observed from an
+	// installed catalog yet, so no effort/-fast id is pinned and a `-fast`
+	// id resolves here at the STANDARD rate (Cursor's Fast is 2x, and 3x
+	// above 256k) until the observed ids are pinned. Before this every
+	// cursor-grok-4.7-* id was a MISS.
+	"cursor-grok-4.7": {
+		Input: 2, Output: 6, CacheRead: 0.50,
+		LongContextThreshold: 256_000,
+		LongContextInput:     4, LongContextOutput: 12, LongContextCacheRead: 1,
+	},
 	"cursor-grok-4.6":             cursorGrok46Standard,
 	"cursor-grok-4.6-low":         cursorGrok46Standard,
 	"cursor-grok-4.6-medium":      cursorGrok46Standard,
@@ -2210,21 +2742,29 @@ var defaultPricing = map[string]Pricing{
 	"cursor-grok-4.5-medium-fast": cursorGrok45Fast,
 	"cursor-grok-4.5-high-fast":   cursorGrok45Fast,
 
-	"composer-1":        {Input: 1.25, Output: 10, CacheRead: 0.125},
-	"composer-1.5":      {Input: 3.50, Output: 17.50, CacheRead: 0.35},
-	"composer-2":        {Input: 0.50, Output: 2.50, CacheRead: 0.20},
-	"composer-2.5":      {Input: 0.50, Output: 2.50, CacheRead: 0.20},
-	"composer-2.5-fast": {Input: 3, Output: 15, CacheRead: 0.30},
+	"composer-1":   {Input: 1.25, Output: 10, CacheRead: 0.125},
+	"composer-1.5": {Input: 3.50, Output: 17.50, CacheRead: 0.35},
+	"composer-2":   {Input: 0.50, Output: 2.50, CacheRead: 0.20},
+	"composer-2.5": {Input: 0.50, Output: 2.50, CacheRead: 0.20},
+	// Composer 2.5 Fast cache read CORRECTED 2026-09-27 $0.30 -> $0.50:
+	// cursor.com/docs/models (fetched 2026-09-27) states $3 / $0.50 cached /
+	// $15. The old $0.30 was never a quoted figure - the Composer 2.5
+	// announcement quotes input/output only - it was the 10%-of-input
+	// default written down, so this is a correction, not a dated change.
+	"composer-2.5-fast": {Input: 3, Output: 15, CacheRead: 0.50},
 	"composer":          {Input: 0.50, Output: 2.50, CacheRead: 0.20}, // family prefix → composer base rates
-	// `default` is what Cursor's `model` field carries when the user
-	// picks "Auto" in the model picker. Composer 2.5 Fast is the
-	// underlying default model per the Composer 2.5 announcement
-	// ("Fast is the default option, similar to Composer 2"). Pricing
-	// is API-list-equivalent — Cursor Pro / Free users on subscription
-	// bundles see different per-request economics. Override via
-	// Settings → Pricing (or `[intelligence.pricing.models."default"]`
-	// in config.toml) when Cursor changes the default backbone.
-	"default": {Input: 3, Output: 15, CacheRead: 0.30},
+	// NO `default` row (retired 2026-09-27, lane R2-PRICING-2). `default` is
+	// the ROUTER PLACEHOLDER Cursor's `model` field carries when the user
+	// picks Auto, and Cursor states "All Auto modes bill at the list price
+	// of the model each request is routed to" (cursor.com/docs/cursor-router,
+	// fetched 2026-09-27). The old flat $3 / $15 / $0.30
+	// ("Auto = Composer 2.5 Fast") had no vendor source and no longer even
+	// matched composer-2.5-fast's quoted cache read. Like the "auto"
+	// sentinel (normalizeUnpricedModel), it is an honest MISS here; the fix
+	// lives in the adapter, which resolves the routed model per request
+	// (cursor.ResolveModelFromStore / the hook's per-generation model). A
+	// user who wants a flat Auto estimate can still set
+	// `[intelligence.pricing.models."default"]`.
 
 	// Cursor — Grok routing rows live above (the cursorGrok4{5,6}Standard/
 	// Fast catalog next to the Composer rows). Cursor's model cards publish

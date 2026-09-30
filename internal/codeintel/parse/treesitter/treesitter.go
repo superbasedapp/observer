@@ -38,7 +38,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/tetratelabs/wazero"
@@ -108,7 +108,55 @@ var servedCapability = codeintel.LanguageCapability{
 type langModule struct {
 	compiled api.Closer // wazero.CompiledModule
 	query    []byte
-	pool     sync.Pool
+	// free is a BOUNDED free-list of reusable instances (SR27-A2). It
+	// replaced a sync.Pool: wazero links every instance into its runtime's
+	// module list, so an instance the pool dropped at GC was never closed
+	// and its linear memory stayed reachable - memory grew without bound
+	// over an index pass. Every instance is now either parked here or
+	// closed.
+	free    chan *instance
+	newInst func() *instance
+}
+
+// Resource bounds for one parse (security review 2026-09-27, SR27-A1). A
+// hostile source file (e.g. 2 MiB of "(") drives tree-sitter's error
+// recovery super-linearly: measured 15 s for 64 KiB and still running after
+// 8.5 min / 1.8 GB for 2 MiB, with the caller's deadline ignored because the
+// runtime never checked it. The runtime is now built to abort a call when its
+// context ends, each Parse carries its own deadline, and the guest's linear
+// memory is capped.
+const (
+	// parseTimeout bounds one Parse call. A legitimate file at the index's
+	// 2 MiB size cap parses in well under a second.
+	parseTimeout = 20 * time.Second
+	// memoryLimitPages caps each instance's linear memory (64 KiB pages):
+	// 8192 pages = 512 MiB, far above a real parse, far below wazero's 4 GiB
+	// default.
+	memoryLimitPages = 8192
+	// freeListSize bounds the parked instances per language.
+	freeListSize = 8
+)
+
+// get returns a parked instance or mints a fresh one (nil on failure).
+func (lm *langModule) get() *instance {
+	select {
+	case in := <-lm.free:
+		return in
+	default:
+		return lm.newInst()
+	}
+}
+
+// put parks a healthy instance, closing it when the free-list is full.
+func (lm *langModule) put(in *instance) {
+	if in == nil {
+		return
+	}
+	select {
+	case lm.free <- in:
+	default:
+		in.close()
+	}
 }
 
 // backend is the wazero-hosted tree-sitter parse.Parser. Constructed once
@@ -127,7 +175,11 @@ type backend struct {
 // backend simply serves nothing and every language stays on the fallback.
 func New() (parse.Parser, []string) {
 	ctx := context.Background()
-	rt := wazero.NewRuntime(ctx)
+	// SR27-A1: abort a guest call when its context ends (otherwise a
+	// pathological parse ignores every deadline) and cap guest memory.
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().
+		WithCloseOnContextDone(true).
+		WithMemoryLimitPages(memoryLimitPages))
 	wasi_snapshot_preview1.MustInstantiate(ctx, rt)
 
 	// One decoder decompresses every embedded .wasm.zst in-memory (ADR-0006);
@@ -174,8 +226,8 @@ func New() (parse.Parser, []string) {
 			warnings = append(warnings, fmt.Sprintf("treesitter: %s compile: %v", s.lang, err))
 			continue
 		}
-		lm := &langModule{compiled: compiled, query: query}
-		lm.pool.New = func() any { return b.newInstance(ctx, compiled) }
+		lm := &langModule{compiled: compiled, query: query, free: make(chan *instance, freeListSize)}
+		lm.newInst = func() *instance { return b.newInstance(ctx, compiled) }
 		shared[key] = lm
 		b.modules[s.lang] = lm
 	}
@@ -214,6 +266,15 @@ func (b *backend) newInstance(ctx context.Context, compiled api.Closer) *instanc
 		outPtr: mod.ExportedFunction("ci_out_ptr"),
 		outLen: mod.ExportedFunction("ci_out_len"),
 	}
+}
+
+// close releases the instance's module (and its linear memory) from the
+// runtime. Safe on nil and on an instance wazero already closed.
+func (in *instance) close() {
+	if in == nil || in.mod == nil {
+		return
+	}
+	_ = in.mod.Close(context.Background())
 }
 
 // Languages reports the languages whose module compiled, in a stable order.
@@ -255,16 +316,21 @@ func (b *backend) Parse(ctx context.Context, src []byte, lang codeintel.Language
 		return res, nil
 	}
 
-	inst, _ := lm.pool.Get().(*instance)
+	inst := lm.get()
 	if inst == nil {
 		return res, fmt.Errorf("treesitter.Parse: instantiate %s failed", lang)
 	}
-	defer lm.pool.Put(inst)
 
-	out, err := inst.runExtract(ctx, src, lm.query)
+	callCtx, cancel := context.WithTimeout(ctx, parseTimeout)
+	out, err := inst.runExtract(callCtx, src, lm.query)
+	cancel()
 	if err != nil {
+		// Never re-park an instance whose call failed: a deadline closed
+		// it (WithCloseOnContextDone) or it may hold half-written state.
+		inst.close()
 		return res, fmt.Errorf("treesitter.Parse: %w", err)
 	}
+	lm.put(inst)
 	decodeInto(&res, out, src)
 	sortResult(&res)
 	return res, nil

@@ -6,6 +6,8 @@ import {
   type ReactNode,
 } from "react";
 import clsx from "clsx";
+import { Check, ChevronDown } from "lucide-react";
+import { Icon } from "./Icon";
 import { Tooltip } from "./Tooltip";
 
 // ComboChip — filter-chip button + anchored popover combobox.
@@ -197,7 +199,7 @@ export function ComboChip({
             </b>
           )}
         </span>
-        <ChevronDown />
+        <Icon icon={ChevronDown} size={10} className="ml-0.5 text-fg-3" />
       </button>
       </Tooltip>
 
@@ -276,7 +278,7 @@ export function ComboChip({
                           {o.rightMeta}
                         </span>
                       )}
-                      {sel && !o.disabled && <CheckIcon />}
+                      {sel && !o.disabled && <Icon icon={Check} size={11} className="shrink-0 text-accent" />}
                     </button>
                     </Tooltip>
                   </div>
@@ -287,47 +289,5 @@ export function ComboChip({
         </div>
       )}
     </div>
-  );
-}
-
-function ChevronDown() {
-  return (
-    <svg
-      width="10"
-      height="10"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden
-      className="ml-0.5 text-fg-3"
-    >
-      <path
-        d="m4 6 4 4 4-4"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      width="11"
-      height="11"
-      viewBox="0 0 16 16"
-      fill="none"
-      aria-hidden
-      className="shrink-0 text-accent"
-    >
-      <path
-        d="m3.5 8.5 3 3 6-6"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }

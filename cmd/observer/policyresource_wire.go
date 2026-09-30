@@ -637,6 +637,10 @@ func publishPolicyResourceResult(handle *obsAdmissionHandle, gw *gatewayProvider
 			ngov.Apply(res)
 		case policyfam.FamilyNodeFeatures:
 			applyNodeFeatures(nf, res, logger)
+		case policyfam.FamilyMCPAccess:
+			// Agent Access P4 (mcprelay_wire.go): compile → swap → cache.
+			// A nil process handle ([mcp_relay].enabled=false) is a no-op.
+			mcpRelayPublish(res)
 		}
 	case orgclient.PRNone:
 		// Withdrawn (404): clear any previously-installed Org layer.
@@ -668,6 +672,8 @@ func clearOrgLayer(handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov 
 		ngov.Clear()
 	case policyfam.FamilyNodeFeatures:
 		nf.Clear()
+	case policyfam.FamilyMCPAccess:
+		mcpRelayClear()
 	}
 }
 
@@ -675,8 +681,10 @@ func clearOrgLayer(handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov 
 
 // policyResourceOutcomeSink records one family's classified fetch outcome
 // into the P0-6 policy-state reporter (admitter/egress last-fetch slots).
-// Nil is fine — the poller still applies/clears Org layers when the
-// [org_client.share].policy_state reporter is off.
+// Nil is fine (tests, or a daemon build without the reporter) — the poller
+// still applies/clears Org layers without a sink; `observer start` always
+// registers one now (D-DEMO-13) and the reporter itself stays dormant until
+// its channel is enabled.
 type policyResourceOutcomeSink func(family string, o orgclient.PolicyResourceFetchOutcome)
 
 // runPolicyResourcePoller runs the plan §6.6/§6.9 steady-state poll loop for

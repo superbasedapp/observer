@@ -46,6 +46,13 @@ const (
 	// routing apply, patterns write). Named for the family it reports,
 	// exactly like node-dashboard is named for its own surface.
 	PointNodeFeatures = "node-features"
+	// PointNodeMCPRelay is the v5 tools.mcp_access point (Agent Access P4,
+	// doc3 §12.8): the node MCP relay + its capability-reduced siblings (the
+	// proxy tools[] filter, the hook deny, the config projection). Named
+	// for the relay because that is the mediation point whose compiled
+	// table the row's EffectiveHash describes; every field stays enum-only
+	// (Status/Reason/Mode from the closed sets, hashes, versions).
+	PointNodeMCPRelay = "node-mcp-relay"
 )
 
 // Family identifiers (§2.4). One family per enforcement point.
@@ -69,6 +76,10 @@ const (
 	// nodefeatures's own package, duplicated for the same dependency-graph
 	// reason as the others.
 	FamilyNodeFeatures = "node.features"
+	// FamilyToolsMCPAccess is the Agent Access grant family (v5). Same
+	// literal as policyfam.FamilyMCPAccess / policyfam/mcpaccess.Family,
+	// duplicated for the same dependency-graph reason as the others.
+	FamilyToolsMCPAccess = "tools.mcp_access"
 )
 
 // PointFacts is the resolved input for ONE enforcement point (§4.1). The split
@@ -390,6 +401,7 @@ var pointFamily = map[string]string{
 	PointProxyGateway:  FamilyGatewayProviders,
 	PointNodeDashboard: FamilyNodeGovernance,
 	PointNodeFeatures:  FamilyNodeFeatures,
+	PointNodeMCPRelay:  FamilyToolsMCPAccess,
 }
 
 // CorePoints is the v1 (four-point) subset of the snapshot — the row set a
@@ -423,7 +435,7 @@ func IsCorePoint(point string) bool {
 // server would happily have taken.
 //
 // ORDER IS THE CONTRACT: append new optional points, never insert.
-var OptionalPoints = []string{PointProxyGateway, PointNodeDashboard, PointNodeFeatures}
+var OptionalPoints = []string{PointProxyGateway, PointNodeDashboard, PointNodeFeatures, PointNodeMCPRelay}
 
 // IsOptionalPoint reports whether point is an optional (post-v1) point.
 func IsOptionalPoint(point string) bool {

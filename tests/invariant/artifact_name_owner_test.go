@@ -25,7 +25,7 @@ func TestArtifactNameRuleHasOneOwner(t *testing.T) {
 		}
 		name := d.Name()
 		if d.IsDir() {
-			if name == ".git" || name == "node_modules" || name == "vendor" || name == "website" {
+			if name == ".git" || name == ".claude" || name == "node_modules" || name == "vendor" || name == "website" { // .claude holds harness agent worktrees (full repo copies)
 				return filepath.SkipDir
 			}
 			return nil

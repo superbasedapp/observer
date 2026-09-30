@@ -1,0 +1,17 @@
+{
+  "name": "deny-only grant set stays default-deny (a deny-only rule set is ALLOW-ALL on stock agentgateway; the sentinel closes it)",
+  "spec": {
+    "registry": {"issuer": "https://auth.acme.superbased.app", "org": "acme", "gateway_base_uri": "https://mcp-gw.acme.superbased.app", "policy_gen": 41,
+      "vservers": [{"id": "vs-gh", "slug": "gh", "sender_constraint": "bearer", "servers": [{"id": "gh", "target": "gh"}]}]},
+    "grants": [
+      {"id": "g-deny-dr", "ord": 1, "subject": {"kind": "any"}, "resource": {"vserver": "vs-gh", "name": "delete_repo"}, "action": "call", "effect": "deny", "enabled": true}
+    ]
+  },
+  "principal_defaults": {"issuer": "https://auth.acme.superbased.app", "org": "acme", "audience": ["https://mcp-gw.acme.superbased.app/mcp/gh"], "policy_gen": 41,
+    "subject": "agent:acme:claude-code:u1", "product": "claude-code", "cred_assurance": "node_enrolled", "client_attestation": "process_attested"},
+  "rows": [
+    {"name": "deny: the named deny", "input": {"vserver": "vs-gh", "action": "call", "name": "delete_repo"}, "want": "deny", "want_grant": "g-deny-dr"},
+    {"name": "deny: an unnamed tool is NOT allowed by denylist semantics", "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "deny: policy_gen exactly at the floor still needs an allow", "input": {"vserver": "vs-gh", "action": "read", "name": "repo://x"}, "want": "deny"}
+  ]
+}

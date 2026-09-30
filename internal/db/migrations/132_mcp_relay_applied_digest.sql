@@ -1,0 +1,22 @@
+-- 132_mcp_relay_applied_digest.sql — Agent Access P4, Sol P3+P4 group review
+-- finding 7 (restore CAS; addendum R8.18 "atomic backup/restore + CAS on
+-- config generation", doc3 §12.1 byte-identical restore).
+--
+-- mcp_relay_launch_spec journals the ORIGINAL launch + the pre-rewrite backup
+-- digest (backup_sha256) but, before this migration, nothing recorded what
+-- the relay WROTE. A whole-file restore that only verifies the backup can
+-- therefore overwrite a client config the operator (or the client itself)
+-- edited AFTER the projection - silently deleting the post-projection edit.
+--
+-- applied_sha256 is the SHA-256 of the config bytes the relay wrote when it
+-- applied the row. Every whole-file restore now compares the config's CURRENT
+-- bytes against it and REFUSES on a mismatch (journal + backup retained); the
+-- restore then falls back to a format-aware reversal of only the relay-owned
+-- entry under its own read-compare-write CAS. NULL = a pre-132 row whose
+-- post-rewrite digest is unknown: such a row also refuses the whole-file
+-- path and takes the format-aware reversal.
+--
+-- NODE-LOCAL, like every mcp_relay_* column: the table never reaches the org
+-- wire (tests/invariant/privacy_test.go forbiddenCacheTables). No paired
+-- server migration.
+ALTER TABLE mcp_relay_launch_spec ADD COLUMN applied_sha256 TEXT;

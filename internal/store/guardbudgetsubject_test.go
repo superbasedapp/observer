@@ -9,10 +9,10 @@ import (
 
 // Bundle BUD-N store tests: the per-subject slice of the guard's one spend
 // read. What is being pinned is not "a map comes back" but that the subject
-// totals obey the SAME window bounds and the SAME per-session
-// MAX(proxy, watcher) de-duplication as the node-wide totals they sit beside —
-// a per-tool cap that contradicted the daily cap would be unexplainable to the
-// developer it stopped.
+// totals obey the SAME window bounds and the SAME de-duplication (the stored
+// sessionmsg dedup verdicts - the session header's rule) as the node-wide
+// totals they sit beside — a per-tool cap that contradicted the daily cap
+// would be unexplainable to the developer it stopped.
 
 func TestGuardBudgetSpendPriced_PerSubjectTotals(t *testing.T) {
 	s, db := newTestStore(t)
@@ -23,8 +23,11 @@ func TestGuardBudgetSpendPriced_PerSubjectTotals(t *testing.T) {
 	inMonthNotDay := month.Add(2 * time.Hour) // inside the month, before the day
 	beforeMonth := month.Add(-48 * time.Hour)
 
-	// The natively captured substrate names a TOOL; the proxy substrate never
-	// does (api_turns has no tool column at all) but does name the model.
+	// The natively captured substrate names a TOOL; a proxy row takes its
+	// session's (api_turns has no tool column) and names the model. The proxy
+	// row is a DIFFERENT turn from u1 (another shape): the one session rule
+	// counts it too. (The old per-session MAX(proxy, watcher) fold dropped
+	// it, so a proxied turn the transcript missed never reached a cap.)
 	insertGuardBudgetUsage(t, db, "sess", "claude-sonnet", "u1", inDay, 100, 50, 2)
 	insertGuardBudgetUsage(t, db, "sess", "claude-sonnet", "u2", inMonthNotDay, 10, 5, 1)
 	insertGuardBudgetUsage(t, db, "other", "claude-sonnet", "u3", inDay, 10, 5, 4)
@@ -38,36 +41,33 @@ func TestGuardBudgetSpendPriced_PerSubjectTotals(t *testing.T) {
 	}
 
 	tool := spend.ByTool["claude-code"]
-	// DAILY, tool: session "sess" contributes MAX(proxy 0.50, watcher 2.00) = 2,
-	// but the proxy row names no tool, so the tool bucket sees the watcher side
-	// only. Session "other" adds its own 4.
-	assertGuardBudgetNear(t, "ByTool[claude-code].DailyUSD", tool.DailyUSD, 6)
-	if tool.DailyTokens != 150+15 {
-		t.Errorf("ByTool[claude-code].DailyTokens = %d, want %d", tool.DailyTokens, 165)
+	// DAILY, tool: session "sess" contributes u1 2 + its proxy turn 0.50;
+	// session "other" adds its own 4.
+	assertGuardBudgetNear(t, "ByTool[claude-code].DailyUSD", tool.DailyUSD, 6.5)
+	if tool.DailyTokens != 150+30+15 {
+		t.Errorf("ByTool[claude-code].DailyTokens = %d, want %d", tool.DailyTokens, 195)
 	}
 	// MONTHLY picks up the extra in-month row; the pre-month one is outside
 	// every window and must not appear anywhere.
-	assertGuardBudgetNear(t, "ByTool[claude-code].MonthlyUSD", tool.MonthlyUSD, 7)
+	assertGuardBudgetNear(t, "ByTool[claude-code].MonthlyUSD", tool.MonthlyUSD, 7.5)
 	// SESSION is scoped to the REQUESTED session and, exactly like the
 	// node-wide session total, is NOT time-bounded: a session budget spans the
 	// session's lifetime, so the row from before the month boundary counts
-	// here and nowhere else (2 + 1 + 99).
-	assertGuardBudgetNear(t, "ByTool[claude-code].SessionUSD", tool.SessionUSD, 102)
+	// here and nowhere else (2 + 1 + 99 + 0.50).
+	assertGuardBudgetNear(t, "ByTool[claude-code].SessionUSD", tool.SessionUSD, 102.5)
 
 	model := spend.ByModel["claude-sonnet"]
-	// The model bucket sees BOTH substrates, so the requested session's day
-	// resolves to MAX(proxy 0.50, watcher 2.00) = 2, plus "other"'s 4.
-	assertGuardBudgetNear(t, "ByModel[claude-sonnet].DailyUSD", model.DailyUSD, 6)
-	// The same session-lifetime rule in tokens, folded MAX against the proxy
-	// substrate's 30: 150 + 15 + 1998.
-	if got := spend.ByModel["claude-sonnet"].SessionTokens; got != 2163 {
-		t.Errorf("ByModel session tokens = %d, want 2163", got)
+	// The model bucket sees BOTH substrates: the same 2 + 0.50 + 4.
+	assertGuardBudgetNear(t, "ByModel[claude-sonnet].DailyUSD", model.DailyUSD, 6.5)
+	// The same session-lifetime rule in tokens: 150 + 15 + 1998 + 30.
+	if got := spend.ByModel["claude-sonnet"].SessionTokens; got != 2193 {
+		t.Errorf("ByModel session tokens = %d, want 2193", got)
 	}
 	// And the node-wide session total agrees with the subject slice.
-	assertGuardBudgetNear(t, "SessionUSD", spend.SessionUSD, 102)
+	assertGuardBudgetNear(t, "SessionUSD", spend.SessionUSD, 102.5)
 	// The node-wide totals must agree with the subject slice about the same
-	// rows: same query, same windows, same fold.
-	assertGuardBudgetNear(t, "DailyUSD", spend.DailyUSD, 6)
+	// rows: same query, same windows, same rule.
+	assertGuardBudgetNear(t, "DailyUSD", spend.DailyUSD, 6.5)
 
 	if spend.SessionTool != "claude-code" {
 		t.Errorf("SessionTool = %q, want claude-code", spend.SessionTool)
@@ -126,26 +126,34 @@ func TestGuardBudgetSpendPriced_AmbiguousSessionResolvesNoSubject(t *testing.T) 
 }
 
 // TestGuardBudgetSpendPriced_NoSubjectsWithoutIdentifiers pins that nothing is
-// attributed on faith: a proxy row names no tool and must not land in any
-// tool bucket.
+// attributed on faith: a proxy row takes the tool of the session it names
+// (the org's spendCTE does the same), and one outside every session names no
+// tool and lands in no tool bucket.
 func TestGuardBudgetSpendPriced_NoSubjectsWithoutIdentifiers(t *testing.T) {
 	s, db := newTestStore(t)
 	guardBudgetTestSession(t, s, "sess")
 	day, week, month := guardBudgetTestWindows()
 	insertGuardBudgetAPI(t, db, "sess", "claude-sonnet", day.Add(time.Hour), 20, 10, 3)
+	if _, err := db.ExecContext(context.Background(), `
+		INSERT INTO api_turns(session_id, timestamp, provider, model, input_tokens, output_tokens, cost_usd)
+		VALUES (NULL, ?, 'anthropic', 'claude-sonnet', 7, 7, 5)`, timestamp(day.Add(2*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
 
 	spend, err := s.GuardBudgetSpendPriced(context.Background(), "sess", day, week, month,
 		func(string, time.Time, PushTokenSplit) (float64, string, bool) { return 0, "miss", false })
 	if err != nil {
 		t.Fatalf("GuardBudgetSpendPriced: %v", err)
 	}
-	if len(spend.ByTool) != 0 {
-		t.Errorf("ByTool = %v, want empty — a proxy turn names no tool", keysOf(spend.ByTool))
+	if got := keysOf(spend.ByTool); len(got) != 1 || got[0] != "claude-code" {
+		t.Fatalf("ByTool = %v, want only the session's tool", got)
 	}
-	if spend.SessionTool != "" {
-		t.Errorf("SessionTool = %q, want empty", spend.SessionTool)
+	assertGuardBudgetNear(t, "ByTool[claude-code].DailyUSD", spend.ByTool["claude-code"].DailyUSD, 3)
+	if spend.SessionTool != "claude-code" {
+		t.Errorf("SessionTool = %q, want claude-code", spend.SessionTool)
 	}
-	assertGuardBudgetNear(t, "ByModel[claude-sonnet].DailyUSD", spend.ByModel["claude-sonnet"].DailyUSD, 3)
+	assertGuardBudgetNear(t, "ByModel[claude-sonnet].DailyUSD", spend.ByModel["claude-sonnet"].DailyUSD, 8)
+	assertGuardBudgetNear(t, "DailyUSD", spend.DailyUSD, 8)
 }
 
 func keysOf(m map[string]GuardBudgetSubjectWindows) []string {

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ChartShell, Pill } from "@/components/primitives";
+import { ChartShell, InlineLoading, Meter, Pill } from "@/components/primitives";
+import type { Tone } from "@shared/lib/tone";
 import { TitleWithHelp } from "@/components/HelpInd";
 import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
@@ -34,7 +35,7 @@ export function BudgetCard() {
         <button
           type="button"
           onClick={() => setEditing((e) => !e)}
-          className="rounded-2 border border-line-2 bg-bg-2 px-2 py-0.5 text-[11px] text-fg-2 hover:bg-bg-3"
+          className="rounded-2 border border-line-2 bg-bg-3 px-2 py-0.5 text-[11px] text-fg-2 hover:bg-bg-4"
         >
           {editing ? "close" : "edit budgets"}
         </button>
@@ -77,6 +78,14 @@ export function BudgetCard() {
   );
 }
 
+// BUDGET_THRESHOLD_TONE - a budget scope's threshold flag (BudgetScope in
+// lib/types.ts): over budget is danger, past 80% warn, otherwise success.
+const BUDGET_THRESHOLD_TONE: Readonly<Record<string, Tone>> = {
+  over100: "danger",
+  warn80: "warn",
+  "": "success",
+};
+
 function ScopeBar({
   sc,
   label,
@@ -89,12 +98,7 @@ function ScopeBar({
   daysInMonth: number;
 }) {
   const pct = Math.min(100, sc.pct);
-  const tone =
-    sc.threshold === "over100"
-      ? "var(--danger)"
-      : sc.threshold === "warn80"
-        ? "var(--warn)"
-        : "var(--success)";
+  const tone = BUDGET_THRESHOLD_TONE[sc.threshold ?? ""] ?? "success";
   return (
     <div className="space-y-1">
       <div className="flex items-baseline justify-between gap-2 text-[12px]">
@@ -109,12 +113,7 @@ function ScopeBar({
           </span>
         </span>
       </div>
-      <div className="h-2 w-full overflow-hidden rounded-pill bg-bg-3">
-        <span
-          className="block h-full"
-          style={{ width: `${pct}%`, background: tone }}
-        />
-      </div>
+      <Meter ratio={pct / 100} tone={tone} trackClassName="h-2 w-full" />
       {sc.threshold === "over100" && (
         <Pill variant="danger">over budget - advisory only</Pill>
       )}
@@ -131,7 +130,6 @@ function BudgetEditor({ onSaved }: { onSaved: () => void }) {
   const cfg = useApi<{
     config: {
       Intelligence: {
-        CodeGraph: unknown;
         APIKeyEnv: string;
         SummaryModel: string;
         MonthlyBudgetUSD: number;
@@ -150,7 +148,7 @@ function BudgetEditor({ onSaved }: { onSaved: () => void }) {
 
   const intel = cfg.data?.config.Intelligence;
   if (!intel) {
-    return <p className="py-3 text-[12px] text-fg-3">Loading config…</p>;
+    return <InlineLoading label="Loading config" className="py-3" />;
   }
   const globalVal = global ?? String(intel.MonthlyBudgetUSD || "");
   const projVals =
@@ -177,7 +175,6 @@ function BudgetEditor({ onSaved }: { onSaved: () => void }) {
       await fetchJSON("/api/config/section/intelligence", undefined, {
         method: "PUT",
         body: JSON.stringify({
-          CodeGraph: intel.CodeGraph,
           APIKeyEnv: intel.APIKeyEnv,
           SummaryModel: intel.SummaryModel,
           MonthlyBudgetUSD: Number(globalVal) > 0 ? Number(globalVal) : 0,
@@ -203,7 +200,7 @@ function BudgetEditor({ onSaved }: { onSaved: () => void }) {
           value={globalVal}
           onChange={(e) => setGlobal(e.target.value)}
           placeholder="0 = off"
-          className="w-28 rounded-2 border border-line-2 bg-bg-1 px-2 py-1 text-right tabular-nums text-fg-1 outline-none focus:border-accent/60"
+          className="w-28 rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-right tabular-nums text-fg-1 outline-none focus:border-accent/60"
         />
       </label>
       {Object.entries(projVals).map(([root, v]) => (
@@ -220,7 +217,7 @@ function BudgetEditor({ onSaved }: { onSaved: () => void }) {
               onChange={(e) =>
                 setPerProject({ ...projVals, [root]: e.target.value })
               }
-              className="w-28 rounded-2 border border-line-2 bg-bg-1 px-2 py-1 text-right tabular-nums text-fg-1 outline-none focus:border-accent/60"
+              className="w-28 rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-right tabular-nums text-fg-1 outline-none focus:border-accent/60"
             />
             <button
               type="button"
@@ -229,7 +226,7 @@ function BudgetEditor({ onSaved }: { onSaved: () => void }) {
                 delete next[root];
                 setPerProject(next);
               }}
-              className="rounded-2 border border-line-2 bg-bg-2 px-1.5 py-0.5 text-[10.5px] text-fg-3 hover:bg-bg-3"
+              className="rounded-2 border border-line-2 bg-bg-3 px-1.5 py-0.5 text-[10.5px] text-fg-3 hover:bg-bg-4"
             >
               remove
             </button>
@@ -240,7 +237,7 @@ function BudgetEditor({ onSaved }: { onSaved: () => void }) {
         <select
           value={addRoot}
           onChange={(e) => setAddRoot(e.target.value)}
-          className="min-w-0 flex-1 rounded-2 border border-line-2 bg-bg-1 px-2 py-1 font-mono text-[11px] text-fg-2 outline-none"
+          className="min-w-0 flex-1 rounded-2 border border-line-2 bg-bg-3 px-2 py-1 font-mono text-[11px] text-fg-2 outline-none"
         >
           <option value="">Add a per-project budget…</option>
           {knownRoots.map((r) => (
@@ -256,7 +253,7 @@ function BudgetEditor({ onSaved }: { onSaved: () => void }) {
             setPerProject({ ...projVals, [addRoot]: "" });
             setAddRoot("");
           }}
-          className="shrink-0 rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-[11px] text-fg-2 hover:bg-bg-3 disabled:opacity-50"
+          className="shrink-0 rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-[11px] text-fg-2 hover:bg-bg-4 disabled:opacity-50"
         >
           add
         </button>

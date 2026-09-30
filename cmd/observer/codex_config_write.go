@@ -167,6 +167,11 @@ func runWriteCodexConfig(stderr interface{ Write([]byte) (int, error) }, misconf
 	// safe separator for the backup stamp.
 	stamp = strings.ReplaceAll(stamp, ":", "-")
 	for _, m := range misconfigs {
+		if !m.fixable() {
+			// A wrong [model_providers.<id>].base_url: appending a top-level
+			// openai_base_url would not change the selected provider's route.
+			continue
+		}
 		backup, err := writeCodexConfigBaseURL(m.ConfigPath, m.WantURL, stamp)
 		if err != nil {
 			fmt.Fprintf(stderr,

@@ -14,6 +14,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/archive"
 	"github.com/marmutapp/superbased-observer/internal/archivestore/migrations"
+	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 
 	_ "modernc.org/sqlite" // pure-Go sqlite driver registration (no CGO).
@@ -99,6 +100,9 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 			_ = database.Close()
 			return nil, fmt.Errorf("archivestore.Open: journal_mode: %w", err)
 		}
+		// SR27-A4: archive.db holds archived captured content; keep it (and
+		// its WAL sidecars) owner-only. Best-effort, like the hot DB.
+		_ = db.RestrictFileMode(opts.Path)
 	}
 	if err := runMigrations(ctx, database); err != nil {
 		_ = database.Close()

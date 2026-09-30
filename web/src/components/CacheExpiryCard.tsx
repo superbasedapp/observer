@@ -1,7 +1,13 @@
 import { useApi } from "@/lib/useApi";
 import { fmtInt, fmtUSD } from "@/lib/format";
 import { HelpInd } from "@/components/HelpInd";
+import { Icon, ModelId, ProgressRing } from "@/components/primitives";
 import type { CacheStatusResponse, CacheWindowStatus } from "@/lib/types";
+import { cacheLifeRatio } from "@/lib/liveSignals";
+import { CACHE_EXPIRY } from "@shared/lib/cacheVocab";
+import { vocabView } from "@shared/lib/vocabEntry";
+import { VocabPill } from "@shared/lib/vocabPill";
+import { TONE_COLOR } from "@shared/lib/tone";
 
 // CacheExpiryCard — the cache-expiry warning surface (Part A of
 // docs/plans/cache-expiry-warning-and-keepwarm-plan-2026-06-25.md). Reads
@@ -68,11 +74,14 @@ function CacheExpiryRow({
   return (
     <div className="rounded-2 px-2 py-1 hover:bg-fg-2/5">
       <div className="flex items-center gap-2 text-[11px]">
+        <CacheLifeRing w={w} />
         <span className="w-20 shrink-0 font-mono tabular-nums text-fg-1">
           {timeLabel(w)}
         </span>
-        <SeverityDot severity={w.severity} />
-        <span className="min-w-0 flex-1 truncate text-fg-2">{w.window.model}</span>
+        <VocabPill vocab="cacheExpiry" table={CACHE_EXPIRY} value={w.severity} className="shrink-0" />
+        <span className="flex min-w-0 flex-1">
+          <ModelId model={w.window.model} mono={false} className="min-w-0" />
+        </span>
         <span className="shrink-0 text-fg-3">{fmtInt(w.window.prefix_tokens)} tok</span>
         <span
           className={`shrink-0 font-medium ${
@@ -83,11 +92,33 @@ function CacheExpiryRow({
         </span>
       </div>
       {adviceShown && (
-        <div className="mt-0.5 pl-[5.5rem] text-[10px] text-info">
+        <div className="mt-0.5 pl-[7.25rem] text-[10px] text-info">
           💡 {w.recommendation.rationale}
         </div>
       )}
     </div>
+  );
+}
+
+// CacheLifeRing - the countdown as a ring: the share of the window's life
+// left, with tone and glyph escalating ok -> soon -> critical -> cold
+// (Flame -> Timer -> AlarmClock -> Snowflake) from the ONE CACHE_EXPIRY
+// table + VOCAB_ICONS.cacheExpiry. The ratio is measured at the server's
+// clock (expires_at minus seconds_to_expiry), the same basis as the text
+// countdown beside it. When the window's span is unknown the glyph renders
+// alone: no ring, rather than an invented fill.
+function CacheLifeRing({ w }: { w: CacheWindowStatus }) {
+  const v = vocabView("cacheExpiry", CACHE_EXPIRY, w.severity);
+  const serverNow = Date.parse(w.window.expires_at) - w.seconds_to_expiry * 1000;
+  const ratio = cacheLifeRatio(w.window, serverNow);
+  const glyph = <Icon icon={v.icon} size={10} style={{ color: TONE_COLOR[v.tone] }} />;
+  if (ratio == null) {
+    return <span className="inline-grid size-5 shrink-0 place-items-center">{glyph}</span>;
+  }
+  return (
+    <ProgressRing ratio={ratio} tone={v.tone} size={20} stroke={2.5} label={`Cache life left (${v.label})`}>
+      {glyph}
+    </ProgressRing>
   );
 }
 
@@ -116,15 +147,4 @@ function clock(secs: number): string {
 function ago(secs: number): string {
   if (secs >= 60) return `${Math.floor(secs / 60)}m`;
   return `${secs}s`;
-}
-
-function SeverityDot({ severity }: { severity: string }) {
-  const map: Record<string, string> = {
-    cold: "bg-danger",
-    critical: "bg-warn",
-    soon: "bg-info",
-    ok: "bg-success",
-  };
-  const cls = map[severity] ?? "bg-fg-3";
-  return <span className={`size-1.5 shrink-0 rounded-full ${cls}`} title={severity} />;
 }

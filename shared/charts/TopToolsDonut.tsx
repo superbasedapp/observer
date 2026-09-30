@@ -1,4 +1,4 @@
-import { useId, useMemo } from "react";
+import { memo, useId, useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import { fmtCompact, fmtPct } from "../lib/format";
 import { toolMeta } from "../lib/tools";
@@ -8,7 +8,7 @@ import type { ToolsResponse } from "../lib/types";
 // design's donut + side legend layout. Center text shows total
 // actions; legend on the right shows per-tool count + success rate
 // + a tiny share bar.
-export function TopToolsDonut({
+export const TopToolsDonut = memo(function TopToolsDonut({
   tools,
 }: {
   tools: ToolsResponse["tools"];
@@ -42,7 +42,7 @@ export function TopToolsDonut({
   }
 
   return (
-    <div className="grid grid-cols-[180px_1fr] items-center gap-4">
+    <div className="grid grid-cols-1 items-center gap-4 sm:grid-cols-[180px_1fr]">
       <div className="relative h-[180px]">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
@@ -53,7 +53,7 @@ export function TopToolsDonut({
               innerRadius="65%"
               outerRadius="92%"
               paddingAngle={1.5}
-              stroke="var(--bg-1)"
+              stroke="var(--bg-2)"
               strokeWidth={2}
               isAnimationActive={false}
             >
@@ -98,49 +98,58 @@ export function TopToolsDonut({
           </div>
         </div>
       </div>
-      <ul className="space-y-1">
-        {data.map((d) => {
-          const share = d.value / total;
-          return (
-            <li
-              key={d.tool}
-              className="grid grid-cols-[8px_1fr_auto] items-baseline gap-2 text-[11.5px]"
-            >
-              <span
-                className="block h-2 w-2 self-center rounded-pill"
-                style={{ background: d.color }}
-              />
-              <div className="min-w-0">
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="truncate text-fg-1">{d.name}</span>
-                  <span className="shrink-0 tabular-nums text-fg-3">
-                    {fmtCompact(d.value)} ·{" "}
-                    <span
-                      className={
-                        d.success_rate < 0.95
-                          ? "text-warn"
-                          : "text-fg-2"
-                      }
-                    >
-                      {fmtPct(d.success_rate)}
+      <div className="min-w-0">
+        {/* Legend key: names the two columns (the swatch rows below are
+            the donut's legend). */}
+        <div className="mb-1 grid grid-cols-[8px_1fr_auto] gap-2 border-b border-line-1 pb-1 text-[10px] uppercase tracking-[0.06em] text-fg-4">
+          <span />
+          <span>tool</span>
+          <span>actions · success</span>
+        </div>
+        <ul className="space-y-1">
+          {data.map((d) => {
+            const share = d.value / total;
+            return (
+              <li
+                key={d.tool}
+                className="grid grid-cols-[8px_1fr_auto] items-baseline gap-2 text-[11.5px]"
+              >
+                <span
+                  className="block h-2 w-2 self-center rounded-pill"
+                  style={{ background: d.color }}
+                />
+                <div className="min-w-0">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="truncate text-fg-1">{d.name}</span>
+                    <span className="shrink-0 tabular-nums text-fg-3">
+                      {fmtCompact(d.value)} ·{" "}
+                      <span
+                        className={
+                          d.success_rate < 0.95
+                            ? "text-warn"
+                            : "text-fg-2"
+                        }
+                      >
+                        {fmtPct(d.success_rate)}
+                      </span>
                     </span>
-                  </span>
+                  </div>
+                  <div className="mt-0.5 h-1 w-full overflow-hidden rounded-pill bg-bg-3">
+                    <span
+                      className="block h-full"
+                      style={{
+                        width: `${share * 100}%`,
+                        background: d.color,
+                        opacity: 0.7,
+                      }}
+                    />
+                  </div>
                 </div>
-                <div className="mt-0.5 h-1 w-full overflow-hidden rounded-pill bg-bg-3">
-                  <span
-                    className="block h-full"
-                    style={{
-                      width: `${share * 100}%`,
-                      background: d.color,
-                      opacity: 0.7,
-                    }}
-                  />
-                </div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </div>
   );
-}
+});

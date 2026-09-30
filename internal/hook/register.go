@@ -10,8 +10,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -2371,6 +2375,15 @@ var cursorEvents = []string{
 	"afterAgentThought", "afterAgentResponse",
 }
 
+// CursorEvents exposes the Cursor hook events this registrar manages, for
+// callers outside this package that need to check coverage (e.g.
+// internal/diag's `cursor.hooks` doctor check) without duplicating or
+// drifting from cursorEvents, the one owner of that list. Returns a copy
+// so a caller mutating the slice can't affect registration.
+func CursorEvents() []string {
+	return append([]string(nil), cursorEvents...)
+}
+
 type cursorHookEntry struct {
 	Command string `json:"command"`
 }
@@ -2590,6 +2603,90 @@ func (r *Registry) registerCursorWindows() RegistrationResult {
 	return res
 }
 
+// IsOrphanedObserverCursorHTTPHook reports whether cmd is a stale
+// observer-authored Cursor hook entry from a LOST, never-committed
+// 2026-09-08 build that POSTed hook payloads over loopback HTTP instead
+// of invoking the CLI directly — e.g.
+//
+//	curl.exe -sS --max-time 3 -X POST -H "Content-Type: application/json" \
+//	  -H "X-Observer-Token: <64 hex>" --data-binary '@-' \
+//	  http://127.0.0.1:8081/api/cursor/hook/<event>
+//
+// This build serves no such route (it was never committed): the dashboard's SPA
+// fallback answers every such POST with a 200 text/html, so a hooks.json
+// carrying this shape silently drops every Cursor event with no visible
+// error. Because it doesn't match the canonical ` hook cursor `
+// signature isObserverWindowsCursorEntry/isObserverCursorEntry look for,
+// it used to be classified foreign — auto-register refused to heal it
+// without --force, and the daemon logged "already has a non-observer
+// hook" on every `observer start`.
+//
+// Recognition requires ALL three to hold, so a user's own curl-based
+// hook is never mistaken for this artifact and silently removed:
+//
+//   - the command invokes curl (`curl.exe` or `curl` as argv[0], via
+//     the same quote-aware tokenizer splitCommandTokens uses elsewhere
+//     in this file);
+//   - one of its arguments is a plain-http URL whose host is LOOPBACK
+//     (127.0.0.1, localhost, or [::1] — including any other IP that
+//     resolves loopback) and whose path is EXACTLY
+//     "/api/cursor/hook/<event>" for one of the Cursor events this
+//     registrar manages (no further segments, query or fragment);
+//   - the command carries an "X-Observer-Token:" header whose value is
+//     a 64-hex-digit token (the lost build's grammar).
+//
+// A curl hook to a non-loopback host, a different path, or without the
+// observer token header stays foreign — see
+// TestIsOrphanedObserverCursorHTTPHook for the recognised/rejected
+// table.
+func IsOrphanedObserverCursorHTTPHook(cmd string) bool {
+	toks := splitCommandTokens(cmd)
+	if len(toks) == 0 {
+		return false
+	}
+	base := strings.ToLower(strings.TrimSuffix(commandBaseName(toks[0]), ".exe"))
+	if base != "curl" {
+		return false
+	}
+	if !orphanHookTokenHeader.MatchString(cmd) {
+		return false
+	}
+	for _, t := range toks[1:] {
+		if !strings.Contains(t, "://") {
+			continue
+		}
+		u, err := url.Parse(t)
+		if err != nil || u.Scheme != "http" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+			continue
+		}
+		event, ok := strings.CutPrefix(u.Path, "/api/cursor/hook/")
+		if isLoopbackHookHost(u.Hostname()) && ok && slices.Contains(cursorEvents, event) {
+			return true
+		}
+	}
+	return false
+}
+
+// orphanHookTokenHeader is the lost build's exact header grammar: the
+// X-Observer-Token header carrying a 64-hex-digit token.
+var orphanHookTokenHeader = regexp.MustCompile(`X-Observer-Token: ?[0-9a-fA-F]{64}(?:["'\s]|$)`)
+
+// isLoopbackHookHost reports whether host names the local machine —
+// the literal forms "localhost"/"127.0.0.1"/"[::1]" (net/url strips
+// brackets from Hostname()) or any other IP literal that resolves
+// loopback. Used only by IsOrphanedObserverCursorHTTPHook to keep its
+// recognition narrow to a hook that could only ever have been talking
+// to this same host's daemon.
+func isLoopbackHookHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // isObserverWindowsCursorEntry recognises an entry in the Windows-side
 // hooks.json as observer-owned, in EITHER shape:
 //
@@ -2599,7 +2696,10 @@ func (r *Registry) registerCursorWindows() RegistrationResult {
 //   - a NATIVE `C:\...\observer.exe hook cursor <event>` entry written
 //     by an earlier Windows-native npm `observer init`
 //     (isObserverAnyHookEntry — class C2 / audit IDE-11, which found
-//     exactly this in a live ~/.cursor/hooks.json).
+//     exactly this in a live ~/.cursor/hooks.json);
+//   - the orphaned observer HTTP-hook shape
+//     (IsOrphanedObserverCursorHTTPHook) left by the lost 2026-09-08
+//     build — recognised so refresh-on-drift heals it without --force.
 //
 // Recognising the native half is what lets refresh-on-drift REPLACE a
 // stale native registration with the bridge command without --force,
@@ -2614,6 +2714,9 @@ func isObserverWindowsCursorEntry(cmd string) bool {
 		if strings.HasPrefix(cmd, "MSYS_NO_PATHCONV=1 wsl.exe ") {
 			return true
 		}
+	}
+	if IsOrphanedObserverCursorHTTPHook(cmd) {
+		return true
 	}
 	return isObserverAnyHookEntry(cmd, "cursor")
 }
@@ -3716,7 +3819,16 @@ func slicesContainsCommand(entries []cursorHookEntry, want string) bool {
 // Excludes wsl.exe-wrapped commands so this and
 // isObserverWindowsCursorEntry match disjoint shapes — see
 // isObserverClaudeEntry's docstring for the same rationale.
+//
+// Also recognises the orphaned observer HTTP-hook shape
+// (IsOrphanedObserverCursorHTTPHook) a native install could carry for
+// the same reason the Windows side can — see that predicate's
+// docstring. It never starts with `wsl.exe`, so it doesn't disturb the
+// disjointness this function's wsl.exe exclusion exists for.
 func isObserverCursorEntry(cmd string) bool {
+	if IsOrphanedObserverCursorHTTPHook(cmd) {
+		return true
+	}
 	if !strings.Contains(cmd, " hook cursor ") {
 		return false
 	}

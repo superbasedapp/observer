@@ -262,9 +262,9 @@ export function platformPrefLabel(
   resolved: KeyPlatform,
 ): string {
   if (pref === "auto") {
-    return `⌨ Key labels: Auto (${resolved === "mac" ? "Mac ⌃⌥" : "PC Ctrl/Alt"})`;
+    return `Key labels: Auto (${resolved === "mac" ? "Mac ⌃⌥" : "PC Ctrl/Alt"})`;
   }
-  return pref === "mac" ? "⌨ Key labels: Mac ⌃⌥" : "⌨ Key labels: PC Ctrl/Alt";
+  return pref === "mac" ? "Key labels: Mac ⌃⌥" : "Key labels: PC Ctrl/Alt";
 }
 
 /**

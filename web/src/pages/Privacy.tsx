@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ChartShell, PageHeader, Pill } from "@/components/primitives";
+import { ChartShell, PageHeader, Pill, Table } from "@/components/primitives";
 import { TitleWithHelp } from "@/components/HelpInd";
 import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
@@ -8,11 +8,14 @@ import { fmtBytes, fmtDateTime, fmtInt } from "@/lib/format";
 import {
   type GovernanceShareKey,
   type GovernancePricing,
+  GOVERNANCE_SOURCE,
   shareSourceLabel,
   shareSourceOf,
   useGovernance,
 } from "@/lib/governance";
+import { VocabPill } from "@shared/lib/vocabPill";
 import type { ConfigResponse } from "@/lib/types";
+import { navIcon } from "@/lib/nav";
 
 // Privacy center (P6.5): one page answering "what does the observer
 // capture, what never leaves this machine, and how do I verify it?".
@@ -28,8 +31,9 @@ export function PrivacyPage() {
     ?.Observer?.Retention;
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6 p-4 sm:p-6">
       <PageHeader
+        icon={navIcon("privacy")}
         title="Privacy"
         sub="What the observer captures, what never leaves this machine, and the tools to verify both - the live scrub tester and the byte-for-byte view of anything shared with a Teams server."
         helpId="tab.privacy"
@@ -164,7 +168,7 @@ function ScrubTesterCard({ scrubbingEnabled }: { scrubbingEnabled: boolean }) {
         </div>
         {error && <p className="text-[11px] text-danger">{error}</p>}
         {result && (
-          <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-2 border border-line-1 bg-bg-1 p-2.5 font-mono text-[11px] leading-relaxed text-fg-2">
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-2 border border-line-2 bg-bg-3 p-2.5 font-mono text-caption leading-relaxed text-fg-2">
             {result.scrubbed}
           </pre>
         )}
@@ -283,22 +287,21 @@ function SharingSourceCard({ config }: { config: Record<string, any> | undefined
           what would apply if you enrolled.
         </p>
       )}
-      <div className="overflow-x-auto">
-        <table className="w-full text-[12px]">
-          <thead>
-            <tr className="border-b border-line-1 text-left text-[10.5px] uppercase tracking-wide text-fg-3">
-              <th className="py-1.5 pr-3 font-medium">Setting</th>
-              <th className="py-1.5 pr-3 font-medium">Your setting</th>
-              <th className="py-1.5 pr-3 font-medium">In force</th>
-              <th className="py-1.5 font-medium">Source</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-line-1">
+      <Table
+        head={
+          <tr className="text-left">
+            <th className="py-1.5 pr-3 font-medium">Setting</th>
+            <th className="py-1.5 pr-3 font-medium">Your setting</th>
+            <th className="py-1.5 pr-3 font-medium">In force</th>
+            <th className="py-1.5 font-medium">Source</th>
+          </tr>
+        }
+      >
             {rows.map((r) => {
               const effective = r.row ? r.row.effective : r.local;
               const governed = !!r.row && r.row.source !== "you";
               return (
-                <tr key={r.key}>
+                <tr key={r.key} className="border-t border-line-1 first:border-t-0">
                   <td className="py-1.5 pr-3 align-top">
                     <div className="text-fg-1">{r.label}</div>
                     <div className="font-mono text-[10.5px] text-fg-3">{r.key}</div>
@@ -311,9 +314,14 @@ function SharingSourceCard({ config }: { config: Record<string, any> | undefined
                       // A raise is the one direction that shares MORE than
                       // the operator asked for, so it does not read as
                       // routine policy the way a reduce or a lock does.
-                      <Pill variant={r.row?.source === "org_raised" ? "warn" : "info"}>
+                      <VocabPill
+                        vocab="governanceSource"
+                        table={GOVERNANCE_SOURCE}
+                        value={r.row?.source}
+                        tone={r.row ? undefined : "info"}
+                      >
                         {shareSourceLabel(r.row)}
-                      </Pill>
+                      </VocabPill>
                     ) : (
                       <span className="text-fg-2">{shareSourceLabel(null)}</span>
                     )}
@@ -321,9 +329,7 @@ function SharingSourceCard({ config }: { config: Record<string, any> | undefined
                 </tr>
               );
             })}
-          </tbody>
-        </table>
-      </div>
+      </Table>
       <PricingSourceRow pricing={gov.data?.pricing} />
       <PricingFeedEgressRow config={config} />
       <p className="pt-2 text-[11px] text-fg-3">
@@ -488,7 +494,7 @@ function OrgPushCard() {
             </Link>
           </div>
           {payload && (
-            <pre className="max-h-64 overflow-auto rounded-2 border border-line-1 bg-bg-1 p-2.5 font-mono text-[10.5px] leading-relaxed text-fg-2">
+            <pre className="max-h-64 overflow-auto rounded-2 border border-line-2 bg-bg-3 p-2.5 font-mono text-[10.5px] leading-relaxed text-fg-2">
               {payload}
             </pre>
           )}

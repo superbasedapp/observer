@@ -277,7 +277,7 @@ func TestLoadSessionLineage(t *testing.T) {
 // TestLoadSessionLineage_OpencodeChildren pins the 2026-08-21 extension:
 // children linked ONLY via parent_thread_id (the opencode sub-agent model —
 // no forked_from_id) are listed by the parent's view, and each child row
-// carries its non-sidechain token/cost/action rollups so the LineageBanner
+// carries its token/cost/action rollups (its own header's) so the LineageBanner
 // can show what the sub-agent cost without navigating into it.
 func TestLoadSessionLineage_OpencodeChildren(t *testing.T) {
 	t.Parallel()
@@ -303,8 +303,12 @@ func TestLoadSessionLineage_OpencodeChildren(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Child usage: two non-sidechain rows + one sidechain row that must be
-	// excluded from the rollup; plus recorded cost on one row.
+	// Child usage: two ordinary rows + one sidechain row, plus recorded cost
+	// on two rows. The rollup is the child's OWN session header (the one
+	// session rule, store.SpendTurn): a sidechain row inside the child is
+	// still the child's spend, exactly as the child's header counts it (the
+	// rollup used to drop it, so the parent's list and the child's detail
+	// disagreed).
 	for _, tok := range []models.TokenEvent{
 		{
 			SessionID: "oc-child", Timestamp: base.Add(time.Second), Model: "m",
@@ -335,8 +339,8 @@ func TestLoadSessionLineage_OpencodeChildren(t *testing.T) {
 	if c.ID != "oc-child" || c.ThreadSource != "subagent" {
 		t.Errorf("child = %s/%s; want oc-child/subagent", c.ID, c.ThreadSource)
 	}
-	if c.InputTokens != 130 || c.OutputTokens != 15 {
-		t.Errorf("child tokens = %d/%d; want 130/15 (sidechain row excluded)", c.InputTokens, c.OutputTokens)
+	if c.InputTokens != 1129 || c.OutputTokens != 15 {
+		t.Errorf("child tokens = %d/%d; want 1129/15 (the child header's figures)", c.InputTokens, c.OutputTokens)
 	}
 	if c.CostUSD < 0.2999 || c.CostUSD > 0.3001 {
 		t.Errorf("child CostUSD = %v; want ~0.30", c.CostUSD)

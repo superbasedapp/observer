@@ -30,10 +30,13 @@ export const PLAN_LABELS: Record<string, string> = {
 
 // JOB_STATE_LABELS covers the enrichment-job state vocabulary
 // (internal/cloudserver/store/jobs.go, internal/cloudserver/store/results.go:
-// "queued", "succeeded", "parked", "failed").
+// "queued", "succeeded", "parked", "failed"). `done` is the node-side
+// spelling of the same terminal state (shared IntelResultCard / JOB_STATUS
+// treat done and succeeded as one success state), so it reads the same here.
 export const JOB_STATE_LABELS: Record<string, string> = {
   queued: "Queued",
   succeeded: "Succeeded",
+  done: "Succeeded",
   parked: "Parked",
   failed: "Failed",
 };

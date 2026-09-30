@@ -1352,6 +1352,9 @@ func TestProcessNetworkCapBodyHardening(t *testing.T) {
 	})
 }
 
+// TestProxy_OpenAIWebSocketUpgradePassthrough pins the opaque tunnel for an
+// OpenAI-path websocket that has no HTTP fallback rule. It used /v1/responses
+// until that endpoint moved to the 426 HTTP-fallback row (wsupgrade.go).
 func TestProxy_OpenAIWebSocketUpgradePassthrough(t *testing.T) {
 	seen := make(chan *http.Request, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1397,7 +1400,7 @@ func TestProxy_OpenAIWebSocketUpgradePassthrough(t *testing.T) {
 	}
 	defer conn.Close()
 
-	_, err = fmt.Fprintf(conn, "GET /v1/responses?conversation=abc HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive, Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer chatgpt-token\r\nX-Session-Id: local-session\r\n\r\n", proxyURL.Host)
+	_, err = fmt.Fprintf(conn, "GET /v1/chat/completions?conversation=abc HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive, Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer chatgpt-token\r\nX-Session-Id: local-session\r\n\r\n", proxyURL.Host)
 	if err != nil {
 		t.Fatalf("write upgrade request: %v", err)
 	}
@@ -1413,8 +1416,8 @@ func TestProxy_OpenAIWebSocketUpgradePassthrough(t *testing.T) {
 
 	select {
 	case req := <-seen:
-		if req.URL.Path != "/root/v1/responses" {
-			t.Errorf("upstream path: got %q want %q", req.URL.Path, "/root/v1/responses")
+		if req.URL.Path != "/root/v1/chat/completions" {
+			t.Errorf("upstream path: got %q want %q", req.URL.Path, "/root/v1/chat/completions")
 		}
 		if req.URL.RawQuery != "conversation=abc" {
 			t.Errorf("upstream query: got %q", req.URL.RawQuery)
@@ -1493,6 +1496,11 @@ func TestProxy_ChatGPTBackendRoutesToChatGPTUpstream(t *testing.T) {
 	}
 }
 
+// TestProxy_ChatGPTBackendWebSocketUpgradePassthrough pins that a chatgpt.com
+// backend websocket that is NOT the Responses endpoint still tunnels to the
+// ChatGPT upstream. The Responses socket itself (/backend-api/codex/responses)
+// is answered 426 so codex falls back to captured HTTP (wsupgrade.go,
+// TestProxy_ResponsesWebSocketUpgradeAnswers426).
 func TestProxy_ChatGPTBackendWebSocketUpgradePassthrough(t *testing.T) {
 	seen := make(chan *http.Request, 1)
 	chatgpt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1537,7 +1545,7 @@ func TestProxy_ChatGPTBackendWebSocketUpgradePassthrough(t *testing.T) {
 	}
 	defer conn.Close()
 
-	_, err = fmt.Fprintf(conn, "GET /backend-api/codex/responses HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer chatgpt-token\r\n\r\n", proxyURL.Host)
+	_, err = fmt.Fprintf(conn, "GET /backend-api/codex/realtime HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer chatgpt-token\r\n\r\n", proxyURL.Host)
 	if err != nil {
 		t.Fatalf("write upgrade request: %v", err)
 	}
@@ -1552,7 +1560,7 @@ func TestProxy_ChatGPTBackendWebSocketUpgradePassthrough(t *testing.T) {
 
 	select {
 	case req := <-seen:
-		if req.URL.Path != "/backend-api/codex/responses" {
+		if req.URL.Path != "/backend-api/codex/realtime" {
 			t.Errorf("upstream path: got %q", req.URL.Path)
 		}
 		if got := req.Header.Get("Authorization"); got != "Bearer chatgpt-token" {
@@ -1697,6 +1705,11 @@ func TestProviderForPath(t *testing.T) {
 		{"/v1/chat/completions", models.ProviderOpenAI},
 		{"/v1/responses", models.ProviderOpenAI},
 		{"/v1/embeddings", models.ProviderOpenAI},
+		// OpenAI Realtime (a websocket) used to fall through to the Anthropic
+		// default and would have been tunnelled to the wrong upstream.
+		{"/v1/realtime", models.ProviderOpenAI},
+		{"/v1/realtime?model=gpt-realtime", models.ProviderOpenAI},
+		{"/api/v1/realtime", models.ProviderOpenAI},
 		{"/backend-api/codex/responses", models.ProviderOpenAI},
 		{"/backend-api/plugins/list", models.ProviderOpenAI},
 		{"/", models.ProviderAnthropic},

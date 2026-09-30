@@ -237,34 +237,9 @@ export async function postPolicy(
   return { status: res.status, data };
 }
 
-export function decisionVariant(d: string): "success" | "warn" | "info" | "danger" | "neutral" {
-  switch (d) {
-    case "allow":
-      return "success";
-    case "flag":
-      return "warn";
-    case "ask":
-      return "info";
-    case "deny":
-      return "danger";
-    default:
-      return "neutral";
-  }
-}
-
-export function severityVariant(s: string): "info" | "warn" | "danger" | "neutral" {
-  switch (s) {
-    case "info":
-      return "info";
-    case "warn":
-      return "warn";
-    case "high":
-    case "critical":
-      return "danger";
-    default:
-      return "neutral";
-  }
-}
+// Guard / admission decision and severity tones live in ONE place,
+// @shared/lib/guardCatalog (decisionTone / severityTone); the glyphs in
+// @shared/lib/vocabIcons. Render them with @shared/lib/vocabPill.
 
 // A stable-ish id for a freshly-added criterion. The engine only requires
 // uniqueness within the policy; this is human-readable and collision-safe

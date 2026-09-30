@@ -1,0 +1,71 @@
+{
+  "name": "basic: the plan §11.4 grant set {allow claude-code -> gh.create_issue ; deny anyone -> gh.delete_repo} + floors, groups, ask, read",
+  "spec": {
+    "registry": {
+      "issuer": "https://auth.acme.superbased.app",
+      "org": "acme",
+      "gateway_base_uri": "https://mcp-gw.acme.superbased.app",
+      "policy_gen": 41,
+      "vservers": [
+        {"id": "vs-gh", "slug": "gh", "sender_constraint": "bearer",
+         "servers": [{"id": "gh", "target": "gh", "credential_mode": "service"}]},
+        {"id": "vs-jira", "slug": "jira", "sender_constraint": "dpop",
+         "servers": [{"id": "jira", "target": "jira", "credential_mode": "vault_user"}]}
+      ]
+    },
+    "grants": [
+      {"id": "g-allow-ci", "ord": 1, "subject": {"kind": "product", "value": "claude-code"},
+       "resource": {"vserver": "vs-gh", "name": "create_issue"}, "action": "call", "effect": "allow", "enabled": true},
+      {"id": "g-deny-dr", "ord": 2, "subject": {"kind": "any"},
+       "resource": {"vserver": "vs-gh", "name": "delete_repo"}, "action": "call", "effect": "deny", "enabled": true},
+      {"id": "g-group-merge", "ord": 3, "subject": {"kind": "group", "value": "release-eng"},
+       "resource": {"vserver": "vs-gh", "name": "merge_pr"}, "action": "call", "effect": "allow", "enabled": true,
+       "conditions": {"requires_cred_assurance": "node_enrolled"}},
+      {"id": "g-ask-force", "ord": 4, "subject": {"kind": "any"},
+       "resource": {"vserver": "vs-gh", "name": "force_push"}, "action": "call", "effect": "ask", "enabled": true},
+      {"id": "g-read-readme", "ord": 5, "subject": {"kind": "any"},
+       "resource": {"vserver": "vs-gh", "name": "repo://acme/app/README.md"}, "action": "read", "effect": "allow", "enabled": true},
+      {"id": "g-list-all", "ord": 6, "subject": {"kind": "any"},
+       "resource": {"vserver": "vs-gh"}, "action": "list", "effect": "allow", "enabled": true},
+      {"id": "g-disabled", "ord": 7, "subject": {"kind": "any"},
+       "resource": {"vserver": "vs-gh", "name": "delete_repo"}, "action": "call", "effect": "allow", "enabled": false},
+      {"id": "g-jira-any", "ord": 8, "subject": {"kind": "env", "value": "prod"},
+       "resource": {"vserver": "vs-jira"}, "action": "call", "effect": "allow", "enabled": true}
+    ]
+  },
+  "principal_defaults": {
+    "issuer": "https://auth.acme.superbased.app", "org": "acme",
+    "audience": ["https://mcp-gw.acme.superbased.app/mcp/gh"], "policy_gen": 42,
+    "subject": "agent:acme:claude-code:u1", "client_id": "agent:claude-code",
+    "product": "claude-code", "agent_kind": "coding_agent", "env": "dev",
+    "cred_assurance": "node_enrolled", "client_attestation": "process_attested"
+  },
+  "rows": [
+    {"name": "allow-path: attested claude-code calls create_issue", "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue", "server": "gh"}, "want": "allow", "want_grant": "g-allow-ci"},
+    {"name": "deny: foreign org", "principal": {"org": "evil"}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "deny: wrong issuer", "principal": {"issuer": "https://evil.example"}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "deny: delete_repo (typed deny object)", "input": {"vserver": "vs-gh", "action": "call", "name": "delete_repo"}, "want": "deny", "want_grant": "g-deny-dr"},
+    {"name": "deny: stale sbo_policy_gen", "principal": {"policy_gen": 40}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "deny: tool outside the positive allowlist (sentinel)", "input": {"vserver": "vs-gh", "action": "call", "name": "sbo_echo"}, "want": "deny"},
+    {"name": "deny: wrong product in act", "principal": {"product": "cursor"}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "deny: multi-audience token", "principal": {"audience": ["https://mcp-gw.acme.superbased.app/mcp/gh", "https://other"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "deny: wrong single audience", "principal": {"audience": ["https://mcp-gw.acme.superbased.app/mcp/jira"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "deny: product grant at configured attestation is node-wide (R2)", "principal": {"client_attestation": "configured"}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "allow: product grant at ipc_bound", "principal": {"client_attestation": "ipc_bound"}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "allow", "want_grant": "g-allow-ci"},
+    {"name": "allow: group member with node_enrolled floor met", "principal": {"groups": ["release-eng"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "merge_pr"}, "want": "allow", "want_grant": "g-group-merge"},
+    {"name": "allow: group floor met by a higher rank (hardware_bound)", "principal": {"groups": ["release-eng"], "cred_assurance": "hardware_bound"}, "input": {"vserver": "vs-gh", "action": "call", "name": "merge_pr"}, "want": "allow", "want_grant": "g-group-merge"},
+    {"name": "deny: group member below the assurance floor (shared_secret)", "principal": {"groups": ["release-eng"], "cred_assurance": "shared_secret"}, "input": {"vserver": "vs-gh", "action": "call", "name": "merge_pr"}, "want": "deny"},
+    {"name": "deny: not in the group", "principal": {"groups": ["docs"]}, "input": {"vserver": "vs-gh", "action": "call", "name": "merge_pr"}, "want": "deny"},
+    {"name": "ask: force_push parks (CEL allows, PDP asks)", "input": {"vserver": "vs-gh", "action": "call", "name": "force_push"}, "want": "ask", "want_grant": "g-ask-force"},
+    {"name": "allow: resources/read of the named URI", "input": {"vserver": "vs-gh", "action": "read", "name": "repo://acme/app/README.md"}, "want": "allow", "want_grant": "g-read-readme"},
+    {"name": "deny: resources/read of another URI", "input": {"vserver": "vs-gh", "action": "read", "name": "repo://acme/app/secrets.env"}, "want": "deny"},
+    {"name": "deny: a tool name presented as a resource read", "input": {"vserver": "vs-gh", "action": "read", "name": "create_issue"}, "want": "deny"},
+    {"name": "allow: tools/list is PDP-owned (CEL not applicable)", "input": {"vserver": "vs-gh", "action": "list"}, "want": "allow", "want_grant": "g-list-all"},
+    {"name": "deny: disabled allow does not resurrect delete_repo", "input": {"vserver": "vs-gh", "action": "call", "name": "delete_repo"}, "want": "deny", "want_grant": "g-deny-dr"},
+    {"name": "deny: tasks/get has no grant", "input": {"vserver": "vs-gh", "action": "tasks/get", "name": "task-1"}, "want": "deny"},
+    {"name": "deny: unknown vserver", "principal": {"audience": ["https://mcp-gw.acme.superbased.app/mcp/nope"]}, "input": {"vserver": "vs-nope", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "allow: env-scoped any-tool grant on jira", "principal": {"env": "prod", "audience": ["https://mcp-gw.acme.superbased.app/mcp/jira"]}, "input": {"vserver": "vs-jira", "action": "call", "name": "create_ticket", "server": "jira"}, "want": "allow", "want_grant": "g-jira-any"},
+    {"name": "deny: jira grant does not leak across vservers", "principal": {"env": "prod"}, "input": {"vserver": "vs-gh", "action": "call", "name": "create_ticket"}, "want": "deny"},
+    {"name": "deny: gh audience presented to jira", "principal": {"env": "prod"}, "input": {"vserver": "vs-jira", "action": "call", "name": "create_ticket"}, "want": "deny"}
+  ]
+}

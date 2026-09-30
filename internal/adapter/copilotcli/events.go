@@ -68,6 +68,18 @@ type modelChangeData struct {
 	ReasoningEffort         string `json:"reasoningEffort"`
 }
 
+// autoModeResolvedData is `session.auto_mode_resolved`: the event Copilot CLI
+// writes when the user's model choice is the "auto" router and the router has
+// picked the concrete model for the turn (live shape, ~/.copilot/session-state
+// 2026-08: {"chosenModel":"gpt-5-mini","candidateModels":["gpt-5-mini",
+// "claude-haiku-4.5"]}). chosenModel is the ROUTED id - the one the request is
+// billed at - so it replaces the "auto" sentinel as the session-level model.
+// candidateModels is the router's shortlist, never a billed identity, and is
+// not read.
+type autoModeResolvedData struct {
+	ChosenModel string `json:"chosenModel"`
+}
+
 // sessionResumeData covers `session.resume.data`. Empirically every
 // resume event in the operator specimen (2026-05-19, 9 of them)
 // carries `selectedModel`, `reasoningEffort`, and `context.{cwd,
@@ -640,6 +652,19 @@ func dispatchState(st *parserState, env eventEnvelope, sc *scrub.Scrubber) {
 			if d.ReasoningEffort != "" {
 				st.effortLevel = d.ReasoningEffort
 			}
+		}
+	case "session.auto_mode_resolved":
+		// Auto routing: `session.model_change` set st.model to the literal
+		// "auto" (the user's choice, kept as-is on action rows until now),
+		// which prices as a MISS. The router's resolution names the model
+		// actually served, so from here on the session-level fallback - used
+		// by an assistant.message that carries no data.model, and by the
+		// process-log lane's sibling-events recovery - is the routed id, not
+		// the sentinel. A per-message data.model still wins over this (see
+		// the assistant.message case). Empty chosenModel leaves st.model be.
+		var d autoModeResolvedData
+		if err := json.Unmarshal(env.Data, &d); err == nil && d.ChosenModel != "" {
+			st.model = d.ChosenModel
 		}
 	case "session.resume":
 		// Refresh parser state from the resume payload. Without this,

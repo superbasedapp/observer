@@ -1,0 +1,171 @@
+[
+  {
+    "name": "rfc9449-4.1-figure3-es256-token-endpoint",
+    "source": "RFC 9449 section 4.1 (published example proof); jkt per section 6.1",
+    "profile": "token_endpoint",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwieCI6Imw4dEZyaHgtMzR0VjNoUklDUkRZOXpDa0RscEJoRjQyVVFVZldWQVdCRnMiLCJ5IjoiOVZFNGpmX09rX282NHpiVFRsY3VOSmFqSG10NnY5VERWclUwQ2R2R1JEQSIsImNydiI6IlAtMjU2In19.eyJqdGkiOiItQndDM0VTYzZhY2MybFRjIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vc2VydmVyLmV4YW1wbGUuY29tL3Rva2VuIiwiaWF0IjoxNTYyMjYyNjE2fQ.2-GxA6T8lP4vfrg8v-FdWP0A0zdrj8igiMLvqRMUvwnQg4PtFLbdLXiOSsX0x7NVY-FNyJK70nfbV37xRZT3Lg",
+    "htm": "POST",
+    "htu": "https://server.example.com/token",
+    "verify_at_unix": 1562262616,
+    "want_jkt": "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+  },
+  {
+    "name": "sbo-EdDSA-token-endpoint",
+    "source": "SuperBased published vector",
+    "profile": "token_endpoint",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVkRFNBIiwiandrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoiSUg3Ynp4YU94TDQwRGtqVmRqY0VPZzRwQVBIeGl0aEtxUkVieUNDV2lCWSJ9fQ.eyJqdGkiOiJzYm8tdmVjLUVkRFNBLXRva2VuIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vYXV0aC5hY21lLnN1cGVyYmFzZWQuYXBwL29hdXRoMi90b2tlbiIsImlhdCI6MTc5MDAwMDAwMH0.oaxqwzc1wM3-leT4Mc93Xc7bu0DX1cF33yW2LozVEy5-xMXREU3wDGxAOirF2FtSq73cTXz8ZBycFgziuz36DA",
+    "htm": "POST",
+    "htu": "https://auth.acme.superbased.app/oauth2/token",
+    "verify_at_unix": 1790000000,
+    "want_jkt": "nNCNjiPkIe5uuHDM_QVS-wVnKO3n-C8GKTNQVL8XBgg"
+  },
+  {
+    "name": "sbo-EdDSA-resource-with-sbo_corr",
+    "source": "SuperBased published vector",
+    "profile": "resource",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVkRFNBIiwiandrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoiSUg3Ynp4YU94TDQwRGtqVmRqY0VPZzRwQVBIeGl0aEtxUkVieUNDV2lCWSJ9fQ.eyJqdGkiOiJzYm8tdmVjLUVkRFNBLXJlc291cmNlIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vbWNwLWd3LmFjbWUuc3VwZXJiYXNlZC5hcHAvbWNwL2doIiwiaWF0IjoxNzkwMDAwMDAwLCJhdGgiOiJhWmU5d040YUlyTEZ2OTVUUGEwMkRtenA3cjd3c2xuOWQ3SVhBVVNMblF3Iiwic2JvX2NvcnIiOnsiY29kaW5nX3Nlc3Npb25faWQiOiJzZXNzXzRkIiwidHVybl9yZWYiOiJ0dXJuXzciLCJhY3Rpb25fcmVmIjoiYWN0XzEyIiwiY2FsbF9pZCI6ImNhbGxfMDEifX0.-h7T6FC_Ph30Tpbdhir_Pc5TzTwDPoKITRx7f1OCXajgRCj2AXoVGDmTZD9nvfu7Pwmsc3D_Isz_npsTtw53AA",
+    "htm": "POST",
+    "htu": "https://mcp-gw.acme.superbased.app/mcp/gh",
+    "verify_at_unix": 1790000000,
+    "access_token": "sbo-example-access-token.eyJzdWIiOiJ1c3JfN2YzYSJ9.sig",
+    "want_jkt": "nNCNjiPkIe5uuHDM_QVS-wVnKO3n-C8GKTNQVL8XBgg"
+  },
+  {
+    "name": "sbo-EdDSA-resource-wrong-htm",
+    "source": "SuperBased published negative vector",
+    "profile": "resource",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVkRFNBIiwiandrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoiSUg3Ynp4YU94TDQwRGtqVmRqY0VPZzRwQVBIeGl0aEtxUkVieUNDV2lCWSJ9fQ.eyJqdGkiOiJzYm8tdmVjLUVkRFNBLXJlc291cmNlIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vbWNwLWd3LmFjbWUuc3VwZXJiYXNlZC5hcHAvbWNwL2doIiwiaWF0IjoxNzkwMDAwMDAwLCJhdGgiOiJhWmU5d040YUlyTEZ2OTVUUGEwMkRtenA3cjd3c2xuOWQ3SVhBVVNMblF3Iiwic2JvX2NvcnIiOnsiY29kaW5nX3Nlc3Npb25faWQiOiJzZXNzXzRkIiwidHVybl9yZWYiOiJ0dXJuXzciLCJhY3Rpb25fcmVmIjoiYWN0XzEyIiwiY2FsbF9pZCI6ImNhbGxfMDEifX0.-h7T6FC_Ph30Tpbdhir_Pc5TzTwDPoKITRx7f1OCXajgRCj2AXoVGDmTZD9nvfu7Pwmsc3D_Isz_npsTtw53AA",
+    "htm": "GET",
+    "htu": "https://mcp-gw.acme.superbased.app/mcp/gh",
+    "verify_at_unix": 1790000000,
+    "access_token": "sbo-example-access-token.eyJzdWIiOiJ1c3JfN2YzYSJ9.sig",
+    "want_error": "htm_mismatch"
+  },
+  {
+    "name": "sbo-EdDSA-resource-wrong-ath",
+    "source": "SuperBased published negative vector",
+    "profile": "resource",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVkRFNBIiwiandrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoiSUg3Ynp4YU94TDQwRGtqVmRqY0VPZzRwQVBIeGl0aEtxUkVieUNDV2lCWSJ9fQ.eyJqdGkiOiJzYm8tdmVjLUVkRFNBLXJlc291cmNlIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vbWNwLWd3LmFjbWUuc3VwZXJiYXNlZC5hcHAvbWNwL2doIiwiaWF0IjoxNzkwMDAwMDAwLCJhdGgiOiJhWmU5d040YUlyTEZ2OTVUUGEwMkRtenA3cjd3c2xuOWQ3SVhBVVNMblF3Iiwic2JvX2NvcnIiOnsiY29kaW5nX3Nlc3Npb25faWQiOiJzZXNzXzRkIiwidHVybl9yZWYiOiJ0dXJuXzciLCJhY3Rpb25fcmVmIjoiYWN0XzEyIiwiY2FsbF9pZCI6ImNhbGxfMDEifX0.-h7T6FC_Ph30Tpbdhir_Pc5TzTwDPoKITRx7f1OCXajgRCj2AXoVGDmTZD9nvfu7Pwmsc3D_Isz_npsTtw53AA",
+    "htm": "POST",
+    "htu": "https://mcp-gw.acme.superbased.app/mcp/gh",
+    "verify_at_unix": 1790000000,
+    "access_token": "sbo-example-access-token.eyJzdWIiOiJ1c3JfN2YzYSJ9.sigx",
+    "want_error": "ath_mismatch"
+  },
+  {
+    "name": "sbo-EdDSA-token-endpoint-stale",
+    "source": "SuperBased published negative vector",
+    "profile": "token_endpoint",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVkRFNBIiwiandrIjp7Imt0eSI6Ik9LUCIsImNydiI6IkVkMjU1MTkiLCJ4IjoiSUg3Ynp4YU94TDQwRGtqVmRqY0VPZzRwQVBIeGl0aEtxUkVieUNDV2lCWSJ9fQ.eyJqdGkiOiJzYm8tdmVjLUVkRFNBLXRva2VuIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vYXV0aC5hY21lLnN1cGVyYmFzZWQuYXBwL29hdXRoMi90b2tlbiIsImlhdCI6MTc5MDAwMDAwMH0.oaxqwzc1wM3-leT4Mc93Xc7bu0DX1cF33yW2LozVEy5-xMXREU3wDGxAOirF2FtSq73cTXz8ZBycFgziuz36DA",
+    "htm": "POST",
+    "htu": "https://auth.acme.superbased.app/oauth2/token",
+    "verify_at_unix": 1790003600,
+    "want_error": "iat_stale"
+  },
+  {
+    "name": "sbo-ES256-token-endpoint",
+    "source": "SuperBased published vector",
+    "profile": "token_endpoint",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiWDR2OWxOVWpJV1I0VEFXS0tPbGZ3ZTJ1T2tLYmp4Vy1qdXY2NDJFSDlTdyIsInkiOiIzbGRxc0VjRXFzbENvZWFBOTF6akRXSXcxOHBxR19zcWR4bldDSWpvYmUwIn19.eyJqdGkiOiJzYm8tdmVjLUVTMjU2LXRva2VuIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vYXV0aC5hY21lLnN1cGVyYmFzZWQuYXBwL29hdXRoMi90b2tlbiIsImlhdCI6MTc5MDAwMDAwMH0.xc3OBjj21Rhq6rZ0Ox9l2ziAiqPr3EaXRqY8thaYMyIkt6-_NM_LC7g79N_xw4O5JvllTGrdZnxlAcc5G38yBA",
+    "htm": "POST",
+    "htu": "https://auth.acme.superbased.app/oauth2/token",
+    "verify_at_unix": 1790000000,
+    "want_jkt": "Uo3Jdo2RykiusXIPrUmG5gvD6xTRNf4lTxWZnsTgjhM"
+  },
+  {
+    "name": "sbo-ES256-resource-with-sbo_corr",
+    "source": "SuperBased published vector",
+    "profile": "resource",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiWDR2OWxOVWpJV1I0VEFXS0tPbGZ3ZTJ1T2tLYmp4Vy1qdXY2NDJFSDlTdyIsInkiOiIzbGRxc0VjRXFzbENvZWFBOTF6akRXSXcxOHBxR19zcWR4bldDSWpvYmUwIn19.eyJqdGkiOiJzYm8tdmVjLUVTMjU2LXJlc291cmNlIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vbWNwLWd3LmFjbWUuc3VwZXJiYXNlZC5hcHAvbWNwL2doIiwiaWF0IjoxNzkwMDAwMDAwLCJhdGgiOiJhWmU5d040YUlyTEZ2OTVUUGEwMkRtenA3cjd3c2xuOWQ3SVhBVVNMblF3Iiwic2JvX2NvcnIiOnsiY29kaW5nX3Nlc3Npb25faWQiOiJzZXNzXzRkIiwidHVybl9yZWYiOiJ0dXJuXzciLCJhY3Rpb25fcmVmIjoiYWN0XzEyIiwiY2FsbF9pZCI6ImNhbGxfMDEifX0.f_WdL8Yc-RfJGLoo8PFBSk43YvpgfmD3C2dygR_S_4Di9NzaAwHJ4RJDEGHerF3ULvqFmB-R4gaDGSjUJ219eA",
+    "htm": "POST",
+    "htu": "https://mcp-gw.acme.superbased.app/mcp/gh",
+    "verify_at_unix": 1790000000,
+    "access_token": "sbo-example-access-token.eyJzdWIiOiJ1c3JfN2YzYSJ9.sig",
+    "want_jkt": "Uo3Jdo2RykiusXIPrUmG5gvD6xTRNf4lTxWZnsTgjhM"
+  },
+  {
+    "name": "sbo-ES256-resource-wrong-htm",
+    "source": "SuperBased published negative vector",
+    "profile": "resource",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiWDR2OWxOVWpJV1I0VEFXS0tPbGZ3ZTJ1T2tLYmp4Vy1qdXY2NDJFSDlTdyIsInkiOiIzbGRxc0VjRXFzbENvZWFBOTF6akRXSXcxOHBxR19zcWR4bldDSWpvYmUwIn19.eyJqdGkiOiJzYm8tdmVjLUVTMjU2LXJlc291cmNlIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vbWNwLWd3LmFjbWUuc3VwZXJiYXNlZC5hcHAvbWNwL2doIiwiaWF0IjoxNzkwMDAwMDAwLCJhdGgiOiJhWmU5d040YUlyTEZ2OTVUUGEwMkRtenA3cjd3c2xuOWQ3SVhBVVNMblF3Iiwic2JvX2NvcnIiOnsiY29kaW5nX3Nlc3Npb25faWQiOiJzZXNzXzRkIiwidHVybl9yZWYiOiJ0dXJuXzciLCJhY3Rpb25fcmVmIjoiYWN0XzEyIiwiY2FsbF9pZCI6ImNhbGxfMDEifX0.f_WdL8Yc-RfJGLoo8PFBSk43YvpgfmD3C2dygR_S_4Di9NzaAwHJ4RJDEGHerF3ULvqFmB-R4gaDGSjUJ219eA",
+    "htm": "GET",
+    "htu": "https://mcp-gw.acme.superbased.app/mcp/gh",
+    "verify_at_unix": 1790000000,
+    "access_token": "sbo-example-access-token.eyJzdWIiOiJ1c3JfN2YzYSJ9.sig",
+    "want_error": "htm_mismatch"
+  },
+  {
+    "name": "sbo-ES256-resource-wrong-ath",
+    "source": "SuperBased published negative vector",
+    "profile": "resource",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiWDR2OWxOVWpJV1I0VEFXS0tPbGZ3ZTJ1T2tLYmp4Vy1qdXY2NDJFSDlTdyIsInkiOiIzbGRxc0VjRXFzbENvZWFBOTF6akRXSXcxOHBxR19zcWR4bldDSWpvYmUwIn19.eyJqdGkiOiJzYm8tdmVjLUVTMjU2LXJlc291cmNlIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vbWNwLWd3LmFjbWUuc3VwZXJiYXNlZC5hcHAvbWNwL2doIiwiaWF0IjoxNzkwMDAwMDAwLCJhdGgiOiJhWmU5d040YUlyTEZ2OTVUUGEwMkRtenA3cjd3c2xuOWQ3SVhBVVNMblF3Iiwic2JvX2NvcnIiOnsiY29kaW5nX3Nlc3Npb25faWQiOiJzZXNzXzRkIiwidHVybl9yZWYiOiJ0dXJuXzciLCJhY3Rpb25fcmVmIjoiYWN0XzEyIiwiY2FsbF9pZCI6ImNhbGxfMDEifX0.f_WdL8Yc-RfJGLoo8PFBSk43YvpgfmD3C2dygR_S_4Di9NzaAwHJ4RJDEGHerF3ULvqFmB-R4gaDGSjUJ219eA",
+    "htm": "POST",
+    "htu": "https://mcp-gw.acme.superbased.app/mcp/gh",
+    "verify_at_unix": 1790000000,
+    "access_token": "sbo-example-access-token.eyJzdWIiOiJ1c3JfN2YzYSJ9.sigx",
+    "want_error": "ath_mismatch"
+  },
+  {
+    "name": "sbo-ES256-token-endpoint-stale",
+    "source": "SuperBased published negative vector",
+    "profile": "token_endpoint",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiWDR2OWxOVWpJV1I0VEFXS0tPbGZ3ZTJ1T2tLYmp4Vy1qdXY2NDJFSDlTdyIsInkiOiIzbGRxc0VjRXFzbENvZWFBOTF6akRXSXcxOHBxR19zcWR4bldDSWpvYmUwIn19.eyJqdGkiOiJzYm8tdmVjLUVTMjU2LXRva2VuIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vYXV0aC5hY21lLnN1cGVyYmFzZWQuYXBwL29hdXRoMi90b2tlbiIsImlhdCI6MTc5MDAwMDAwMH0.xc3OBjj21Rhq6rZ0Ox9l2ziAiqPr3EaXRqY8thaYMyIkt6-_NM_LC7g79N_xw4O5JvllTGrdZnxlAcc5G38yBA",
+    "htm": "POST",
+    "htu": "https://auth.acme.superbased.app/oauth2/token",
+    "verify_at_unix": 1790003600,
+    "want_error": "iat_stale"
+  },
+  {
+    "name": "sbo-RS256-token-endpoint",
+    "source": "SuperBased published vector",
+    "profile": "token_endpoint",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IlJTMjU2IiwiandrIjp7Imt0eSI6IlJTQSIsIm4iOiJ6T3R3ZEdmX0Fla3hIVThnUkstTXJ4a2pzT0ZTdTh1TnpjSXAzQkNld0g4aVlibmZVczliODkzTEN0NVpLX01QWDhPR3pkZGpFLTdrX1ZySTA5YjA0Z1FHemxHLWpid0V3VWUtT0p0blV6VXhhMFcySEpoSkpNX08wOFhxRWRVTTlvTlFGQk9HR0hpNlprWkdyeHNMRk1JZThibUNZbUtHMF9PUWg1SEVjNDBoN1ljRG52Z1ZVbEFlM29LRW5oS09fTHNuVnlJbGZjTk1GajVxM0swVDdrcEVYNmh1TGI0VDZlMVcwWER2c0I1bEROUW5tOEFZdS05X1RRVzFkX2ZaaUgxX3llcm5iR3RRNVpuSUpUdmRtVk03LTh3Z3REZEI1U2RzRFU5UGZyLWZGdzFKdElQcFZQZHV5WVVVWXZkMGJTNmlrTUd6MFdJQ2FBRER0NjZYQk5VNEpPd3VoMFdTcHE0bGVDZ2lXbHgwc0tlYWptSWZobTMyRjhpUzBVdmhsZVRVRGg4QURCejlNUVNMSzlBQ0JtSEVyNTJnN0FHbnE5b2NyeWZ5SmVHYk1vSUZQNEFBSVZQY1liM2xMSFh2YkNkZ18tZHduc2VkRGVzb1BOa09nUlVrSVJieERjek1hNkpqbzRRUWhEVTM1bEZtdWEweUR5djRLcVhGdG1yYiIsImUiOiJBUUFCIn19.eyJqdGkiOiJzYm8tdmVjLVJTMjU2LXRva2VuIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vYXV0aC5hY21lLnN1cGVyYmFzZWQuYXBwL29hdXRoMi90b2tlbiIsImlhdCI6MTc5MDAwMDAwMH0.dpoeoxTDAsNbMDr1VQK9lM-v9jpE5-qNETE_9YXTK_v0CEypaNiiyyhgvsD57p1olRuCsHDePC3jJUGpUGSAc-h9VR90KokrYufTyWvY0lj9zQesMUH9Ee1sFcsw2JXKrjKDJHpVtF5UB-VMUSHcNGKFvrBZNbMhGhCJbOgSqkpEK-d_EZheiDF90RORspNiHW4BLtFz_JZF2UgV-HXXYwRyCrh1qhQxCuNwH1PC2K9MhzrohuvTvH6Ykj7QzZxGD6mSjVixqPDgt4aRTnPr1is9ArryULyfR5BI2Y1sJGfI4t5eJp5yheKSDZ7avUVfIGcPPCYSmZlI-DZ_3ug_Oc-De9IRbeO0MGqoWc4rzm-ALby8rXIqFItRZFO9IXsGEU1ZpxMLU3g7L6TaxIuO0vFZwHLpvemWW6YpYXcNGKbK3JT0axOvmYCHFlT4E1RQ2rDzVWuRryKdbatUaLi084US7S7Io0b5jMStWfTpsrh4oo_hb6doJqWuka-t09rS",
+    "htm": "POST",
+    "htu": "https://auth.acme.superbased.app/oauth2/token",
+    "verify_at_unix": 1790000000,
+    "want_jkt": "tLWjjhRXyvXXpR7mMzSwaqMsDNfDOURz7mIDtV7tXmk"
+  },
+  {
+    "name": "sbo-RS256-resource-with-sbo_corr",
+    "source": "SuperBased published vector",
+    "profile": "resource",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IlJTMjU2IiwiandrIjp7Imt0eSI6IlJTQSIsIm4iOiJ6T3R3ZEdmX0Fla3hIVThnUkstTXJ4a2pzT0ZTdTh1TnpjSXAzQkNld0g4aVlibmZVczliODkzTEN0NVpLX01QWDhPR3pkZGpFLTdrX1ZySTA5YjA0Z1FHemxHLWpid0V3VWUtT0p0blV6VXhhMFcySEpoSkpNX08wOFhxRWRVTTlvTlFGQk9HR0hpNlprWkdyeHNMRk1JZThibUNZbUtHMF9PUWg1SEVjNDBoN1ljRG52Z1ZVbEFlM29LRW5oS09fTHNuVnlJbGZjTk1GajVxM0swVDdrcEVYNmh1TGI0VDZlMVcwWER2c0I1bEROUW5tOEFZdS05X1RRVzFkX2ZaaUgxX3llcm5iR3RRNVpuSUpUdmRtVk03LTh3Z3REZEI1U2RzRFU5UGZyLWZGdzFKdElQcFZQZHV5WVVVWXZkMGJTNmlrTUd6MFdJQ2FBRER0NjZYQk5VNEpPd3VoMFdTcHE0bGVDZ2lXbHgwc0tlYWptSWZobTMyRjhpUzBVdmhsZVRVRGg4QURCejlNUVNMSzlBQ0JtSEVyNTJnN0FHbnE5b2NyeWZ5SmVHYk1vSUZQNEFBSVZQY1liM2xMSFh2YkNkZ18tZHduc2VkRGVzb1BOa09nUlVrSVJieERjek1hNkpqbzRRUWhEVTM1bEZtdWEweUR5djRLcVhGdG1yYiIsImUiOiJBUUFCIn19.eyJqdGkiOiJzYm8tdmVjLVJTMjU2LXJlc291cmNlIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vbWNwLWd3LmFjbWUuc3VwZXJiYXNlZC5hcHAvbWNwL2doIiwiaWF0IjoxNzkwMDAwMDAwLCJhdGgiOiJhWmU5d040YUlyTEZ2OTVUUGEwMkRtenA3cjd3c2xuOWQ3SVhBVVNMblF3Iiwic2JvX2NvcnIiOnsiY29kaW5nX3Nlc3Npb25faWQiOiJzZXNzXzRkIiwidHVybl9yZWYiOiJ0dXJuXzciLCJhY3Rpb25fcmVmIjoiYWN0XzEyIiwiY2FsbF9pZCI6ImNhbGxfMDEifX0.yRWnB_Z1Ejgv7kBOQoQH7pc8SZoTHBWWO9FjfBaQkoKoxoqWVG6RINHjt6j_d1IhFmHwPSGk4bP1upgmgxgtbwZNqqfky1hMqVzqaWmWiRiW-n02z2ToqT8B_G-3pGyxagtFuspWroYAl4TWIblTRqb146q-JrmapxxUMNO2TmS_2uAk1spxA7HohHGRnmtSzIWrm5tLWl42Q7NrnuFXi7PtTiibYO_Nua2UBEykVWd9RtqPWGFpygW5lrDGnBGEjuNF3aQU8e8vp5bSJinDtqcpgw73oq-JY3ynawzZ9M_4sMdkWuuqCWWgPJ_SvjTpe0_Zhk2cVuO2x5wOjbq4TqQFaucnUgUu1QZXg5pV33NL_jNP7fesORjgeNiRWKgavXCd8y2iCAmYvRzAISXJV2KBxw_C-MQP2prhlKQXMy-kjRw93JRiI1_n6JhJPl1lP42Kk-sZQ7Q2hYQWALY0Z7KpR76bcw5p7ukw3e0INc-R-7b3-_qYaFo2oKtYji88",
+    "htm": "POST",
+    "htu": "https://mcp-gw.acme.superbased.app/mcp/gh",
+    "verify_at_unix": 1790000000,
+    "access_token": "sbo-example-access-token.eyJzdWIiOiJ1c3JfN2YzYSJ9.sig",
+    "want_jkt": "tLWjjhRXyvXXpR7mMzSwaqMsDNfDOURz7mIDtV7tXmk"
+  },
+  {
+    "name": "sbo-RS256-resource-wrong-htm",
+    "source": "SuperBased published negative vector",
+    "profile": "resource",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IlJTMjU2IiwiandrIjp7Imt0eSI6IlJTQSIsIm4iOiJ6T3R3ZEdmX0Fla3hIVThnUkstTXJ4a2pzT0ZTdTh1TnpjSXAzQkNld0g4aVlibmZVczliODkzTEN0NVpLX01QWDhPR3pkZGpFLTdrX1ZySTA5YjA0Z1FHemxHLWpid0V3VWUtT0p0blV6VXhhMFcySEpoSkpNX08wOFhxRWRVTTlvTlFGQk9HR0hpNlprWkdyeHNMRk1JZThibUNZbUtHMF9PUWg1SEVjNDBoN1ljRG52Z1ZVbEFlM29LRW5oS09fTHNuVnlJbGZjTk1GajVxM0swVDdrcEVYNmh1TGI0VDZlMVcwWER2c0I1bEROUW5tOEFZdS05X1RRVzFkX2ZaaUgxX3llcm5iR3RRNVpuSUpUdmRtVk03LTh3Z3REZEI1U2RzRFU5UGZyLWZGdzFKdElQcFZQZHV5WVVVWXZkMGJTNmlrTUd6MFdJQ2FBRER0NjZYQk5VNEpPd3VoMFdTcHE0bGVDZ2lXbHgwc0tlYWptSWZobTMyRjhpUzBVdmhsZVRVRGg4QURCejlNUVNMSzlBQ0JtSEVyNTJnN0FHbnE5b2NyeWZ5SmVHYk1vSUZQNEFBSVZQY1liM2xMSFh2YkNkZ18tZHduc2VkRGVzb1BOa09nUlVrSVJieERjek1hNkpqbzRRUWhEVTM1bEZtdWEweUR5djRLcVhGdG1yYiIsImUiOiJBUUFCIn19.eyJqdGkiOiJzYm8tdmVjLVJTMjU2LXJlc291cmNlIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vbWNwLWd3LmFjbWUuc3VwZXJiYXNlZC5hcHAvbWNwL2doIiwiaWF0IjoxNzkwMDAwMDAwLCJhdGgiOiJhWmU5d040YUlyTEZ2OTVUUGEwMkRtenA3cjd3c2xuOWQ3SVhBVVNMblF3Iiwic2JvX2NvcnIiOnsiY29kaW5nX3Nlc3Npb25faWQiOiJzZXNzXzRkIiwidHVybl9yZWYiOiJ0dXJuXzciLCJhY3Rpb25fcmVmIjoiYWN0XzEyIiwiY2FsbF9pZCI6ImNhbGxfMDEifX0.yRWnB_Z1Ejgv7kBOQoQH7pc8SZoTHBWWO9FjfBaQkoKoxoqWVG6RINHjt6j_d1IhFmHwPSGk4bP1upgmgxgtbwZNqqfky1hMqVzqaWmWiRiW-n02z2ToqT8B_G-3pGyxagtFuspWroYAl4TWIblTRqb146q-JrmapxxUMNO2TmS_2uAk1spxA7HohHGRnmtSzIWrm5tLWl42Q7NrnuFXi7PtTiibYO_Nua2UBEykVWd9RtqPWGFpygW5lrDGnBGEjuNF3aQU8e8vp5bSJinDtqcpgw73oq-JY3ynawzZ9M_4sMdkWuuqCWWgPJ_SvjTpe0_Zhk2cVuO2x5wOjbq4TqQFaucnUgUu1QZXg5pV33NL_jNP7fesORjgeNiRWKgavXCd8y2iCAmYvRzAISXJV2KBxw_C-MQP2prhlKQXMy-kjRw93JRiI1_n6JhJPl1lP42Kk-sZQ7Q2hYQWALY0Z7KpR76bcw5p7ukw3e0INc-R-7b3-_qYaFo2oKtYji88",
+    "htm": "GET",
+    "htu": "https://mcp-gw.acme.superbased.app/mcp/gh",
+    "verify_at_unix": 1790000000,
+    "access_token": "sbo-example-access-token.eyJzdWIiOiJ1c3JfN2YzYSJ9.sig",
+    "want_error": "htm_mismatch"
+  },
+  {
+    "name": "sbo-RS256-resource-wrong-ath",
+    "source": "SuperBased published negative vector",
+    "profile": "resource",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IlJTMjU2IiwiandrIjp7Imt0eSI6IlJTQSIsIm4iOiJ6T3R3ZEdmX0Fla3hIVThnUkstTXJ4a2pzT0ZTdTh1TnpjSXAzQkNld0g4aVlibmZVczliODkzTEN0NVpLX01QWDhPR3pkZGpFLTdrX1ZySTA5YjA0Z1FHemxHLWpid0V3VWUtT0p0blV6VXhhMFcySEpoSkpNX08wOFhxRWRVTTlvTlFGQk9HR0hpNlprWkdyeHNMRk1JZThibUNZbUtHMF9PUWg1SEVjNDBoN1ljRG52Z1ZVbEFlM29LRW5oS09fTHNuVnlJbGZjTk1GajVxM0swVDdrcEVYNmh1TGI0VDZlMVcwWER2c0I1bEROUW5tOEFZdS05X1RRVzFkX2ZaaUgxX3llcm5iR3RRNVpuSUpUdmRtVk03LTh3Z3REZEI1U2RzRFU5UGZyLWZGdzFKdElQcFZQZHV5WVVVWXZkMGJTNmlrTUd6MFdJQ2FBRER0NjZYQk5VNEpPd3VoMFdTcHE0bGVDZ2lXbHgwc0tlYWptSWZobTMyRjhpUzBVdmhsZVRVRGg4QURCejlNUVNMSzlBQ0JtSEVyNTJnN0FHbnE5b2NyeWZ5SmVHYk1vSUZQNEFBSVZQY1liM2xMSFh2YkNkZ18tZHduc2VkRGVzb1BOa09nUlVrSVJieERjek1hNkpqbzRRUWhEVTM1bEZtdWEweUR5djRLcVhGdG1yYiIsImUiOiJBUUFCIn19.eyJqdGkiOiJzYm8tdmVjLVJTMjU2LXJlc291cmNlIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vbWNwLWd3LmFjbWUuc3VwZXJiYXNlZC5hcHAvbWNwL2doIiwiaWF0IjoxNzkwMDAwMDAwLCJhdGgiOiJhWmU5d040YUlyTEZ2OTVUUGEwMkRtenA3cjd3c2xuOWQ3SVhBVVNMblF3Iiwic2JvX2NvcnIiOnsiY29kaW5nX3Nlc3Npb25faWQiOiJzZXNzXzRkIiwidHVybl9yZWYiOiJ0dXJuXzciLCJhY3Rpb25fcmVmIjoiYWN0XzEyIiwiY2FsbF9pZCI6ImNhbGxfMDEifX0.yRWnB_Z1Ejgv7kBOQoQH7pc8SZoTHBWWO9FjfBaQkoKoxoqWVG6RINHjt6j_d1IhFmHwPSGk4bP1upgmgxgtbwZNqqfky1hMqVzqaWmWiRiW-n02z2ToqT8B_G-3pGyxagtFuspWroYAl4TWIblTRqb146q-JrmapxxUMNO2TmS_2uAk1spxA7HohHGRnmtSzIWrm5tLWl42Q7NrnuFXi7PtTiibYO_Nua2UBEykVWd9RtqPWGFpygW5lrDGnBGEjuNF3aQU8e8vp5bSJinDtqcpgw73oq-JY3ynawzZ9M_4sMdkWuuqCWWgPJ_SvjTpe0_Zhk2cVuO2x5wOjbq4TqQFaucnUgUu1QZXg5pV33NL_jNP7fesORjgeNiRWKgavXCd8y2iCAmYvRzAISXJV2KBxw_C-MQP2prhlKQXMy-kjRw93JRiI1_n6JhJPl1lP42Kk-sZQ7Q2hYQWALY0Z7KpR76bcw5p7ukw3e0INc-R-7b3-_qYaFo2oKtYji88",
+    "htm": "POST",
+    "htu": "https://mcp-gw.acme.superbased.app/mcp/gh",
+    "verify_at_unix": 1790000000,
+    "access_token": "sbo-example-access-token.eyJzdWIiOiJ1c3JfN2YzYSJ9.sigx",
+    "want_error": "ath_mismatch"
+  },
+  {
+    "name": "sbo-RS256-token-endpoint-stale",
+    "source": "SuperBased published negative vector",
+    "profile": "token_endpoint",
+    "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IlJTMjU2IiwiandrIjp7Imt0eSI6IlJTQSIsIm4iOiJ6T3R3ZEdmX0Fla3hIVThnUkstTXJ4a2pzT0ZTdTh1TnpjSXAzQkNld0g4aVlibmZVczliODkzTEN0NVpLX01QWDhPR3pkZGpFLTdrX1ZySTA5YjA0Z1FHemxHLWpid0V3VWUtT0p0blV6VXhhMFcySEpoSkpNX08wOFhxRWRVTTlvTlFGQk9HR0hpNlprWkdyeHNMRk1JZThibUNZbUtHMF9PUWg1SEVjNDBoN1ljRG52Z1ZVbEFlM29LRW5oS09fTHNuVnlJbGZjTk1GajVxM0swVDdrcEVYNmh1TGI0VDZlMVcwWER2c0I1bEROUW5tOEFZdS05X1RRVzFkX2ZaaUgxX3llcm5iR3RRNVpuSUpUdmRtVk03LTh3Z3REZEI1U2RzRFU5UGZyLWZGdzFKdElQcFZQZHV5WVVVWXZkMGJTNmlrTUd6MFdJQ2FBRER0NjZYQk5VNEpPd3VoMFdTcHE0bGVDZ2lXbHgwc0tlYWptSWZobTMyRjhpUzBVdmhsZVRVRGg4QURCejlNUVNMSzlBQ0JtSEVyNTJnN0FHbnE5b2NyeWZ5SmVHYk1vSUZQNEFBSVZQY1liM2xMSFh2YkNkZ18tZHduc2VkRGVzb1BOa09nUlVrSVJieERjek1hNkpqbzRRUWhEVTM1bEZtdWEweUR5djRLcVhGdG1yYiIsImUiOiJBUUFCIn19.eyJqdGkiOiJzYm8tdmVjLVJTMjU2LXRva2VuIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vYXV0aC5hY21lLnN1cGVyYmFzZWQuYXBwL29hdXRoMi90b2tlbiIsImlhdCI6MTc5MDAwMDAwMH0.dpoeoxTDAsNbMDr1VQK9lM-v9jpE5-qNETE_9YXTK_v0CEypaNiiyyhgvsD57p1olRuCsHDePC3jJUGpUGSAc-h9VR90KokrYufTyWvY0lj9zQesMUH9Ee1sFcsw2JXKrjKDJHpVtF5UB-VMUSHcNGKFvrBZNbMhGhCJbOgSqkpEK-d_EZheiDF90RORspNiHW4BLtFz_JZF2UgV-HXXYwRyCrh1qhQxCuNwH1PC2K9MhzrohuvTvH6Ykj7QzZxGD6mSjVixqPDgt4aRTnPr1is9ArryULyfR5BI2Y1sJGfI4t5eJp5yheKSDZ7avUVfIGcPPCYSmZlI-DZ_3ug_Oc-De9IRbeO0MGqoWc4rzm-ALby8rXIqFItRZFO9IXsGEU1ZpxMLU3g7L6TaxIuO0vFZwHLpvemWW6YpYXcNGKbK3JT0axOvmYCHFlT4E1RQ2rDzVWuRryKdbatUaLi084US7S7Io0b5jMStWfTpsrh4oo_hb6doJqWuka-t09rS",
+    "htm": "POST",
+    "htu": "https://auth.acme.superbased.app/oauth2/token",
+    "verify_at_unix": 1790003600,
+    "want_error": "iat_stale"
+  }
+]

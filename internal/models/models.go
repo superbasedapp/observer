@@ -1101,8 +1101,10 @@ type Session struct {
 	// session (migration 125): the free-form semver string an adapter
 	// resolved from a grounded on-disk field (Codex
 	// `session_meta.cli_version`, Cline `cline_version`, Claude Code
-	// transcript top-level `version`, ...). NODE-LOCAL — never on the
-	// org-push wire. Written ONLY through Store.SetSessionToolVersion
+	// transcript top-level `version`, ...). Since 2026-09-22 it ships on
+	// the org-push wire UNCONDITIONALLY as metadata (server migration
+	// 161 / pg 0027, positive canary in tests/invariant/privacy_test.go,
+	// docs/security.md TOOLVERSION-1). Written ONLY through Store.SetSessionToolVersion
 	// (not UpsertSession), FIRST-WINS-UNLESS-EMPTY. Empty = the adapter
 	// found no grounded version on disk — the honest "unknown", NEVER
 	// fabricated.
@@ -1620,7 +1622,57 @@ type TokenEvent struct {
 	// migration 087) can bucket them without a separate session row.
 	// NODE-LOCAL — not on the org-push wire.
 	IsSidechain bool
+	// GenMs is the per-call GENERATION DURATION the adapter captured for
+	// this model call (agent migration 136, token_usage.gen_ms), in
+	// milliseconds, normalised at the adapter boundary (hermes float
+	// seconds, poolside/muse/etc. timestamps -> ms). 0 = none captured, the
+	// common case - stored NULL. Set ONLY when the row is COMPLETE (the
+	// record carrying the final usage / the duration itself). A transcript-
+	// timed adapter may prove the span only in a LATER parse; it then
+	// re-emits the row with GenStampOnly set. The org push holds such rows
+	// back briefly (store.PushSettle) so the first push carries the stamp.
+	// Never derived from Timestamp or a neighbour row. Feeds
+	// internal/sessionmsg's Speed (Tok/s) only. S10-SPEED.
+	GenMs int64
+	// GenBasis names GenMs's basis: GenBasisNative (the tool's own store
+	// recorded the call's duration or start+end) or GenBasisTranscript
+	// (an in-window, proven transcript span). Empty when GenMs is 0.
+	GenBasis string
+	// GenTimingV is the adapter's gen-timing parser version: an upsert
+	// replaces a stored duration only when this is strictly newer (a bug
+	// fix re-derives on rescan; a same-version re-parse is a no-op).
+	GenTimingV int
+	// GenStampOnly marks a re-emission whose ONLY purpose is to stamp the
+	// generation timing of a row an earlier parse already inserted (the
+	// claude-code look-back). The store applies it as a narrow UPDATE of
+	// gen_ms / gen_basis / gen_timing_v on the existing (source_file,
+	// source_event_id) row and NEVER inserts it, so it cannot resurrect a
+	// row retention pruned or rewrite any token / sidechain column.
+	GenStampOnly bool
+	// HookEvent names the hook event that delivered this usage, in the
+	// emitting adapter's own event vocabulary (Cursor: "stop" /
+	// "afterAgentResponse"). Empty for every non-hook source. It is
+	// IN-MEMORY provenance only - never persisted, never on the org-push
+	// wire - and exists so a store-side dedup can act on WHICH hook
+	// delivered a row instead of inferring a restatement from counter
+	// equality alone (review finding F3, 2026-09-26).
+	HookEvent string
+	// Restates is the MessageID of an EARLIER row of the same session that
+	// the emitting adapter has PROVEN, from both halves in its own source,
+	// this event merely restates under a different identity (Cursor's
+	// mislabelled stop, which carries the NEXT request's generation id with
+	// the previous request's usage). The store never writes such an event,
+	// and removes a row already stored under its key only when that row
+	// still carries exactly this restated usage. Empty in every other case.
+	Restates string
 }
+
+// Generation-timing bases (TokenEvent.GenBasis). The values are the
+// internal/sessionmsg Basis vocabulary for adapter-captured durations.
+const (
+	GenBasisNative     = "native"
+	GenBasisTranscript = "transcript"
+)
 
 // APITurn is one request/response pair observed by the proxy. Accurate token
 // counts come from the provider's response body; session/project linkage is
@@ -1761,7 +1813,42 @@ type APITurn struct {
 	Route             string
 	RoutingGeneration int64
 	AuthoritySource   string
+	// PromptID is the client-supplied id of the user prompt this request
+	// serves (migration 139): every request serving one prompt, including
+	// the subagent turns it started, carries the same value. The proxy reads
+	// it from a known prompt-grouping request header (today Claude Code's
+	// x-claude-code-prompt-id gateway hint); empty when the client sent
+	// none. An opaque random id, never prompt text. Node-local metadata -
+	// not on the org wire.
+	PromptID string
+	// RequestClass is the client-declared kind of request (migration 144):
+	// one of the APIRequestClass* values, or empty when the client sent no
+	// request-class hint or sent a value outside the documented closed
+	// vocabulary (unknown is never mapped to a known class). The proxy reads
+	// it from a known request-class header (today Claude Code's
+	// x-claude-code-request-class gateway hint). Node-local metadata - not
+	// on the org wire.
+	RequestClass string
 }
+
+// Request classes for APITurn.RequestClass (migration 144). A closed,
+// content-free enum: exactly the values Claude Code documents for its
+// x-claude-code-request-class gateway hint
+// (https://code.claude.com/docs/en/llm-gateway-protocol#gateway-hint-headers).
+const (
+	// APIRequestClassMain is a turn of the main conversation.
+	APIRequestClassMain = "main"
+	// APIRequestClassSubagent is a turn of a subagent.
+	APIRequestClassSubagent = "subagent"
+	// APIRequestClassWorkflow is an agent running inside a workflow.
+	APIRequestClassWorkflow = "workflow"
+	// APIRequestClassCompaction is the summarization request that compacts
+	// a conversation.
+	APIRequestClassCompaction = "compaction"
+	// APIRequestClassAuxiliary is a side request such as a session title,
+	// a classifier or a summary.
+	APIRequestClassAuxiliary = "auxiliary"
+)
 
 // Route classes for APITurn.Route (Plane B per-turn authority stamp, Sol
 // S5). Content-free enum: how the node proxy served a turn.
@@ -2113,9 +2200,10 @@ type SessionSurface struct {
 }
 
 // SessionToolVersion is the per-session tool/CLI version an adapter
-// resolved from a grounded on-disk field. NODE-LOCAL (migration 125):
-// `sessions.tool_version` never enters the org-push wire (pinned by
-// tests/invariant/privacy_test.go). Written through the single store
+// resolved from a grounded on-disk field (migration 125). Since
+// 2026-09-22 `sessions.tool_version` ships on the org-push wire
+// unconditionally as metadata (server migration 161 / pg 0027; positive
+// canary in tests/invariant/privacy_test.go). Written through the single store
 // seam Store.SetSessionToolVersion with FIRST-WINS-UNLESS-EMPTY
 // semantics: the first grounded stamp sticks, a later parse can only
 // FILL a still-empty column, and a re-parse can never clear or change a

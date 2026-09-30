@@ -132,11 +132,13 @@ func TestEnterpriseAuthoritySetContainsIntel(t *testing.T) {
 		t.Fatalf("EnterpriseAuthoritySet() omits %q — decision D11 requires the fleet-wide auto-grant", AuthorityExtractIntel)
 	}
 	// Every token it returns must be either a real extraction authority (the
-	// set is sourced from the extract.* family) or one of the TWO governing
+	// set is sourced from the extract.* family) or one of the THREE governing
 	// tokens the enterprise posture exists to carry (W7, 2026-09-13:
 	// settings.pin makes the default node.governance pins land, enforce.budget
-	// makes the org's cap authoritative). Anything else is drift.
-	governing := map[string]bool{AuthoritySettingsPin: false, AuthorityEnforceBudget: false}
+	// makes the org's cap authoritative; Agent Access B9, 2026-09-24:
+	// enforce.mcp_access makes the org's MCP-access policy authoritative).
+	// Anything else is drift.
+	governing := map[string]bool{AuthoritySettingsPin: false, AuthorityEnforceBudget: false, AuthorityEnforceMCPAccess: false}
 	for _, tok := range EnterpriseAuthoritySet() {
 		if _, ok := governing[tok]; ok {
 			governing[tok] = true

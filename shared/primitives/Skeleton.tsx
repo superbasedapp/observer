@@ -1,9 +1,11 @@
 import clsx from "clsx";
 import type { CSSProperties } from "react";
 
-// Pulse skeleton placeholder. The animate-shimmer utility is
-// defined in src/index.css and uses --ease from tokens.css so
-// theme switches stay consistent.
+// Shimmer skeleton placeholder. The animate-shimmer class lives in
+// shared/styles/motion.css; the base (--skel-base) and the sweep highlight
+// (--skel-hl) are theme tokens so the placeholder reads in BOTH themes (the
+// old white-on-white sweep was invisible in light mode, and the old
+// bg-bg-3/60 base never compiled at all).
 export function Skeleton({
   className,
   style,
@@ -15,7 +17,7 @@ export function Skeleton({
     <div
       aria-hidden="true"
       className={clsx(
-        "relative overflow-hidden rounded-2 bg-bg-3/60 animate-shimmer",
+        "relative overflow-hidden rounded-2 bg-skel animate-shimmer",
         className,
       )}
       style={style}

@@ -130,6 +130,27 @@ func TestSetSessionToolVersionRejectsMalformed(t *testing.T) {
 		{"prose", "the latest build as of tuesday"},
 		{"over the length cap", strings.Repeat("9", maxToolVersionRunes+1)},
 		{"empty", ""},
+		// TOOLVERSION-1 (docs/security.md): the grammar rejects shapes a
+		// URL/email/path/compact-secret needs but a real version never does.
+		{"url scheme", "https://x"},
+		{"url with host and path", "https://attacker.example/collect"},
+		{"email-shaped", "user@example"},
+		{"path traversal", "../../client"},
+		{"absolute path", "/etc/passwd"},
+		{"leading dot", ".hidden"},
+		{"leading hyphen", "-1.2.3"},
+		{"embedded colon", "sbo:secret-token"},
+		{"embedded slash", "1.2/3"},
+		{"compact base64-shaped secret with padding", "c2VjcmV0LXRva2VuLXZhbHVl="},
+		// TOOLVERSION-1 follow-up (2026-09-23): the grammar now requires a
+		// leading digit (after an optional "v"/"V") AND at least one ".",
+		// which a compact secret's alphanumeric noise never has.
+		{"AWS access key id", "AKIAIOSFODNN7EXAMPLE"},
+		{"GitHub PAT", "ghp_abcdefghijklmnopqrstuvwxyz1234567890"},
+		{"JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"},
+		{"hex sha (no dot)", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+		{"hex sha, digit-leading (no dot)", "0d3b45c1a2f6e8b9c0d1e2f3a4b5c6d7e8f9a0b1"},
+		{"UUID (no dot)", "550e8400-e29b-41d4-a716-446655440000"},
 	}
 	for _, tc := range bad {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,14 +169,43 @@ func TestSetSessionToolVersionRejectsMalformed(t *testing.T) {
 		})
 	}
 
-	// A value at exactly the length cap, with no whitespace/control, IS
-	// accepted — the cap is inclusive.
-	okVer := strings.Repeat("9", maxToolVersionRunes)
+	// A value at exactly the length cap, version-shaped (leading "v", a
+	// digit, and a "."), with no whitespace/control, IS accepted — the cap
+	// is inclusive. "v9." (3 runes) + 61 more digits = 64 runes total.
+	okVer := "v9." + strings.Repeat("9", maxToolVersionRunes-3)
+	if len(okVer) != maxToolVersionRunes {
+		t.Fatalf("test setup bug: okVer length = %d, want %d", len(okVer), maxToolVersionRunes)
+	}
 	changed, err := s.SetSessionToolVersion(ctx, models.SessionToolVersion{SessionID: "tv-bad", Version: okVer})
 	if err != nil || !changed {
 		t.Fatalf("value at length cap should be accepted: changed=%v err=%v", changed, err)
 	}
 	if got := read(); got != okVer {
 		t.Errorf("stored = %q, want %q", got, okVer)
+	}
+}
+
+// TestValidToolVersionAdmitsRealVendorShapes pins that the TOOLVERSION-1
+// grammar (delegated to orgcontract.ValidToolVersion) admits every shape a
+// real adapter actually stamps: plain semver, a "v"-prefixed CLI version, a
+// date-based CalVer release, and semver with a prerelease or build-metadata
+// suffix (grepped from internal/adapter/{claudecode,codex,cline,kilocode,
+// qoder,copilotcli,qwencode} 2026-09-22).
+func TestValidToolVersionAdmitsRealVendorShapes(t *testing.T) {
+	t.Parallel()
+	good := []string{
+		"1.2.3",
+		"2026.8.2",
+		"v0.130.0",
+		"1.8.1-rc.1",
+		"0.45.0+build.7",
+		"2.1.0_beta",
+		"0.150.0",
+		"3.17.4-beta.1",
+	}
+	for _, v := range good {
+		if !validToolVersion(v) {
+			t.Errorf("validToolVersion(%q) = false, want true (a real vendor-stamped shape)", v)
+		}
 	}
 }

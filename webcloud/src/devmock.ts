@@ -1143,6 +1143,16 @@ export function installDevMock(): void {
       /* keep raw */
     }
     if (path.startsWith("/portal/")) {
+      // Optional simulated latency (localStorage sbci_devmock_delay = ms) so
+      // the loading skeletons, the top progress bar and the keep-previous
+      // dimming can be seen and screenshotted; the mock is otherwise instant.
+      let delay = 0;
+      try {
+        delay = Number(localStorage.getItem("sbci_devmock_delay") ?? 0) || 0;
+      } catch {
+        delay = 0;
+      }
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
       const res = await route(path, method, init, search);
       if (res) return res;
     }

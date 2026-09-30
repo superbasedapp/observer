@@ -360,7 +360,11 @@ func newHookCmd() *cobra.Command {
 // rewrite a Bash command to funnel through `observer run`; other events
 // fall through to HandleApprove (the JSONL watcher captures them
 // out-of-band). Always replies with an approval on stdout — must never
-// block the host.
+// block the host. The one exception is a payload ANOTHER host sent to a
+// Claude Code hook command (cursor-agent runs the user's Claude Code
+// hooks with its own payload): hook.ForeignClaudeHookHost recognises it
+// from a field it carries and the receiver exits 0 without a reply,
+// without ingesting and without evaluating the guard.
 //
 // `configPath`, when non-empty, is forwarded to all `config.Load` calls
 // so the hook handler reads the same config (and therefore writes to
@@ -370,17 +374,37 @@ func handleClaudeCodeHook(ctx context.Context, event, configPath string) {
 	if event != "" {
 		label = "claude-code:" + event
 	}
+	stdin, host, foreign := claudeCodeHookPayload(os.Stdin)
+	if foreign {
+		skipForeignClaudeCodeHook(label, host, os.Stderr)
+		return
+	}
+	dispatchClaudeCodeHook(ctx, event, configPath, stdin)
+}
+
+// dispatchClaudeCodeHook is handleClaudeCodeHook's per-event dispatch over
+// the already-peeked payload stream (see claudeCodeHookPayload).
+func dispatchClaudeCodeHook(ctx context.Context, event, configPath string, stdin io.Reader) {
+	label := "claude-code"
+	if event != "" {
+		label = "claude-code:" + event
+	}
 	if event == "pre-tool" {
-		handleClaudeCodePreTool(os.Stdin, os.Stdout, os.Stderr, label, configPath)
+		handleClaudeCodePreTool(stdin, os.Stdout, os.Stderr, label, configPath)
 		return
 	}
 	if event == "post-tool" {
-		handleClaudeCodePostTool(os.Stdin, os.Stdout, os.Stderr, label, configPath)
+		handleClaudeCodePostTool(stdin, os.Stdout, os.Stderr, label, configPath)
 		return
 	}
 	if event == "session-start" {
 		writer := makePidbridgeWriter(configPath)
-		handleClaudeCodeSessionStart(ctx, os.Getppid(), defaultAncestors, os.Stdin, os.Stdout, os.Stderr, label, writer)
+		// The body is teed so the skills-history snapshot (S10-SKILLS,
+		// hook_skillsnap.go) can run AFTER the session-start reply, on the
+		// same payload, without changing the handler's signature.
+		var body bytes.Buffer
+		handleClaudeCodeSessionStart(ctx, os.Getppid(), defaultAncestors, io.TeeReader(stdin, &body), os.Stdout, os.Stderr, label, writer)
+		recordClaudeSkillSnapshot(body.Bytes(), "SessionStart", label, configPath, os.Stderr)
 		return
 	}
 	// Tier 1 expansion (2026-05): each of these events maps to one row
@@ -388,55 +412,55 @@ func handleClaudeCodeHook(ctx context.Context, event, configPath string) {
 	// stdin → reply → DB open → insert.
 	switch event {
 	case "session-end":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeSessionEndEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeSessionEndEvent)
 		return
 	case "user-prompt-submit":
-		handleClaudeCodeUserPromptSubmit(ctx, label, configPath)
+		handleClaudeCodeUserPromptSubmitFrom(ctx, stdin, label, configPath)
 		return
 	case "post-tool-failure":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudePostToolFailureEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudePostToolFailureEvent)
 		return
 	case "stop-failure":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeStopFailureEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeStopFailureEvent)
 		return
 	case "subagent-start":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeSubagentStartEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeSubagentStartEvent)
 		return
 	case "subagent-stop":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeSubagentStopEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeSubagentStopEvent)
 		return
 	case "stop":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeStopEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeStopEvent)
 		return
 	case "notification":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeNotificationEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeNotificationEvent)
 		return
 	case "cwd-changed":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeCwdChangedEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeCwdChangedEvent)
 		return
 	case "setup":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeSetupEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeSetupEvent)
 		return
 	case "user-prompt-expansion":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeUserPromptExpansionEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeUserPromptExpansionEvent)
 		return
 	case "post-tool-batch":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudePostToolBatchEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudePostToolBatchEvent)
 		return
 	case "permission-request":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudePermissionRequestEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudePermissionRequestEvent)
 		return
 	case "permission-denied":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudePermissionDeniedEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudePermissionDeniedEvent)
 		return
 	case "instructions-loaded":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeInstructionsLoadedEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeInstructionsLoadedEvent)
 		return
 	case "config-change":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeConfigChangeEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeConfigChangeEvent)
 		return
 	case "worktree-remove":
-		handleClaudeCodeActionEvent(ctx, label, configPath, buildClaudeWorktreeRemoveEvent)
+		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeWorktreeRemoveEvent)
 		return
 	case "worktree-create":
 		// Special path: blocking hook that must write the chosen
@@ -444,17 +468,17 @@ func handleClaudeCodeHook(ctx context.Context, event, configPath string) {
 		// reply matrix) — any non-zero exit or empty stdout fails
 		// the Agent spawn. NOT registered by default; user opts in
 		// per docs/claude-worktree-hook.md.
-		handleClaudeCodeWorktreeCreate(ctx, label, configPath, os.Stdin, os.Stdout, os.Stderr)
+		handleClaudeCodeWorktreeCreate(ctx, label, configPath, stdin, os.Stdout, os.Stderr)
 		return
 	}
 	if event != "pre-compact" && event != "post-compact" {
-		hook.HandleApprove(label, os.Stdin, os.Stdout, os.Stderr)
+		hook.HandleApprove(label, stdin, os.Stdout, os.Stderr)
 		markHookReplied()
 		return
 	}
 	// Read stdin first — we need it for both the approval reply (which is
 	// stateless) and the compaction handler.
-	body, _ := io.ReadAll(io.LimitReader(os.Stdin, defaultHookBodyLimit))
+	body, _ := io.ReadAll(io.LimitReader(stdin, defaultHookBodyLimit))
 	// Reply immediately; the DB write is best-effort.
 	_ = json.NewEncoder(os.Stdout).Encode(hook.Decision{Decision: "approve"})
 	markHookReplied()
@@ -501,6 +525,37 @@ func handleClaudeCodeHook(ctx context.Context, event, configPath string) {
 			fmt.Fprintf(os.Stderr, "observer-hook: %s reconcile: %v\n", label, err)
 		}
 	}
+}
+
+// claudeCodeHookPayload reads the Claude Code hook payload ONCE (up to
+// the largest bound any claude-code handler reads, plus one byte) to ask
+// hook.ForeignClaudeHookHost whether another host sent it, and returns a
+// stream that replays those bytes followed by whatever is left, so every
+// handler still reads - and still detects truncation - exactly as before.
+// An over-bound payload is never classified (its tail, where Cursor puts
+// cursor_version, is not in hand) and takes the normal path.
+func claudeCodeHookPayload(r io.Reader) (stdin io.Reader, host string, foreign bool) {
+	buf, _ := io.ReadAll(io.LimitReader(r, promptSubmitBodyLimit+1))
+	stdin = io.MultiReader(bytes.NewReader(buf), r)
+	if int64(len(buf)) > promptSubmitBodyLimit {
+		return stdin, "", false
+	}
+	host, foreign = hook.ForeignClaudeHookHost(bytes.TrimPrefix(buf, []byte{0xEF, 0xBB, 0xBF}))
+	return stdin, host, foreign
+}
+
+// skipForeignClaudeCodeHook is the claude-code receiver's answer to a
+// payload another host sent (cursor-agent runs the user's Claude Code
+// hooks with its own payload; see hook.ForeignClaudeHookHost): nothing is
+// ingested, the guard is not evaluated (Observer's own hook for that host
+// already sees the call), and NOTHING is written to stdout. Exit 0 with an
+// empty stdout is the one reply no host reads as a decision: cursor-agent
+// treats it as "this hook had no opinion" for every step (a non-empty but
+// unrecognised reply on a permission step, by contrast, is blocked "for
+// safety"), and an explicit allow would pre-empt the host's own approval.
+func skipForeignClaudeCodeHook(label, host string, stderr io.Writer) {
+	hookExpectsStdoutReply = false
+	fmt.Fprintf(stderr, "observer-hook: %s payload from %s (runs Claude Code hooks); no-op\n", label, host)
 }
 
 // pidbridgeWriter is the injected DB-write side of the SessionStart hook,
@@ -875,11 +930,25 @@ type preToolRewriteOut struct {
 // `observer run`. Any failure falls through to plain approval — this hook
 // MUST NEVER block the host tool.
 func handleClaudeCodePreTool(stdin io.Reader, stdout, stderr io.Writer, label, configPath string) {
-	body, _ := io.ReadAll(io.LimitReader(stdin, defaultHookBodyLimit))
-	fmt.Fprintf(stderr, "observer-hook: event=%s received bytes=%d at=%s\n",
-		label, len(body), time.Now().UTC().Format(time.RFC3339))
+	// SR27-D2: a PreToolUse body carries the tool's whole input (a Write's
+	// file content, an Edit's new_string), so it can legitimately exceed
+	// the default bound. Read with the larger prompt-submit bound AND
+	// detect truncation: a truncated body fails to parse, and an
+	// unparseable body must never reach the guard's approve-if-unevaluable
+	// path while the guard is enforcing.
+	body, truncated := readHookBodyDetectTruncation(stdin, promptSubmitBodyLimit)
+	fmt.Fprintf(stderr, "observer-hook: event=%s received bytes=%d truncated=%v at=%s\n",
+		label, len(body), truncated, time.Now().UTC().Format(time.RFC3339))
 
 	cfg, cfgErr := config.Load(config.LoadOptions{GlobalPath: configPath})
+
+	if truncated {
+		enforcing := cfgErr == nil && cfg.Guard.Enabled && cfg.Guard.Mode == "enforce"
+		if hook.HandleTruncatedPreTool(label, enforcing, stdout, stderr) {
+			markHookReplied()
+			return
+		}
+	}
 
 	// Guard seam (guard spec §3.2 seam 1, G4): evaluate BEFORE the
 	// rewrite decision. A deny/ask emission replaces the reply
@@ -960,6 +1029,13 @@ func buildHookGuard(cfg config.Config, stderr io.Writer) *guard.Guard {
 	}
 	for _, issue := range g.LoadIssues() {
 		fmt.Fprintf(stderr, "observer-hook: guard policy issue: %s\n", issue)
+	}
+	// Agent Access P4 hook deny (doc3 §12.6): answer R-306/R-307 from the
+	// compiled node table the daemon cached beside the org-bundle cache —
+	// one file read, no DB, no org fetch; absent/disabled = no lookup
+	// (fail-open, exactly the pre-P4 hook).
+	if fn := hookMCPAccessLookup(cfg); fn != nil {
+		g.SetMCPAccessLookup(fn)
 	}
 	// §6.3 approvals on the hook path: the lookup opens the DB
 	// LAZILY and only runs for verdicts that would block (ask/deny —
@@ -1226,7 +1302,13 @@ var hookOSExit = os.Exit
 // ordering here is required by the security property, not an
 // oversight.
 func handleClaudeCodeUserPromptSubmit(ctx context.Context, label, configPath string) {
-	body, truncated := readHookBodyDetectTruncation(os.Stdin, promptSubmitBodyLimit)
+	handleClaudeCodeUserPromptSubmitFrom(ctx, os.Stdin, label, configPath)
+}
+
+// handleClaudeCodeUserPromptSubmitFrom is handleClaudeCodeUserPromptSubmit
+// over an explicit payload stream (the dispatcher's peeked stdin).
+func handleClaudeCodeUserPromptSubmitFrom(ctx context.Context, stdin io.Reader, label, configPath string) {
+	body, truncated := readHookBodyDetectTruncation(stdin, promptSubmitBodyLimit)
 	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
 
 	cfg, cfgErr := config.Load(config.LoadOptions{GlobalPath: configPath})
@@ -1330,6 +1412,9 @@ func handleClaudeCodePostTool(stdin io.Reader, stdout, stderr io.Writer, label, 
 	markHookReplied()
 
 	recordClaudecodeEffort(body, "PostToolUse", label, configPath, stderr)
+	// S10-SKILLS: a Skill-tool invocation snapshots the invoked SKILL.md
+	// (a no-op for every other tool; see hook_skillsnap.go).
+	recordClaudeSkillSnapshot(body, "PostToolUse", label, configPath, stderr)
 }
 
 // recordClaudecodeEffort parses (session_id, tool_use_id, effort.level)
@@ -1880,8 +1965,8 @@ type claudeActionBuilder func(body []byte) (models.ToolEvent, bool)
 // events that ingest one row each. Reads stdin, replies approve, opens
 // the configured DB, calls build(body), and inserts the resulting
 // ToolEvent. All errors log to stderr and never block the host (spec P1).
-func handleClaudeCodeActionEvent(ctx context.Context, label, configPath string, build claudeActionBuilder) {
-	body, _ := io.ReadAll(io.LimitReader(os.Stdin, defaultHookBodyLimit))
+func handleClaudeCodeActionEvent(ctx context.Context, stdin io.Reader, label, configPath string, build claudeActionBuilder) {
+	body, _ := io.ReadAll(io.LimitReader(stdin, defaultHookBodyLimit))
 	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
 	_ = json.NewEncoder(os.Stdout).Encode(hook.Decision{Decision: "approve"})
 	markHookReplied()

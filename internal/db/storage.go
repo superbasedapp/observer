@@ -290,13 +290,23 @@ func BackupInto(ctx context.Context, database *sql.DB, dest string) error {
 	if _, err := os.Stat(dest); err == nil {
 		return fmt.Errorf("db.BackupInto: destination %s already exists", dest)
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 		return fmt.Errorf("db.BackupInto: create backup dir: %w", err)
 	}
+	// SR27-A4: pre-create the destination owner-only (VACUUM INTO accepts an
+	// existing EMPTY file) so the snapshot of a hardened database is never
+	// written - nor, after `archive reclaim` swaps it into place, left -
+	// world-readable under the process umask.
+	f, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, privateFileMode)
+	if err != nil {
+		return fmt.Errorf("db.BackupInto: create destination: %w", err)
+	}
+	_ = f.Close()
 	if _, err := database.ExecContext(ctx, "VACUUM INTO ?", dest); err != nil {
+		_ = os.Remove(dest)
 		return fmt.Errorf("db.BackupInto: %w", err)
 	}
-	return nil
+	return RestrictFileMode(dest)
 }
 
 func fileBytes(ctx context.Context, database *sql.DB) (int64, error) {

@@ -35,6 +35,127 @@ const (
 // hard error.
 var ErrGitUnavailable = errors.New("gitview: git binary unavailable")
 
+// GitError structurally describes one non-zero git exit: its exit code
+// and the raw (LC_ALL=C-pinned) stderr text git wrote, if any. A caller
+// classifying a failure can then branch on that STRUCTURE — the exit
+// code, and whether git printed a diagnostic at all — instead of
+// matching a particular diagnostic's English wording, which drifts
+// across git versions/locales and cannot reliably tell one failure
+// class apart from another (2026-09-22 review finding S8: the pre-fix
+// IsNoCommitsError matched the literal substring "Needed a single
+// revision", indistinguishable from a malformed/dangling HEAD that
+// happens to print similar text). runGitCapped returns *GitError for
+// every non-zero git exit that isn't a missing-binary
+// (ErrGitUnavailable) failure.
+type GitError struct {
+	Args     []string
+	ExitCode int
+	Stderr   string
+}
+
+// Error renders the same shape runGit's pre-GitError text used, so
+// existing log lines / %v formatting stay readable.
+func (e *GitError) Error() string {
+	if e.Stderr == "" {
+		return fmt.Sprintf("gitview.runGit %v: exit status %d", e.Args, e.ExitCode)
+	}
+	return fmt.Sprintf("gitview.runGit %v: exit status %d (%s)", e.Args, e.ExitCode, e.Stderr)
+}
+
+// IsNoCommitsError classifies an error from a `--quiet` git lookup probe
+// — `git rev-parse --verify --quiet HEAD`, or the structurally identical
+// `git show-ref --verify --quiet <ref>` — as "this target did not
+// resolve, and git said nothing about why": EXACTLY exit code 1 with
+// EMPTY stderr, `--quiet`'s own documented contract for a failed lookup
+// ("do not output an error message ... instead exit with non-zero
+// status silently"). This is a STRUCTURAL classification (the exact
+// exit code plus the literal absence of any diagnostic text), not a
+// match on any particular wording, so it holds across git versions/
+// locales without tracking a message string (2026-09-22 review finding
+// S8).
+//
+// The check requires ExitCode == 1 EXACTLY, never "any positive code"
+// (2026-09-22 review finding 11): a corrupt repository, a permission
+// failure, or git refusing to run at all ("not a git repository") all
+// exit non-zero and can print NOTHING to stderr under some git
+// versions/configurations, but git documents 128 (not 1) for "fatal"
+// startup-level failures — a caller must not read exit 128 as a quiet
+// lookup miss. Exit 1 also cannot collide with ExitCode()'s -1 sentinel
+// for a signal-killed or still-running process (e.g. a context
+// deadline), which a naive "!= 0" check would.
+//
+// This signal alone is NOT sufficient to conclude "healthy, no commits
+// yet" for the rev-parse probe: a detached HEAD pointing at a missing/
+// invalid object fails the exact same way. internal/commitscan's
+// resolveHeadSHA treats IsNoCommitsError==true on the rev-parse probe as
+// only the FIRST of two probes, following it with an independent
+// ref-state probe (`git symbolic-ref -q HEAD` then `git show-ref
+// --verify --quiet <that ref>`, ALSO classified through this same
+// predicate — its `--quiet` failure contract is identical) before
+// concluding "no commits yet" — see resolveHeadSHA's doc comment for the
+// full decision table.
+func IsNoCommitsError(err error) bool {
+	var gitErr *GitError
+	if !errors.As(err, &gitErr) {
+		return false
+	}
+	return gitErr.ExitCode == 1 && gitErr.Stderr == ""
+}
+
+// missingObjectPhrases are git's C-locale (the envelope forces LC_ALL=C)
+// fatal diagnostics for "that object is not in this repository": a commit
+// garbage-collected after a rebase, one beyond a shallow clone's boundary,
+// or one a partial clone would have to fetch (GIT_NO_LAZY_FETCH=1 turns
+// that fetch into this error). Data, not a ladder.
+var missingObjectPhrases = []string{
+	"not a tree object",
+	"bad object",
+	"not a valid object name",
+	"invalid object name",
+	"unable to read tree",
+	"could not fetch",
+	"lazy fetching disabled",
+}
+
+// IsMissingObjectError reports whether err is a git fatal (exit 128) whose
+// diagnostic says the named object does not exist locally. The skills
+// history step (internal/skillscan) records such a commit as "missing"
+// instead of retrying it forever; any other failure stays retryable.
+func IsMissingObjectError(err error) bool {
+	var gitErr *GitError
+	if !errors.As(err, &gitErr) || gitErr.ExitCode != 128 {
+		return false
+	}
+	msg := strings.ToLower(gitErr.Stderr)
+	for _, p := range missingObjectPhrases {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// notRepoPhrase is git's C-locale (the envelope forces LC_ALL=C) fatal
+// diagnostic for a directory that is not inside any work tree: "fatal: not a
+// git repository (or any of the parent directories): .git", and the
+// GIT_DIR-pointed variant "fatal: not a git repository: '<path>'".
+const notRepoPhrase = "not a git repository"
+
+// IsNotRepoError reports whether err is a git fatal (exit 128) saying the
+// directory it ran in is not inside a git repository at all. The commit
+// scanner (internal/commitscan, wired in cmd/observer/commitscan_wire.go)
+// uses it to treat a project root that exists but was never `git init`-ed
+// as "not scannable right now" - logged once, re-probed on a slow cadence -
+// instead of a per-tick "scan failed" WARN. Any other failure (a timeout,
+// a corrupt repository, dubious ownership) is not this class.
+func IsNotRepoError(err error) bool {
+	var gitErr *GitError
+	if !errors.As(err, &gitErr) || gitErr.ExitCode != 128 {
+		return false
+	}
+	return strings.Contains(strings.ToLower(gitErr.Stderr), notRepoPhrase)
+}
+
 // FileStatus is one changed path in the working tree. Staged and Worktree are
 // single-character porcelain-v2 status codes for the index (X) and working-tree
 // (Y) axes respectively ("." = unmodified in that axis, "?" = untracked).
@@ -158,7 +279,67 @@ func Snapshot(ctx context.Context, root string) (Info, error) {
 // non-zero exit wraps the underlying error with %w (so timeout/cancellation
 // stays classifiable) and includes the trimmed stderr for context.
 func runGit(ctx context.Context, root string, args ...string) ([]byte, bool, error) {
-	cctx, cancel := context.WithTimeout(ctx, perCommandTimeout)
+	return runGitCapped(ctx, root, maxOutputBytes, perCommandTimeout, nil, args...)
+}
+
+// RunReadOnly is runGit with a CALLER-CHOSEN stdout byte cap, exported so a
+// second consumer (internal/commitscan's commit-log scan, which needs a
+// larger cap than the default 1MiB status/log snapshot) can reuse the exact
+// same safe-invocation envelope — the -C root pin, the lock-free/no-hook/
+// no-pager config overrides, the LC_ALL=C + GIT_TERMINAL_PROMPT=0
+// environment, the WaitDelay bound, and the ErrGitUnavailable /
+// stderr-wrapped-error classification — rather than growing a second,
+// drifting implementation of any of that. Every existing gitview caller
+// keeps going through runGit (and therefore maxOutputBytes) unchanged;
+// this is purely an additional entry point.
+func RunReadOnly(ctx context.Context, root string, maxBytes int, args ...string) ([]byte, bool, error) {
+	return RunReadOnlyTimeout(ctx, root, maxBytes, perCommandTimeout, args...)
+}
+
+// RunReadOnlyTimeout is RunReadOnly with a CALLER-CHOSEN per-invocation
+// timeout (<= 0 falls back to the dashboard's perCommandTimeout). The
+// dashboard's 3 s bound is right for a status/branch snapshot on a
+// request path; a background commit-log page (`git log --numstat` over
+// hundreds of commits) legitimately needs tens of seconds on a large
+// repository, and a scan that always times out is a scanner that never
+// captures anything. Same envelope, same caps, one more knob.
+func RunReadOnlyTimeout(ctx context.Context, root string, maxBytes int, timeout time.Duration, args ...string) ([]byte, bool, error) {
+	if maxBytes <= 0 {
+		maxBytes = maxOutputBytes
+	}
+	if timeout <= 0 {
+		timeout = perCommandTimeout
+	}
+	return runGitCapped(ctx, root, maxBytes, timeout, nil, args...)
+}
+
+// RunReadOnlyNoLazyFetch is RunReadOnlyTimeout with GIT_NO_LAZY_FETCH=1
+// added: on a PARTIAL clone (--filter=blob:none / tree:0) a missing object
+// becomes an error instead of a fetch from the promisor remote. Same
+// envelope, same caps, one more environment entry.
+//
+// It is deliberately NOT the default for every invocation: the commit
+// scanner's line counts need blob contents, and on a blobless clone they
+// only exist remotely, so forcing the variable there turns every scan into
+// a failure (verified 2026-09-23, docs/security.md SKILL-2). The skills
+// history step only lists trees and reads the reflog, so it can refuse a
+// fetch without losing anything but the missing object itself.
+func RunReadOnlyNoLazyFetch(ctx context.Context, root string, maxBytes int, timeout time.Duration, args ...string) ([]byte, bool, error) {
+	if maxBytes <= 0 {
+		maxBytes = maxOutputBytes
+	}
+	if timeout <= 0 {
+		timeout = perCommandTimeout
+	}
+	return runGitCapped(ctx, root, maxBytes, timeout, []string{noLazyFetchEnv}, args...)
+}
+
+// runGitCapped is runGit's implementation, parameterized on the stdout/
+// stderr byte cap and the per-invocation timeout so runGit (fixed at
+// maxOutputBytes / perCommandTimeout) and RunReadOnly[Timeout]
+// (caller-chosen) share one envelope.
+func runGitCapped(ctx context.Context, root string, maxBytes int, timeout time.Duration, extraEnv []string, args ...string) ([]byte, bool, error) {
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Force a safe, non-executing command-line configuration BEFORE the
@@ -179,26 +360,17 @@ func runGit(ctx context.Context, root string, args ...string) ([]byte, bool, err
 	}
 	full = append(full, args...)
 	cmd := exec.CommandContext(cctx, "git", full...)
-	// Stable, lock-free, non-interactive environment for parsing. GIT_ASKPASS +
-	// GIT_TERMINAL_PROMPT=0 guarantee git never blocks on a credential prompt or
-	// runs an askpass helper; LC_ALL=C keeps porcelain output parseable.
-	cmd.Env = append(
-		os.Environ(),
-		"LC_ALL=C",
-		"GIT_OPTIONAL_LOCKS=0",
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_ASKPASS=/bin/false",
-	)
+	cmd.Env = append(append(os.Environ(), gitEnvOverrides...), extraEnv...)
 	// Bound the time Wait blocks for I/O after the process exits or the context
 	// cancels, so a descendant holding the output pipes cannot keep Wait blocked
 	// forever (finding 6).
 	cmd.WaitDelay = waitDelay
 	var stdout cappedBuffer
-	stdout.cap = maxOutputBytes
+	stdout.cap = maxBytes
 	// stderr is capped identically so a hook/helper cannot exhaust memory by
 	// writing unbounded diagnostics within the timeout window (finding 6).
 	var stderr cappedBuffer
-	stderr.cap = maxOutputBytes
+	stderr.cap = maxBytes
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -210,14 +382,39 @@ func runGit(ctx context.Context, root string, args ...string) ([]byte, bool, err
 		if errors.As(err, &execErr) {
 			return nil, false, ErrGitUnavailable
 		}
-		msg := strings.TrimSpace(string(stderr.Bytes()))
-		if msg == "" {
-			return nil, false, fmt.Errorf("gitview.runGit %v: %w", args, err)
+		// exitCode stays -1 (never a real git exit code) when the
+		// failure wasn't cmd.Run() itself reporting a plain non-zero
+		// exit (e.g. a context deadline) — IsNoCommitsError's `!= 0`
+		// check never mismatches that as a git-exit signal.
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
 		}
-		return nil, false, fmt.Errorf("gitview.runGit %v: %w (%s)", args, err, msg)
+		return nil, false, &GitError{
+			Args:     append([]string(nil), args...),
+			ExitCode: exitCode,
+			Stderr:   strings.TrimSpace(string(stderr.Bytes())),
+		}
 	}
 	return stdout.Bytes(), stdout.overflowed, nil
 }
+
+// gitEnvOverrides is appended to the inherited environment of every git
+// invocation: a stable, lock-free, non-interactive, NETWORK-FREE
+// environment for parsing. GIT_ASKPASS + GIT_TERMINAL_PROMPT=0 guarantee
+// git never blocks on a credential prompt or runs an askpass helper;
+// LC_ALL=C keeps porcelain output (and error text) parseable.
+var gitEnvOverrides = []string{
+	"LC_ALL=C",
+	"GIT_OPTIONAL_LOCKS=0",
+	"GIT_TERMINAL_PROMPT=0",
+	"GIT_ASKPASS=/bin/false",
+}
+
+// noLazyFetchEnv is added only by RunReadOnlyNoLazyFetch (the skills
+// history step, S10-SKILLS, docs/security.md SKILL-2).
+const noLazyFetchEnv = "GIT_NO_LAZY_FETCH=1"
 
 // cappedBuffer is an io.Writer that accumulates at most cap bytes, discards the
 // rest, and records whether any bytes were dropped (overflowed), bounding memory

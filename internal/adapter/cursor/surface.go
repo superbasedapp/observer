@@ -48,6 +48,11 @@ const (
 	// layoutStateDB is `<...>/Cursor/User/globalStorage/state.vscdb`.
 	layoutStateDB
 	layoutCLIUsage
+	// layoutHooksLog is the IDE hooks output-channel log
+	// `<Cursor userData>/logs/<launch>/window*/output_*/cursor.hooks*.log`
+	// (hookslog.go). Deliberately absent from surfaceByLayout: it replays
+	// the live hook's payloads, and the live hook stamps no surface.
+	layoutHooksLog
 )
 
 // layoutFor classifies path into one of Cursor's session-file shapes.
@@ -57,6 +62,8 @@ func layoutFor(path string) storeLayout {
 	switch {
 	case matchesCLIUsageLog(path):
 		return layoutCLIUsage
+	case matchesHooksLog(path):
+		return layoutHooksLog
 	case matchesStoreDBShape(path):
 		return layoutStoreDB
 	case matchesStateDBShape(path):

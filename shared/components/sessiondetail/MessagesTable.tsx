@@ -9,8 +9,11 @@ import {
 import { AnimatePresence, motion } from "framer-motion";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { CopyOnClick, Pill, Tooltip } from "../../primitives";
+import { CopyOnClick, Icon, ModelId, Pill, Tooltip } from "../../primitives";
 import { actionMeta, mcpIdentity } from "../../lib/actions";
+import { MESSAGE_ROLE, STOP_REASON } from "../../lib/sessionVocab";
+import { vocabIcon } from "../../lib/vocabIcons";
+import { VocabPill } from "../../lib/vocabPill";
 import { fmtClock, fmtCompact, fmtDuration, fmtInt } from "../../lib/format";
 import type {
   ActionFullText,
@@ -31,7 +34,10 @@ import {
   type SortDir,
 } from "../../lib/messagesModel";
 import { truncate } from "../../lib/sessionElapsed";
+import { fmtTps, tokensPerSec, tpsTooltip } from "../../lib/speed";
 import { defaultRenderCost, type RenderCost } from "./cost";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Dot, Gauge, Zap, type LucideIcon } from "lucide-react";
+import { statusMarker } from "../../lib/statusEvents";
 
 // MessagesTable and its row internals (tool-call expander, diff view, browser
 // chat bubbles, full-text modal). Promoted into the shared design system so
@@ -58,40 +64,19 @@ export type FetchFullText = (actionId: string) => Promise<ActionFullText>;
 // import them alongside MessagesTable have one entry point.
 export type { RenderCost } from "./cost";
 
+// SORT_GLYPH is the column-header sort indicator per sort state; "none" is
+// the quiet dot on a sortable column that is not the active sort.
+const SORT_GLYPH: Record<SortDir | "none", LucideIcon> = {
+  asc: ArrowUp,
+  desc: ArrowDown,
+  none: Dot,
+};
+
 // ----- Messages table ---------------------------------------------
 
-// tokensPerSec is OUTPUT tokens per second: the turn's output_tokens
-// divided by its elapsed time. Only output tokens count (input / cache
-// tokens are not generated, so they don't belong in a generation-rate).
-// Returns null when there's no output or no/zero timing (don't fabricate
-// a rate).
-// tokensPerSec is OUTPUT tokens per second. The denominator (tps_ms) is
-// chosen server-side from the best available timing source — proxy
-// measured response time, codex intra-turn span, or the gap-to-next
-// fallback — and is absent when none applies (then we show "—").
-function tokensPerSec(m: MessageRow): number | null {
-  if (m.output <= 0 || m.tps_ms == null || m.tps_ms <= 0) return null;
-  return m.output / (m.tps_ms / 1000);
-}
-
-// tpsBasisLabel describes which timing source backed a Tok/s value, for
-// the column's tooltip.
-function tpsBasisLabel(basis: MessageRow["tps_basis"]): string {
-  switch (basis) {
-    case "measured":
-      return "measured response time (proxy)";
-    case "intra-turn":
-      return "intra-turn generation span";
-    default:
-      return "elapsed (to next message)";
-  }
-}
-
-// fmtTps keeps one decimal under 10 tok/s (where precision matters) and
-// rounds to a whole number above it, suffixed "/s".
-function fmtTps(tps: number): string {
-  return `${tps >= 10 ? Math.round(tps).toString() : tps.toFixed(1)}/s`;
-}
+// Tok/s is rendered ONLY through ../../lib/speed (the one client owner of
+// the figure the server's internal/sessionmsg computed): never output divided
+// by a timestamp gap.
 
 // msgTokens is the token count behind a message's cost figure: net input +
 // output + cache read + cache write. Passed to renderCost as `ctx.tokens` so
@@ -118,7 +103,7 @@ function SortableTh({
   dir: SortDir;
   onSort: (key: MessageSortKey) => void;
 }) {
-  const indicator = active ? (dir === "asc" ? "↑" : "↓") : "·";
+  const indicator = SORT_GLYPH[active ? dir : "none"];
   const hint = `Sort by ${col.label}${
     active ? (dir === "asc" ? " (ascending)" : " (descending)") : ""
   }`;
@@ -143,7 +128,7 @@ function SortableTh({
       )}
     >
       {col.label}
-      <span className="ml-1 text-fg-4">{indicator}</span>
+      <Icon icon={indicator} size={10} className="ml-1 inline-block align-middle text-fg-4" />
     </th>
   );
   if (!col.tooltip) return th;
@@ -180,7 +165,7 @@ function ExtraTh({
 }) {
   const sortable = col.sortKey != null && onSort != null;
   const indicator =
-    col.sortKey != null ? (active ? (dir === "asc" ? "↑" : "↓") : "·") : null;
+    col.sortKey != null ? SORT_GLYPH[active ? dir : "none"] : null;
   return (
     <th
       tabIndex={sortable ? 0 : undefined}
@@ -211,7 +196,9 @@ function ExtraTh({
       )}
     >
       {col.header}
-      {indicator ? <span className="ml-1 text-fg-4">{indicator}</span> : null}
+      {indicator ? (
+        <Icon icon={indicator} size={10} className="ml-1 inline-block align-middle text-fg-4" />
+      ) : null}
     </th>
   );
 }
@@ -275,17 +262,8 @@ const MESSAGE_CELLS: Record<MessageSortKey, (c: CellCtx) => ReactNode> = {
     <td className="max-w-[160px] py-1 font-mono text-fg-2">
       <div className="flex items-center gap-1">
         {m.model ? (
-          <Tooltip
-            content={<span className="break-all font-mono">{m.model}</span>}
-            maxWidth={360}
-          >
-            <span
-              tabIndex={0}
-              className="block max-w-[120px] truncate cursor-help focus:outline-none"
-            >
-              {m.model}
-            </span>
-          </Tooltip>
+          // ModelId: family mark + id, full id on hover (title).
+          <ModelId model={m.model} className="max-w-[140px]" />
         ) : (
           "-"
         )}
@@ -303,8 +281,8 @@ const MESSAGE_CELLS: Record<MessageSortKey, (c: CellCtx) => ReactNode> = {
             maxWidth={320}
           >
             <span tabIndex={0} className="shrink-0 cursor-help focus:outline-none">
-              <Pill variant="info" title="fast tier (premium price)">
-                ⚡ fast
+              <Pill variant="info" icon={Zap} title="fast tier (premium price)">
+                fast
               </Pill>
             </span>
           </Tooltip>
@@ -316,20 +294,14 @@ const MESSAGE_CELLS: Record<MessageSortKey, (c: CellCtx) => ReactNode> = {
             </Pill>
           )}
         {m.stop_reason && (
-          <Pill
-            // Show every turn's stop_reason; routine completions
-            // (end_turn / tool_use) stay subdued (neutral) while
-            // abnormal ends (max_tokens / refusal / stop_sequence
-            // / pause_turn) stand out in warn.
-            variant={
-              m.stop_reason === "end_turn" || m.stop_reason === "tool_use"
-                ? "neutral"
-                : "warn"
-            }
+          // Show every turn's stop_reason; routine completions stay
+          // subdued while abnormal ends stand out (STOP_REASON table).
+          <VocabPill
+            vocab="stopReason"
+            table={STOP_REASON}
+            value={m.stop_reason}
             title="how this turn ended (stop_reason)"
-          >
-            {m.stop_reason}
-          </Pill>
+          />
         )}
       </div>
     </td>
@@ -370,18 +342,23 @@ const MESSAGE_CELLS: Record<MessageSortKey, (c: CellCtx) => ReactNode> = {
       {m.elapsed_ms != null ? fmtDuration(m.elapsed_ms) : "-"}
     </td>
   ),
+  response_ms: ({ m }) => (
+    <td className="py-1 text-right tabular-nums text-fg-3">
+      {m.response_ms != null ? fmtDuration(m.response_ms) : "-"}
+    </td>
+  ),
   tokens_per_sec: ({ m }) => {
     const tps = tokensPerSec(m);
+    // A row that generated tokens always explains itself - a rate with its
+    // basis, or "-" with the suppression reason. A row that generated
+    // nothing (a user prompt) is a plain "-".
+    const explained = tps != null || m.tps_suppressed != null;
     return (
       <td className="py-1 text-right tabular-nums text-fg-3">
-        {tps != null ? (
-          <Tooltip
-            content={`${fmtInt(m.output)} output tokens over ${fmtDuration(
-              m.tps_ms ?? 0,
-            )} ${tpsBasisLabel(m.tps_basis)}`}
-          >
+        {explained ? (
+          <Tooltip content={tpsTooltip(m, fmtInt, fmtDuration)}>
             <span tabIndex={0} className="cursor-help focus:outline-none">
-              {fmtTps(tps)}
+              {tps != null ? fmtTps(tps) : "-"}
             </span>
           </Tooltip>
         ) : (
@@ -489,6 +466,7 @@ const MESSAGE_CELLS: Record<MessageSortKey, (c: CellCtx) => ReactNode> = {
   },
   content: ({ m }) => (
     <td className="max-w-[320px] truncate py-1 pl-3 pr-3 text-fg-2">
+      <StatusMarkerBadge row={m} />
       <ContentSnippet row={m} />
     </td>
   ),
@@ -1004,9 +982,7 @@ function BrowserChatBubble({
       onClick={(e) => e.stopPropagation()}
     >
       <div className="flex items-center gap-2">
-        <Pill variant={isUser ? "accent" : "success"}>
-          {isUser ? "user" : "assistant"}
-        </Pill>
+        <VocabPill vocab="messageRole" table={MESSAGE_ROLE} value={isUser ? "user" : "assistant"} />
         {tc.raw_tool_name && (
           <span className="font-mono text-[10px] text-fg-3">
             {tc.raw_tool_name}
@@ -1216,6 +1192,7 @@ function ToolCallRowView({
           className="inline-flex items-center gap-1 rounded-pill border border-line-2 bg-bg-3 px-2 py-0.5 font-mono text-[10.5px] font-medium leading-none"
           style={{ color: "var(--act-cmd)" }}
         >
+          <Icon icon={vocabIcon("actionType", tc.action_type)} size={11} className="shrink-0" />
           {actionMeta(tc.action_type).label}
         </span>
         {(() => {
@@ -1280,9 +1257,11 @@ function ToolCallRowView({
             type="button"
             onClick={toggleChange}
             title={changeOpen ? "Hide change" : "View the file change"}
-            className="shrink-0 rounded-1 border border-line-2 bg-bg-3 px-1.5 py-0.5 font-mono text-[10px] text-fg-3 transition-colors hover:border-accent hover:text-accent"
+            aria-expanded={changeOpen}
+            className="inline-flex shrink-0 items-center gap-0.5 rounded-1 border border-line-2 bg-bg-3 px-1.5 py-0.5 font-mono text-[10px] text-fg-3 transition-colors hover:border-accent hover:text-accent"
           >
-            {changeOpen ? "▾ Change" : "▸ Change"}
+            <Icon icon={changeOpen ? ChevronDown : ChevronRight} size={10} />
+            Change
           </button>
         )}
         {tc.duration_ms != null && tc.duration_ms > 0 && (
@@ -1548,46 +1527,61 @@ function ContentSnippet({ row }: { row: MessageRow }) {
   return <span className="text-fg-4">-</span>;
 }
 
-function RolePill({ role }: { role: string }) {
-  // Design's role color mapping (page-sessions.jsx:222-224):
-  //   user      → accent (purple)
-  //   assistant → success (green)
-  //   tool      → warn (yellow)
-  switch (role) {
-    case "user":
-      return <Pill variant="accent">user</Pill>;
-    case "assistant":
-      return <Pill variant="success">assistant</Pill>;
-    case "tool":
-      return <Pill variant="warn">tool</Pill>;
-    case "system":
-      return <Pill>system</Pill>;
-    default:
-      return <Pill>{role}</Pill>;
-  }
+// StatusMarkerBadge is the small inline marker for status readings (a
+// rate_limit snapshot) folded onto this message by the server
+// (internal/sessionmsg/status.go). It renders ONLY when a reading on the row
+// changed - an unchanged repeat shows nothing - so a Codex session no longer
+// carries a "Rate limit" row between every turn. Same component for the node
+// and the org drawer; the org has no reading body, so its label is generic.
+function StatusMarkerBadge({ row }: { row: MessageRow }) {
+  const marker = statusMarker(row);
+  if (!marker) return null;
+  return (
+    <Tooltip
+      content={
+        <div className="space-y-0.5">
+          {marker.lines.map((l, i) => (
+            <p key={i}>{l}</p>
+          ))}
+        </div>
+      }
+      maxWidth={360}
+    >
+      <span
+        tabIndex={0}
+        data-testid="status-marker"
+        className={clsx(
+          "mr-1.5 inline-flex cursor-help items-center gap-1 rounded-pill border px-1.5 py-px align-middle font-mono text-[10px] leading-none focus:outline-none",
+          marker.limited ? "border-warn/50 text-warn" : "border-line-2 text-fg-3",
+        )}
+      >
+        <Gauge size={10} aria-hidden />
+        {truncate(marker.label, 40)}
+      </span>
+    </Tooltip>
+  );
 }
 
+// RolePill renders a message role from the ONE MESSAGE_ROLE table
+// (shared/lib/sessionVocab.ts: the design's user accent / assistant success
+// / tool warn / system neutral).
+function RolePill({ role }: { role: string }) {
+  return <VocabPill vocab="messageRole" table={MESSAGE_ROLE} value={role} />;
+}
+
+
+// Caret is the row disclosure chevron: points down when collapsed and flips
+// up when the row is open.
 function Caret({ open, disabled }: { open: boolean; disabled?: boolean }) {
   return (
-    <svg
-      width={9}
-      height={9}
-      viewBox="0 0 12 12"
-      fill="none"
+    <Icon
+      icon={ChevronDown}
+      size={10}
       className={clsx(
         "transition-transform",
         open ? "rotate-180" : "rotate-0",
         disabled && "opacity-30",
       )}
-      aria-hidden
-    >
-      <path
-        d="m3 4.5 3 3 3-3"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
+    />
   );
 }

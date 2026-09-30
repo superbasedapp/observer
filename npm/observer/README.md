@@ -419,6 +419,15 @@ or written. A persistent banner marks demo state, and one click
 clears it again. The fastest way to evaluate the dashboard before
 routing any real traffic.
 
+**Time windows.** Every page follows one window (1h / 12h / 1d / 7d /
+14d / 30d / 90d / 1y / all, or Custom: a picker with one-click presets
+such as Today or Last week, a month calendar and hour / minute
+selects). Time-series charts bucket by that window in your browser's
+time zone - 5 minutes up to 3 hours, hourly up to 7 days, daily up to
+180 days, weekly beyond - and each chart has an Auto / 5 min / Hour /
+Day / Week control; empty buckets are drawn as zero. A density toggle
+switches tables between comfortable and compact.
+
 ### Overview tab
 
 <p align="center">
@@ -429,8 +438,9 @@ High-level snapshot of the selected window:
 
 - **KPI tiles**: Sessions count, API turns (proxy-captured), Token
   rows (JSONL-recovered), Failures (24h)
-- **Cost over time** chart — daily token volume, split into the four
-  billable buckets (net input / cache read / cache write / output)
+- **Cost over time** chart — token volume per time bucket (following
+  the window), split into the four billable buckets (net input / cache
+  read / cache write / output)
 - **Actions over time** chart — total actions vs failures
 - **Top models (by tokens)** chart — top-8 models stacked by net
   input / cache read / output
@@ -454,6 +464,12 @@ sourced tokens, rate may be a family-prefix fallback), `unreliable`
 (no pricing entry for the model). Two adapters — OpenCode and Pi —
 write their own per-turn cost into `estimated_cost_usd`; the engine
 uses those as-is when present.
+
+Costs are stamped when a turn is captured. When a price changes or is
+corrected later, `observer reprice` (a dry run unless `--apply`,
+revertible with `--revert`) or Settings -> Pricing re-prices stored
+turns at the rate in force when each one ran; a cost the tool itself
+reported is never overwritten.
 
 Hover any column header for tooltip; click for the full definition
 in the help drawer.
@@ -487,8 +503,10 @@ One row per AI-coding session. Each session has a stable ID, a tool
 opencode / openclaw / pi / antigravity / gemini-cli / hermes /
 kilo-code / kilo-code-cli), a working-directory project, action
 count, sub-agent action count (when the session spawned sub-agents via
-the `Agent` tool), per-session **Tokens** and **Cost** columns, and —
-if `observer score` has run — quality / errors / redundancy ratios. The `~` suffix on Cost flags rows whose pricing
+the `Agent` tool), per-session **Tokens** and **Cost** columns, and
+quality / errors / redundancy ratios (filled in by the daemon's session
+scorer, `[intelligence.scoring]`, on by default, once a session has
+been idle for 30 minutes). The `~` suffix on Cost flags rows whose pricing
 was tier-fallback rather than billing-grade ("accurate" reliability).
 
 Click a row to open the session-detail panel:
@@ -520,6 +538,13 @@ Click a row to open the session-detail panel:
   browser responsive on multi-thousand-message sessions. Requires
   `observer backfill --message-id` on first upgrade for historical
   sessions to surface their parent message ids.
+- **Gauges, quality, lines and commits** — a context-window gauge (and,
+  for proxied subscription sessions, the 5-hour / weekly limit gauge), a
+  session quality card with the score's parts, AI lines of code split
+  into code and comments, and a Commits card listing the git commits the
+  session's edits reached and whether it owns each one (the session with
+  the most AI code lines in it; merges, teammates' commits and commits
+  no AI edit reached have no owner).
 
 ### Actions tab
 
@@ -1393,6 +1418,10 @@ Every command supports `--help` for the full surface.
 | `observer backfill --cache-tier`   | Re-walk JSONL to populate `cache_creation_1h_tokens` (added by migration 008) on pre-migration rows. Run once after upgrading to v1.4.16+ to correct historical 1h-tier cache writes that were silently billed at the cheaper 5m rate. |
 | `observer backfill --message-id`   | Re-walk JSONL to populate `message_id` on `actions` and `token_usage` (added by migration 012). Required by the per-message timeline view in the Sessions modal. |
 | `observer backfill --all`          | Run every supported backfill in one invocation. Idempotent — safe to re-run. |
+| `observer reprice`                 | Re-price stored costs at the rate in force when each turn ran. Dry run by default; `--apply` writes, `--revert <run>` undoes a run, `--list` shows history, `--since` / `--until` / `--model` narrow it. Never overwrites a tool-reported cost. |
+| `observer project <id\|root>`      | Per-project spend, AI lines (code vs comments), commits and prompt-to-commit status - the dashboard's Projects detail in the terminal. |
+| `observer shell-wrap status\|preview\|enable\|disable` | Opt-in command wrapping: PATH shims so typing `claude` runs `observer claude` (per tool, exact preview, byte-for-byte undo). |
+| `observer ide <id> [project-dir]`  | Launch an IDE or desktop app the way the dashboard does and report whether its AI traffic can be routed through the proxy. |
 | `observer profile list\|show\|assign\|create\|delete\|set` | Compression profiles: inspect built-ins, reassign per traffic class or per tool (`assign tool:cline codex-safe`), create/edit custom profiles. Edits apply to new sessions hot. |
 | `observer config set <key> <value>` | Dotted-key config setter (`compression.conversation.enabled true`). `--project <root>` writes a per-repo override file instead. |
 | `observer advise`                  | Prescriptive cost/quality suggestions from captured activity (the Suggestions tab, in the CLI) |

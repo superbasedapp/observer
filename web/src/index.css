@@ -10,6 +10,9 @@
 @import "@fontsource/jetbrains-mono/latin-400.css";
 @import "@fontsource/jetbrains-mono/latin-500.css";
 @import "../../shared/styles/tokens.css";
+@import "../../shared/styles/motion.css";
+@import "../../shared/styles/components.css";
+@import "../../shared/styles/illustrations.css";
 
 @tailwind base;
 @tailwind components;
@@ -33,40 +36,6 @@
   samp,
   pre {
     @apply font-mono;
-  }
-}
-
-@keyframes shimmer {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(100%);
-  }
-}
-
-@keyframes datatable-stripe {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(400%);
-  }
-}
-
-@layer utilities {
-  .animate-shimmer::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    transform: translateX(-100%);
-    background-image: linear-gradient(
-      90deg,
-      rgba(255, 255, 255, 0) 0%,
-      rgba(255, 255, 255, 0.04) 50%,
-      rgba(255, 255, 255, 0) 100%
-    );
-    animation: shimmer 1.6s var(--ease) infinite;
   }
 }
 
@@ -98,28 +67,6 @@
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
-}
-
-/* --------------------------------------------------------------
-   Horizontal table scroller (DataTable's wrapper).
-   The global rules above give a transparent track, which on a wide
-   data table reads as "no scrollbar at all" until you happen to
-   drag. Here the track is painted, so the bar is visible whenever
-   the table overflows -- paired with DataTable's edge fades.
-   -------------------------------------------------------------- */
-.table-scroll-x {
-  scrollbar-color: var(--line-3) var(--bg-3);
-}
-.table-scroll-x::-webkit-scrollbar {
-  height: 10px;
-}
-.table-scroll-x::-webkit-scrollbar-track {
-  background: var(--bg-3);
-  border-radius: 999px;
-}
-.table-scroll-x::-webkit-scrollbar-thumb {
-  background: var(--line-3);
-  border: 2px solid var(--bg-3);
 }
 
 /* ============================================================

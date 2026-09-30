@@ -22,9 +22,12 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 )
 
-// The CLI writes these records even when headless mode does not emit stop or
+// The headless CLI writes these records and never runs stop or
 // afterAgentResponse. Counters match its final result. Input is ALREADY net of
 // both cache buckets. A retried turn retains only the final attempt's usage.
+// Interactive turn-outcome records carry no token fields and a tracker id that
+// is not the hook generation id, so they are never read for usage here (the
+// interactive usage arrives on the hooks; see cli_turns.go).
 const cliOutcomePrefix = "cursor-cli-outcome:"
 
 var cliLogName = regexp.MustCompile(`^session-[0-9T.Z-]+-[0-9]+-[0-9]+\.log$`)
@@ -91,6 +94,7 @@ func (a *Adapter) parseCLIUsageLog(ctx context.Context, path string, fromOffset 
 	}
 	res := adapter.ParseResult{NewOffset: fromOffset}
 	r := bufio.NewReader(io.LimitReader(f, fi.Size()-fromOffset))
+	terminal := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return res, err
@@ -104,13 +108,27 @@ func (a *Adapter) parseCLIUsageLog(ctx context.Context, path string, fromOffset 
 			return res, err
 		}
 		res.NewOffset += size
+		if !terminal && cliLogHasTerminalMarker(line) {
+			terminal = true
+		}
 		ev, ok := parseCLIOutcome(line)
 		if !ok {
 			continue
 		}
 		ev.SourceFile = path
-		ev.Model, ev.ProjectRoot = a.cliUsageContext(ctx, ev.SessionID)
+		ev.Model, ev.ProjectRoot = a.cliUsageContext(ctx, ev.SessionID, ev.MessageID)
 		res.TokenEvents = append(res.TokenEvents, ev)
+	}
+	// A turn can only close on a terminal record, and its start and end can
+	// straddle polls, so the evidence fold (cli_turns.go) re-reads the whole
+	// process log only then. Its rows are keyed deterministically and dedup
+	// on a re-read.
+	if terminal {
+		evs, err := a.cliTurnEvents(ctx, path, res.NewOffset)
+		if err != nil {
+			return res, err
+		}
+		res.ToolEvents = append(res.ToolEvents, evs...)
 	}
 	return res, nil
 }
@@ -195,16 +213,29 @@ func validCLIUsageID(id string) bool {
 }
 
 // Resolve pricing context only from this conversation's native assistant
-// messages. Ambiguous mixed-model history keeps its model unknown; current
-// account preferences must never be used to price historical requests.
-func (a *Adapter) cliUsageContext(ctx context.Context, sessionID string) (string, string) {
+// messages. The request's own answer (its requestId-tagged turn in the
+// store.db) wins: Cursor bills each Auto request at the routed model's list
+// price. Without it, ambiguous mixed-model history keeps its model unknown;
+// current account preferences must never be used to price historical
+// requests (so the live hook's "latest answer" rung is NOT used here - a log
+// can be read long after later turns were routed elsewhere).
+func (a *Adapter) cliUsageContext(ctx context.Context, sessionID, requestID string) (string, string) {
 	for _, root := range a.roots {
 		if filepath.Base(root) != "chats" {
 			continue
 		}
 		paths, _ := filepath.Glob(filepath.Join(root, "*", sessionID, "store.db"))
 		for _, path := range paths {
-			return cliUsageModel(ctx, path), a.projectRootForStoreDB(path, sessionID)
+			model := ""
+			if requestID != "" {
+				if turns, ok := readStoreTurnModels(path); ok {
+					model = generationModel(turns, requestID)
+				}
+			}
+			if model == "" {
+				model = cliUsageModel(ctx, path)
+			}
+			return model, a.projectRootForStoreDB(path, sessionID)
 		}
 	}
 	return "", ""

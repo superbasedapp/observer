@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Pill, SegmentedControl } from "@/components/primitives";
+import { ChartShell, HostMark, Icon, InlineLoading, Pill, SegmentedControl, Tooltip } from "@/components/primitives";
+import { Summary } from "@/components/Summary";
 import { useApi } from "@/lib/useApi";
 import { pushToast } from "@/components/Toast";
 import { markRestartPending } from "@/lib/restartPending";
@@ -18,7 +19,6 @@ import {
   postPolicy,
 } from "./types";
 import {
-  Card,
   IssueList,
   Labeled,
   Muted,
@@ -31,6 +31,7 @@ import {
   btnSecondary,
   inputClass,
 } from "./ui";
+import { ArrowDown, ArrowUp } from "lucide-react";
 
 // Routing tab — the Plane-A egress (routing) authoring surface: typed upstream
 // targets + a first-match-wins WHEN→ROUTE rule table. Egress only takes real
@@ -68,8 +69,8 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
 
   const globalIssues = useMemo(() => issues.filter((i) => !i.rule_name), [issues]);
 
-  if (api.loading && !draft) return <Card title="Egress policy"><Muted>Loading…</Muted></Card>;
-  if (!draft) return <Card title="Egress policy"><Muted>No policy loaded.</Muted></Card>;
+  if (api.loading && !draft) return <ChartShell title="Egress policy"><InlineLoading label="Loading egress policy" /></ChartShell>;
+  if (!draft) return <ChartShell title="Egress policy"><Muted>No policy loaded.</Muted></ChartShell>;
 
   const patch = (p: Partial<EgressPolicy>) => setDraft({ ...draft, ...p });
   const patchTarget = (i: number, t: Partial<EgressTarget>) =>
@@ -119,7 +120,7 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
   return (
     <div className="space-y-4">
       {/* Targets */}
-      <Card
+      <ChartShell
         title="Upstream targets"
         sub="Named upstreams a rule can route to. A declared shape (anthropic | openai) is required for any enforce-mode route - cross-shape routing is rejected at compile."
       >
@@ -127,6 +128,8 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
           {draft.targets.length === 0 && <Muted>No targets. Add one before a route-to-upstream rule can reference it.</Muted>}
           {draft.targets.map((t, i) => (
             <div key={i} className="flex flex-wrap items-center gap-2">
+              {/* Serving-host mark resolved from the id / url (unknown renders nothing). */}
+              <HostMark host={`${t.id} ${t.url}`} size={12} />
               <TextInput value={t.id} onChange={(id) => patchTarget(i, { id })} placeholder="id (e.g. ollama-local)" className="min-w-[9rem]" />
               <TextInput value={t.url} onChange={(url) => patchTarget(i, { url })} placeholder="http://127.0.0.1:11434" className="min-w-[14rem] flex-1" />
               <Select
@@ -145,13 +148,13 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
         >
           + Add target
         </button>
-      </Card>
+      </ChartShell>
 
       {/* Cohorts */}
       <CohortsCard value={draft.cohorts} onChange={(cohorts) => patch({ cohorts })} />
 
       {/* Rules */}
-      <Card
+      <ChartShell
         title="Routing rules"
         sub="First match wins - order matters (use ↑/↓). Each rule matches on the admission verdict, budget, cohort, or request shape, then takes exactly one action."
       >
@@ -221,7 +224,7 @@ export function RoutingTab({ onApplied }: { onApplied?: () => void }) {
           </button>
           <span className="text-[11px] text-fg-3">Routing changes only take effect on the proxy after Save &amp; restart</span>
         </div>
-      </Card>
+      </ChartShell>
     </div>
   );
 }
@@ -239,7 +242,7 @@ function CohortsCard({ value, onChange }: { value: Record<string, string>; onCha
     onChange(map);
   };
   return (
-    <Card title="Cohorts" sub="Map an end-user id to a cohort label so a rule can match on it (user_cohort). Optional; local-only.">
+    <ChartShell title="Cohorts" sub="Map an end-user id to a cohort label so a rule can match on it (user_cohort). Optional; local-only.">
       <div className="space-y-2">
         {rows.length === 0 && <Muted>No cohorts mapped.</Muted>}
         {rows.map(([u, c], i) => (
@@ -252,7 +255,7 @@ function CohortsCard({ value, onChange }: { value: Record<string, string>; onCha
         ))}
       </div>
       <button type="button" onClick={() => emit([...rows, ["", ""]])} className={btnGhost + " mt-3"}>+ Add cohort</button>
-    </Card>
+    </ChartShell>
   );
 }
 
@@ -290,13 +293,13 @@ function RuleRow({
   const setAction = (a: Partial<EgressAction>) => onChange({ action: { ...rule.action, ...a } });
 
   return (
-    <div className="rounded-2 border border-line-1 bg-bg-2/40 p-3">
+    <div className="rounded-2 border border-line-2 bg-bg-3/40 p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[10.5px] font-mono text-fg-3">#{index + 1}</span>
         <TextInput value={rule.name} onChange={(name) => onChange({ name })} placeholder="rule name" className="min-w-[10rem] flex-1" />
         <div className="flex items-center gap-1">
-          <button type="button" disabled={index === 0} onClick={() => onMove(-1)} className={btnGhost} title="Move up (earlier match)">↑</button>
-          <button type="button" disabled={index === count - 1} onClick={() => onMove(1)} className={btnGhost} title="Move down">↓</button>
+          <Tooltip content="Move up (earlier match)"><button type="button" disabled={index === 0} onClick={() => onMove(-1)} className={btnGhost} aria-label="Move up (earlier match)"><Icon icon={ArrowUp} size="xs" /></button></Tooltip>
+          <Tooltip content="Move down"><button type="button" disabled={index === count - 1} onClick={() => onMove(1)} className={btnGhost} aria-label="Move down"><Icon icon={ArrowDown} size="xs" /></button></Tooltip>
           <button type="button" onClick={onRemove} className={btnGhostDanger}>Remove</button>
         </div>
       </div>
@@ -334,7 +337,7 @@ function RuleRow({
           </Labeled>
         </div>
         <details className="mt-2">
-          <summary className="cursor-pointer text-[10.5px] text-fg-3 hover:text-fg-2">More matchers</summary>
+          <Summary className="w-fit text-[10.5px] text-fg-3 hover:text-fg-2">More matchers</Summary>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
             <Labeled label="Content class"><TextInput value={rule.when.content_class} onChange={(v) => setWhen({ content_class: v })} placeholder="(any)" /></Labeled>
             <Labeled label="Model glob"><TextInput value={rule.when.model_glob} onChange={(v) => setWhen({ model_glob: v })} placeholder="(any)" /></Labeled>
@@ -375,7 +378,7 @@ function RuleRow({
         </div>
       </div>
 
-      <div className="mt-2 rounded-2 bg-bg-2/60 px-2.5 py-1.5 text-[11px] leading-relaxed text-fg-2">
+      <div className="mt-2 rounded-2 bg-bg-3/60 px-2.5 py-1.5 text-[11px] leading-relaxed text-fg-2">
         <Pill variant="neutral" className="mr-1.5">preview</Pill>
         {previewSentence(rule)}
       </div>

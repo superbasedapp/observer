@@ -1,19 +1,41 @@
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Suspense, lazy, useEffect, useState } from "react";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { PageTransition, TopProgress } from "@shared/primitives/Motion";
+import { Skeleton } from "@shared/primitives/Skeleton";
+import { usePortalActivity } from "./lib/query";
+import { DashboardSkeleton } from "./components/LoadState";
 import { getSession, hasCsrf, onCsrfSync } from "./api";
 import { clearConsentState, loadConsent, needsConsentSetup } from "./consent";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { SignIn } from "./pages/SignIn";
 import { ConsentSetup } from "./pages/ConsentSetup";
-import { Overview } from "./pages/Overview";
-import { Sessions } from "./pages/Sessions";
-import { SessionDetail } from "./pages/SessionDetail";
-import { Community } from "./pages/Community";
-import { Usage } from "./pages/Usage";
-import { Billing } from "./pages/Billing";
-import { Privacy } from "./pages/Privacy";
+// Signed-in pages load per route: a signed-out visitor (SignIn, eager above)
+// never downloads recharts or the dashboard pages, and each page's chunk is
+// fetched in parallel with its data. The shell shows a page-shaped skeleton
+// meanwhile (Suspense sits inside the page transition).
+const Overview = lazy(() =>
+  import("./pages/Overview").then((m) => ({ default: m.Overview })),
+);
+const Sessions = lazy(() =>
+  import("./pages/Sessions").then((m) => ({ default: m.Sessions })),
+);
+const SessionDetail = lazy(() =>
+  import("./pages/SessionDetail").then((m) => ({ default: m.SessionDetail })),
+);
+const Community = lazy(() =>
+  import("./pages/Community").then((m) => ({ default: m.Community })),
+);
+const Usage = lazy(() =>
+  import("./pages/Usage").then((m) => ({ default: m.Usage })),
+);
+const Billing = lazy(() =>
+  import("./pages/Billing").then((m) => ({ default: m.Billing })),
+);
+const Privacy = lazy(() =>
+  import("./pages/Privacy").then((m) => ({ default: m.Privacy })),
+);
 import { PortalFooter } from "./components/PortalFooter";
 
 // RequireAuth guards a page: "signed in" is purely whether the CSRF token is
@@ -33,13 +55,59 @@ function RequireAuth({ children }: { children: ReactNode }) {
   if (needsConsentSetup()) {
     return <Navigate to="/consent" replace />;
   }
+  return <Shell>{children}</Shell>;
+}
+
+// Shell is the authenticated frame. The viewport-bounded .app-shell keeps
+// the sidebar in place while .main scrolls on its own; the routed page
+// enters with the shared page transition (keyed on the path, no exit
+// phase), and the top progress bar shows while a foreground request runs
+// (a page's first load, a filter change) - never for a background refetch.
+function Shell({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation();
   return (
     <div className="app-shell">
       <Sidebar />
       <div className="app-shell-main">
+        <ActivityProgress />
         <TopBar />
-        <main className="main">{children}</main>
+        <main className="main">
+          <PageTransition routeKey={pathname} className="main-inner">
+            <Suspense fallback={<DashboardSkeleton />}>{children}</Suspense>
+          </PageTransition>
+        </main>
         <PortalFooter />
+      </div>
+    </div>
+  );
+}
+
+// BootSkeleton stands in for the whole shell while the boot-time session and
+// consent reads run, so the first paint is already the app's shape instead of
+// a bare "Loading..." line followed by a layout jump.
+function BootSkeleton() {
+  return (
+    <div className="app-shell" aria-busy="true">
+      <div className="sidebar boot-sidebar" aria-hidden>
+        <div className="sidebar-brand">
+          <Skeleton className="h-4 w-24" />
+        </div>
+        <div className="sidebar-nav">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="my-1 h-5 w-full" />
+          ))}
+        </div>
+      </div>
+      <div className="app-shell-main">
+        <div className="topbar" aria-hidden>
+          <span />
+          <Skeleton className="h-6 w-40" />
+        </div>
+        <main className="main">
+          <div className="main-inner">
+            <DashboardSkeleton />
+          </div>
+        </main>
       </div>
     </div>
   );
@@ -125,7 +193,7 @@ export function App() {
   }, []);
 
   if (session === "checking") {
-    return <div className="boot-loading">Loading...</div>;
+    return <BootSkeleton />;
   }
 
   return (
@@ -191,4 +259,10 @@ export function App() {
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
+}
+
+// Leaf reader of the query cache's foreground activity. Keep it a leaf: the
+// shell re-rendering on every busy/idle flip would re-render the whole app.
+function ActivityProgress() {
+  return <TopProgress active={usePortalActivity() > 0} className="z-40" />;
 }

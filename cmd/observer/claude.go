@@ -35,6 +35,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/proxyroute"
 )
 
 // newClaudeCmd implements `observer claude` — sets ANTHROPIC_BASE_URL
@@ -495,10 +496,15 @@ func runClaudeRoutedLaunch(opts claudeLauncherOptions, bin, proxyURL string, rou
 // verbatim so the child resets to claude's default profile rather than silently
 // retaining the daemon's inherited value — launchChildEnv layers ExtraEnv AFTER
 // the inherited env, so the empty override wins at the child (last-wins). Nil
-// when neither key is present.
+// when no key is present.
+//
+// CLAUDE_CODE_GATEWAY_HINT_HEADERS rides along on the same presence rule: the
+// inner launcher turns the hint headers on only when the variable is unset
+// (prepareClaudeEnv), and without forwarding it would read the DAEMON's
+// environment, so a caller's explicit opt-out would be lost on attach.
 func claudeAttachEnv(environ []string) []string {
 	var out []string
-	for _, key := range []string{"CLAUDE_CONFIG_DIR", "ANTHROPIC_CONFIG_DIR"} {
+	for _, key := range []string{"CLAUDE_CONFIG_DIR", "ANTHROPIC_CONFIG_DIR", claudeGatewayHintEnv} {
 		if v, ok := lookupEnvValue(environ, key); ok {
 			out = append(out, key+"="+v)
 		}
@@ -790,13 +796,28 @@ type claudeEnvInfo struct {
 	OAuthPreset    bool  // user already had ANTHROPIC_AUTH_TOKEN; we kept theirs
 	OAuthStale     bool  // stored token expired — deliberately NOT re-exported (D13)
 	CredentialsErr error // non-fatal — file missing / unreadable / wrong shape
+	// GatewayHintsSet: the launcher turned on Claude Code's gateway hint
+	// headers (CLAUDE_CODE_GATEWAY_HINT_HEADERS=1) because the child routes
+	// to the observer proxy and the user had not set the variable.
+	GatewayHintsSet bool
 }
+
+// claudeGatewayHintEnv is Claude Code's switch for its gateway hint headers
+// (x-claude-code-request-class / -agent-type / -compaction /
+// -context-compacted / -prev-tool-durations, and since 2.1.283
+// x-claude-code-prompt-id). They are sent by default only on a direct
+// connection to the Anthropic API; behind a custom ANTHROPIC_BASE_URL they
+// stay off unless this is "1"
+// (https://code.claude.com/docs/en/llm-gateway-protocol#gateway-hint-headers).
+const claudeGatewayHintEnv = proxyroute.ClaudeGatewayHintEnv
 
 // prepareClaudeEnv merges the OAuth-routing env vars into the parent
 // environment without clobbering anything the user explicitly set.
 //
 // Rules:
 //   - If ANTHROPIC_BASE_URL is unset, set it to proxyURL.
+//   - If CLAUDE_CODE_GATEWAY_HINT_HEADERS is unset and the child routes to
+//     the observer proxy, set it to "1" (prompt-id capture).
 //   - If ANTHROPIC_AUTH_TOKEN is unset and credentialsPath has a usable
 //     `claudeAiOauth.accessToken`, set it from there.
 //   - Anything the user already exported wins. The launcher never
@@ -828,6 +849,20 @@ func prepareClaudeEnv(parent []string, proxyURL, credentialsPath string) ([]stri
 		env["ANTHROPIC_BASE_URL"] = proxyURL
 		keys = appendIfMissing(keys, "ANTHROPIC_BASE_URL")
 		info.BaseURLSet = true
+	}
+
+	// Gateway hint headers (backlog item 14). The proxy records the prompt id
+	// as an exact user-message boundary (api_turns.prompt_id) and forwards
+	// every hint header upstream untouched; Anthropic's own API receives the
+	// same headers by default on a direct connection, so they are safe on
+	// the loopback hop. Only when the child actually routes to the observer
+	// proxy (never a user's own gateway, which might reject unknown headers),
+	// and never over the user's own setting - presence wins, so an explicit
+	// "0" or "" is kept.
+	if _, preset := env[claudeGatewayHintEnv]; !preset && urlRoutesToProxy(env["ANTHROPIC_BASE_URL"], proxyURL) {
+		env[claudeGatewayHintEnv] = "1"
+		keys = appendIfMissing(keys, claudeGatewayHintEnv)
+		info.GatewayHintsSet = true
 	}
 
 	if existing, ok := env["ANTHROPIC_AUTH_TOKEN"]; ok && existing != "" {

@@ -282,6 +282,21 @@ type PushEnvelope struct {
 	// rather than a copy of the developer count. Empty is "not tracked",
 	// never "zero machines".
 	MachineIdentity string `json:"machine_identity,omitempty"`
+	// SourceNodeKey is the pushing DEVICE's stable identity for the managed-
+	// node MCP relay ingest (doc3 §9.5, R8.28.g / R8.30.a): the lowercase hex
+	// SHA-256 of the node's per-device agent-access public-key thumbprint
+	// (SourceNodeKeyFromThumbprint). Distinct from the member-level agent
+	// signing key push auth verifies and from MachineIdentity (managed-only,
+	// org-salted). ENVELOPE-level like both: one push comes from one device.
+	//
+	// OPTIONAL both directions (the compat invariant): a pre-P4 agent sends
+	// nothing and the server keys its relay rows 'member:' || member_id
+	// (MemberSourceNodeKey); a pre-P4 server ignores the key. The server
+	// accepts a supplied value ONLY when it matches an ACTIVE kind='node'
+	// agent_credential of the authenticated member - a node cannot spoof
+	// another device's key (400). omitempty keeps a node without an
+	// agent-access key on a byte-identical envelope.
+	SourceNodeKey string `json:"source_node_key,omitempty"`
 	// UpdatePosture is the OPTIONAL self-reported update state of this node
 	// (Enterprise Update Management §3.5): version / channel / os / arch /
 	// state / target / manifest version / error CLASS / install method /
@@ -305,6 +320,22 @@ type PushEnvelope struct {
 	Actions       []ActionRow       `json:"actions"`
 	APITurns      []APITurnRow      `json:"api_turns"`
 	TokenUsage    []TokenUsageRow   `json:"token_usage"`
+	// Deletions are the node's TOMBSTONES for cursor-wire rows it deleted as
+	// a correction after pushing them (agent migration 141, lane R2-TOMB):
+	// a dedup repair, a moved row, a retired identity. Node-local ageing
+	// (retention) never produces one. The org deletes its copy only when the
+	// copy's node_rev is OLDER than the tombstone's NodeRev (see
+	// PushDeletion). OPTIONAL both directions: a pre-141 agent sends none, a
+	// pre-R2-TOMB server ignores the key (and keeps the rows, exactly the old
+	// behaviour); omitempty keeps an envelope without deletions
+	// byte-identical to the previous shape.
+	Deletions []PushDeletion `json:"deletions,omitempty"`
+	// SessionManifests are the `observer org resync --deletions` HEAL for rows
+	// deleted before tombstones existed: per session, a digest of every row
+	// identity the node still holds, so the org removes the rows it holds for
+	// that session that the node no longer does (see SessionManifest).
+	// OPTIONAL both directions like Deletions.
+	SessionManifests []SessionManifest `json:"session_manifests,omitempty"`
 	// RoutingSummaries is the OPTIONAL §R19.4 aggregate (counts +
 	// dollars by tier/reason only) — present only when the node
 	// operator opted in via [org_client.share] routing_summary.
@@ -356,6 +387,29 @@ type PushEnvelope struct {
 	// aggregate — the carrier for editor-reported human work that happens
 	// outside any session (plan §2). Same default posture as SessionLOC.
 	LOCDays []LOCDayRow `json:"loc_days,omitempty"`
+
+	// SessionQuality carries the per-session quality score (BL2-ORG), one row
+	// per session the node's scorer has written, windowed on scored_at so a
+	// score that lands after its sessions row already shipped still goes out.
+	// Derived numbers only, so it rides the DEFAULT metadata posture like
+	// SessionLOC. Composed by store.SelectSessionQualityRows
+	// (internal/store/sessionqualitysummary.go). Optional both directions: an
+	// older server ignores the key, an older agent omits it. See
+	// internal/orgcontract/sessionquality.go.
+	SessionQuality []SessionQualityRow `json:"session_quality,omitempty"`
+
+	// CommitOwnership carries commit ownership (lane F-PROJ): one row per
+	// (project root, commit) this node's AI sessions contributed to, with the
+	// owning session, the ranked contributors and their shares, plus an
+	// identity-only row for a commit that fell out of HEAD. Ids and counts
+	// ride the DEFAULT metadata posture like SessionLOC; the commit Subject is
+	// gated on shipsRawContent(); no author identity and no path ever ship.
+	// Composed by store.SelectCommitOwnershipRows
+	// (internal/store/commitownersummary.go), so orgpush.go never names the
+	// node-local commit tables. Optional both directions: an older server
+	// ignores the key, an older agent omits it. See
+	// internal/orgcontract/commitowner.go.
+	CommitOwnership []CommitOwnershipRow `json:"commit_ownership,omitempty"`
 
 	// SessionCacheSummaries carries the W2.1 session-scoped cache summary
 	// (per session × model × kind × cause counts + token sums, no content) —
@@ -468,6 +522,28 @@ type PushEnvelope struct {
 	// like RoutingSummaries.
 	TerminalSummaries    []TerminalSummaryRow    `json:"terminal_summaries,omitempty"`
 	RemoteAuditSummaries []RemoteAuditSummaryRow `json:"remote_audit_summaries,omitempty"`
+	// MCPRelayActivity is the HMAC-only daily aggregate of this node's MCP
+	// relay decisions (Agent Access P4 W4e, doc3 §9.5). An individual node
+	// attaches it only under [org_client.share].mcp_activity (R8.30.b); an
+	// enrolled teams/enterprise node attaches it by capture posture (R9.5).
+	// Composed by internal/store/mcprelaysummary.go through the
+	// internal/mcprelay/record seam - orgpush.go names no relay table.
+	// Optional both directions like RoutingSummaries.
+	MCPRelayActivity []MCPRelayActivityRow `json:"mcp_relay_activity,omitempty"`
+	// MCPRelayEvents are the per-record relay events (decision / completion /
+	// gap / gap_resolution, R14.5), attached ONLY under shipsRawContent() -
+	// the enrolled teams/enterprise L2 posture - and never on an individual
+	// node. A CURSOR wire (PushCursor.MCPRelay) like GuardEvents: the server
+	// de-dupes on (source_node_key, local_record_seq, record_kind).
+	MCPRelayEvents []MCPRelayEventRow `json:"mcp_relay_events,omitempty"`
+	// MCPInventory is the node's configured-MCP-server inventory (Agent
+	// Access P11 item (c), R12.10 / R13.8 / R14.6; mcpinventory.go): FULL
+	// under shipsRawContent(), REDUCED (identity + metadata, no raw locator)
+	// otherwise; an individual node attaches it only under
+	// [org_client.share].mcp_activity. Composed by
+	// internal/store/mcpinventory.go through the MCPInventoryProviders seam.
+	// Optional both directions like RoutingSummaries.
+	MCPInventory []MCPInventoryRow `json:"mcp_inventory,omitempty"`
 
 	// RoutingDetails is the OPTIONAL Arc 4 P5d routing-detail aggregate
 	// (model-id-bearing per-decision rollup), present only when the node
@@ -480,6 +556,17 @@ type PushEnvelope struct {
 	// limit_gauge tier (opt-in individual / admin-raised managed). Optional
 	// both directions like RoutingSummaries.
 	LimitGauges []LimitGaugeRow `json:"limit_gauges,omitempty"`
+
+	// SessionLimitSnapshots is the OPTIONAL per-session rate-limit window wire
+	// (lane F-WIRE): the newest proxy-captured 5h / 7d window observation per
+	// (session, provider) above the node's limit-snapshot cursor, so the org
+	// session drawer renders the node's "% of limit spent" gauge. Metadata
+	// only; ships under the limit_gauge tier or on a full-capture node.
+	// Composed by store.SelectSessionLimitSnapshots
+	// (internal/store/limitgauge.go, so orgpush.go never names
+	// limit_snapshots). Optional both directions like RoutingSummaries. See
+	// internal/orgcontract/limitsnapshot.go.
+	SessionLimitSnapshots []SessionLimitSnapshotRow `json:"session_limit_snapshots,omitempty"`
 
 	// GuardEvents are guard-layer verdict rows (v1.8.3+, guard spec
 	// §14.3). omitempty keeps pre-guard envelopes byte-identical and
@@ -916,6 +1003,51 @@ type SessionRow struct {
 	// render that absence honestly and NEVER as "cli".
 	Surface     string `json:"surface,omitempty"`
 	SurfaceHost string `json:"surface_host,omitempty"`
+
+	// ToolVersion is the captured AI-tool/CLI build version the node
+	// resolved from a grounded on-disk field the adapter itself controls
+	// (server migration 161 / pg 0027; agent migration 125,
+	// internal/store/toolversion.go::SetSessionToolVersion, FIRST-WINS-
+	// UNLESS-EMPTY). METADATA, not content: unlike Surface it is not a
+	// closed vocabulary, but it is a bounded (64-rune), non-prose,
+	// whitespace/control-char-rejected token
+	// (internal/store/toolversion.go::validToolVersion) sourced only from a
+	// vendor-authored field — never developer-typed text — so it ships BY
+	// DEFAULT alongside Surface/SurfaceHost, with no share key and no
+	// shipsRawContent() gate. Empty means UNKNOWN: a pre-125 agent, an
+	// adapter with no grounded version source, or a session whose
+	// transcript predates the field. Never rendered as a guess.
+	ToolVersion string `json:"tool_version,omitempty"`
+
+	// ParentThreadID is the node-local session-lineage pointer (agent
+	// migrations 069/102, internal/store::SetSessionLineage) — for Cursor
+	// the parent session of a sub-agent child, also Codex fork lineage
+	// (server migration 162 / pg 0028). METADATA, not content: it is an
+	// OPAQUE vendor-minted session id, never developer-typed text, and the
+	// child session it points at already ships as its own SessionRow on the
+	// wire, so shipping the pointer adds structure (fan-out), not content —
+	// the same reasoning that lets ToolVersion ship unconditionally. It
+	// ships BY DEFAULT, with no share key and no shipsRawContent() gate.
+	// ForkedFromID and ThreadSource (the fork's existence/kind) stay
+	// NODE-LOCAL and are deliberately NOT added here — only the pointer
+	// itself ships. Empty means the session has no recorded parent. Lets
+	// the org drawer's per-session tool-account column resolve a Cursor
+	// CHILD session's account the way the node's
+	// internal/store/toolaccount.go::LoadMessageAccounts already does, by
+	// joining through this column (rollup/messageaccounts.go). See
+	// docs/security.md ledger row LINEAGE-1.
+	ParentThreadID string `json:"parent_thread_id,omitempty"`
+	// NodeRev is the node's change-sequence snapshot this row was read at
+	// (agent migration 140 / server 178 / pg 0044, lane R2-RESEND): the org
+	// ingest lets a re-sent row REPLACE the stored one only when its NodeRev is
+	// strictly greater (newer-wins by node version, never by arrival order), so
+	// a row the node changed after it first shipped - a token MAX-upgrade, an
+	// action outcome, a reparented transcript, a session's later model /
+	// ended_at / surface - converges on the org. Metadata (a counter), ships in
+	// every posture. Additive/omitempty both directions: an older agent never
+	// sends it (0 = first-wins, exactly the pre-178 behaviour) and an older
+	// server ignores it.
+	NodeRev int64 `json:"node_rev,omitempty"`
 }
 
 // ActionRow is an action as pushed to the server.
@@ -1005,6 +1137,17 @@ type ActionRow struct {
 	StopReason string `json:"stop_reason,omitempty"`
 	OrgID      string `json:"org_id"`
 	UserEmail  string `json:"user_email"`
+	// NodeRev is the node's change-sequence snapshot this row was read at
+	// (agent migration 140 / server 178 / pg 0044, lane R2-RESEND): the org
+	// ingest lets a re-sent row REPLACE the stored one only when its NodeRev is
+	// strictly greater (newer-wins by node version, never by arrival order), so
+	// a row the node changed after it first shipped - a token MAX-upgrade, an
+	// action outcome, a reparented transcript, a session's later model /
+	// ended_at / surface - converges on the org. Metadata (a counter), ships in
+	// every posture. Additive/omitempty both directions: an older agent never
+	// sends it (0 = first-wins, exactly the pre-178 behaviour) and an older
+	// server ignores it.
+	NodeRev int64 `json:"node_rev,omitempty"`
 }
 
 // APITurnRow is a proxy-observed API turn as pushed. Prompt/completion
@@ -1054,6 +1197,27 @@ type APITurnRow struct {
 	Route             string `json:"route,omitempty"`
 	RoutingGeneration uint64 `json:"routing_generation,omitempty"`
 	AuthoritySource   string `json:"authority_source,omitempty"`
+	// NodeRev is the node's change-sequence snapshot this row was read at
+	// (agent migration 140 / server 178 / pg 0044, lane R2-RESEND): the org
+	// ingest lets a re-sent row REPLACE the stored one only when its NodeRev is
+	// strictly greater (newer-wins by node version, never by arrival order), so
+	// a row the node changed after it first shipped - a token MAX-upgrade, an
+	// action outcome, a reparented transcript, a session's later model /
+	// ended_at / surface - converges on the org. Metadata (a counter), ships in
+	// every posture. Additive/omitempty both directions: an older agent never
+	// sends it (0 = first-wins, exactly the pre-178 behaviour) and an older
+	// server ignores it.
+	NodeRev int64 `json:"node_rev,omitempty"`
+	// RequestClass is the client-declared kind of request (node agent
+	// migration 144, org server migration 188 / pg 0054): one of the closed
+	// internal/requestclass vocabulary (main | subagent | workflow |
+	// compaction | auxiliary), or empty when the client sent no class hint.
+	// CONTENT-FREE metadata (a closed enum, never request text), so it ships
+	// in every posture like Route. Additive/omitempty both directions: an
+	// older agent never sends it and the org stores NULL (never a guessed
+	// class); an older server ignores the unknown key. The org re-validates
+	// it against the vocabulary at ingest, so an unknown spelling lands NULL.
+	RequestClass string `json:"request_class,omitempty"`
 }
 
 // GuardEventRow is a guard-layer audit event as pushed to the server
@@ -1155,9 +1319,60 @@ type TokenUsageRow struct {
 	// shipsRawContent() gate. Additive/omitempty both directions — an older
 	// server ignores it, an older agent never sends it and the server lands the
 	// same honest false the node would have stored.
-	IsSidechain bool   `json:"is_sidechain,omitempty"`
-	OrgID       string `json:"org_id"`
-	UserEmail   string `json:"user_email"`
+	IsSidechain bool `json:"is_sidechain,omitempty"`
+	// TurnID groups several per-inference token_usage rows into the SAME
+	// user-turn — token_usage.turn_id on the node (agent migrations 032/033),
+	// server migration 160 / pg 0026. The node's own Messages-tab bucket key
+	// (dashboard.go's tokenGroupExpr) PREFERS turn_id over message_id/
+	// source_event_id: for codex (and its openinterpreter retag), several
+	// per-inference calls within one user-turn share a turn_id and merge into
+	// ONE row. Before this field, the org rollup had no way to reproduce that
+	// merge and over-counted (one row per token_usage row instead of one per
+	// turn) — the §7 follow-up to the 2026-09-22 node-vs-org parity fix.
+	// CONTENT-FREE opaque id (an adapter-minted grouping token, never
+	// agent-authored text), so it is METADATA and ships BY DEFAULT: populated
+	// unconditionally by SelectUnpushedSince with no share key and no
+	// shipsRawContent() gate — same posture as IsSidechain/MessageID above.
+	// Additive/omitempty both directions: an older agent that never sends the
+	// key lands NULL/empty (byte-identical to a pre-160 row); an older server
+	// ignores the new wire key.
+	TurnID string `json:"turn_id,omitempty"`
+	// GenMs is the per-model-call generation duration the adapter captured
+	// for this row — token_usage.gen_ms on the node (agent migration 136),
+	// server migration 174 / pg 0040. It feeds the Tok/s throughput figure
+	// (internal/sessionmsg's Speed accumulator) the same way on both
+	// engines: TimingWire.TpsMs sums GenMs across a message's contributing
+	// token rows. NUMERIC metadata over a row that already ships (a
+	// duration, never agent-authored text), so it ships BY DEFAULT: populated
+	// unconditionally by SelectUnpushedSince with no share key and no
+	// shipsRawContent() gate — same posture as IsSidechain/TurnID above.
+	// Additive/omitempty both directions: an older agent that never sends
+	// the key lands 0/NULL (byte-identical to a pre-174 row, and
+	// indistinguishable from "not measured" — the same honest-absence shape
+	// GenMs already has node-side); an older server ignores the new wire key.
+	GenMs int64 `json:"gen_ms,omitempty"`
+	// GenBasis names GenMs's basis (models.GenBasisNative /
+	// GenBasisTranscript on the node) — a closed, adapter-minted enum, never
+	// agent-authored text, so it is METADATA and ships BY DEFAULT alongside
+	// GenMs under the same rule. GenTimingV (the adapter's gen-timing parser
+	// version) deliberately has NO wire counterpart: it is a node-local
+	// upsert-precedence input only, meaningless once GenMs/GenBasis have
+	// already been chosen on the node — the same posture as the node-local
+	// `fast` pricing flag next to token_usage's other wire fields.
+	GenBasis  string `json:"gen_basis,omitempty"`
+	OrgID     string `json:"org_id"`
+	UserEmail string `json:"user_email"`
+	// NodeRev is the node's change-sequence snapshot this row was read at
+	// (agent migration 140 / server 178 / pg 0044, lane R2-RESEND): the org
+	// ingest lets a re-sent row REPLACE the stored one only when its NodeRev is
+	// strictly greater (newer-wins by node version, never by arrival order), so
+	// a row the node changed after it first shipped - a token MAX-upgrade, an
+	// action outcome, a reparented transcript, a session's later model /
+	// ended_at / surface - converges on the org. Metadata (a counter), ships in
+	// every posture. Additive/omitempty both directions: an older agent never
+	// sends it (0 = first-wins, exactly the pre-178 behaviour) and an older
+	// server ignores it.
+	NodeRev int64 `json:"node_rev,omitempty"`
 }
 
 // OTelContentRow is one captured native-OTel content body on the wire

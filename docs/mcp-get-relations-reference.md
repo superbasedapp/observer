@@ -2,7 +2,7 @@
 
 **Available since:** v1.7.10 (third of four V7-12 retrieval-surface MCP tools).
 
-`get_relations` does codegraph-native graph traversal. The agent asks
+`get_relations` does graph traversal over the in-process code index (`internal/codeintel`). The agent asks
 *"what calls `handleClick` within 2 hops?"* and gets back the
 reachability set — without writing recursive logic, without spawning
 shell tools to grep, without multiple round-trips.
@@ -21,7 +21,7 @@ Pairs with v1.7.7 marker enrichment + v1.7.8 `get_file` + v1.7.9
 
 `observer serve` registers `get_relations` automatically when
 `[intelligence.mcp.get_relations].enabled` is true (default). It stays
-registered even when codegraph is unavailable — calls then return
+registered even when the code index is unavailable — calls then return
 `degraded: true` with a recovery hint.
 
 To disable:
@@ -156,7 +156,7 @@ extract the correct fqn and re-call.
 
 ## Response shape — degraded
 
-When the codegraph is unavailable, stale, or the requested edge kind
+When the code index is unavailable, stale, or the requested edge kind
 isn't populated:
 
 ```json
@@ -167,15 +167,15 @@ isn't populated:
   "depth":    1,
   "results":  [],
   "degraded": true,
-  "reason":   "edge kind 'contains' not populated by codebase-memory-mcp for this project; fall back to get_symbols or get_file"
+  "reason":   "edge kind 'contains' not populated by the code index for this project; fall back to get_symbols or get_file"
 }
 ```
 
 Reason texts you may see:
 
-- `"codegraph unavailable; fall back to get_file"`
-- `"codegraph index stale relative to file; fall back to get_file"`
-- `"edge kind 'contains' not populated by codebase-memory-mcp for this project; fall back to get_symbols or get_file"`
+- `"code index unavailable; fall back to get_file"`
+- `"code index stale relative to file; fall back to get_file"`
+- `"edge kind 'contains' not populated by the code index for this project; fall back to get_symbols or get_file"`
 
 The `degraded: true` flag distinguishes "we tried and got nothing"
 from "the symbol genuinely has zero relations".
@@ -184,22 +184,22 @@ from "the symbol genuinely has zero relations".
 
 ## CONTAINS-edge caveat
 
-The codebase-memory-mcp schema documents CONTAINS edges (module →
-class → method), but not every release populates them. v1.7.10
-detects this automatically: when a `kind: "contains"` query returns
-zero results AND zero CONTAINS edges exist in the whole graph DB,
-the response sets `degraded: true` with the upstream-population hint.
+The code-index schema defines CONTAINS edges (module → class →
+method), but not every language backend emits them. The tool detects
+this automatically: when a `kind: "contains"` query returns zero
+results AND zero CONTAINS edges exist for the project, the response
+sets `degraded: true` with the population hint.
 
 This avoids two failure modes:
 
 - Agent doesn't waste turns retrying when CONTAINS will always be empty.
 - Operators see a clear signal in the audit log
-  (`reason: "edge kind 'contains' not populated..."`) and know whether
-  to file a bug upstream or update their codebase-memory-mcp install.
+  (`reason: "edge kind 'contains' not populated..."`) and know the
+  project's language backend does not emit CONTAINS edges yet.
 
-When upstream populates CONTAINS edges, the tool starts returning
-real results with no other operator action — the `degraded: true` flag
-disappears naturally.
+Once the index carries CONTAINS edges for the project, the tool starts
+returning real results with no other operator action — the
+`degraded: true` flag disappears naturally.
 
 ---
 
@@ -306,8 +306,8 @@ the unfamiliar ones to fetch via `get_symbols`.
 }
 ```
 
-Returns the class's methods (when codebase-memory-mcp populates
-CONTAINS). Otherwise `degraded: true` with the upstream-population
+Returns the class's methods (when the index carries CONTAINS edges
+for the project). Otherwise `degraded: true` with the population
 hint — agent can fall back to `get_symbols` discovery mode.
 
 ---
@@ -316,8 +316,8 @@ hint — agent can fall back to `get_symbols` discovery mode.
 
 - **Zero per-call log spam.** Every call writes one `mcp_audit` row;
   stderr stays clean.
-- **One-line startup notice** when codegraph open failed (same line
-  the `get_symbols` wiring already emits — they share the handle).
+- **No startup failure mode.** The code index is in-process; until a
+  project is indexed, calls degrade per-request (below).
 - **`degraded: true`** instead of silent zeros for every "we know
   this won't work" case (unavailable, stale, edge kind missing).
 
@@ -326,7 +326,7 @@ hint — agent can fall back to `get_symbols` discovery mode.
 ## See also
 
 - [`docs/mcp-get-file-reference.md`](mcp-get-file-reference.md) —
-  byte-level file reads; fall back here when codegraph is unavailable.
+  byte-level file reads; fall back here when the code index is unavailable.
 - [`docs/mcp-get-symbols-reference.md`](mcp-get-symbols-reference.md) —
   per-symbol bodies + `include_relations`. Use when you want body
   content alongside callers. `get_relations` is the cheaper, deeper-

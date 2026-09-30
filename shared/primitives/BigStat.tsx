@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import clsx from "clsx";
+import { AnimatedValue } from "./Motion";
 
 // BigStat is the large session-detail KPI tile used above the tab strip.
 // Values and provenance captions stay app-owned; this component owns their
@@ -58,7 +59,7 @@ export function BigStat({
             warn ? "text-warn" : muted ? "text-fg-2" : "text-fg-0",
           )}
         >
-          {value}
+          <AnimatedValue value={value} />
         </span>
         {sub && (
           <span

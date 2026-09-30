@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -208,13 +207,12 @@ type statuslineTotals struct {
 	RowCount        int
 }
 
-// statuslineQueryRows runs a per-turn-deduped scan over
-// api_turns∪token_usage and prices every row through the cost engine.
-// It mirrors the structural shape of handleAnalysisHeadline's `combined`
-// CTE in analysis.go (same proxy_turn_ids exclusion trick so a JSONL
-// row already covered by a proxy-recorded api_turns row isn't
-// double-counted) but carries NONE of that handler's extra tiles —
-// see the handleStatuslineTile doc comment for why that's a hard
+// statuslineQueryRows sums the node's deduped spend substrate
+// (loadSpendTurns: the one session dedup rule, sessionmsg.DeriveVerdicts,
+// applied by the cost engine and priced by it) over whichever rows the
+// caller selects, so the statusline agrees with the session detail header
+// and the Sessions list. It carries NONE of handleAnalysisHeadline's extra
+// tiles — see the handleStatuslineTile doc comment for why that's a hard
 // constraint, not an oversight.
 //
 // sinceRFC3339 (when non-empty) bounds rows to timestamp >= that value
@@ -223,135 +221,36 @@ type statuslineTotals struct {
 // this function each supply exactly one of the two (never both, never
 // neither), but the function itself tolerates any combination.
 //
-// Pricing rule per row (the "recorded-cost-wins" rule, identical to
-// handleAnalysisHeadline): a row with a positive recorded cost
-// (api_turns.cost_usd from the proxy, or token_usage.estimated_cost_usd
-// from JSONL backfill) uses that ground-truth figure as-is. A row with
-// no recorded cost (zero or NULL) is priced via cost.Compute against
-// the engine's pricing table when the model is known; an unknown model
-// contributes $0 (no fabricated cost). Unlike handleAnalysisHeadline,
-// this function does NOT decompose long-context surcharge or a
-// cache-savings counterfactual — the statusline has no use for either,
-// and computing them would mean pricing every row twice for nothing.
+// Pricing is the engine's per-row rule: a positive recorded cost wins, else
+// the pricing table's rate at the row's own timestamp; an unknown model
+// contributes $0 (no fabricated cost). With no engine there is nothing to
+// dedup or price with, and the totals stay zero.
 func statuslineQueryRows(ctx context.Context, db *sql.DB, engine *cost.Engine, sinceRFC3339 string, sessionID string) (statuslineTotals, error) {
 	var totals statuslineTotals
-	if db == nil {
+	if db == nil || engine == nil {
 		return totals, nil
 	}
-
-	proxyExtra, proxyArgs := statuslineWhereClause("", sinceRFC3339, sessionID)
-	atExtra, atArgs := statuslineWhereClause("at.", sinceRFC3339, sessionID)
-	tuExtra, tuArgs := statuslineWhereClause("tu.", sinceRFC3339, sessionID)
-
-	//nolint:gosec // G202: SQL structure (proxyExtra/atExtra/tuExtra) is built
-	// only from the fixed " AND col >= ?" / " AND col = ?" fragments in
-	// statuslineWhereClause — never from raw request input; all values are
-	// bound via ? args.
-	q := `WITH proxy_turn_ids AS (
-		SELECT request_id FROM api_turns
-		 WHERE request_id IS NOT NULL AND request_id != ''` + proxyExtra + `
-	),
-	combined AS (
-		SELECT at.model, at.input_tokens, at.output_tokens, at.cache_read_tokens,
-		       at.cache_creation_tokens, at.cache_creation_1h_tokens,
-		       0 AS reasoning_tokens, at.web_search_requests,
-		       at.cost_usd AS recorded_cost, at.fast, at.timestamp
-		FROM api_turns at
-		WHERE 1=1` + atExtra + `
-		UNION ALL
-		SELECT tu.model, tu.input_tokens, tu.output_tokens, tu.cache_read_tokens,
-		       tu.cache_creation_tokens, tu.cache_creation_1h_tokens,
-		       tu.reasoning_tokens, tu.web_search_requests,
-		       tu.estimated_cost_usd AS recorded_cost, tu.fast, tu.timestamp
-		FROM token_usage tu
-		WHERE 1=1` + tuExtra + `
-		  AND (tu.source_event_id IS NULL OR tu.source_event_id = ''
-		       OR tu.source_event_id NOT IN (SELECT request_id FROM proxy_turn_ids))
-	)
-	SELECT COALESCE(model, ''),
-	       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-	       COALESCE(cache_read_tokens, 0), COALESCE(cache_creation_tokens, 0),
-	       COALESCE(cache_creation_1h_tokens, 0),
-	       COALESCE(reasoning_tokens, 0), COALESCE(web_search_requests, 0),
-	       COALESCE(recorded_cost, 0), COALESCE(fast, 0), COALESCE(timestamp, '')
-	FROM combined`
-
-	args := make([]any, 0, len(proxyArgs)+len(atArgs)+len(tuArgs))
-	args = append(args, proxyArgs...)
-	args = append(args, atArgs...)
-	args = append(args, tuArgs...)
-
-	rows, err := db.QueryContext(ctx, q, args...)
+	var since time.Time
+	if sinceRFC3339 != "" {
+		t, err := time.Parse(time.RFC3339Nano, sinceRFC3339)
+		if err != nil {
+			return totals, fmt.Errorf("dashboard.statuslineQueryRows: since: %w", err)
+		}
+		since = t
+	}
+	var ids []string
+	if sessionID != "" {
+		ids = []string{sessionID}
+	}
+	turns, err := loadSpendTurns(ctx, db, engine, since, time.Time{}, "", "", ids)
 	if err != nil {
 		return totals, fmt.Errorf("dashboard.statuslineQueryRows: %w", err)
 	}
-	defer rows.Close()
-
-	// dateAware gates the per-row time.Parse: an install with zero
-	// dated-pricing entries (the common case) pays nothing extra on
-	// this <100ms-budget hot path, matching cost/summary.go's pattern.
-	dateAware := engine != nil && engine.HasDatedPricing()
-
-	for rows.Next() {
-		var (
-			model    string
-			bundle   cost.TokenBundle
-			recorded float64
-			fastInt  int
-			tsStr    string
-		)
-		if err := rows.Scan(&model,
-			&bundle.Input, &bundle.Output,
-			&bundle.CacheRead, &bundle.CacheCreation, &bundle.CacheCreation1h,
-			&bundle.Reasoning, &bundle.WebSearchRequests,
-			&recorded, &fastInt, &tsStr); err != nil {
-			return totals, fmt.Errorf("dashboard.statuslineQueryRows: scan: %w", err)
-		}
-		bundle.Fast = fastInt != 0
-
-		var rowCost float64
-		switch {
-		case recorded > 0:
-			rowCost = recorded
-		case engine != nil:
-			var ts time.Time
-			if dateAware {
-				ts, _ = time.Parse(time.RFC3339Nano, tsStr)
-			}
-			if p, ok := engine.LookupAt(model, ts); ok {
-				rowCost = cost.Compute(p, bundle)
-			}
-		}
-
-		totals.CostUSD += rowCost
-		totals.CacheReadTokens += bundle.CacheRead
-		totals.PromptTokens += bundle.Input + bundle.CacheRead + bundle.CacheCreation
+	for _, t := range turns {
+		totals.CostUSD += t.CostUSD
+		totals.CacheReadTokens += t.Bundle.CacheRead
+		totals.PromptTokens += t.Bundle.Input + t.Bundle.CacheRead + t.Bundle.CacheCreation
 		totals.RowCount++
 	}
-	if err := rows.Err(); err != nil {
-		return totals, fmt.Errorf("dashboard.statuslineQueryRows: rows: %w", err)
-	}
 	return totals, nil
-}
-
-// statuslineWhereClause builds the AND-joined WHERE fragment (plus its
-// bound args, in the same order) for an optional time-floor and/or
-// optional session-id filter, against columns referenced with the
-// given alias prefix ("" for the unaliased proxy_turn_ids subquery,
-// "at."/"tu." for the combined CTE's two legs). Returns ("", nil) when
-// neither filter applies.
-func statuslineWhereClause(prefix, sinceRFC3339, sessionID string) (clause string, args []any) {
-	var parts []string
-	if sinceRFC3339 != "" {
-		parts = append(parts, prefix+"timestamp >= ?")
-		args = append(args, sinceRFC3339)
-	}
-	if sessionID != "" {
-		parts = append(parts, prefix+"session_id = ?")
-		args = append(args, sessionID)
-	}
-	if len(parts) == 0 {
-		return "", nil
-	}
-	return " AND " + strings.Join(parts, " AND "), args
 }

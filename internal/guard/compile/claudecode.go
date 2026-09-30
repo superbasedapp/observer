@@ -265,6 +265,14 @@ func claudeCodeRows() []Translation {
 			Note: "config-scan finding (pin diff), not a tool-call shape",
 		},
 		{
+			RuleID: "R-306", Fidelity: FidelityNone,
+			Note: "decided against the compiled tools.mcp_access node table at call time (runtime state); the hook seam enforces it, no static native expression",
+		},
+		{
+			RuleID: "R-307", Fidelity: FidelityNone,
+			Note: "org grant deny is runtime state from the signed tools.mcp_access resource; the hook seam enforces it, no static native expression",
+		},
+		{
 			RuleID: "T-501", Fidelity: FidelityNone,
 			Note: "session taint is runtime state; no static native expression",
 		},

@@ -81,7 +81,8 @@ var shareModeRules = []shareModeRule{
 		name:   "enterprise_grant",
 		lifted: func(_, _, enterprise bool) bool { return enterprise },
 		line: "FULL CONTENT (raw command bodies + assistant prose + raw paths SHIPPED) " +
-			"— this node's managed enrolment grant carries the enterprise content authorities",
+			"— this node's managed enrolment grant carries extract.managed, the organisation-signed raise " +
+			"to full content (see `observer org grant show`; your config file was not rewritten)",
 	},
 	{
 		// The total fallback, and the only line that may claim the default.
@@ -114,23 +115,105 @@ func shareModeLine(fullContent, adminManaged, enterpriseGranted bool) string {
 }
 
 // enterpriseContentGranted resolves whether this node's managed enrolment
-// grant carries the enterprise content authorities — the third, grant-borne
-// input to ShipsRawContent, which no TOML key records.
+// grant is raising it to full content RIGHT NOW — the third, grant-borne
+// input to ShipsRawContent, which no TOML key records. It reads
+// govern.Effective.EnterpriseContentInForce, the same predicate the push seam
+// ships under (governance_wire.lowerShareOptions), so the status line names
+// exactly the posture the wire has: an org-signed extract.managed grant on a
+// managed enrolment raises (Agent Access R9.5 / R11.10), an org body that
+// lowered full_content makes it yield, a grant whose signature no longer
+// verifies (govern.StateGrantSignatureInvalid), or one whose key pin or
+// enrolment generation no longer matches, grants nothing.
 //
 // It mirrors budgetEnforcementGranted (costengine_wire.go) deliberately: both
 // are "resolve the live governance grant from a short-lived CLI process", and
 // both fail CLOSED on any error, because a status line must never claim a
 // narrower posture than the push actually has.
 func enterpriseContentGranted(ctx context.Context, cfg config.Config, st *store.Store, logger *slog.Logger) bool {
+	return enterpriseContentEffective(ctx, cfg, st, logger).EnterpriseContentInForce()
+}
+
+// enterpriseContentEffective resolves the live governance posture the way
+// the daemon does (identity loader + last-known-good body), for the CLI
+// surfaces that report what the grant does to content sharing. A nil store
+// resolves to the zero posture, which grants nothing.
+func enterpriseContentEffective(ctx context.Context, cfg config.Config, st *store.Store, logger *slog.Logger) govern.Effective {
 	if st == nil {
-		return false
+		return govern.Effective{}
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
 	ngov := newNodeGovernanceHandle(governanceIdentityLoader(st), logger)
 	loadNodeGovernanceLKG(ctx, cfg, st, ngov, logger)
-	return ngov.Effective(ctx).GrantsEnterpriseContent()
+	return ngov.Effective(ctx)
+}
+
+// enterpriseContentRule is one row of the `observer org grant show`
+// "Content sharing" line: the resolved posture it matches and the line it
+// renders. Walked top-down; the last row is the total fallback.
+type enterpriseContentRule struct {
+	name  string
+	match func(eff govern.Effective) bool
+	line  string
+}
+
+// enterpriseContentRules names WHY the grant does or does not raise this
+// machine to full content, most-specific first. The order matters: a grant
+// that carries the umbrella but is lowered by the org must say "lowered", not
+// "raised", and an individual enrolment must be told the token is inert for
+// it rather than being shown a raise it will never get.
+var enterpriseContentRules = []enterpriseContentRule{
+	{
+		name:  "raised",
+		match: func(e govern.Effective) bool { return e.EnterpriseContentInForce() },
+		line: "Content:      FULL (L2) - this organisation-signed grant carries extract.managed on a managed enrolment,\n" +
+			"              so raw command bodies, assistant prose and raw paths ship. Your config file was\n" +
+			"              not rewritten; the raise lives in this grant and lapses with it.",
+	},
+	{
+		name:  "lowered",
+		match: func(e govern.Effective) bool { return e.GrantsEnterpriseContent() && !e.EnterpriseContentInForce() },
+		line: "Content:      LOWERED - the grant carries extract.managed, but your organisation's signed policy\n" +
+			"              sets share.full_content = false for this machine, so only hashes ship under it.",
+	},
+	{
+		name: "inert_individual",
+		// Effective.Authority is the grant's KNOWN token list as recorded
+		// (govern normalize/splitAuthority), so it still names the umbrella
+		// on an individual enrolment even though HonoredAuthority applies
+		// nothing under it — which is exactly the fact this row explains.
+		match: func(e govern.Effective) bool {
+			return !e.Managed && containsString(govern.AuthorityExtractManaged, e.Authority)
+		},
+		line: "Content:      unchanged - extract.managed is on this grant but this is an INDIVIDUAL enrolment,\n" +
+			"              where that token is inert; only your own [org_client.share].full_content decides.",
+	},
+	{
+		name:  "not_granted",
+		match: func(govern.Effective) bool { return true },
+		line: "Content:      unchanged by this grant - it carries no extract.managed; what ships is decided by\n" +
+			"              your own [org_client.share] block (see `observer org status`).",
+	},
+}
+
+// enterpriseContentLine renders the `observer org grant show` line that says
+// what the recorded grant does to this machine's content sharing, resolved
+// through the same predicate the push seam ships under.
+func enterpriseContentLine(ctx context.Context, cfg config.Config, st *store.Store, logger *slog.Logger) string {
+	return enterpriseContentLineFor(enterpriseContentEffective(ctx, cfg, st, logger))
+}
+
+// enterpriseContentLineFor walks enterpriseContentRules for a resolved
+// posture. Split from enterpriseContentLine so the table is testable without
+// a store.
+func enterpriseContentLineFor(eff govern.Effective) string {
+	for _, rule := range enterpriseContentRules {
+		if rule.match(eff) {
+			return rule.line
+		}
+	}
+	return enterpriseContentRules[len(enterpriseContentRules)-1].line
 }
 
 // governancePostureLine returns a one-line WARNING for `observer org status`
@@ -224,6 +307,10 @@ func buildOrgBundle(ctx context.Context, configPath string) (orgBundle, error) {
 	// SAME cost.Engine the dashboard prices with, so the org rollup's SUM
 	// of estimated_cost_usd stops under-reporting hook-only adapters.
 	st.SetOrgPushPricer(orgPushPricer(acquireProcessCostEngine(ctx, cfg, database, logger)))
+	// Agent Access P11 (c): the shadow-MCP discovery inventory seam over the
+	// node's client MCP configs (mcpinventory_wire.go). Composes nothing
+	// unless the share posture attaches the wire (orgpush.go).
+	st.SetMCPInventoryProviders(mcpInventoryProviders())
 	bs := orgclient.OpenBearerStore(cfg.OrgClient.KeychainID, filepath.Dir(cfg.Observer.DBPath), logger)
 	client := orgclient.New(cfg.OrgClient, st, bs, version, nil, logger)
 	client.SetPolicyResourceCacheDir(policyResourceCacheDir(cfg))
@@ -297,8 +384,11 @@ Four ways to supply credentials, in priority order:
   ENROLMENT_TOKEN env      With ` + "`--link <url-without-/enrol/code>`" + ` for org URL only
 
 After enrolling, the agent (a) writes a default [org_client] block to
-your config.toml (enabled=true, share.full_content=false,
-push_interval_seconds=900) so you don't have to hand-edit TOML, and
+your config.toml (enabled=true, push_interval_seconds=900, and
+share.full_content=true for an organisation-managed enrolment - the
+teams/enterprise capture posture ships raw content - or false for an
+individual one, which keeps the node-side opt-in) so you don't have to
+hand-edit TOML, and
 (b) auto-wires the observer proxy + hooks + MCP into every detected
 AI client (claude-code, codex, cursor, cline). Pass --no-write-block
 or --wire-clients=false to opt out of either side. Only activity AFTER
@@ -363,10 +453,21 @@ high-water id).`,
 				if werr != nil {
 					fmt.Fprintf(out, "\nWarn: could not resolve config path to write [org_client] block: %v\n", werr)
 				} else {
-					if added, werr := ensureOrgClientBlock(cfgPath, enr.OrgServerURL); werr != nil {
+					// W4f (R9.5 / PR-014): the enrolment's TENANCY — the
+					// server's own answer on the enrol response, stored on
+					// the enrolment row — decides the share default this
+					// node-authored block carries. Managed (teams/
+					// enterprise) writes full_content = true; individual
+					// keeps the opt-in false. Still a node-side write, not
+					// a remote toggle; an already-present [org_client]
+					// block is never rewritten (the already-enrolled raise
+					// rides the signed grant instead).
+					posture := enrolShareDefaultFor(enr.IsManaged())
+					if added, werr := ensureOrgClientBlock(cfgPath, enr.OrgServerURL, enr.IsManaged()); werr != nil {
 						fmt.Fprintf(out, "\nWarn: could not write [org_client] block to %s: %v\n", cfgPath, werr)
 					} else if added {
 						fmt.Fprintf(out, "\nWrote default [org_client] block to %s — start `observer start` to begin pushing.\n", cfgPath)
+						fmt.Fprintf(out, "  share.full_content = %t: %s\n", posture.fullContent, posture.summary)
 						fmt.Fprintln(out, "  (A daemon already running with org push enabled picks up a re-enrolment within one push interval — no restart needed.)")
 					} else if !enabled {
 						fmt.Fprintln(out, "\nNote: [org_client] enabled = false — set it to true and restart `observer start` to begin pushing.")
@@ -608,7 +709,86 @@ func hasOrgClientTableHeader(body string) bool {
 	return false
 }
 
-func ensureOrgClientBlock(path, orgServerURL string) (bool, error) {
+// enrolShareDefault is one row of the enrolment-time share-default table:
+// which enrolment TENANCY it covers, the full_content value `observer org
+// enroll` writes into the node's own [org_client.share] block for it, the
+// comment that block carries so the operator reading the file later knows
+// why, and the one-line summary the enrol command prints.
+//
+// It is a table (CLAUDE.md #5) because the answer has exactly two rows and
+// they are the product's whole capture-posture split (Agent Access R9.5,
+// robustness finding PR-014): a MANAGED enrolment — the teams/enterprise
+// posture, the server's own verdict on the enrol response
+// (orgcontract.EnrollResponse.Tenancy, stored as store.Enrolment.Tenancy) —
+// captures everything, so a managed node shipping hashes only is a defect;
+// an INDIVIDUAL enrolment keeps the node-side opt-in the privacy plane is
+// built on. Both rows are NODE-authored config written by the enrolment the
+// developer just ran, never a remote force: the org admin has no toggle for
+// this file, and a node enrolled before the managed row existed is raised by
+// the org-SIGNED extract.managed grant it is shown (govern.Effective.
+// EnterpriseContentInForce), not by a rewrite of this block.
+type enrolShareDefault struct {
+	// name is for the tests and for reading the table.
+	name string
+	// managed is the tenancy the row covers (store.Enrolment.IsManaged).
+	managed bool
+	// fullContent is the [org_client.share].full_content value written.
+	fullContent bool
+	// comment is the TOML comment block written above the key, each line
+	// already prefixed with "# " and newline-terminated.
+	comment string
+	// summary is the one-line explanation the enrol command prints.
+	summary string
+}
+
+// enrolShareDefaults is the whole table; enrolShareDefaultFor walks it.
+var enrolShareDefaults = []enrolShareDefault{
+	{
+		name:        "managed",
+		managed:     true,
+		fullContent: true,
+		comment: "# full_content = true: this machine enrolled as ORGANISATION-MANAGED (the\n" +
+			"# teams/enterprise capture posture), so raw command bodies (run_command),\n" +
+			"# assistant prose (task_complete), and raw filesystem paths ship to the org\n" +
+			"# server. `observer org enroll` wrote this from the enrolment's tenancy: it is\n" +
+			"# a node-authored value in this file, not a remote toggle. A managed node that\n" +
+			"# ships hashes only is a defect, so lower this only on an explicit admin\n" +
+			"# decision (the org can also lower it through its signed governance policy).\n" +
+			"# See docs/teams-getting-started.md.\n",
+		summary: "organisation-managed enrolment (teams/enterprise) ships full content; a node-authored value you can read in the file",
+	},
+	{
+		name:        "individual",
+		managed:     false,
+		fullContent: false,
+		comment: "# full_content = true ships raw command bodies (run_command), assistant prose\n" +
+			"# (task_complete), and raw filesystem paths to the org server. Default false\n" +
+			"# ships only hashes — the metadata-only posture. The org admin cannot flip\n" +
+			"# this remotely; it lives solely in this file. See docs/teams-getting-started.md.\n",
+		summary: "individual enrolment keeps the node-side opt-in (hashes only until you set it to true)",
+	},
+}
+
+// enrolShareDefaultFor returns the enrolShareDefaults row for the enrolment
+// tenancy. The table is closed (two rows, one per tenancy class), so the
+// walk always matches; the individual row is the fallback so an unexpected
+// caller can never be defaulted INTO full content.
+func enrolShareDefaultFor(managed bool) enrolShareDefault {
+	for _, row := range enrolShareDefaults {
+		if row.managed == managed {
+			return row
+		}
+	}
+	return enrolShareDefaults[len(enrolShareDefaults)-1]
+}
+
+// ensureOrgClientBlock appends the default [org_client] block to the config
+// file at path unless one is already present, and reports whether it wrote.
+// managed selects the enrolShareDefaults row (the share.full_content value
+// and its comment); the rest of the block is tenancy-independent. It never
+// modifies an existing block, which is what keeps the already-enrolled case
+// on the signed-grant rail rather than a silent config rewrite.
+func ensureOrgClientBlock(path, orgServerURL string, managed bool) (bool, error) {
 	body, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return false, err
@@ -620,6 +800,7 @@ func ensureOrgClientBlock(path, orgServerURL string) (bool, error) {
 	if u := strings.TrimSpace(orgServerURL); u != "" {
 		urlLine = "org_server_url = " + strconv.Quote(u) + "\n"
 	}
+	share := enrolShareDefaultFor(managed)
 	block := "\n[org_client]\n" +
 		"# enabled = true means observer start ships activity rollups to the org server\n" +
 		"# on every push_interval_seconds. Set to false to pause sharing without unenrolling.\n" +
@@ -635,11 +816,8 @@ func ensureOrgClientBlock(path, orgServerURL string) (bool, error) {
 		"# snapshot_interval_seconds = 480\n" +
 		"\n" +
 		"[org_client.share]\n" +
-		"# full_content = true ships raw command bodies (run_command), assistant prose\n" +
-		"# (task_complete), and raw filesystem paths to the org server. Default false\n" +
-		"# ships only hashes — the metadata-only posture. The org admin cannot flip\n" +
-		"# this remotely; it lives solely in this file. See docs/teams-getting-started.md.\n" +
-		"full_content = false\n" +
+		share.comment +
+		"full_content = " + strconv.FormatBool(share.fullContent) + "\n" +
 		"# target_action_allowlist = [\"read_file\", \"edit_file\", \"write_file\"]\n" +
 		"\n" +
 		"[org_client.scope]\n" +
@@ -963,6 +1141,7 @@ func newOrgCmd() *cobra.Command {
 		newOrgPushNowCmd(),
 		newOrgPreviewCmd(),
 		newOrgBackfillCmd(),
+		newOrgResyncCmd(),
 		newOrgEmitManagedSettingsCmd(),
 		newOrgGrantCmd(),
 		newOrgRequestCmd(),
@@ -1042,6 +1221,18 @@ func newOrgStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "%-12s  %12d  %12d\n", "api_turns", maxIDs.APITurns, maxIDs.APITurns-cur.APITurns)
 			fmt.Fprintf(out, "%-12s  %12d  %12d\n", "token_usage", maxIDs.TokenUsage, maxIDs.TokenUsage-cur.TokenUsage)
 			fmt.Fprintf(out, "%-12s  %12d  %12d\n", "guard_events", maxIDs.GuardEvents, maxIDs.GuardEvents-cur.GuardEvents)
+			// Already-pushed rows that changed on this node and are queued to
+			// re-send (agent migration 140) - "eligible" above only counts
+			// rows the org has never seen.
+			if pending, perr := b.store.PushResendPending(cmd.Context()); perr == nil && len(pending) > 0 {
+				fmt.Fprintf(out, "Pending re-sends: sessions=%d actions=%d api_turns=%d token_usage=%d\n",
+					pending["sessions"], pending["actions"], pending["api_turns"], pending["token_usage"])
+			}
+			// Deletions queued to propagate (agent migration 141) and resync
+			// session manifests not yet shipped.
+			if tomb, mans, perr := b.store.PushDeletionsPending(cmd.Context()); perr == nil && tomb+mans > 0 {
+				fmt.Fprintf(out, "Pending deletions: %d (session manifests: %d)\n", tomb, mans)
+			}
 			fmt.Fprintln(out)
 
 			// Explain an eligible==0 state in plain language (Phase C #8)

@@ -371,7 +371,7 @@ func (a *Adapter) tokenEvent(sourceFile, projectRoot, gitRemote string, s sessio
 	if in == 0 && out == 0 && cr == 0 && cc == 0 {
 		return models.TokenEvent{}, false
 	}
-	return models.TokenEvent{
+	ev := models.TokenEvent{
 		SourceFile:          sourceFile,
 		SourceEventID:       "tokens:" + eventKey(cm.MessageID, n.NodeID),
 		SessionID:           s.ID,
@@ -387,7 +387,19 @@ func (a *Adapter) tokenEvent(sourceFile, projectRoot, gitRemote string, s sessio
 		Source:              models.TokenSourceJSONL,
 		Reliability:         models.ReliabilityApproximate,
 		MessageID:           cm.MessageID,
-	}, true
+	}
+	// total_time_ms is this node's own generation wall-clock time (TTFT
+	// plus per-output-token decode time for THIS call only — verified
+	// against the live-capture fixture's tpot_ms: (total_time_ms -
+	// ttft_ms)/(output_tokens-1) ≈ tpot_ms, and tokens_per_sec ==
+	// 1000/tpot_ms). It covers exactly the tokens on this TokenEvent and
+	// no tool execution, so it's safe to stamp as-is.
+	if m.TotalTimeMs != nil && *m.TotalTimeMs > 0 {
+		ev.GenMs = int64(*m.TotalTimeMs + 0.5)
+		ev.GenBasis = models.GenBasisNative
+		ev.GenTimingV = 1
+	}
+	return ev, true
 }
 
 // resolveProjectRoot turns a session's raw working_directory into a stable

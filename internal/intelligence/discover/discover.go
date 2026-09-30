@@ -116,6 +116,13 @@ type Options struct {
 	Limit int
 	// Now overrides time.Now for deterministic tests.
 	Now func() time.Time
+	// StaleOnly stops Run after the stale-read pass: TotalActions, StaleReads
+	// and the stale fields of Summary are exactly what a full Run returns;
+	// RepeatedCommands, CrossToolFiles, NativeVsBash and their Summary fields
+	// stay empty. For a reader that shows only the stale-read counts (the
+	// node Overview's KPI tile), which otherwise paid for the whole report -
+	// the repeated-command and no-change-rerun passes are most of its cost.
+	StaleOnly bool
 }
 
 // Discoverer runs a pass against a DB.
@@ -188,6 +195,9 @@ func (d *Discoverer) Run(ctx context.Context, opts Options) (Report, error) {
 		report.Summary.StaleReadCount += s.StaleCount
 		report.Summary.CrossThreadStaleCount += s.CrossThreadStaleCount
 		report.Summary.EstWastedTokens += s.EstWastedTokens
+	}
+	if opts.StaleOnly {
+		return report, nil
 	}
 
 	reps, err := d.repeatedCommands(ctx, opts.ProjectRoot, opts.Tool, since, opts.Limit)
@@ -403,32 +413,61 @@ type noChangeKey struct {
 // "no-change rerun" intervals across all run_command groups in the
 // window. A no-change rerun is two consecutive runs of the same
 // (session, project, command) with no edit_file / write_file in between.
-// Replaces the per-group countNoChangeReruns loop; one query, ~100ms on
-// an 81k-action DB.
+// Replaces the per-group countNoChangeReruns loop with one query.
+//
+// The query is a single ordered pass (optimization review 2026-09-27,
+// docs/audits/optimization-review-2026-09-27.md). The previous form
+// answered "was there an edit between these two runs?" with a correlated
+// NOT EXISTS per run pair; the only index it could seek on led with
+// session_id, so every probe re-walked the WHOLE session's actions — a
+// per-session quadratic that measured 30-68s of /api/discover's ~50-107s
+// on a 936k-action corpus. Here the question is answered with running
+// counts instead:
+//
+//	edits_le(t) = # edits in the session with timestamp <= t
+//	edits_lt(t) = edits_le(t) - (# edits at exactly t)
+//	edits strictly inside (prev, cur) = edits_lt(cur) - edits_le(prev)
+//
+// A difference <= 0 is exactly the old NOT EXISTS being true (it is
+// negative only when prev == cur, the empty open interval the old
+// predicate also treated as "no edit"). Timestamps compare as TEXT in
+// both forms (BINARY collation), and the edit rows only need the window
+// lower bound because prev_ts is itself >= since, so the interval can
+// never reach below the window. TestNoChangeRerunCountsMatchesReference
+// pins byte-identical output against the old correlated form.
 func (d *Discoverer) noChangeRerunCounts(ctx context.Context, projectRoot string, since time.Time) (map[noChangeKey]int, error) {
-	q := `WITH runs AS (
+	q := `WITH ev AS (
 		SELECT a.session_id, a.target, a.project_id, a.timestamp,
-		       LAG(a.timestamp) OVER (PARTITION BY a.session_id, a.target, a.project_id ORDER BY a.timestamp) AS prev_ts
+		       CASE WHEN a.action_type = 'run_command' THEN 1 ELSE 0 END AS is_run,
+		       CASE WHEN a.action_type IN ('edit_file', 'write_file') THEN 1 ELSE 0 END AS is_edit
 		FROM actions a
-		WHERE a.action_type = 'run_command' AND a.target != ''`
+		WHERE ((a.action_type = 'run_command' AND a.target != '')
+		       OR a.action_type IN ('edit_file', 'write_file'))`
 	var args []any
 	if !since.IsZero() {
 		q += " AND a.timestamp >= ?"
 		args = append(args, since.UTC().Format(time.RFC3339Nano))
 	}
 	q += `
+	),
+	cum AS (
+		SELECT session_id, target, project_id, timestamp, is_run,
+		       SUM(is_edit) OVER (PARTITION BY session_id ORDER BY timestamp) AS edits_le,
+		       SUM(is_edit) OVER (PARTITION BY session_id, timestamp) AS edits_at
+		FROM ev
+	),
+	runs AS (
+		SELECT target, project_id,
+		       edits_le - edits_at AS edits_lt,
+		       LAG(edits_le) OVER (PARTITION BY session_id, target, project_id ORDER BY timestamp) AS prev_edits_le
+		FROM cum
+		WHERE is_run = 1
 	)
 	SELECT r.target, COALESCE(p.root_path, '') AS project_root,
-	       SUM(CASE WHEN NOT EXISTS (
-	         SELECT 1 FROM actions e
-	         WHERE e.session_id = r.session_id
-	           AND e.action_type IN ('edit_file', 'write_file')
-	           AND e.timestamp > r.prev_ts
-	           AND e.timestamp < r.timestamp
-	       ) THEN 1 ELSE 0 END) AS no_change_count
+	       SUM(CASE WHEN r.edits_lt - r.prev_edits_le <= 0 THEN 1 ELSE 0 END) AS no_change_count
 	FROM runs r
 	LEFT JOIN projects p ON p.id = r.project_id
-	WHERE r.prev_ts IS NOT NULL`
+	WHERE r.prev_edits_le IS NOT NULL`
 	if projectRoot != "" {
 		q += " AND p.root_path = ?"
 		args = append(args, projectRoot)
@@ -524,7 +563,16 @@ func (d *Discoverer) nativeVsBash(ctx context.Context, projectRoot, tool string,
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += " GROUP BY a.action_type, a.is_native_tool ORDER BY COUNT(*) DESC"
+	// `+a.action_type` (a no-op on the value) stops the planner from
+	// walking idx_actions_type in full just to get groups pre-sorted: with
+	// no ANALYZE statistics it otherwise prefers that index over the
+	// window's covering timestamp index (migration 138), fetching every
+	// ~4.7 KB action row of ALL time to aggregate a 30-day window (2.2 s ->
+	// 0.45 s on the reference corpus). The explicit tiebreak pins the order
+	// of equal counts, which previously fell out of idx_actions_type's
+	// (action_type, is_native_tool) group order — the same order, now
+	// stated rather than inherited from a plan.
+	q += " GROUP BY +a.action_type, a.is_native_tool ORDER BY COUNT(*) DESC, a.action_type, a.is_native_tool"
 
 	rows, err := d.db.QueryContext(ctx, q, args...)
 	if err != nil {

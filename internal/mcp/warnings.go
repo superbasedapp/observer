@@ -12,15 +12,14 @@ const (
 	// WarningIndexUnavailable fires when the codeintel Provider's
 	// Available() is false at request time. Paired with degraded: true.
 	// The regex fallback in livesym.Parse may produce approximate
-	// matches. (Renamed from codegraph_unavailable in Phase 4 when the
-	// external codegraph dependency was decommissioned.)
+	// matches.
 	WarningIndexUnavailable = "index_unavailable"
 
 	// WarningIndexStale fires when the codeintel Provider's
 	// Stale(absPath) is true — the file's mtime is meaningfully newer
 	// than the index's last pass. Per-match line numbers may be off;
 	// drift signal (index_lines + live_lines) fields surface the
-	// divergence. (Renamed from codegraph_stale in Phase 4.)
+	// divergence.
 	WarningIndexStale = "index_stale"
 
 	// WarningIndexChangedMidQuery fires when the index DB's mtime

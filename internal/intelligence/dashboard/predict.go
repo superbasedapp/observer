@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/predict"
+	"github.com/marmutapp/superbased-observer/internal/sessiongauge"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -39,39 +40,11 @@ type PredictResponse struct {
 }
 
 // LimitGauge is the rate-limit / subscription-window half of the
-// predictor. In v1 the capture path (proxy graft + limit_snapshots) is
-// Phase C; until a snapshot exists for the session's scope the gauge is
-// Available=false / NeedsProxy=true and the surface renders a help-icon
-// "route through the proxy to unlock" state — never fabricated numbers.
-type LimitGauge struct {
-	Available  bool `json:"available"`
-	NeedsProxy bool `json:"needs_proxy"`
-	// NoWindow is true when the proxy HAS captured a snapshot for this
-	// provider but it carried no subscription-window utilization (e.g.
-	// OpenAI/codex, or Anthropic API-key traffic — only classic
-	// per-minute headers). Distinct from NeedsProxy so the surface shows
-	// "this provider exposes no 5h/weekly window" rather than the
-	// (wrong) "route through the proxy" hint.
-	NoWindow bool `json:"no_window,omitempty"`
-	// ObservedAge is a human-readable staleness hint ("2m ago") when a
-	// snapshot exists — the window keeps ticking from other sessions on
-	// the same account, so the gauge is only as fresh as the last
-	// proxied response.
-	ObservedAge string `json:"observed_age,omitempty"`
-	// Source names where the window came from: "proxy" (Anthropic
-	// response headers via limit_snapshots) or "transcript" (a tool's own
-	// session log, e.g. codex token_count rate_limits). Empty when the
-	// gauge is unavailable.
-	Source string `json:"source,omitempty"`
-	// Populated once snapshots land (Phase C): 5h / weekly utilization
-	// (0..1), reset unix timestamps, and the predicted next-message
-	// utilization-delta band. Omitted while unavailable.
-	Window5hUtil   *float64 `json:"window_5h_util,omitempty"`
-	Window5hReset  *int64   `json:"window_5h_reset,omitempty"`
-	Window7dUtil   *float64 `json:"window_7d_util,omitempty"`
-	Window7dReset  *int64   `json:"window_7d_reset,omitempty"`
-	ObservedAtUnix *int64   `json:"observed_at_unix,omitempty"`
-}
+// predictor. The type and the ladder that fills it live in the pure shared
+// derivation internal/sessiongauge (Limit), so the org session drawer renders
+// the same gauge from the same arithmetic; this alias keeps the wire shape
+// (see sessiongauge.LimitGauge for the three named unavailable outcomes).
+type LimitGauge = sessiongauge.LimitGauge
 
 // handleSessionPredict serves GET /api/session/<id>/predict. Sub-route
 // under handleSessionDetail. The cost estimate is pure read-side math
@@ -177,97 +150,37 @@ func (s *Server) handleSessionPredict(w http.ResponseWriter, r *http.Request, se
 	writeJSON(w, resp)
 }
 
-// loadLimitGauge resolves the limit gauge for a session. Primary source
-// is the proxy-captured snapshot for the session's provider (Anthropic
-// response headers). When that yields no subscription window — because
-// the session isn't proxied, or the provider doesn't expose 5h/weekly in
-// headers at all (OpenAI/codex) — it falls back to the tool's own
-// transcript-captured rate_limits (codex token_count → ActionRateLimit
-// rows). No window from either source → needs-proxy / no-window.
+// loadLimitGauge resolves the limit gauge for a session: it loads the two
+// observations the shared ladder reads and hands them to sessiongauge.Limit,
+// which owns the ladder (audited no-source finding -> proxy window ->
+// transcript window -> no_window / needs_proxy).
 //
-// The fallback is capability-driven: st.LatestRateLimitWindows returns
-// ok=false for any tool that doesn't emit those rows, so there's no
-// branch on source identity here.
+//   - Proxy: the newest proxy-captured snapshot for the session tool's
+//     provider, ATTRIBUTED to the tool that observed it (a node-wide
+//     per-provider read would leak one tool's subscription gauge, e.g. Claude
+//     Code's 5h/weekly, onto every other anthropic-default tool's session).
+//   - Transcript: the tool's own transcript-captured rate_limits (codex
+//     token_count -> ActionRateLimit rows); st.LatestRateLimitWindows is
+//     ok=false for any tool that does not emit those rows.
+//
+// A load error degrades to "no observation", never an error page.
 func loadLimitGauge(ctx context.Context, st *store.Store, tool, sessionID string) LimitGauge {
-	provider := providerForTool(tool)
-	// Attribute the window to the tool that observed it — a node-wide
-	// per-provider read leaks one tool's subscription gauge (e.g. Claude
-	// Code's 5h/weekly) onto every other anthropic-default tool's session
-	// detail (cline-cli, cursor, …) that never produced one.
-	snap, ok, err := st.LatestLimitSnapshotForTool(ctx, provider, tool)
-
-	var g LimitGauge
-	switch {
-	case err != nil || !ok:
-		g = LimitGauge{Available: false, NeedsProxy: true}
-	default:
-		g = LimitGauge{ObservedAge: humanizeAge(time.Since(snap.ObservedAt))}
-		if snap.Window5hUtil == nil && snap.Window7dUtil == nil {
-			g.NoWindow = true
-		} else {
-			g.Available = true
-			g.Source = "proxy"
-			g.Window5hUtil = snap.Window5hUtil
-			g.Window5hReset = snap.Window5hReset
-			g.Window7dUtil = snap.Window7dUtil
-			g.Window7dReset = snap.Window7dReset
-			if !snap.ObservedAt.IsZero() {
-				u := snap.ObservedAt.Unix()
-				g.ObservedAtUnix = &u
-			}
+	in := sessiongauge.LimitInput{Tool: tool, Now: time.Now()}
+	if snap, ok, err := st.LatestLimitSnapshotForTool(ctx, sessiongauge.ProviderForTool(tool), tool); err == nil && ok {
+		in.Proxy = &sessiongauge.Window{
+			ObservedAt:   snap.ObservedAt,
+			Window5hUtil: snap.Window5hUtil, Window5hReset: snap.Window5hReset,
+			Window7dUtil: snap.Window7dUtil, Window7dReset: snap.Window7dReset,
 		}
 	}
-
-	// Transcript fallback for providers without subscription-window
-	// headers (codex). Only consulted when the header path produced no
-	// usable window — a real proxied Anthropic window always wins.
-	if !g.Available {
-		if w, found, werr := st.LatestRateLimitWindows(ctx, tool, sessionID); werr == nil && found &&
-			(w.Window5hUtil != nil || w.Window7dUtil != nil) {
-			g = LimitGauge{
-				Available:     true,
-				Source:        "transcript",
-				Window5hUtil:  w.Window5hUtil,
-				Window5hReset: w.Window5hReset,
-				Window7dUtil:  w.Window7dUtil,
-				Window7dReset: w.Window7dReset,
-			}
-			if !w.ObservedAt.IsZero() {
-				g.ObservedAge = humanizeAge(time.Since(w.ObservedAt))
-				u := w.ObservedAt.Unix()
-				g.ObservedAtUnix = &u
-			}
+	if w, found, err := st.LatestRateLimitWindows(ctx, tool, sessionID); err == nil && found {
+		in.Transcript = &sessiongauge.Window{
+			ObservedAt:   w.ObservedAt,
+			Window5hUtil: w.Window5hUtil, Window5hReset: w.Window5hReset,
+			Window7dUtil: w.Window7dUtil, Window7dReset: w.Window7dReset,
 		}
 	}
-	return g
-}
-
-// providerForTool maps an AI-tool name to the upstream provider the
-// limit snapshot is keyed by. Capability-style: Anthropic-family tools
-// vs OpenAI-family; unknown defaults to anthropic (the common proxied
-// case). Branches on the known OpenAI tools rather than source identity
-// elsewhere in the pipeline.
-func providerForTool(tool string) string {
-	switch tool {
-	case "codex", "copilot", "copilot-cli":
-		return "openai"
-	default:
-		return "anthropic"
-	}
-}
-
-// humanizeAge renders a short staleness string for the gauge.
-func humanizeAge(d time.Duration) string {
-	if d < time.Minute {
-		return "just now"
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	}
-	if d < 24*time.Hour {
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	}
-	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	return sessiongauge.Limit(in)
 }
 
 // loadSessionFastNow reports whether the session is in the provider's

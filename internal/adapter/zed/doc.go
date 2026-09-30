@@ -53,9 +53,12 @@
 //     `tool_results` map keyed by the ToolUse call id
 //     ({tool_use_id, tool_name, is_error, content:[{"Text":...}], output}).
 //
-// 7 grounded native tool names, the COMPLETE surface a live multi-call
+// 7 native tool names grounded LIVE — the surface a live multi-call
 // session exercised: read_file, write_file, edit_file, list_directory,
-// find_path, terminal, delete_path.
+// find_path, terminal, delete_path. 9 more grounded in Zed's own tool
+// sources (crates/agent/src/tools/*_tool.rs `const NAME`, 2026-09-28):
+// grep, diagnostics, fetch, search_web, copy_path, move_path,
+// create_directory, skill, spawn_agent. See mapZedTool.
 //
 // # Timestamps
 //
@@ -80,12 +83,17 @@
 // # Model / pricing
 //
 // The one grounded capture reports `model.provider`="zed.dev" /
-// `model.model`="gpt-5.6-luna" — Zed's own managed model gateway (a
-// closed, non-mainstream backend). No pricing entry exists for it in
-// the cost engine; token rows land with EstimatedCostUSD=0 and resolve
-// as unknown cost rather than a fabricated price. This is honest, not a
-// bug — add a pricing entry only once a real published rate is
-// grounded.
+// `model.model`="gpt-5.6-luna" — Zed's own managed model gateway. The
+// adapter emits the bare `model.model` id, and the cost engine DOES
+// price it (checked 2026-09-28): `gpt-5.6-luna` is a row of the
+// generated, signed-feed pricing snapshot
+// (internal/intelligence/cost/pricing_snapshot.json, feed v5) with its
+// dated history (the 2026-07-30 cut), so token rows are costed at the
+// OpenAI list rate for the turn's date. That is an API-list-price
+// estimate: Zed's gateway bills through the Zed plan, not per token, so
+// the figure is not Zed's invoice. The adapter itself still carries
+// EstimatedCostUSD=0 (the source reports no cost); the engine computes
+// it downstream.
 //
 // # Surface
 //

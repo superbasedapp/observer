@@ -7,7 +7,8 @@
  */
 
 :root,
-:root[data-theme="dark"] {
+:root[data-theme="dark"],
+[data-theme-scope="dark"] {
   /* Surfaces — layered elevation, low to high */
   --bg-0: #08090d;
   --bg-1: #0e1018;
@@ -21,18 +22,29 @@
   --line-2: #262a36;
   --line-3: #353a48;
 
-  /* Foreground */
+  /* Foreground. fg-3 (labels, sub-text, table headers) clears WCAG AA 4.5:1
+     on every bg-0..bg-4 surface in both themes; fg-4 (placeholders,
+     decorative) clears 3:1 on the card surface. Raised 2026-09-27 from
+     #6b7388 / #474d5e (3.8:1 / 2.1:1 on bg-2). */
   --fg-0: #f5f7fb;
   --fg-1: #e2e6ef;
   --fg-2: #9aa2b2;
-  --fg-3: #6b7388;
-  --fg-4: #474d5e;
+  --fg-3: #848ca2;
+  --fg-4: #5d6478;
 
   /* Brand */
   --brand-from: #6199f0;
   --brand-to: #8b5cf6;
   --brand-grad: linear-gradient(135deg, var(--brand-from) 0%, var(--brand-to) 100%);
   --brand-soft: rgba(139, 92, 246, 0.12);
+  /* The CURRENT mark's Blueprint (favicon.svg / BrandMark). --brand-from /
+     --brand-to / --brand-grad above are the LEGACY "S"-logo gradient, kept
+     for aurora / progress bar / value flash (operator decision D3). The
+     same value in both themes: it is a badge fill, never body text
+     (#2647E8 on --bg-0 is ~3:1). */
+  --brand-blueprint: #2647e8;
+  --brand-blueprint-ink: #ffffff;
+  --brand-blueprint-soft: rgba(38, 71, 232, 0.16);
 
   /* Accent — primary interactive */
   --accent: #7c9eff;
@@ -47,6 +59,8 @@
   --warn: #fbbf24;
   --warn-soft: rgba(251, 191, 36, 0.12);
   --danger: #f87171;
+  /* Text on a solid danger fill: the dark red is light, so near-black (6.9:1). */
+  --on-danger: #1a0a0c;
   --danger-soft: rgba(248, 113, 113, 0.12);
   --info: #60a5fa;
   --info-soft: rgba(96, 165, 250, 0.12);
@@ -106,7 +120,9 @@
      screened >= 39 against all 33 prior tool hues in both themes and
      >= 197 pairwise among the three. */
   --tool-zcode: #4cd742;
-  --tool-mistral-code: #3106e0;
+  /* dark value lifted 2026-09 (#3106e0 almost vanished on the dark
+     surface); #a375fe keeps ΔE ≥ 15 vs gemini / muse. */
+  --tool-mistral-code: #a375fe;
   --tool-freebuff: #e25acb;
   /* Browser-chatbot rail (Phase 2, 2026-07-10) — brand-evocative hues,
      CIE76 ΔE-validated ≥ 21 vs every existing tool + each other (same
@@ -118,6 +134,23 @@
   --tool-perplexity-web: #88d7d7;
   --tool-gemini-web: #8193d5;
   --tool-copilot-web: #bb62cb;
+  /* 2026-09 wave (dashboard visual upgrade) — eight registry tools that
+     rendered in --tool-other, same CIE76 ΔE check as wave 3, run against
+     every existing tool hue in BOTH themes: every new hue clears ΔE 15.0
+     vs all others (the shipped palette's own tightest pairs are 9.8 dark,
+     cline/copilot-cli, and 14.4 light, cursor/gemini). The kit's first
+     brand-evocative picks collided in the crowded blue/violet band
+     (deepseek vs kimi-code 3.9, muse vs poolside 6.6), so each was nudged
+     ≤ 11° in Lab hue from its brand colour. kiro-crew and grokbot reuse
+     their product-family sibling (the gemini-cli precedent). */
+  --tool-kiro-crew: var(--tool-kiro-cli);
+  --tool-grokbot: var(--tool-grok);
+  --tool-muse: #a779e6;
+  --tool-prime-agent: #e5ddbf;
+  --tool-deepseek: #a8a6fe;
+  --tool-junie: #6eea72;
+  --tool-poolside: #947ed2;
+  --tool-zed: #5a9df5;
   --tool-other: #64748b;
 
   /* Action-type category colors. One var per canonical category in
@@ -151,6 +184,20 @@
   --rel-unreliable: var(--danger);
 
   /* Radius */
+  /* Type scale (2026-09-28). The apps grew ~25 arbitrary text-[Npx] sizes;
+     these nine steps are the named scale (preset fontSize: text-micro ...
+     text-display). Migrate a page onto them when it is next touched; never
+     a big-bang rewrite. Same in both themes. */
+  --fs-micro: 10px;
+  --fs-caption: 11px;
+  --fs-small: 12px;
+  --fs-body: 13px;
+  --fs-lead: 15px;
+  --fs-title: 20px;
+  --fs-h1: 22px;
+  --fs-display-sm: 28px;
+  --fs-display: 34px;
+
   --r-1: 4px;
   --r-2: 6px;
   --r-3: 8px;
@@ -175,13 +222,41 @@
     0 1px 0 rgba(255, 255, 255, 0.03) inset;
   --shadow-drawer: -16px 0 48px rgba(0, 0, 0, 0.6);
 
-  /* Motion */
+  /* Motion - the ONE motion vocabulary for every app surface (see
+     shared/styles/motion.css for the keyframes + composite classes and
+     shared/lib/motion.ts for the JS mirror). Durations collapse to 0 under
+     prefers-reduced-motion (motion.css), so anything built on these tokens
+     honours the OS setting without its own media query. */
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --dur-instant: 80ms;
   --dur-fast: 120ms;
   --dur: 200ms;
+  --dur-slow: 320ms;
+  --dur-slower: 560ms;
+  --stagger: 32ms;
+
+  /* Loading placeholders + interaction overlays (theme-aware; the old
+     white-on-white shimmer was invisible in the light theme). */
+  --skel-base: #1b1f29;
+  /* Toggle / slider knob: a near-white disc on any track, both themes. */
+  --knob: #f4f6fa;
+  --skel-hl: rgba(255, 255, 255, 0.06);
+  --overlay-1: rgba(255, 255, 255, 0.08);
+  --overlay-2: rgba(255, 255, 255, 0.16);
+
+  /* Terminal surfaces. The terminal panel sets data-theme-scope so it can
+     follow the app theme or pin its own (Settings > terminal theme). */
+  --term-bg: #0b0b0f;
+  --term-chrome: #14141a;
+  --term-banner: #101017;
+  --term-pop: #1b1b23;
 }
 
-:root[data-theme="light"] {
+:root[data-theme="light"],
+[data-theme-scope="light"] {
   --bg-0: #f4f5f9;
   --bg-1: #ffffff;
   --bg-2: #ffffff;
@@ -195,11 +270,14 @@
 
   --fg-0: #0c0f15;
   --fg-1: #1b1f28;
-  --fg-2: #56607a;
-  --fg-3: #828aa0;
-  --fg-4: #b3b9c7;
+  --fg-2: #475067;
+  --fg-3: #646d86;
+  --fg-4: #8d94a8;
 
   --brand-soft: rgba(139, 92, 246, 0.1);
+  --brand-blueprint: #2647e8;
+  --brand-blueprint-ink: #ffffff;
+  --brand-blueprint-soft: rgba(38, 71, 232, 0.08);
 
   --accent: #4763ed;
   --accent-strong: #3850dd;
@@ -212,6 +290,7 @@
   --warn: #d97706;
   --warn-soft: rgba(217, 119, 6, 0.1);
   --danger: #e53e3e;
+  --on-danger: #ffffff;
   --danger-soft: rgba(229, 62, 62, 0.1);
   --info: #2563eb;
   --info-soft: rgba(37, 99, 235, 0.1);
@@ -260,6 +339,14 @@
   --tool-perplexity-web: #19d1e6;
   --tool-gemini-web: #2e508a;
   --tool-copilot-web: #7013ae;
+  --tool-kiro-crew: var(--tool-kiro-cli);
+  --tool-grokbot: var(--tool-grok);
+  --tool-muse: #9648de;
+  --tool-prime-agent: #68655f;
+  --tool-deepseek: #7b65f7;
+  --tool-junie: #31971f;
+  --tool-poolside: #202fe5;
+  --tool-zed: #565dcc;
   --tool-other: #475569;
 
   --act-file: #2563eb;
@@ -289,4 +376,49 @@
     0 16px 48px rgba(15, 23, 42, 0.12),
     0 1px 0 rgba(0, 0, 0, 0.02);
   --shadow-drawer: -16px 0 48px rgba(15, 23, 42, 0.12);
+
+  /* Darkened 2026-09-28: #e9ecf3 vanished on the white bg-1 / bg-2 cards. */
+  --skel-base: #dde1ea;
+  --knob: #ffffff;
+  --skel-hl: rgba(255, 255, 255, 0.75);
+  --overlay-1: rgba(15, 23, 42, 0.06);
+  --overlay-2: rgba(15, 23, 42, 0.12);
+
+  --term-bg: #fbfbfd;
+  --term-chrome: #eef0f5;
+  --term-banner: #f4f5f9;
+  --term-pop: #ffffff;
+}
+
+/* Density (2026-09-29) - the per-browser "comfortable / compact" preference
+   (shared/lib/density.ts), stamped on <html> as data-density by each app's
+   index.html pre-paint script and shared/lib/useDensity. Theme-independent:
+   both themes share these. The default block equals the pre-density
+   rendering exactly (py-1.5 / py-2 / px-2 / px-1.5 / p-4 / px-4 py-3 /
+   min-h-[104px]), so nothing moves for a viewer who never touches the
+   toggle; compact is the only override. Exposed to Tailwind by the shared
+   preset as py-row, py-head, px-cell, px-cell-num, p-card, px-stat-x,
+   py-stat-y, min-h-stat. Every token must appear in BOTH blocks
+   (web/src/lib/density.test.ts). */
+:root,
+:root[data-density="comfortable"] {
+  --density-row-y: 6px;
+  --density-head-y: 8px;
+  --density-cell-x: 8px;
+  --density-cell-x-num: 6px;
+  --density-card-pad: 16px;
+  --density-stat-x: 16px;
+  --density-stat-y: 12px;
+  --density-stat-min-h: 104px;
+}
+
+:root[data-density="compact"] {
+  --density-row-y: 3px;
+  --density-head-y: 5px;
+  --density-cell-x: 6px;
+  --density-cell-x-num: 4px;
+  --density-card-pad: 12px;
+  --density-stat-x: 12px;
+  --density-stat-y: 8px;
+  --density-stat-min-h: 88px;
 }

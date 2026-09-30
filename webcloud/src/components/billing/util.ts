@@ -5,9 +5,11 @@
 // header pill, the hero card and the subscription card.
 
 import { fmtDateTime, fmtRelative } from "@shared/lib/format";
+import type { LucideIcon } from "lucide-react";
+import type { Tone } from "@shared/lib/tone";
+import { vocabView } from "@shared/lib/vocabEntry";
 import type { SubscriptionStatus } from "../../api";
-
-export type StatusVariant = "success" | "danger" | "neutral" | "warn" | "info";
+import { SUBSCRIPTION_STATUS } from "../../lib/vocab";
 
 // isFuture reports whether an RFC3339 instant is still ahead of now. An
 // unparseable or missing value is treated as not-future, so a canceled
@@ -49,31 +51,16 @@ export function isPlusPlan(planToken: string | null | undefined): boolean {
   return (planToken ?? "").startsWith("plus");
 }
 
-// statusMeta maps a Paddle subscription status onto an honest label plus the
-// shared Pill variant. An unknown status is shown verbatim rather than
-// hidden (defensive: the server's vocabulary can grow before this page's
-// does).
+// statusMeta reads a Paddle subscription status from the ONE status table
+// (lib/vocab.ts SUBSCRIPTION_STATUS) that the header pill, the subscription
+// card and the hero all share: honest label, Pill variant, glyph. An unknown
+// status is shown verbatim rather than hidden (defensive: the server's
+// vocabulary can grow before this page's does).
 export function statusMeta(
   status: SubscriptionStatus,
-): { label: string; variant: StatusVariant } {
-  switch (status) {
-    case "active":
-      return { label: "Active", variant: "success" };
-    case "trialing":
-      return { label: "Trial", variant: "info" };
-    case "canceled":
-      return { label: "Canceled", variant: "neutral" };
-    case "past_due":
-      return { label: "Past due", variant: "danger" };
-    case "paused":
-      return { label: "Paused", variant: "neutral" };
-    case "refunded":
-      return { label: "Refunded", variant: "danger" };
-    case "charged_back":
-      return { label: "Charged back", variant: "danger" };
-    default:
-      return { label: status, variant: "neutral" };
-  }
+): { label: string; variant: Tone; icon: LucideIcon } {
+  const v = vocabView("subscriptionStatus", SUBSCRIPTION_STATUS, status);
+  return { label: v.label, variant: v.tone, icon: v.icon };
 }
 
 // PLAN_COMPARISON_ROWS is the ruled §2 table (cloud-intelligence value-upgrade
@@ -100,6 +87,27 @@ export const PLAN_COMPARISON_ROWS: {
     plus: "Own pool",
   },
 ];
+
+// PlanFeature is the planFeature vocabulary (VOCAB_ICONS.planFeature): a
+// comparison cell that is a yes / no rather than a quantity.
+export type PlanFeature = "included" | "not_included";
+
+// PLAN_FEATURE_CELL maps the comparison table's yes / no cell text onto the
+// planFeature vocabulary, so the row draws a Check or a Minus beside the
+// words. A cell not listed here (a count, a retention window, "Own pool") is
+// a value, not a yes / no, and renders as plain text.
+export const PLAN_FEATURE_CELL: Readonly<Record<string, PlanFeature>> = {
+  Included: "included",
+  "Not included": "not_included",
+  No: "not_included",
+};
+
+// PLAN_FEATURE_TONE colours the glyph: included reads as success, not
+// included recedes (a dash, not an alarm).
+export const PLAN_FEATURE_TONE: Readonly<Record<PlanFeature, string>> = {
+  included: "text-success",
+  not_included: "text-fg-4",
+};
 
 // PLAN_COMPARISON_FOOTNOTE is the one line shown once beneath both plan
 // cards, not per-card, since it applies equally to both.

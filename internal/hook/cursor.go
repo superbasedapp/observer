@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/cursor"
@@ -230,23 +228,29 @@ func processCursorEvent(eventName string, body []byte, sink CursorSink, sc *scru
 		// conversation's store.db turn blobs. Resolve it so token rows get
 		// the concrete model the cost engine can price. Gated on the
 		// sentinel, so explicit-model sessions pay no store.db I/O.
-		if tk.Model == "" || strings.EqualFold(tk.Model, "default") || strings.EqualFold(tk.Model, "auto") {
-			if home, err := os.UserHomeDir(); err == nil {
-				if m := cursor.ResolveModelFromStore(home, tk.SessionID); m != "" {
-					tk.Model = m
-				}
-			}
-		}
+		tk.Model = cursor.ResolvePlaceholderModelFor(tk.Model, tk.SessionID, tk.MessageID)
 		if deadline <= 0 {
 			deadline = 250 * time.Millisecond
 		}
+		// Tokens FIRST, alone, under their own budget. The billed usage
+		// is the one fact on this event that nothing else can recover
+		// live; bundling it into the transcript-row Ingest put it BEHIND
+		// InsertActions + FTS indexing (store.ingest inserts tokens
+		// last, in their own transaction), so a busy DB committed the
+		// actions and then lost the token row to the deadline — the
+		// 2026-09-19 8be96a3f drop (docs: S10-CURSOR diagnosis).
+		ingestCursorTokens(sink, eventName, []models.TokenEvent{tk}, deadline, stderr)
 		events, err := cursor.BuildStopTranscriptEvents(body, sc, tk.Timestamp)
 		if err != nil {
 			fmt.Fprintf(stderr, "observer-hook: cursor transcript %s: %v\n", eventName, err)
 		}
+		if len(events) == 0 {
+			return
+		}
+		resolveCursorRoots(sink, events, nil, deadline, stderr)
 		ctx, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()
-		if _, err := sink.Ingest(ctx, events, []models.TokenEvent{tk}, store.IngestOptions{}); err != nil {
+		if _, err := sink.Ingest(ctx, events, nil, store.IngestOptions{}); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				fmt.Fprintf(stderr, "observer-hook: cursor %s insert deadline exceeded\n", eventName)
 			} else {
@@ -270,11 +274,18 @@ func processCursorEvent(eventName string, body []byte, sink CursorSink, sc *scru
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()
+		// The tool's output body is persisted (raw_tool_output + FTS) and
+		// store.UpdateActionOutcome has no scrub backstop — scrub it here,
+		// the same posture every other content field on this path has.
+		output := outcome.Output
+		if sc != nil {
+			output = sc.String(output)
+		}
 		n, err := sink.UpdateActionOutcome(
 			ctx,
 			outcome.SourceFile, outcome.SourceEventID,
 			outcome.Success, outcome.ErrorMessage, outcome.DurationMs,
-			outcome.Output, outcome.ToolName, outcome.Target,
+			output, outcome.ToolName, outcome.Target,
 		)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -292,6 +303,17 @@ func processCursorEvent(eventName string, body []byte, sink CursorSink, sc *scru
 		return
 	}
 
+	if deadline <= 0 {
+		deadline = 250 * time.Millisecond
+	}
+	// Cursor 3.4+ carries per-generation token usage on afterAgentResponse
+	// (identical to stop's; they dedup by generation id). Extract it FIRST,
+	// alone, and independently of the assistant-message row: an
+	// empty-text response mints no row but still carries billed usage.
+	if eventName == cursor.EventAfterAgentResponse {
+		ingestCursorTokens(sink, eventName, cursorResponseTokens(body, stderr), deadline, stderr)
+	}
+
 	ev, ok, err := cursor.BuildEvent(eventName, body, sc)
 	if err != nil {
 		fmt.Fprintf(stderr, "observer-hook: cursor build %s: %v\n", eventName, err)
@@ -304,28 +326,87 @@ func processCursorEvent(eventName string, body []byte, sink CursorSink, sc *scru
 		fmt.Fprintf(stderr, "observer-hook: cursor %s missing project_root or session_id\n", eventName)
 		return
 	}
+	evs := []models.ToolEvent{ev}
+	resolveCursorRoots(sink, evs, nil, deadline, stderr)
+	ev = evs[0]
 
-	// Cursor 3.4+ carries per-generation token usage on afterAgentResponse
-	// (it no longer fires the `stop` hook that the block above expects), so
-	// extract usage here alongside the assistant-message row — otherwise
-	// token_usage stays empty for every modern cursor session.
-	var toks []models.TokenEvent
-	if eventName == cursor.EventAfterAgentResponse {
-		toks = cursorResponseTokens(body, stderr)
-	}
-
-	if deadline <= 0 {
-		deadline = 250 * time.Millisecond
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
-	if _, err := sink.Ingest(ctx, []models.ToolEvent{ev}, toks, store.IngestOptions{}); err != nil {
+	if _, err := sink.Ingest(ctx, []models.ToolEvent{ev}, nil, store.IngestOptions{}); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			fmt.Fprintf(stderr, "observer-hook: cursor %s insert deadline exceeded\n", eventName)
 		} else {
 			fmt.Fprintf(stderr, "observer-hook: cursor %s insert: %v\n", eventName, err)
 		}
 		return
+	}
+}
+
+// cursorTokenDeadlineFloor is the minimum budget for the token-only
+// write. The stdout reply has already gone out before any DB work, and
+// Cursor's own per-hook timeout is 60s ("Running hook 1 with timeout
+// 60000ms" in its hooks output log), so a few seconds here cost the
+// agent loop nothing on a healthy DB and keep the billed row on a busy
+// one. Action rows keep the configured [observer.hooks] timeout_ms.
+const cursorTokenDeadlineFloor = 3 * time.Second
+
+// ingestCursorTokens writes cursor token events in a token-only
+// Ingest (no actions, no FTS, no outcome loop — one upsert
+// transaction) under max(deadline, cursorTokenDeadlineFloor). Failures
+// are reported on stderr, which Cursor records in its hooks output log;
+// the hooks-log replay reader (internal/adapter/cursor/hookslog.go)
+// recovers anything still lost.
+func ingestCursorTokens(sink CursorSink, eventName string, toks []models.TokenEvent, deadline time.Duration, stderr io.Writer) {
+	if len(toks) == 0 {
+		return
+	}
+	if deadline < cursorTokenDeadlineFloor {
+		deadline = cursorTokenDeadlineFloor
+	}
+	resolveCursorRoots(sink, nil, toks, deadline, stderr)
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	if _, err := sink.Ingest(ctx, nil, toks, store.IngestOptions{}); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(stderr, "observer-hook: cursor %s token insert deadline exceeded\n", eventName)
+		} else {
+			fmt.Fprintf(stderr, "observer-hook: cursor %s token insert: %v\n", eventName, err)
+		}
+	}
+}
+
+// cursorRootResolver is the optional sink capability that resolves a
+// session's stored project root; *store.Store implements it
+// (ProjectRootForSession). A sink without it (test fakes) resolves
+// batch-locally only.
+type cursorRootResolver interface {
+	ProjectRootForSession(ctx context.Context, sessionID string) (string, error)
+}
+
+// resolveCursorRoots rewrites the "[cursor]" placeholder on root-less
+// events/tokens to the session's real root when the store knows one, so
+// a root-less payload never moves a folder session onto the placeholder
+// (store.UpsertSession overwrites project_id). It costs one indexed
+// lookup, and only when a placeholder is present.
+func resolveCursorRoots(sink CursorSink, events []models.ToolEvent, toks []models.TokenEvent, deadline time.Duration, stderr io.Writer) {
+	needs := false
+	for _, e := range events {
+		needs = needs || e.ProjectRoot == cursor.SyntheticProjectRoot
+	}
+	for _, t := range toks {
+		needs = needs || t.ProjectRoot == cursor.SyntheticProjectRoot
+	}
+	if !needs {
+		return
+	}
+	var lookup cursor.SessionRootLookup
+	if r, ok := sink.(cursorRootResolver); ok {
+		lookup = r.ProjectRootForSession
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	if err := cursor.ResolveSyntheticRoots(ctx, events, toks, lookup); err != nil {
+		fmt.Fprintf(stderr, "observer-hook: %v\n", err)
 	}
 }
 
@@ -353,13 +434,7 @@ func cursorResponseTokens(body []byte, stderr io.Writer) []models.TokenEvent {
 		dumpCursorStopReject(body, "afterAgentResponse missing_session_id")
 		return nil
 	}
-	if tk.Model == "" || strings.EqualFold(tk.Model, "default") || strings.EqualFold(tk.Model, "auto") {
-		if home, err := os.UserHomeDir(); err == nil {
-			if m := cursor.ResolveModelFromStore(home, tk.SessionID); m != "" {
-				tk.Model = m
-			}
-		}
-	}
+	tk.Model = cursor.ResolvePlaceholderModelFor(tk.Model, tk.SessionID, tk.MessageID)
 	return []models.TokenEvent{tk}
 }
 
@@ -403,12 +478,21 @@ func BuildCursorEvent(eventName string, body []byte, sc *scrub.Scrubber) (policy
 		return policy.Event{}, false
 	}
 	caps.Sandboxed = sandboxedChild()
+	// cursor.SyntheticProjectRoot is a storage placeholder for a
+	// conversation with NO workspace folder, not a directory: the
+	// boundary rules (R-150/151, T-502) must see the honest "no project
+	// root" they saw before the placeholder existed, never evaluate
+	// paths against "[cursor]".
+	projectRoot := ev.ProjectRoot
+	if projectRoot == cursor.SyntheticProjectRoot {
+		projectRoot = ""
+	}
 	return policy.Event{
 		Kind:        kind,
 		ActionType:  ev.ActionType,
 		Tool:        models.ToolCursor,
 		Target:      ev.Target,
-		ProjectRoot: ev.ProjectRoot,
+		ProjectRoot: projectRoot,
 		SessionID:   ev.SessionID,
 		Caps:        caps,
 		Now:         time.Now().UTC(),

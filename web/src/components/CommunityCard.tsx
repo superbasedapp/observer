@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Obs } from "@/components/Obs";
+import { Icon, Pill } from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
 import { fmtUSD } from "@/lib/format";
 import {
@@ -10,6 +11,7 @@ import {
   xShareURL as buildXShareURL,
 } from "@/lib/share";
 import type { MonthlyReport } from "@/lib/types";
+import { Bug, Check, Github, Heart, Share2 } from "lucide-react";
 
 // CommunityCard — the operator/node/developer "get involved" surface on the
 // Overview setup page. Four honest calls to action: star the public repo,
@@ -85,39 +87,6 @@ function feedbackURL(): string {
   return `mailto:${CONTACT}?subject=${subject}`;
 }
 
-function GitHubIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" className={className} aria-hidden="true">
-      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z" />
-    </svg>
-  );
-}
-function BugIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.4" className={className} aria-hidden="true">
-      <rect x="5" y="5.5" width="6" height="7" rx="3" />
-      <path d="M8 3.5V5M6.2 4l1 1.2M9.8 4l-1 1.2M4.5 7.5H2M14 7.5h-2.5M4.5 10.5H2M14 10.5h-2.5M8 5.5v7" />
-    </svg>
-  );
-}
-function ShareIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.4" className={className} aria-hidden="true">
-      <circle cx="12" cy="3.5" r="1.8" />
-      <circle cx="4" cy="8" r="1.8" />
-      <circle cx="12" cy="12.5" r="1.8" />
-      <path d="M10.5 4.4L5.5 7.1M5.5 8.9l5 2.7" />
-    </svg>
-  );
-}
-function HeartIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" className={className} aria-hidden="true">
-      <path d="M8 14s-5.4-3.3-5.4-7A2.9 2.9 0 018 4.2 2.9 2.9 0 0113.4 7c0 3.7-5.4 7-5.4 7z" />
-    </svg>
-  );
-}
-
 function ActionTile({
   href,
   icon,
@@ -135,7 +104,7 @@ function ActionTile({
       href={href}
       target={external ? "_blank" : undefined}
       rel={external ? "noreferrer noopener" : undefined}
-      className="group flex items-start gap-3 rounded-2 border border-line-2 bg-bg-1 p-3 transition-colors hover:border-accent/40 hover:bg-accent-soft/40"
+      className="group flex items-start gap-3 rounded-2 border border-line-2 bg-bg-3 p-3 transition-colors hover:border-accent/40 hover:bg-accent-soft/40"
     >
       <span className="mt-0.5 shrink-0 text-fg-3 group-hover:text-accent">{icon}</span>
       <span className="min-w-0">
@@ -159,17 +128,17 @@ export function CommunityLinksMini() {
       <ul className="space-y-1">
         <li>
           <a href={REPO} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1.5 font-medium text-fg-2 hover:text-accent">
-            <GitHubIcon className="h-3 w-3" /> Star on GitHub
+            <Icon icon={Github} size="xs" /> Star on GitHub
           </a>
         </li>
         <li>
           <a href={ISSUES} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1.5 font-medium text-fg-2 hover:text-accent">
-            <BugIcon className="h-3 w-3" /> Report a problem
+            <Icon icon={Bug} size="xs" /> Report a problem
           </a>
         </li>
         <li>
           <a href={feedbackURL()} className="inline-flex items-center gap-1.5 font-medium text-fg-2 hover:text-accent">
-            <HeartIcon className="h-3 w-3" /> Send feedback
+            <Icon icon={Heart} size="xs" /> Send feedback
           </a>
         </li>
       </ul>
@@ -211,9 +180,7 @@ export function CommunityCard() {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <h2 className="text-[14px] font-semibold text-fg-0">Community &amp; support</h2>
-            <span className="rounded-pill border border-accent/40 bg-accent-soft px-1.5 py-0.5 font-mono text-[9px] tracking-[0.08em] text-accent">
-              OPEN SOURCE
-            </span>
+            <Pill variant="accent">open source</Pill>
           </div>
           <p className="mt-1 text-[12px] text-fg-3">
             SuperBased is open source and built in the open. A star helps others find it,
@@ -223,27 +190,33 @@ export function CommunityCard() {
           <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
             <ActionTile
               href={REPO}
-              icon={<GitHubIcon />}
+              icon={<Icon icon={Github} size="md" />}
               title="Star us on GitHub"
               desc="If SuperBased is useful, a star helps other developers find it."
             />
             <ActionTile
               href={ISSUES}
-              icon={<BugIcon />}
+              icon={<Icon icon={Bug} size="md" />}
               title="Report a problem"
               desc="Hit a bug or have a request? Open a GitHub issue."
             />
             <button
               type="button"
               onClick={share}
-              className="group flex items-start gap-3 rounded-2 border border-line-2 bg-bg-1 p-3 text-left transition-colors hover:border-accent/40 hover:bg-accent-soft/40"
+              className="group flex items-start gap-3 rounded-2 border border-line-2 bg-bg-3 p-3 text-left transition-colors hover:border-accent/40 hover:bg-accent-soft/40"
             >
               <span className="mt-0.5 shrink-0 text-fg-3 group-hover:text-accent">
-                <ShareIcon />
+                <Icon icon={Share2} size="md" />
               </span>
               <span className="min-w-0">
                 <span className="block text-[12px] font-semibold text-fg-1 group-hover:text-accent">
-                  {shared === "copied" ? "Copied ✓" : "Refer a friend"}
+                  {shared === "copied" ? (
+                    <span className="inline-flex items-center gap-1">
+                      Copied <Icon icon={Check} size="xs" />
+                    </span>
+                  ) : (
+                    "Refer a friend"
+                  )}
                 </span>
                 <span className="mt-0.5 block text-[11px] text-fg-4">
                   Share SuperBased with someone who'd find it useful.
@@ -252,7 +225,7 @@ export function CommunityCard() {
             </button>
             <ActionTile
               href={feedbackURL()}
-              icon={<HeartIcon />}
+              icon={<Icon icon={Heart} size="md" />}
               title="Send feedback"
               desc={`Tell us what works (or doesn't) - ${CONTACT}.`}
             />
@@ -261,14 +234,14 @@ export function CommunityCard() {
           {/* Share payload preview - the exact text below is what
               "Refer a friend" / X / LinkedIn / email will post; the
               operator sees it before acting, never a hidden payload. */}
-          <div className="mt-3 rounded-2 border border-line-2 bg-bg-1 px-3 py-2">
+          <div className="mt-3 rounded-2 border border-line-2 bg-bg-3 px-3 py-2">
             <label className="flex items-center gap-2 text-[11px] text-fg-3">
               <input
                 type="checkbox"
                 checked={includeStats}
                 disabled={!personalStat}
                 onChange={(e) => setIncludeStats(e.target.checked)}
-                className="h-3 w-3 shrink-0 rounded border-line-2 accent-accent disabled:opacity-40"
+                className="h-3 w-3 shrink-0 rounded-1 border-line-2 accent-accent disabled:opacity-40"
               />
               <span>
                 Include this month's stats in the share
@@ -306,7 +279,7 @@ export function CommunityCard() {
               <div className="space-y-2">
                 <h3 className="text-[11.5px] font-semibold text-fg-2">What people say</h3>
                 {TESTIMONIALS.map((t) => (
-                  <blockquote key={t.author} className="rounded-2 border border-line-2 bg-bg-1 p-3">
+                  <blockquote key={t.author} className="rounded-2 border border-line-2 bg-bg-3 p-3">
                     <p className="text-[12px] italic text-fg-2">&ldquo;{t.quote}&rdquo;</p>
                     <footer className="mt-1 text-[11px] text-fg-4">
                       - {t.author}

@@ -1,2 +1,1 @@
 import{j as t}from"./vendor-react-BT-Z05uK.js";const n="▞ superbased";function s({variant:r="corner",className:e=""}){return r==="inline"?t.jsx("span",{"aria-hidden":!0,className:`select-none font-mono text-[9.5px] tracking-[0.04em] text-fg-4/80 ${e}`,children:n}):t.jsx("span",{"aria-hidden":!0,className:`pointer-events-none absolute bottom-1.5 right-2 select-none font-mono text-[9.5px] tracking-[0.04em] text-fg-4/70 ${e}`,children:n})}export{s as H};
-//# sourceMappingURL=HeroWordmark-C5lUeFPf.js.map

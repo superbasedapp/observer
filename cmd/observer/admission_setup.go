@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/dataauthority"
 )
 
 // `observer obs admission setup` — the interactive admin wizard for the
@@ -350,7 +351,7 @@ func judgeSetupHostingLabel(cfg config.Config) string {
 	switch {
 	case u == "":
 		return "aggregator"
-	case strings.Contains(u, "127.0.0.1"), strings.Contains(u, "localhost"), strings.Contains(u, "0.0.0.0"):
+	case dataauthority.IsLoopbackJudgeEndpoint(j.BaseURL): // exact host parse, never a substring (JUDGE-1 round 5)
 		return "local"
 	case strings.Contains(u, "openrouter.ai"):
 		return "aggregator"

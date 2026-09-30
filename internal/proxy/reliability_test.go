@@ -313,3 +313,51 @@ func TestKeyPoolNeverRotatesOAuth(t *testing.T) {
 		t.Errorf("upstream hits = %d, want 1 (G7: OAuth untouched)", hits)
 	}
 }
+
+// TestKeyPoolRotatesOnlyPoolMemberCredential is the SR27-B2 regression
+// (security review 2026-09-27). Before the fix a caller that presented ANY
+// x-api-key / Bearer sk- value - its own, deliberately rate-limited key - got
+// the 429 retried on the operator's pool key, so anything that could reach the
+// proxy could borrow the operator's credential. Now a non-member credential is
+// never rotated: the 429 passes through and the upstream only ever sees the
+// caller's own key.
+func TestKeyPoolRotatesOnlyPoolMemberCredential(t *testing.T) {
+	var keysSeen []string
+	var mu sync.Mutex
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("x-api-key")
+		mu.Lock()
+		keysSeen = append(keysSeen, key)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if key == "sk-ant-outsider" {
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(routerRespBody))
+	}))
+	defer up.Close()
+	p, err := New(Options{
+		AnthropicUpstream: up.URL, OpenAIUpstream: up.URL, Sink: &fakeSink{},
+		KeyPools: map[string][]string{"anthropic": {"sk-ant-key-A", "sk-ant-key-B"}},
+	})
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	ts := httptest.NewServer(p.Handler())
+	defer ts.Close()
+
+	resp := postRouterRequest(t, ts, "sk-ant-outsider")
+	defer resp.Body.Close()
+	if resp.StatusCode != 429 {
+		t.Fatalf("status = %d, want the outsider's 429 passed through (no operator key lent)", resp.StatusCode)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, k := range keysSeen {
+		if k != "sk-ant-outsider" {
+			t.Fatalf("upstream saw %q; an operator pool key was lent to a non-member credential (keys seen %v)", k, keysSeen)
+		}
+	}
+}

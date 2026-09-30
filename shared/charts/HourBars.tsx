@@ -1,19 +1,32 @@
+import { memo } from "react";
 import { fmtUSD } from "../lib/format";
 import type { HourBucket } from "../lib/types";
 import { Tooltip } from "../primitives";
+import { ScaleLegend } from "./ScaleLegend";
 
 // 24-bar "when you spend" chart. Hand-rolled so each bar can render
 // its hour label + value tooltip without Recharts overhead.
-// Color intensity scales with cost — hotter hours get warmer tones.
-export function HourBars({ buckets }: { buckets: HourBucket[] }) {
+// Color intensity scales with cost: hotter hours get warmer tones, and the
+// scale legend under the bars (on by default; `legend={false}` for a caller
+// that explains the ramp itself) maps a tint back to a dollar range.
+export const HourBars = memo(function HourBars({
+  buckets,
+  legend = true,
+}: {
+  buckets: HourBucket[];
+  legend?: boolean;
+}) {
   // Recharts could do this but it's a perfect case for a tight
   // hand-rolled grid: 24 fixed columns + per-bar gradient.
   const filled = Array.from({ length: 24 }, (_, h) =>
     buckets.find((b) => b.hour === h) ?? { hour: h, cost_usd: 0, turn_count: 0 },
   );
-  const max = Math.max(1, ...filled.map((b) => b.cost_usd));
+  // peak is the real top hour (the legend's honest high end); max floors
+  // it at 1 only as the intensity divisor.
+  const peak = Math.max(0, ...filled.map((b) => b.cost_usd));
+  const max = Math.max(1, peak);
 
-  return (
+  const bars = (
     <div className="flex h-[200px] items-end gap-[2px] px-1">
       {filled.map((b) => {
         const intensity = b.cost_usd / max;
@@ -28,7 +41,7 @@ export function HourBars({ buckets }: { buckets: HourBucket[] }) {
             >
               <div
                 tabIndex={0}
-                className="w-full cursor-help rounded-sm transition-opacity group-hover:opacity-90 focus:outline-none"
+                className="w-full cursor-help rounded-t-[2px] transition-opacity group-hover:opacity-90 focus:outline-none"
                 style={{
                   height: `${h}px`,
                   background: hourTint(intensity),
@@ -43,16 +56,36 @@ export function HourBars({ buckets }: { buckets: HourBucket[] }) {
       })}
     </div>
   );
-}
+  if (!legend) return bars;
+  return (
+    <div className="flex flex-col gap-2">
+      {bars}
+      <ScaleLegend
+        className="self-end px-1"
+        colorAt={hourTint}
+        stops={[0.1, 0.3, 0.5, 0.7, 0.9]}
+        low={fmtUSD(0)}
+        high={fmtUSD(peak)}
+        label="Cost colour scale"
+      />
+    </div>
+  );
+});
+
+// TINT_STEPS: the bar colour for an intensity below each `upTo`, walked
+// top-down (cool blue to warm orange; the same hues as --tok-net to
+// --tok-write). A zero hour renders as the empty track.
+const TINT_STEPS: readonly { upTo: number; color: string }[] = [
+  { upTo: 0.2, color: "color-mix(in srgb, var(--tok-net) 35%, var(--bg-4))" },
+  { upTo: 0.4, color: "color-mix(in srgb, var(--tok-net) 60%, transparent)" },
+  { upTo: 0.6, color: "color-mix(in srgb, var(--accent) 70%, transparent)" },
+  { upTo: 0.8, color: "color-mix(in srgb, var(--warn) 75%, transparent)" },
+  { upTo: Infinity, color: "var(--warn)" },
+];
 
 function hourTint(t: number): string {
-  // Cool blue → warm orange. Same hues as --tok-net → --tok-write.
   if (t <= 0) return "var(--bg-4)";
-  if (t < 0.2) return "color-mix(in srgb, var(--tok-net) 35%, var(--bg-4))";
-  if (t < 0.4) return "color-mix(in srgb, var(--tok-net) 60%, transparent)";
-  if (t < 0.6) return "color-mix(in srgb, var(--accent) 70%, transparent)";
-  if (t < 0.8) return "color-mix(in srgb, var(--warn) 75%, transparent)";
-  return "var(--warn)";
+  return TINT_STEPS.find((s) => t < s.upTo)?.color ?? "var(--warn)";
 }
 
 function pad(n: number): string {

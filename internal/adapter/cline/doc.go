@@ -38,9 +38,10 @@
 // never disagree about action_type. Two documented limitations: an
 // XML call's Success is always true (Cline reports the outcome as free
 // text in the next user message, with no machine-readable error flag),
-// and three real tags (list_code_definition_names, new_task,
-// plan_mode_respond) classify as `unknown` because neither actionMap
-// nor internal/tooltax carries a row for them.
+// and two real tags (new_task, plan_mode_respond) classify as
+// `unknown` because neither actionMap nor internal/tooltax carries a
+// row for them (list_code_definition_names maps to search_files since
+// 2026-09-28).
 //
 // # Surface attribution (audit IDE-05)
 //

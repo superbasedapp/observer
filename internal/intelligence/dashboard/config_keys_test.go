@@ -176,9 +176,12 @@ func TestConfigKeys_TierGates(t *testing.T) {
 		}
 		untouched(t)
 	})
-	t.Run("deprecated alias is 409", func(t *testing.T) {
-		rr := putKeys(t, s, keysBody(etag, `{"key":"compression.code_graph.enabled","value":true}`), true)
-		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "deprecated") {
+	t.Run("removed flat obs alias is an unknown key (400)", func(t *testing.T) {
+		// The flat org_client.share.obs_* aliases are gone from the schema
+		// (backlog item 12); the editor must refuse them rather than write a
+		// key the loader no longer reads. Use org_client.share.obs.summary.
+		rr := putKeys(t, s, keysBody(etag, `{"key":"org_client.share.obs_summary","value":true}`), true)
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "org_client.share.obs_summary") {
 			t.Fatalf("got %d %s", rr.Code, rr.Body.String())
 		}
 		untouched(t)

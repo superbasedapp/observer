@@ -328,3 +328,63 @@ func TestTierTable_OrgObserverUnpricedIDs2026Q3(t *testing.T) {
 		}
 	}
 }
+
+// TestTierTable_AdapterSweep20260927 pins the placements added for the
+// 2026-09-27 adapter sweep. Each row is a model that the family ladder used to
+// place WRONG (a Flash-Lite as Opus-class through "gemini-3.1", a Flash as
+// Sonnet-class through "glm") or not at all (MiMo), so the assertion is on
+// the resolved tier for the ids an adapter actually emits, not just the seed
+// key.
+func TestTierTable_AdapterSweep20260927(t *testing.T) {
+	t.Parallel()
+	r := NewTierResolver()
+	for _, tc := range []struct {
+		model string
+		want  Tier
+	}{
+		{"gemini-3.1-flash-lite", TierHaikuClass},
+		{"gemini-3.1-flash-lite-preview", TierHaikuClass},
+		{"gemini-3.1-pro-preview", TierOpusClass}, // the family the Flash-Lite used to fall into, unchanged
+		{"gemini-3.5-flash-lite", TierHaikuClass},
+		{"glm-5.3-flash", TierHaikuClass},
+		{"glm-5.3", TierSonnetClass},
+		{"mimo-v2.6-flash", TierHaikuClass},
+		{"mimo-v2.6-pro", TierSonnetClass},
+		{"xiaomi/mimo-v2.6-flash", TierHaikuClass},
+	} {
+		if got, _ := r.Lookup(tc.model); got != tc.want {
+			t.Errorf("Lookup(%q) = %s, want %s", tc.model, got, tc.want)
+		}
+	}
+}
+
+// TestTierTable_SonnetFiveFiveFamilyFallback pins how Claude Sonnet 5.5
+// (claude-sonnet-5-5, launched 2026-09-28) resolves. There is deliberately
+// NO explicit tier seed row: the bare "claude-sonnet" family prefix places
+// the id in the Sonnet class, the Anthropic shape resolves from the "claude" prefix, and
+// the Sonnet-class representative (which also seeds cross-family handoffs,
+// cmd/observer/handoff_target.go) is unchanged.
+func TestTierTable_SonnetFiveFiveFamilyFallback(t *testing.T) {
+	t.Parallel()
+	tbl := NewTierResolver().Table()
+	for _, model := range []string{"claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", "claude-sonnet-5"} {
+		if tier, src := tbl.Lookup(model); tier != TierSonnetClass || src != TierSourceFamily {
+			t.Errorf("Lookup(%q) = (%s,%s), want (sonnet-class, family)", model, tier, src)
+		}
+		if got := ShapeForModel(model); got != ShapeAnthropic {
+			t.Errorf("ShapeForModel(%q) = %q, want %q", model, got, ShapeAnthropic)
+		}
+	}
+	if m, ok := tbl.Representative(ShapeAnthropic, TierSonnetClass); !ok || m != "claude-sonnet-4-6" {
+		t.Errorf("Representative(anthropic, sonnet-class) = (%q,%v), want (claude-sonnet-4-6, true) - unchanged", m, ok)
+	}
+	// Context window: 1M per Anthropic's models overview; Sonnet 5 keeps
+	// the conservative bare-"claude" seed (a fit check never passes on
+	// optimism).
+	if got := contextWindowTokens("claude-sonnet-5-5"); got != 1_000_000 {
+		t.Errorf("contextWindowTokens(claude-sonnet-5-5) = %d, want 1000000", got)
+	}
+	if got := contextWindowTokens("claude-sonnet-5"); got != 200_000 {
+		t.Errorf("contextWindowTokens(claude-sonnet-5) = %d, want 200000 (conservative claude seed)", got)
+	}
+}

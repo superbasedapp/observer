@@ -1,19 +1,26 @@
+import { hasNonZero } from "@shared/lib/seriesEmpty";
 import { useMemo, useState } from "react";
+import type { ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "@/components/DataTable";
 import {
   ActionsAreaChart,
 } from "@/components/charts";
 import {
   ChartShell,
   PageHeader,
+  Pill,
   SegmentedControl,
   StatCard,
   ToolBadge,
   ToolDot,
   Tooltip,
+  Stagger,
 } from "@/components/primitives";
 import { HelpInd, TitleWithHelp } from "@/components/HelpInd";
 import { ChartState } from "@/components/ChartState";
-import { useFilters, windowParams, windowSpanHours } from "@/lib/filters";
+import { useFilters, useGranularity, windowParams } from "@/lib/filters";
+import { GranControl } from "@/components/GranControl";
+import { asGranularity, perBucketTitle } from "@shared/lib/granularity";
 import { useApi } from "@/lib/useApi";
 import {
   ACTION_CATEGORIES,
@@ -22,23 +29,20 @@ import {
   expressibleCategories,
 } from "@/lib/actions";
 import { toolMeta, isBrowserTool } from "@/lib/tools";
-import {
-  BoltIcon,
-  FlameIcon,
-  LayersIcon,
-  PercentIcon,
-} from "@/components/icons";
-import { fmtDateTime, fmtInt, fmtPct } from "@/lib/format";
+import { fmtDateTime, fmtInt, fmtPct, localeDateString } from "@/lib/format";
 import type {
   ActionsTimeseries,
   ToolsBreakdownResponse,
   ToolsResponse,
 } from "@/lib/types";
+import { navIcon } from "@/lib/nav";
+import { MetricIcon } from "@/components/MetricIcon";
 
 export function ToolsPage() {
   const { win, customRange, tool, project } = useFilters();
   const winParams = windowParams(win, customRange);
-  const bucket = windowSpanHours(win, customRange) <= 48 ? "hour" : "day";
+  // Chart bucket: the shared granularity rule + the viewer's `gran=`.
+  const gran = useGranularity();
   const projectParam = project === "all" ? undefined : project;
   const toolParam = tool === "all" ? undefined : tool;
 
@@ -80,9 +84,10 @@ export function ToolsPage() {
   );
   const ts = useApi<ActionsTimeseries>(
     "/api/timeseries/actions",
-    { ...winParams, bucket, tool: toolParam, project: projectParam },
-    [win, customRange, tool, project],
+    { ...winParams, ...gran.params, tool: toolParam, project: projectParam },
+    [win, customRange, tool, project, gran.params],
   );
+  const tsGran = asGranularity(ts.data?.bucket ?? gran.expected);
 
   // A summary exists only when the CURRENT request has resolved successfully.
   //
@@ -109,8 +114,9 @@ export function ToolsPage() {
   }, [ts.data]);
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6 p-4 sm:p-6">
       <PageHeader
+        icon={navIcon("tools")}
         title="Tools"
         sub="Per-tool aggregates with charts showing when each AI client was active and what kind of work it did - four KPIs, activity-over-time stack, action-type mix per tool, and the per-tool aggregates table."
         helpId="tab.tools"
@@ -126,10 +132,10 @@ export function ToolsPage() {
           says the value is still coming; the success tile additionally names
           the failure when there is one, since a blank there would read as
           "nothing to report". */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <Stagger className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatCard
           label="Total actions"
-          icon={<BoltIcon />}
+          icon={<MetricIcon metric="actions" />}
           loading={tools.loading}
           value={fmtInt(summary?.totalActions)}
           sub={summary ? `${fmtInt(summary.totalSessions)} sessions` : undefined}
@@ -138,14 +144,14 @@ export function ToolsPage() {
         />
         <StatCard
           label="Distinct tools"
-          icon={<LayersIcon />}
+          icon={<MetricIcon metric="distinctTools" />}
           loading={tools.loading}
           value={fmtInt(summary?.distinctTools)}
           sub={summary ? `${win} window` : undefined}
         />
         <StatCard
           label="Overall success"
-          icon={<PercentIcon />}
+          icon={<MetricIcon metric="successRate" />}
           loading={tools.loading}
           value={fmtPct(summary?.overallSuccess)}
           // No summary ⇒ no verdict: an unresolved query must not paint the
@@ -163,7 +169,7 @@ export function ToolsPage() {
         />
         <StatCard
           label="Busiest tool"
-          icon={<FlameIcon />}
+          icon={<MetricIcon metric="busiestTool" />}
           loading={tools.loading}
           value={
             summary?.busiestTool ? (
@@ -183,22 +189,25 @@ export function ToolsPage() {
               : undefined
           }
         />
-      </div>
+      </Stagger>
 
       {/* Activity + Mix side-by-side */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <ChartShell
           title={<TitleWithHelp text="Activity over time" helpId="chart.tools_activity" />}
-          sub={`Stacked actions by tool · ${win}`}
+          sub={`${perBucketTitle("Actions", tsGran)}, stacked by tool · ${win}`}
+          right={<GranControl served={ts.data} />}
         >
           <ChartState
             loading={ts.loading && !ts.data}
             error={ts.error}
-            empty={!ts.data?.series.length}
+            denied={ts.denied}
+            deniedPermission={ts.deniedPermission}
+            empty={!hasNonZero(ts.data?.series, ["total"])}
             emptyHint="No actions in window."
             height={300}
           >
-            {ts.data && <ActionsAreaChart data={ts.data.series} />}
+            {ts.data && <ActionsAreaChart data={ts.data.series} granularity={tsGran} />}
           </ChartState>
         </ChartShell>
 
@@ -209,6 +218,8 @@ export function ToolsPage() {
           <ChartState
             loading={breakdown.loading && !breakdown.data}
             error={breakdown.error}
+            denied={breakdown.denied}
+            deniedPermission={breakdown.deniedPermission}
             empty={!breakdown.data?.tools.length}
             emptyHint="No actions to break down."
             height={300}
@@ -226,6 +237,8 @@ export function ToolsPage() {
         <ChartState
           loading={tools.loading && !tools.data}
           error={tools.error}
+          denied={tools.denied}
+          deniedPermission={tools.deniedPermission}
           empty={!tools.data?.tools.length}
           emptyHint="No tools active in window."
           height={160}
@@ -347,7 +360,7 @@ function ActionMixPanel({ data }: { data: ToolsBreakdownResponse }) {
           return (
             <li
               key={t.tool}
-              className="rounded-2 border border-line-1 bg-bg-2 px-3 py-2"
+              className="rounded-2 border border-line-2 bg-bg-3 px-3 py-2"
             >
               <div className="mb-1.5 flex items-baseline justify-between gap-2">
                 <span className="flex items-center gap-2">
@@ -535,115 +548,151 @@ function CoverageDepthRow({
 
 // --------------------------------------------------------------- PerToolTable
 
+type ToolRow = ToolsResponse["tools"][number];
+
+// timeValue turns an ISO timestamp into a sortable epoch-ms value.
+function timeValue(iso: string): number {
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) ? t : -Infinity;
+}
+
+// ActionsBarCell is the per-tool actions count with its share bar, shared by
+// the per-tool table and the browser-chatbots card.
+function ActionsBarCell({ row, maxActions }: { row: ToolRow; maxActions: number }) {
+  const pct = (row.action_count / maxActions) * 100;
+  const meta = toolMeta(row.tool);
+  return (
+    <div className="flex items-center gap-2">
+      <div className="h-1.5 w-[120px] overflow-hidden rounded-pill bg-bg-3">
+        <span
+          style={{
+            display: "block",
+            height: "100%",
+            width: `${pct}%`,
+            background: meta.colorVar,
+            opacity: 0.75,
+          }}
+        />
+      </div>
+      <span className="tabular-nums text-fg-1">{fmtInt(row.action_count)}</span>
+    </div>
+  );
+}
+
+// DateCell is a compact date with the full timestamp in a tooltip.
+function DateCell({ iso }: { iso: string }) {
+  return (
+    <Tooltip content={fmtDateTime(iso)}>
+      <span tabIndex={0} className="cursor-help text-fg-3 focus:outline-none">
+        {fmtCompactDate(iso)}
+      </span>
+    </Tooltip>
+  );
+}
+
+// perToolColumns: every column sorts by its raw value; the server order
+// (busiest first) is kept until a header is clicked.
+function perToolColumns(maxActions: number): ColumnDef<ToolRow, unknown>[] {
+  return [
+    {
+      id: "tool",
+      header: () => <>Tool<HelpInd id="column.tools.tool" /></>,
+      accessorKey: "tool",
+      cell: ({ row }) => <ToolBadge tool={row.original.tool} />,
+    },
+    {
+      id: "actions",
+      header: () => <>Actions<HelpInd id="column.tools.actions" /></>,
+      accessorFn: (t) => t.action_count,
+      cell: ({ row }) => <ActionsBarCell row={row.original} maxActions={maxActions} />,
+    },
+    {
+      id: "failures",
+      header: () => <>Failures<HelpInd id="column.tools.failures" /></>,
+      accessorFn: (t) => t.failure_count,
+      meta: { align: "right" },
+      cell: ({ row }) =>
+        row.original.failure_count > 0 ? (
+          <span className="text-danger">{fmtInt(row.original.failure_count)}</span>
+        ) : (
+          <span className="text-fg-4">-</span>
+        ),
+    },
+    {
+      id: "success_rate",
+      header: () => <>Success rate<HelpInd id="column.tools.success_rate" /></>,
+      accessorFn: (t) => t.success_rate,
+      cell: ({ row }) => {
+        const t = row.original;
+        const succPct = Math.max(0, Math.min(1, t.success_rate)) * 100;
+        const succColor =
+          t.success_rate >= 0.95
+            ? "var(--success)"
+            : t.success_rate >= 0.8
+              ? "var(--warn)"
+              : "var(--danger)";
+        return (
+          <div className="flex items-center gap-2">
+            <div className="h-1.5 w-[100px] overflow-hidden rounded-pill bg-bg-3">
+              <span
+                style={{
+                  display: "block",
+                  height: "100%",
+                  width: `${succPct}%`,
+                  background: succColor,
+                }}
+              />
+            </div>
+            <span
+              className={`tabular-nums ${
+                t.success_rate < 0.9 ? "text-warn" : "text-fg-1"
+              }`}
+            >
+              {fmtPct(t.success_rate)}
+            </span>
+          </div>
+        );
+      },
+    },
+    {
+      id: "sessions",
+      header: () => <>Sessions<HelpInd id="column.tools.sessions" /></>,
+      accessorFn: (t) => t.session_count,
+      meta: { align: "right" },
+      cell: ({ row }) => <span className="text-fg-2">{fmtInt(row.original.session_count)}</span>,
+    },
+    {
+      id: "first_seen",
+      header: () => <>First seen<HelpInd id="column.tools.first_seen" /></>,
+      accessorFn: (t) => timeValue(t.first_seen),
+      cell: ({ row }) => <DateCell iso={row.original.first_seen} />,
+    },
+    {
+      id: "last_seen",
+      header: () => <>Last seen<HelpInd id="column.tools.last_seen" /></>,
+      accessorFn: (t) => timeValue(t.last_seen),
+      cell: ({ row }) => <DateCell iso={row.original.last_seen} />,
+    },
+  ];
+}
+
 function PerToolTable({ rows }: { rows: ToolsResponse["tools"] }) {
   const maxActions = Math.max(1, ...rows.map((r) => r.action_count));
+  const columns = useMemo(() => perToolColumns(maxActions), [maxActions]);
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[760px] text-left text-[11.5px]">
-        <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
-          <tr className="border-b border-line-2">
-            <th className="py-1.5 pl-2 font-medium">Tool<HelpInd id="column.tools.tool" /></th>
-            <th className="py-1.5 font-medium">Actions<HelpInd id="column.tools.actions" /></th>
-            <th className="py-1.5 text-right font-medium">Failures<HelpInd id="column.tools.failures" /></th>
-            <th className="py-1.5 font-medium">Success rate<HelpInd id="column.tools.success_rate" /></th>
-            <th className="py-1.5 text-right font-medium">Sessions<HelpInd id="column.tools.sessions" /></th>
-            <th className="py-1.5 font-medium">First seen<HelpInd id="column.tools.first_seen" /></th>
-            <th className="py-1.5 font-medium">Last seen<HelpInd id="column.tools.last_seen" /></th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((t) => {
-            const pct = (t.action_count / maxActions) * 100;
-            const meta = toolMeta(t.tool);
-            const succPct = Math.max(0, Math.min(1, t.success_rate)) * 100;
-            const succColor =
-              t.success_rate >= 0.95
-                ? "var(--success)"
-                : t.success_rate >= 0.8
-                  ? "var(--warn)"
-                  : "var(--danger)";
-            return (
-              <tr
-                key={t.tool}
-                className="border-b border-line-1 last:border-b-0 hover:bg-bg-3/40"
-              >
-                <td className="py-1.5 pl-2">
-                  <ToolBadge tool={t.tool} />
-                </td>
-                <td className="py-1.5">
-                  <div className="flex items-center gap-2">
-                    <div className="h-1.5 w-[120px] overflow-hidden rounded-pill bg-bg-3">
-                      <span
-                        style={{
-                          display: "block",
-                          height: "100%",
-                          width: `${pct}%`,
-                          background: meta.colorVar,
-                          opacity: 0.75,
-                        }}
-                      />
-                    </div>
-                    <span className="tabular-nums text-fg-1">
-                      {fmtInt(t.action_count)}
-                    </span>
-                  </div>
-                </td>
-                <td className="py-1.5 text-right tabular-nums">
-                  {t.failure_count > 0 ? (
-                    <span className="text-danger">
-                      {fmtInt(t.failure_count)}
-                    </span>
-                  ) : (
-                    <span className="text-fg-4">-</span>
-                  )}
-                </td>
-                <td className="py-1.5">
-                  <div className="flex items-center gap-2">
-                    <div className="h-1.5 w-[100px] overflow-hidden rounded-pill bg-bg-3">
-                      <span
-                        style={{
-                          display: "block",
-                          height: "100%",
-                          width: `${succPct}%`,
-                          background: succColor,
-                        }}
-                      />
-                    </div>
-                    <span
-                      className={`tabular-nums ${
-                        t.success_rate < 0.9 ? "text-warn" : "text-fg-1"
-                      }`}
-                    >
-                      {fmtPct(t.success_rate)}
-                    </span>
-                  </div>
-                </td>
-                <td className="py-1.5 text-right tabular-nums text-fg-2">
-                  {fmtInt(t.session_count)}
-                </td>
-                <Tooltip content={fmtDateTime(t.first_seen)}>
-                  <td tabIndex={0} className="cursor-help py-1.5 text-fg-3 focus:outline-none">
-                    {fmtCompactDate(t.first_seen)}
-                  </td>
-                </Tooltip>
-                <Tooltip content={fmtDateTime(t.last_seen)}>
-                  <td tabIndex={0} className="cursor-help py-1.5 text-fg-3 focus:outline-none">
-                    {fmtCompactDate(t.last_seen)}
-                  </td>
-                </Tooltip>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <DataTable<ToolRow>
+      data={rows}
+      columns={columns}
+      rowKey={(t) => t.tool}
+      minWidth={760}
+    />
   );
 }
 
 function fmtCompactDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("en-US", {
+  return localeDateString(d, "en-US", {
     month: "short",
     day: "numeric",
     year: "2-digit",
@@ -657,14 +706,12 @@ function fmtCompactDate(iso: string): string {
 // authoritative count. Rendered wherever a browser token/cost figure appears.
 function EstPill() {
   return (
-    <Tooltip content="Browser-chatbot tokens & cost are ESTIMATES - no target UI returns authoritative counts.">
-      <span
-        tabIndex={0}
-        className="ml-1 cursor-help rounded-pill bg-bg-3 px-1.5 py-0.5 align-middle text-[9px] font-medium uppercase tracking-[0.06em] text-fg-3 focus:outline-none"
-      >
-        est.
-      </span>
-    </Tooltip>
+    <Pill
+      className="ml-1 align-middle"
+      title="Browser-chatbot tokens & cost are ESTIMATES - no target UI returns authoritative counts."
+    >
+      est.
+    </Pill>
   );
 }
 
@@ -683,8 +730,38 @@ function BrowserChatbotsCard({
     () => rows.filter((r) => isBrowserTool(r.tool)),
     [rows],
   );
-  if (!loading && browserRows.length === 0) return null;
   const maxActions = Math.max(1, ...browserRows.map((r) => r.action_count));
+  const browserColumns = useMemo<ColumnDef<ToolRow, unknown>[]>(
+    () => [
+      {
+        id: "site",
+        header: "Site",
+        accessorKey: "tool",
+        cell: ({ row }) => <ToolBadge tool={row.original.tool} />,
+      },
+      {
+        id: "turns",
+        header: "Turns",
+        accessorFn: (t) => t.action_count,
+        cell: ({ row }) => <ActionsBarCell row={row.original} maxActions={maxActions} />,
+      },
+      {
+        id: "sessions",
+        header: "Sessions",
+        accessorFn: (t) => t.session_count,
+        meta: { align: "right" },
+        cell: ({ row }) => <span className="text-fg-2">{fmtInt(row.original.session_count)}</span>,
+      },
+      {
+        id: "last_seen",
+        header: "Last seen",
+        accessorFn: (t) => timeValue(t.last_seen),
+        cell: ({ row }) => <DateCell iso={row.original.last_seen} />,
+      },
+    ],
+    [maxActions],
+  );
+  if (!loading && browserRows.length === 0) return null;
   return (
     <ChartShell
       title={
@@ -702,63 +779,12 @@ function BrowserChatbotsCard({
         emptyHint="No browser-chatbot turns captured - install the browser extension to observe web AI usage."
         height={120}
       >
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[560px] text-left text-[11.5px]">
-            <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
-              <tr className="border-b border-line-2">
-                <th className="py-1.5 pl-2 font-medium">Site</th>
-                <th className="py-1.5 font-medium">Turns</th>
-                <th className="py-1.5 text-right font-medium">Sessions</th>
-                <th className="py-1.5 font-medium">Last seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              {browserRows.map((t) => {
-                const pct = (t.action_count / maxActions) * 100;
-                const meta = toolMeta(t.tool);
-                return (
-                  <tr
-                    key={t.tool}
-                    className="border-b border-line-1 last:border-b-0 hover:bg-bg-3/40"
-                  >
-                    <td className="py-1.5 pl-2">
-                      <ToolBadge tool={t.tool} />
-                    </td>
-                    <td className="py-1.5">
-                      <div className="flex items-center gap-2">
-                        <div className="h-1.5 w-[120px] overflow-hidden rounded-pill bg-bg-3">
-                          <span
-                            style={{
-                              display: "block",
-                              height: "100%",
-                              width: `${pct}%`,
-                              background: meta.colorVar,
-                              opacity: 0.75,
-                            }}
-                          />
-                        </div>
-                        <span className="tabular-nums text-fg-1">
-                          {fmtInt(t.action_count)}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-1.5 text-right tabular-nums text-fg-2">
-                      {fmtInt(t.session_count)}
-                    </td>
-                    <Tooltip content={fmtDateTime(t.last_seen)}>
-                      <td
-                        tabIndex={0}
-                        className="cursor-help py-1.5 text-fg-3 focus:outline-none"
-                      >
-                        {fmtCompactDate(t.last_seen)}
-                      </td>
-                    </Tooltip>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <DataTable<ToolRow>
+          data={browserRows}
+          columns={browserColumns}
+          rowKey={(t) => t.tool}
+          minWidth={560}
+        />
       </ChartState>
     </ChartShell>
   );

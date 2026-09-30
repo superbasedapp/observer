@@ -533,7 +533,7 @@ func (s *Store) CodeIntelFileMeta(ctx context.Context, absPath string) (indexed 
 }
 
 // userFacingKinds is the symbol-kind filter shared by the read queries —
-// matches the codegraph wrapper's set so the native engine is a drop-in.
+// the user-facing symbol kinds every read surface agrees on.
 const codeIntelUserFacingKinds = "kind IN ('function','method','class','interface','type','enum')"
 
 // CodeIntelSymbolsInFile returns the user-facing symbols defined in
@@ -694,7 +694,7 @@ func (s *Store) CodeIntelFunctionsInFile(ctx context.Context, absPath string) ([
 	return out, rows.Err()
 }
 
-// CodeIntelFindSymbols mirrors codegraph.FindSymbols: matches in absFile
+// CodeIntelFindSymbols returns the symbols in absFile
 // filtered by the optional (name, fqn, kind) selectors. All-empty is
 // discovery mode (every user-facing symbol).
 func (s *Store) CodeIntelFindSymbols(ctx context.Context, absFile, name, fqn, kind string) ([]codeintel.SymbolMatch, error) {

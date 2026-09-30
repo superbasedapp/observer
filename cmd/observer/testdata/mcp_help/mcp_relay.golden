@@ -1,0 +1,19 @@
+The AI client's rewritten MCP entry runs this in place of the original
+server. It resolves the ORIGINAL command from the launch journal,
+spawns it with the client's cwd/environment (secret references resolved
+from this process's own environment, never persisted), relays JSON-RPC
+frames byte-exactly, and mediates each request through the local PDP
+and the hash-chained decision record before the child sees it. A
+SIGINT/SIGTERM/SIGHUP is forwarded to the original first; it gets
+--grace to exit before it is killed; its exit code is propagated. Not
+for interactive use.
+
+Usage:
+  observer mcp relay --server <entry-key> [--client <tool>] [flags]
+
+Flags:
+      --client string    AI client tool id the entry belongs to (disambiguates the same key across clients)
+      --config string    path to config.toml (default ~/.observer/config.toml)
+      --grace duration   how long a forwarded SIGINT/SIGTERM/SIGHUP gives the original server before it is killed (default 5s)
+  -h, --help             help for relay
+      --server string    launch-journal entry key of the original server

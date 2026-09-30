@@ -1,5 +1,6 @@
 import clsx from "clsx";
-import { Tooltip } from "@/components/primitives";
+import { CircleHelp } from "lucide-react";
+import { Icon, Tooltip } from "@/components/primitives";
 
 // HelpInd is the inline indicator a column header / tile / chart can
 // render to flag "there's help for this entity." Hovering shows the
@@ -32,11 +33,11 @@ export function HelpInd({
         data-help-id={id}
         aria-label="Show help"
         className={clsx(
-          "ml-1 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border border-line-3 text-[8px] font-semibold text-fg-3 hover:border-accent hover:text-accent focus:border-accent focus:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
+          "ml-1 inline-flex h-3.5 w-3.5 items-center justify-center rounded-pill text-fg-3 hover:text-accent focus:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
           className,
         )}
       >
-        ?
+        <Icon icon={CircleHelp} size={13} />
       </button>
     </Tooltip>
   );

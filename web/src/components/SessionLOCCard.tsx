@@ -1,10 +1,18 @@
 import { useMemo } from "react";
 import { ChartState } from "@/components/ChartState";
+import { Icon, Table, Tooltip } from "@/components/primitives";
+import { vocabIcon } from "@shared/lib/vocabIcons";
 import { HelpInd } from "@/components/HelpInd";
 import { sessionLOCPath } from "@/lib/api";
 import { fmtInt } from "@/lib/format";
 import { useApi } from "@/lib/useApi";
-import type { LOCBucket, LOCStats, SessionLOCResponse } from "@/lib/types";
+import type {
+  LOCAuthoredSplit,
+  LOCBucket,
+  LOCStats,
+  SessionLOCResponse,
+} from "@/lib/types";
+import { CodeCommentSplit } from "@shared/primitives/CodeCommentSplit";
 
 // SessionLOCCard — the per-session "Code lines" card
 // (docs/plans/lines-of-code-tracking-plan-2026-09-07.md §3.4/§3.5). Reads
@@ -41,7 +49,7 @@ export function SessionLOCCard({ sessionId }: { sessionId: string }) {
   const uncounted = !!data && data.buckets.length === 0;
 
   return (
-    <section className="mt-5 rounded-3 border bg-bg-2 px-4 py-3">
+    <section className="mt-5 rounded-3 border border-line-2 bg-bg-2 px-4 py-3">
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">
           Code lines
@@ -63,6 +71,8 @@ export function SessionLOCCard({ sessionId }: { sessionId: string }) {
       <ChartState
         loading={loc.loading && !loc.data}
         error={loc.error}
+        denied={loc.denied}
+        deniedPermission={loc.deniedPermission}
         empty={false}
         height={96}
       >
@@ -141,6 +151,29 @@ function LOCBody({
         />
       </div>
 
+      {/* Code vs comments of the two AI headlines above (operator ask
+          2026-09-28). The counts and the share arrive precomputed by the
+          server (internal/loc.SplitAuthored); this card does no line
+          arithmetic for them. Not an AI-vs-human share, so it is honest
+          with or without human capture. Absent on an older daemon. */}
+      {(data.ai_split || data.ai_sidechain_split) && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <SplitLine
+            label="Main agent: code vs comments"
+            split={data.ai_split}
+          />
+          <SplitLine
+            label="Subagent: code vs comments"
+            split={data.ai_sidechain_split}
+          />
+          <p className="text-[9.5px] leading-tight text-fg-3 sm:col-span-2">
+            Code files only. Comment lines are counted apart from code and
+            are not in the code headlines; blank and whitespace-only lines
+            are in neither.
+          </p>
+        </div>
+      )}
+
       {/* The capture note is the SERVER's sentence, rendered verbatim. */}
       <p
         className={
@@ -211,6 +244,25 @@ function Headline({
   );
 }
 
+// SplitLine renders one server-computed code-vs-comment split with the
+// shared renderer, under a small label.
+function SplitLine({
+  label,
+  split,
+}: {
+  label: string;
+  split?: LOCAuthoredSplit;
+}) {
+  return (
+    <div className="min-w-0 rounded-2 border border-line-2 bg-bg-1 px-2.5 py-2">
+      <span className="mb-1 block text-[9.5px] font-semibold uppercase tracking-[0.06em] text-fg-3">
+        {label}
+      </span>
+      <CodeCommentSplit split={split} variant="bar" compact />
+    </div>
+  );
+}
+
 // ----- bucket table -------------------------------------------------
 
 const COLUMNS: { key: keyof LOCStats; label: string; title: string }[] = [
@@ -242,79 +294,86 @@ function BucketTable({
         </span>
         {note && <span className="text-[9.5px] text-fg-3">{note}</span>}
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[560px] border-collapse text-[10.5px]">
-          <thead>
-            <tr className="border-b border-line-2 text-fg-3">
-              <th className="py-1 pr-2 text-left font-medium">who</th>
-              {COLUMNS.map((c) => (
-                <th
-                  key={c.key}
-                  title={c.title}
-                  className="cursor-help py-1 pl-2 text-right font-medium"
-                >
-                  {c.label}
-                </th>
-              ))}
-              <th className="py-1 pl-2 text-right font-medium" title="Files touched">
-                files
+      <Table
+        size="sm"
+        minWidth={560}
+        head={
+          <tr>
+            <th className="py-1 pr-2 text-left font-medium">who</th>
+            {COLUMNS.map((c) => (
+              <th key={c.key} className="py-1 pl-2 text-right font-medium">
+                <Tooltip content={c.title}>
+                  <span tabIndex={0} className="cursor-help focus:outline-none">
+                    {c.label}
+                  </span>
+                </Tooltip>
               </th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.key} className="border-b border-line-1/60 last:border-0">
-                <td className="py-1 pr-2 align-top">
-                  <span className="block text-fg-1">{r.label}</span>
-                  {r.note && (
-                    <span className="block text-[9.5px] text-fg-3">{r.note}</span>
-                  )}
-                  {/* Honesty rule: the caveats sit WITH the numbers. */}
-                  {(r.lowConfidence > 0 || r.overwrites > 0) && (
-                    <span className="mt-0.5 flex flex-wrap gap-1">
-                      {r.lowConfidence > 0 && (
-                        <span
-                          className="rounded-1 bg-warn-soft px-1 py-0.5 text-[9px] text-warn"
-                          title="Files whose line classification is not high confidence: a truncated tool input, a fragment that started mid block-comment or mid-string, or an edit that carried only a path."
-                        >
-                          {fmtInt(r.lowConfidence)} low confidence
-                        </span>
-                      )}
-                      {r.overwrites > 0 && (
-                        <span
-                          className="rounded-1 bg-bg-1 px-1 py-0.5 text-[9px] text-fg-3"
-                          title="Whole-file writes over an existing file."
-                        >
-                          {fmtInt(r.overwrites)} overwrite: counted as added
-                          (before-image from the prior read, or none)
-                        </span>
-                      )}
-                    </span>
-                  )}
-                </td>
-                {COLUMNS.map((c) => (
-                  <td
-                    key={c.key}
-                    className={[
-                      "py-1 pl-2 text-right align-top font-mono tabular-nums",
-                      r.stats[c.key] === 0
-                        ? "text-fg-4"
-                        : c.key === "code_touched"
-                          ? "text-fg-0"
-                          : "text-fg-2",
-                    ].join(" ")}
-                  >
-                    {r.stats[c.key] === 0 ? "-" : fmtInt(r.stats[c.key])}
-                  </td>
-                ))}
-                <td className="py-1 pl-2 text-right align-top font-mono tabular-nums text-fg-2">
-                  {fmtInt(r.files)}
-                </td>
-              </tr>
             ))}
-          </tbody>
-        </table>
-      </div>
+            <th className="py-1 pl-2 text-right font-medium">
+              <Tooltip content="Files touched">
+                <span tabIndex={0} className="cursor-help focus:outline-none">
+                  files
+                </span>
+              </Tooltip>
+            </th>
+          </tr>
+        }
+      >
+        {rows.map((r) => (
+          <tr key={r.key} className="border-b border-line-1/60 last:border-0">
+            <td className="py-1 pr-2 align-top">
+              <span className="block text-fg-1">{r.label}</span>
+              {r.note && (
+                <span className="block text-[9.5px] text-fg-3">{r.note}</span>
+              )}
+              {/* Honesty rule: the caveats sit WITH the numbers. */}
+              {(r.lowConfidence > 0 || r.overwrites > 0) && (
+                <span className="mt-0.5 flex flex-wrap gap-1">
+                  {r.lowConfidence > 0 && (
+                    <Tooltip content="Files whose line classification is not high confidence: a truncated tool input, a fragment that started mid block-comment or mid-string, or an edit that carried only a path.">
+                      <span
+                        tabIndex={0}
+                        className="rounded-1 bg-warn-soft px-1 py-0.5 text-[9px] text-warn focus:outline-none"
+                      >
+                        {fmtInt(r.lowConfidence)} low confidence
+                      </span>
+                    </Tooltip>
+                  )}
+                  {r.overwrites > 0 && (
+                    <Tooltip content="Whole-file writes over an existing file.">
+                      <span
+                        tabIndex={0}
+                        className="rounded-1 bg-bg-3 px-1 py-0.5 text-[9px] text-fg-3 focus:outline-none"
+                      >
+                        {fmtInt(r.overwrites)} overwrite: counted as added
+                        (before-image from the prior read, or none)
+                      </span>
+                    </Tooltip>
+                  )}
+                </span>
+              )}
+            </td>
+            {COLUMNS.map((c) => (
+              <td
+                key={c.key}
+                className={[
+                  "py-1 pl-2 text-right align-top font-mono tabular-nums",
+                  r.stats[c.key] === 0
+                    ? "text-fg-4"
+                    : c.key === "code_touched"
+                      ? "text-fg-0"
+                      : "text-fg-2",
+                ].join(" ")}
+              >
+                {r.stats[c.key] === 0 ? "-" : fmtInt(r.stats[c.key])}
+              </td>
+            ))}
+            <td className="py-1 pl-2 text-right align-top font-mono tabular-nums text-fg-2">
+              {fmtInt(r.files)}
+            </td>
+          </tr>
+        ))}
+      </Table>
       {rows.some((r) => r.overwrites > 0) && (
         <p className="mt-1 text-[9.5px] leading-relaxed text-fg-3">
           Overwrite rows are counted as added (before-image from the prior
@@ -333,16 +392,25 @@ function LanguageChips({ data }: { data: SessionLOCResponse }) {
   return (
     <div className="flex flex-wrap gap-1">
       {langs.map((l) => (
-        <span
+        <Tooltip
           key={`${l.language}-${l.category}`}
-          className="rounded-2 bg-bg-1 px-1.5 py-0.5 text-[10px] text-fg-2"
-          title={`${l.category} · ${fmtInt(l.files)} file${l.files === 1 ? "" : "s"}`}
+          content={`${l.category} · ${fmtInt(l.files)} file${l.files === 1 ? "" : "s"} · ${
+            l.category === "code"
+              ? "code lines written (added + modified), every actor"
+              : "lines written in a non-code file, not counted as code"
+          }`}
         >
-          {l.language || "unknown"}{" "}
-          <span className="tabular-nums text-fg-3">
-            {fmtInt(l.stats.code_touched)}
+          <span
+            tabIndex={0}
+            className="inline-flex items-center gap-1 rounded-2 bg-bg-3 px-1.5 py-0.5 text-micro text-fg-2 focus:outline-none"
+          >
+            <Icon icon={vocabIcon("locCategory", l.category)} size={10} className="shrink-0 text-fg-3" />
+            {l.language || "unknown"}{" "}
+            <span className="tabular-nums text-fg-3">
+              {fmtInt(l.stats.code_touched)}
+            </span>
           </span>
-        </span>
+        </Tooltip>
       ))}
     </div>
   );

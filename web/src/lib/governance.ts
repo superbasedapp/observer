@@ -7,6 +7,7 @@
 // dashboard.visibility authority.
 import { useApi, type ApiState } from "./useApi";
 import type { NavGroup } from "./nav";
+import type { VocabEntry } from "@shared/lib/vocabEntry";
 
 export type GovernanceState =
   | "no_grant"
@@ -41,6 +42,16 @@ export type GovernanceNotice = {
 //                  Tenancy); on an individual / BYO machine the raise is
 //                  structurally inert and the source stays "you".
 export type GovernanceShareSource = "you" | "org" | "both" | "org_raised";
+
+// GOVERNANCE_SOURCE - the tone of a governed share row's source pill. A raise
+// is the one direction that shares MORE than the operator asked for, so it
+// is warn rather than routine-policy info. Glyph: VOCAB_ICONS.governanceSource.
+export const GOVERNANCE_SOURCE: Readonly<Record<GovernanceShareSource, VocabEntry>> = {
+  you: { tone: "info" },
+  org: { tone: "info" },
+  both: { tone: "info" },
+  org_raised: { tone: "warn" },
+};
 
 // GovernanceShareKey is one row of the /api/governance `share` block: the
 // value in force, the value this machine's own config asks for, and which of

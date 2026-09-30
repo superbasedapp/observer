@@ -1,3 +1,4 @@
+import { ArchiveRestore, RefreshCw, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 import {
@@ -5,9 +6,9 @@ import {
   Card,
   ChartShell,
   CopyOnClick,
-  Pill,
   StatCard,
   Table,
+  Stagger,
 } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
 import { TitleWithHelp } from "@/components/HelpInd";
@@ -15,6 +16,9 @@ import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
 import { fmtInt } from "@/lib/format";
 import type { BackfillJob, BackfillRunResponse } from "@/lib/types";
+import { MetricIcon } from "@/components/MetricIcon";
+import { JOB_STATUS } from "@shared/lib/sessionVocab";
+import { VocabPill } from "@shared/lib/vocabPill";
 
 // StorageSection — Settings → Storage (usability arc P6.8): per-table
 // size breakdown, vacuum, one-click backup, restore instructions.
@@ -50,7 +54,8 @@ function fmtBytes(n: number): string {
   return `${v.toFixed(1)} ${units[i]}`;
 }
 
-export function StorageSection() {
+// `icon` is the section glyph from the Settings SECTIONS table.
+export function StorageSection({ icon }: { icon?: LucideIcon }) {
   const storage = useApi<StorageResponse>("/api/storage");
   const rep = storage.data?.report;
   const restoreCommand = `cp ${storage.data?.backup_dir ?? "<backup dir>"}/<file> ${storage.data?.db_path ?? "<db path>"}`;
@@ -59,9 +64,10 @@ export function StorageSection() {
     <div className="space-y-4">
       <ChartShell
         title={<TitleWithHelp text="Storage" helpId="glossary.settings_storage" />}
+        icon={icon}
         sub="Where the database's bytes live - per table, indexes and search shadow tables folded into their owners"
         right={
-          <Button variant="secondary" size="sm" onClick={() => storage.reload()}>
+          <Button variant="secondary" size="sm" iconLeft={RefreshCw} onClick={() => storage.reload()}>
             refresh
           </Button>
         }
@@ -69,21 +75,24 @@ export function StorageSection() {
         <ChartState
           loading={storage.loading && !storage.data}
           error={storage.error}
+          denied={storage.denied}
+          deniedPermission={storage.deniedPermission}
           empty={!rep}
           emptyHint="No report."
           height={200}
         >
           {rep && (
             <div className="space-y-4">
-              <div className="grid grid-cols-3 gap-3">
-                <StatCard label="Database size" value={fmtBytes(rep.total_bytes)} sub={storage.data?.db_path ?? ""} />
+              <Stagger className="grid grid-cols-3 gap-3">
+                <StatCard label="Database size" icon={<MetricIcon metric="databaseSize" />} value={fmtBytes(rep.total_bytes)} sub={storage.data?.db_path ?? ""} />
                 <StatCard
                   label="Reclaimable by vacuum"
+                  icon={<MetricIcon metric="reclaimable" />}
                   value={fmtBytes(rep.reclaimable_bytes)}
                   sub={`${fmtInt(rep.freelist_pages)} free pages - live-page fragmentation can add more`}
                 />
-                <StatCard label="Tables" value={fmtInt(rep.tables.length)} sub="indexes + FTS internals folded in" />
-              </div>
+                <StatCard label="Tables" icon={<MetricIcon metric="tables" />} value={fmtInt(rep.tables.length)} sub="indexes + FTS internals folded in" />
+              </Stagger>
               <Table
                 minWidth={420}
                 head={
@@ -125,7 +134,7 @@ export function StorageSection() {
         onDone={() => storage.reload()}
       />
 
-      <ChartShell title="Backups & restore" sub={storage.data?.backup_dir ?? ""}>
+      <ChartShell title="Backups & restore" icon={ArchiveRestore} sub={storage.data?.backup_dir ?? ""}>
         <div className="space-y-3 text-[11.5px]">
           {(storage.data?.backups?.length ?? 0) > 0 ? (
             <Table>
@@ -222,7 +231,8 @@ function MaintenanceCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-[12px] font-semibold text-fg-1">
             {title}
-            {job?.status === "running" && <Pill variant="warn">running</Pill>}
+            {/* The ONE JOB_STATUS row: running spins its LoaderCircle. */}
+            {job?.status === "running" && <VocabPill vocab="jobStatus" table={JOB_STATUS} value="running" />}
           </div>
           <p className="m-0 mt-0.5 text-fg-3">{description}</p>
         </div>

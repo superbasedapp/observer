@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Pill, SegmentedControl, Toggle } from "@/components/primitives";
+import { ChartShell, HostMark, InlineLoading, Pill, SegmentedControl, Toggle } from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
 import { pushToast } from "@/components/Toast";
@@ -21,7 +21,6 @@ import {
   postPolicy,
 } from "./types";
 import {
-  Card,
   IssueList,
   Labeled,
   Muted,
@@ -102,8 +101,8 @@ function PolicyEditor({
 
   const globalIssues = useMemo(() => issues.filter((i) => !i.criterion_id), [issues]);
 
-  if (policyApi.loading && !draft) return <Card title="Admission policy"><Muted>Loading…</Muted></Card>;
-  if (!draft) return <Card title="Admission policy"><Muted>No policy loaded.</Muted></Card>;
+  if (policyApi.loading && !draft) return <ChartShell title="Admission policy"><InlineLoading label="Loading admission policy" /></ChartShell>;
+  if (!draft) return <ChartShell title="Admission policy"><Muted>No policy loaded.</Muted></ChartShell>;
 
   const patch = (p: Partial<AdmissionPolicy>) => setDraft({ ...draft, ...p });
   const patchCriterion = (idx: number, c: Partial<AdmissionCriterion>) => {
@@ -151,7 +150,7 @@ function PolicyEditor({
   }
 
   return (
-    <Card
+    <ChartShell
       title="Admission policy"
       sub="The guardrail table plus its mode and deterministic pre-filter. Applying live affects the SDK front-door immediately; saving also writes config.toml (the proxy backstop needs a restart)."
     >
@@ -256,7 +255,7 @@ function PolicyEditor({
         </button>
         <span className="text-[11px] text-fg-3">Apply live = front-door now · Save = durable + proxy on restart</span>
       </div>
-    </Card>
+    </ChartShell>
   );
 }
 
@@ -273,7 +272,7 @@ function CriterionRow({
 }) {
   const judged = isJudged(c.type);
   return (
-    <div className="rounded-2 border border-line-1 bg-bg-2/40 p-3">
+    <div className="rounded-2 border border-line-2 bg-bg-3/40 p-3">
       <div className="flex flex-wrap items-center gap-2">
         <Select
           value={c.type}
@@ -291,7 +290,7 @@ function CriterionRow({
           placeholder="name (e.g. on-scope)"
           className={inputClass + " min-w-[10rem] flex-1"}
         />
-        <button type="button" onClick={onRemove} className={btnGhostDanger} title="Remove criterion">Remove</button>
+        <button type="button" onClick={onRemove} className={btnGhostDanger} aria-label="Remove criterion">Remove</button>
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -341,7 +340,7 @@ function JudgeEditor({ configApi }: { configApi: ReturnType<typeof useApi<Config
     if (j) setDraft({ ...j });
   }, [configApi.data]);
 
-  if (!draft) return <Card title="Judge"><Muted>Loading…</Muted></Card>;
+  if (!draft) return <ChartShell title="Judge"><InlineLoading label="Loading judge settings" /></ChartShell>;
   const hosting = judgeHosting(draft.BaseURL);
   const patch = (p: Partial<JudgeConfig>) => setDraft({ ...draft, ...p });
 
@@ -367,8 +366,12 @@ function JudgeEditor({ configApi }: { configApi: ReturnType<typeof useApi<Config
   }
 
   return (
-    <Card
-      title={<span className="inline-flex items-center gap-2">Judge <Pill variant="info">{hosting}</Pill></span>}
+    <ChartShell
+      title={
+        <span className="inline-flex items-center gap-2">
+          Judge <HostMark host={draft.BaseURL} size={12} /> <Pill variant="info">{hosting}</Pill>
+        </span>
+      }
       sub="The LLM that evaluates judged criteria. Hosting is derived from the base URL - a loopback URL keeps requests local with no key egress. Read at daemon start, so this always needs a restart."
     >
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -396,7 +399,7 @@ function JudgeEditor({ configApi }: { configApi: ReturnType<typeof useApi<Config
       <div className="mt-4">
         <button type="button" disabled={busy} onClick={save} className={btnSecondary}>{busy ? "Saving…" : "Save & restart"}</button>
       </div>
-    </Card>
+    </ChartShell>
   );
 }
 
@@ -412,7 +415,7 @@ function BudgetEditor({ configApi }: { configApi: ReturnType<typeof useApi<Confi
     if (b) setDraft({ ...b });
   }, [configApi.data]);
 
-  if (!draft) return <Card title="Per-user budget"><Muted>Loading…</Muted></Card>;
+  if (!draft) return <ChartShell title="Per-user budget"><InlineLoading label="Loading budget" /></ChartShell>;
   const patch = (p: Partial<BudgetConfig>) => setDraft({ ...draft, ...p });
 
   async function save() {
@@ -437,7 +440,7 @@ function BudgetEditor({ configApi }: { configApi: ReturnType<typeof useApi<Confi
   }
 
   return (
-    <Card
+    <ChartShell
       title="Per-user budget"
       sub="A per-end-user spend cap evaluated at the admission chokepoint. A breach yields a Deny (shadow in observe, blocking in enforce). Needs the app to share the end-user identity; anonymous requests are inert."
     >
@@ -454,7 +457,7 @@ function BudgetEditor({ configApi }: { configApi: ReturnType<typeof useApi<Confi
       <div className="mt-4">
         <button type="button" disabled={busy} onClick={save} className={btnSecondary}>{busy ? "Saving…" : "Save & restart"}</button>
       </div>
-    </Card>
+    </ChartShell>
   );
 }
 

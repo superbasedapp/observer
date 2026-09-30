@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { SlideOver, SurfaceBadge, TabStrip, ToolBadge, TruncatedPath, type TabDef } from "@/components/primitives";
+import { SlideOver, SurfaceBadge, TabStrip, ToolBadge, Tooltip, TruncatedPath, type TabDef } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
+import { sessionTabIcon } from "@shared/components/sessiondetail";
 import { CopyOnClick } from "@/components/CopyOnClick";
 import { SessionActionHeader } from "@/components/SessionActionHeader";
 import { fetchJSON } from "@/lib/api";
@@ -19,6 +20,7 @@ import { KpiBand } from "@/components/sessiondetail/KpiBand";
 import { LineageBanner } from "@/components/sessiondetail/LineageBanner";
 import { LiveHeroBand } from "@/components/sessiondetail/LiveHeroBand";
 import { MessagesTab } from "@/components/sessiondetail/MessagesTab";
+import { MCPCallsTab } from "@/components/sessiondetail/MCPCallsTab";
 import { OverviewTab } from "@/components/sessiondetail/OverviewTab";
 import { SessionEnrichmentHeader } from "@/components/sessiondetail/SessionEnrichmentHeader";
 import { SystemTab } from "@/components/sessiondetail/SystemTab";
@@ -54,6 +56,9 @@ import { hasRecordedUsage, sessionRecentlyActive } from "@/components/sessiondet
 //                                          already contains the 5h/weekly
 //                                          limit gauge) + model-switch forecast
 //   Cache               CacheTab.tsx     — cache expiry + cache stats
+//   MCP calls           MCPCallsTab.tsx  — Agent Access P11(a) correlated MCP
+//                                          calls (the shared panel the org
+//                                          drawer also renders)
 //   System              SystemTab.tsx    — processes
 //
 // Panel width is 1680px. Each historical bump unlocked another Messages
@@ -61,7 +66,7 @@ import { hasRecordedUsage, sessionRecentlyActive } from "@/components/sessiondet
 
 // ----- Tab model ---------------------------------------------------
 
-type TabId = "overview" | "messages" | "cost" | "cache" | "tasks" | "system";
+type TabId = "overview" | "messages" | "cost" | "cache" | "tasks" | "mcp" | "system";
 
 const TAB_IDS: TabId[] = [
   "overview",
@@ -69,6 +74,8 @@ const TAB_IDS: TabId[] = [
   "cost",
   "cache",
   "tasks",
+  // Agent Access P11(a): MCP calls, the same panel the org drawer renders.
+  "mcp",
   "system",
 ];
 
@@ -276,8 +283,15 @@ export function SessionDetailPanel({
   // is hidden via the default visibility gate in useApi.
   // Watch mode polls faster (4s) so the tail stays close to live; the
   // calm 8s cadence remains the default for normal reading.
+  //
+  // 2026-09-27: a session with no activity for 15 minutes polls every 60 s
+  // instead (it can still resume, so polling never stops). The old cadence
+  // re-fetched the detail + a full messages page every 8 s for sessions that
+  // ended days ago. `quiet` is derived from the detail itself; until the
+  // first response lands the live cadence applies.
+  const [quiet, setQuiet] = useState(false);
   const liveRefresh = open
-    ? { refreshMs: watchMode ? 4000 : 8000 }
+    ? { refreshMs: watchMode ? 4000 : quiet ? 60_000 : 8000 }
     : undefined;
   const detail = useApi<SessionDetail>(
     sessionId ? `/api/session/${sessionId}` : null,
@@ -285,6 +299,11 @@ export function SessionDetailPanel({
     [sessionId],
     liveRefresh,
   );
+  const lastActivity = detail.data?.last_activity_at ?? detail.data?.ended_at;
+  useEffect(() => {
+    const t = lastActivity ? Date.parse(lastActivity) : NaN;
+    setQuiet(Number.isFinite(t) && Date.now() - t > 15 * 60_000);
+  }, [lastActivity]);
   const [msgPage, setMsgPage] = useState(1);
   // tokenDetail controls per-message token grouping:
   //   - "turn": one message row per user-turn (claudecode msg.ID for
@@ -499,18 +518,22 @@ export function SessionDetailPanel({
 
   const d = detail.data;
   const tabs: TabDef<TabId>[] = useMemo(
-    () => [
-      { id: "overview", label: "Overview" },
-      {
-        id: "messages",
-        label: "Messages",
-        count: messages.data ? messages.data.total : null,
-      },
-      { id: "cost", label: "Cost & limits" },
-      { id: "cache", label: "Cache" },
-      { id: "tasks", label: "Tasks" },
-      { id: "system", label: "System" },
-    ],
+    () =>
+      (
+        [
+          { id: "overview", label: "Overview" },
+          {
+            id: "messages",
+            label: "Messages",
+            count: messages.data ? messages.data.total : null,
+          },
+          { id: "cost", label: "Cost & limits" },
+          { id: "cache", label: "Cache" },
+          { id: "tasks", label: "Tasks" },
+          { id: "mcp", label: "MCP calls" },
+          { id: "system", label: "System" },
+        ] satisfies TabDef<TabId>[]
+      ).map((t) => ({ ...t, icon: sessionTabIcon(t.id) })),
     [messages.data],
   );
 
@@ -523,7 +546,7 @@ export function SessionDetailPanel({
       title={
         d ? (
           <span className="flex items-center gap-2">
-            <ToolBadge tool={d.tool} />
+            <ToolBadge tool={d.tool} pip={false} />
             {/* Capture surface (migration 107). Renders nothing when the
                 session carries no stamp — absence is UNKNOWN, never "cli". */}
             <SurfaceBadge surface={d.surface} host={d.surface_host} />
@@ -531,9 +554,11 @@ export function SessionDetailPanel({
                 when stamped — absence is UNKNOWN, never a fabricated
                 version. */}
             {d.tool_version ? (
-              <span className="font-mono text-[11px] text-fg-3" title="Tool version">
-                v{d.tool_version}
-              </span>
+              <Tooltip content="Tool version">
+                <span tabIndex={0} className="font-mono text-caption text-fg-3 focus:outline-none">
+                  v{d.tool_version}
+                </span>
+              </Tooltip>
             ) : null}
             <CopyOnClick
               value={d.id}
@@ -557,11 +582,19 @@ export function SessionDetailPanel({
       }
     >
       <div className="px-5 pb-5 pt-3">
+        {/* Loading until the detail fetch resolves (including the moment the
+            session id is not set yet); the empty state only after a resolved
+            response carried no detail. It used to fake loading through the
+            empty state ("Loading session…" drawn as an empty chart). */}
         <ChartState
-          loading={detail.loading && !detail.data}
+          loading={!detail.data && !detail.error && (detail.loading || !sessionId)}
           error={detail.error}
+          denied={detail.denied}
+          deniedPermission={detail.deniedPermission}
+          onRetry={detail.reload}
           empty={!detail.data}
-          emptyHint="Loading session…"
+          emptyHint="No detail for this session"
+          kind="list"
           height={120}
         >
           {d && (
@@ -668,10 +701,15 @@ export function SessionDetailPanel({
               data: rawEvents.data,
               loading: rawEvents.loading,
               error: rawEvents.error,
+              denied: rawEvents.denied,
+              deniedPermission: rawEvents.deniedPermission,
               page: rawPage,
               onPage: setRawPage,
             }}
           />
+        </TabPanel>
+        <TabPanel id="mcp" active={activeTab}>
+          <MCPCallsTab sessionId={sessionId} onFocusMessage={onFocusMessage} />
         </TabPanel>
         <TabPanel id="system" active={activeTab}>
           <SystemTab sessionId={sessionId} onFocusMessage={onFocusMessage} />

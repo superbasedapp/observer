@@ -169,6 +169,13 @@ type Capability struct {
 	MCP         *MCPTarget
 	Native      NativeRails
 	TokenTier   TokenTier
+	// Limit records an AUDITED negative finding for the 5h/weekly usage-
+	// limit gauge (docs/cost-predictor.md; LimitCapability's doc comment).
+	// Zero value = not audited, falls through to the existing proxy/
+	// transcript ladder unchanged. Populated only for a tool where a live
+	// investigation found NO possible local source — see the "cursor" and
+	// "grokbot" rows for the grounded examples.
+	Limit LimitCapability
 	// Handoff is the session-handoff row: transcript readability (Phase 0
 	// P0.1, live-grounded 2026-07-03 on a 328-session corpus) + grounded
 	// delivery lanes. Zero value = actions-only carry + file delivery, the
@@ -295,9 +302,21 @@ var registry = map[string]Capability{
 		},
 		Routability: RouteStatusRoutableNow,
 		Hook:        HookSpec{Mechanism: HookClaudeSettings, CrossOSBridge: true, AutoWired: true},
-		MCP:         &MCPTarget{Format: MCPServersJSON, PathHint: ".claude.json", Implemented: true},
-		Native:      NativeRails{A: true, B: true, C: true},
-		TokenTier:   TokenTier{Best: "proxy"},
+		// Remote grounded 2026-09-24 against code.claude.com/docs/en/mcp:
+		// `{"type":"http"|"sse","url":…,"headers":{…}}` — a url WITHOUT a
+		// type is a configuration ERROR Claude Code skips, so the writer
+		// always emits `type`. Written by internal/mcp's shared JSON remote
+		// writer (W4a).
+		MCP: &MCPTarget{Format: MCPServersJSON, PathHint: ".claude.json", Implemented: true, Remote: &MCPRemoteTarget{
+			Transports:   []MCPRemoteTransport{MCPRemoteStreamableHTTP, MCPRemoteSSE},
+			Headers:      true,
+			TransportKey: "type",
+			Spelling:     map[MCPRemoteTransport]string{MCPRemoteStreamableHTTP: "http", MCPRemoteSSE: "sse"},
+			Implemented:  true,
+			Note:         "code.claude.com/docs/en/mcp 2026-09-24: type http|sse + url + headers; url without type is skipped as a config error",
+		}},
+		Native:    NativeRails{A: true, B: true, C: true},
+		TokenTier: TokenTier{Best: "proxy", ReasoningDisjoint: true, GenerationTiming: GenTimingTranscript},
 		// P0.1 FULL: ~/.claude/projects/<slug>/<sid>.jsonl; reader derives
 		// the path by session-id glob (hook-fed rows carry a sentinel).
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile, InjectMCP, InjectHook, InjectPrompt}, Launch: &LaunchSpec{Subcommand: "claude"}},
@@ -363,6 +382,9 @@ var registry = map[string]Capability{
 		Sandbox: SandboxSpec{
 			StateRW: []string{".claude", ".claude.json", ".claude.json.backup"},
 			StateRO: []string{".local/share/claude"},
+			// settings.json carries the hooks observer registers
+			// (internal/hook/register.go registerClaudeCode).
+			ProtectRO: []string{".claude/settings.json"},
 		},
 		// Headless one-shot, grounded by the live benchmark drives
 		// (cmd/observer/benchmark_driver.go claudeCodeDriver): `claude -p
@@ -383,7 +405,7 @@ var registry = map[string]Capability{
 		// override, so an un-overridden launch reaches the Observer proxy.
 		Proxy: &ProxyRoute{
 			Kind: RouteConfigFile, EnvVar: "", Launcher: "observer codex",
-			Note:          "codex routes through ~/.codex/config.toml openai_base_url (not an env var)",
+			Note:          "codex routes through ~/.codex/config.toml (model_provider=openai-observer base_url, or openai_base_url for the built-in openai provider; not an env var); a selected provider that resolves its own endpoint (amazon-bedrock, SigV4 to AWS) bypasses the proxy - `observer doctor codex` reports it",
 			CrossOSBridge: true, Proof: RouteProofLauncherRoute,
 		},
 		Routability: RouteStatusRoutableNow,
@@ -392,10 +414,23 @@ var registry = map[string]Capability{
 		// Windows-side ~/.codex/hooks.json exactly like the claude-code and
 		// cursor targets, so init/start's hookSupported() may auto-wire the
 		// `codex-windows` target.
-		Hook:      HookSpec{Mechanism: HookCodexConfig, CrossOSBridge: true, AutoWired: true},
-		MCP:       &MCPTarget{Format: MCPCodexTOML, PathHint: ".codex/config.toml", Implemented: true},
+		Hook: HookSpec{Mechanism: HookCodexConfig, CrossOSBridge: true, AutoWired: true},
+		// Remote grounded 2026-09-24 against the Codex config reference
+		// (learn.chatgpt.com/docs/config-file/config-reference, the
+		// developers.openai.com redirect) + docs/plans/native-console-codex-
+		// findings-2026-06-16.md: `[mcp_servers.<id>] url = …` designates a
+		// Streamable HTTP server (no transport/type key — url-vs-command is
+		// the discriminator), `http_headers` = static headers,
+		// `bearer_token_env_var`/`env_http_headers` = secret-by-reference
+		// (never written by the relay writer). No SSE spelling exists.
+		MCP: &MCPTarget{Format: MCPCodexTOML, PathHint: ".codex/config.toml", Implemented: true, Remote: &MCPRemoteTarget{
+			Transports:  []MCPRemoteTransport{MCPRemoteStreamableHTTP},
+			Headers:     true,
+			Implemented: true,
+			Note:        "codex config reference 2026-09-24: url (streamable HTTP only, no type key) + http_headers; bearer_token_env_var/env_http_headers never emitted (no secret in config)",
+		}},
 		Native:    NativeRails{A: true, B: true, C: true, Note: "Rail A (usage-export) config-gated on live keys"},
-		TokenTier: TokenTier{Best: "proxy"},
+		TokenTier: TokenTier{Best: "proxy", ReasoningDisjoint: true, GenerationTiming: GenTimingTranscript},
 		// P0.1 FULL: rollout JSONL (event_msg text lane + function_call
 		// pairing); reader derives the path by session-id glob.
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile, InjectMCP, InjectPrompt}, Launch: &LaunchSpec{Subcommand: "codex"}},
@@ -457,7 +492,9 @@ var registry = map[string]Capability{
 		// deliberately does not hide the operator's own credentials from the tool
 		// they just launched; the boundary is about the rest of $HOME and the rest
 		// of the filesystem, not about this tool's own state.
-		Sandbox: SandboxSpec{StateRW: []string{".codex"}},
+		// hooks.json = register.go codexHooksFile; config.toml carries
+		// mcp_servers (internal/mcp/locate) and the hooks feature flag.
+		Sandbox: SandboxSpec{StateRW: []string{".codex"}, ProtectRO: []string{".codex/hooks.json", ".codex/config.toml"}},
 		// Headless one-shot, grounded by the live benchmark drives
 		// (cmd/observer/benchmark_driver.go codexDriver): `codex exec
 		// <prompt> --json -o <file>` writes the final message to the -o
@@ -496,9 +533,19 @@ var registry = map[string]Capability{
 		// ~/.config/opencode/opencode.json (live-grounded 2026-06-26 against
 		// the operator's install: {"type":"local","command":[…],"enabled"}),
 		// written globally by registerOpenCodeJSON.
-		MCP:       &MCPTarget{Format: MCPOpenCodeJSON, PathHint: ".config/opencode/opencode.json", Implemented: true},
+		// Remote grounded 2026-09-24 against opencode.ai/docs/mcp-servers:
+		// `{"type":"remote","url":…,"enabled":true,"headers":{…}}` — the
+		// typed-remote sibling of the local shape above; transport is
+		// inferred from the url. Written by registerOpenCodeRemote (W4a).
+		MCP: &MCPTarget{Format: MCPOpenCodeJSON, PathHint: ".config/opencode/opencode.json", Implemented: true, Remote: &MCPRemoteTarget{
+			Transports:  []MCPRemoteTransport{MCPRemoteStreamableHTTP, MCPRemoteSSE},
+			Headers:     true,
+			Flags:       map[string]bool{"enabled": true},
+			Implemented: true,
+			Note:        "opencode.ai/docs/mcp-servers 2026-09-24: type remote + url + enabled + headers; transport inferred from url",
+		}},
 		Native:    NativeRails{},
-		TokenTier: TokenTier{Best: "sqlite"},
+		TokenTier: TokenTier{Best: "sqlite", ReportsCost: true},
 		// P0.1 FULL: opencode.db message+part tables (reader = P2 tranche).
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile, InjectMCP, InjectPrompt}, Launch: &LaunchSpec{Subcommand: "opencode"}},
 		// Attach grounded 2026-07-24 (attach-all-launchers); PTY handoff only
@@ -570,6 +617,8 @@ var registry = map[string]Capability{
 		// whole state tree is bound rw: the tool needs its own credentials.
 		Sandbox: SandboxSpec{
 			StateRW: []string{".local/share/opencode", ".config/opencode", ".opencode"},
+			// opencode.json carries the MCP servers (internal/mcp/locate).
+			ProtectRO: []string{".config/opencode/opencode.json"},
 		},
 		// GUI launch row (plan §2.2): OpenCode Desktop writes the SAME
 		// opencode.db this row's watcher reads (inventory §2.12,
@@ -641,8 +690,17 @@ var registry = map[string]Capability{
 		Proxy:       nil,
 		Routability: RouteStatusProbeRequired,
 		Hook:        HookSpec{Mechanism: HookCursor, CrossOSBridge: true, AutoWired: true},
-		MCP:         &MCPTarget{Format: MCPServersJSON, PathHint: ".cursor/mcp.json", Implemented: true},
-		Native:      NativeRails{}, // business admin/usage API not yet investigated (Phase-4 ledger).
+		// Remote grounded 2026-09-24 against cursor.com/docs/context/mcp:
+		// `{"url":…,"headers":{…}}` — NO type key on a remote entry (type is
+		// only used for `"stdio"`); Cursor auto-detects Streamable HTTP vs
+		// SSE from the endpoint. Written by the shared JSON remote writer.
+		MCP: &MCPTarget{Format: MCPServersJSON, PathHint: ".cursor/mcp.json", Implemented: true, Remote: &MCPRemoteTarget{
+			Transports:  []MCPRemoteTransport{MCPRemoteStreamableHTTP, MCPRemoteSSE},
+			Headers:     true,
+			Implemented: true,
+			Note:        "cursor.com/docs/context/mcp 2026-09-24: url + headers, no type key on remote entries (transport auto-detected)",
+		}},
+		Native: NativeRails{}, // business admin/usage API not yet investigated (Phase-4 ledger).
 		// Auto-mode "default" model is now resolved from store.db turn blobs
 		// (providerOptions.cursor.modelName) at hook time — see
 		// cursor.ResolveModelFromStore. Tokens still depend on the stop hook
@@ -663,7 +721,43 @@ var registry = map[string]Capability{
 		// both cache buckets) even when headless runs emit neither stop nor
 		// afterAgentResponse; a retried turn keeps the final attempt only, so
 		// totals are a lower bound and are labelled as such.
-		TokenTier: TokenTier{Best: "sqlite", Gap: "IDE builds since 3.15.x drop usage from stop payloads; per-turn usage comes from afterAgentResponse where it fires and, for the CLI, from its agent_cli.turn.outcome log records (final attempt only, so a lower bound)"},
+		//
+		// CORRECTED 2026-09-23 (S10-CURSOR, live-grounded on 3.17.21 /
+		// 3.20.21 / 3.21.13): IDE stop AND afterAgentResponse payloads DO
+		// carry per-request usage again (input_tokens GROSS incl. cache
+		// read, output, cache_read, cache_write). Session 8be96a3f's
+		// 2,783,511 / 21,724 / 2,529,792 reached the hook and was LOST to
+		// the hook's ingest deadline (tokens were written after actions +
+		// FTS). Fixed by the token-first write (internal/hook/cursor.go) and
+		// backstopped by the IDE hooks output-log replay
+		// (internal/adapter/cursor/hookslog.go): Cursor writes every hook
+		// INPUT payload to <userData>/logs/*/window*/output_*/cursor.hooks*.log,
+		// which the watcher replays under the live hook's own identity.
+		// Cloud Agents (bc-… ids) carry no usage in any local hook.
+		//
+		// 2026-09-27 (tracker item 17, grounded on node-1 + the 2026.09.18 /
+		// 2026.09.26 cursor-agent bundles): the INTERACTIVE CLI reports usage
+		// only on stop + afterAgentResponse (gross input incl. BOTH cache
+		// buckets - now netted by both), its turn-outcome log record carries
+		// no tokens, and a turn that is still retrying when the user quits
+		// runs neither hook - no local usage exists for it. The adapter now
+		// records such turns from the debug log as turn_aborted / api_error
+		// evidence rows (cli_turns.go) so the session page and
+		// `observer doctor cursor` (cursor.usage) say why usage is unknown.
+		TokenTier: TokenTier{Best: "hook", Gap: "IDE usage rides the stop/afterAgentResponse hook payload (replayed from Cursor's own hooks output log when the live write is lost; the watcher tails that log, so a log first seen with more than max_file_bytes unread needs `observer backfill --cursor-hook-usage`, and the log only covers Cursor's last ~10 IDE launches); interactive CLI usage rides the same two hooks, which run only when a turn finishes, so a turn quit mid-retry or killed has no local usage (recorded as turn_aborted evidence, never zero); CLI headless usage comes from agent_cli.turn.outcome log records (final attempt only, so a lower bound); Cloud Agents (bc-… ids) expose no local usage at all"},
+		// Limit AUDITED 2026-09-22: `cursor-agent about|status --format
+		// json` (live-run) return only email/subscriptionTier/auth state —
+		// no numeric usage/quota field. `~/.cursor/cli-config.json` and
+		// `agent-cli-state.json` carry no usage data either, and
+		// `cursor-agent --help` lists no usage/limits/quota subcommand.
+		// Cursor traffic never touches the observer proxy (Proxy is nil
+		// above), so the proxy-header half of the gauge can never fire
+		// either — the vendor's own dashboard (cursor.com/settings) is the
+		// only place this number exists.
+		Limit: LimitCapability{
+			Source: LimitSourceNoneRemote,
+			Note:   "Cursor's usage-based limits are visible only in the Cursor dashboard (cursor.com/settings) - cursor-agent's own CLI (about/status/--help) and every local config file carry no usage/quota field, and Cursor traffic never routes through the observer proxy.",
+		},
 		// P0.1 FULL (CLI): ~/.cursor/projects/<slug>/agent-transcripts/
 		// <sid>/<sid>.jsonl, Anthropic-shaped; NOT referenced by DB
 		// source_file (sentinel) — derive by session id. IDE state.vscdb
@@ -832,7 +926,21 @@ var registry = map[string]Capability{
 		// confirmed 2026-06-26: {"mcpServers":{}}). Written natively on the
 		// daemon OS (locate "cline") AND cross-OS into a Windows VS Code from
 		// a WSL daemon via the cline-windows wsl.exe bridge (CrossOSBridge).
-		MCP:       &MCPTarget{Format: MCPServersJSON, PathHint: "<vscode>/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json", Implemented: true, CrossOSBridge: true},
+		// Remote grounded 2026-09-24 against docs.cline.bot/mcp/configuring-
+		// mcp-servers: `{"type":"streamableHttp"|"sse","url":…,"headers":{…},
+		// "disabled":false,"autoApprove":[]}` — an OMITTED type defaults to
+		// the legacy sse transport, so the writer always emits it. autoApprove
+		// is left unset (its absence = no auto-approval, the safe default).
+		// Same writer natively AND through the cline-windows bridge path.
+		MCP: &MCPTarget{Format: MCPServersJSON, PathHint: "<vscode>/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json", Implemented: true, CrossOSBridge: true, Remote: &MCPRemoteTarget{
+			Transports:   []MCPRemoteTransport{MCPRemoteStreamableHTTP, MCPRemoteSSE},
+			Headers:      true,
+			TransportKey: "type",
+			Spelling:     map[MCPRemoteTransport]string{MCPRemoteStreamableHTTP: "streamableHttp", MCPRemoteSSE: "sse"},
+			Flags:        map[string]bool{"disabled": false},
+			Implemented:  true,
+			Note:         "docs.cline.bot 2026-09-24: type streamableHttp|sse (omitted = legacy sse) + url + headers + disabled; autoApprove left unset",
+		}},
 		Native:    NativeRails{},
 		TokenTier: TokenTier{Best: "transcript"}, // per-message metrics + modelInfo; full.
 		// P0.1 FULL: tasks/<id>/api_conversation_history.json, Anthropic-
@@ -854,7 +962,7 @@ var registry = map[string]Capability{
 		Hook:        HookSpec{Mechanism: HookNone},
 		MCP:         nil,
 		Native:      NativeRails{A: true, B: true, C: true, Note: "rails partial; identity = GitHub login, cost seat/account-level"},
-		TokenTier:   TokenTier{Best: "events_jsonl", Gap: "no cache tier"},
+		TokenTier:   TokenTier{Best: "events_jsonl", Gap: "no cache tier", OutputOnlyShadow: true, GenerationTiming: GenTimingNative}, // legacy OTel llm_request span dur only
 		// P0.1 PARTIAL: chatSessions/<id>.jsonl is a key-path PATCH LOG
 		// (kind:0 init + kind:1/2 patches) — content present but needs a
 		// replay reader (deferred tranche).
@@ -904,7 +1012,7 @@ var registry = map[string]Capability{
 		// (modelMetrics.<model>.usage); debug only adds PER-TURN input/cache
 		// attribution (plain turns are output-only). The "no cache tier" the
 		// audit attributed here was VS Code copilot's, not the CLI's.
-		TokenTier: TokenTier{Best: "events_jsonl", Gap: "per-turn input/cache attribution needs --log-level debug (session-aggregate captured without it)"},
+		TokenTier: TokenTier{Best: "events_jsonl", Gap: "per-turn input/cache attribution needs --log-level debug (session-aggregate captured without it)", OutputOnlyShadow: true},
 		// P0.1 FULL: ~/.copilot/session-store.db turns(user_message,
 		// assistant_response) (reader = P2 tranche).
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile, InjectPrompt}, Launch: &LaunchSpec{Subcommand: "copilot-cli"}},
@@ -1011,7 +1119,7 @@ var registry = map[string]Capability{
 		// cost engine's provider-segment strip (stealth/claude-sonnet-4.6 →
 		// claude-sonnet-4.6). cachetrack shape rule now covers stealth/claude
 		// explicitly (Anthropic-shape) alongside kilo-auto.
-		TokenTier: TokenTier{Best: "sqlite"},
+		TokenTier: TokenTier{Best: "sqlite", ReportsCost: true},
 		// P0.1 FULL: kilo.db message+part tables (reader = P2 tranche).
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile, InjectPrompt}, Launch: &LaunchSpec{Subcommand: "kilo"}},
 		// Attach grounded 2026-07-24 (attach-all-launchers); PTY handoff only
@@ -1102,7 +1210,7 @@ var registry = map[string]Capability{
 		// fabricating a target we cannot write (docs/clinecli-adapter.md).
 		MCP:       nil,
 		Native:    NativeRails{},
-		TokenTier: TokenTier{Best: "sqlite"}, // sessions.db + per-session messages.json; full.
+		TokenTier: TokenTier{Best: "sqlite", ReportsCost: true}, // sessions.db + per-session messages.json; full.
 		// P0.1 FULL: <id>.messages.json, Anthropic-shaped (reader = P2
 		// tranche).
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile, InjectPrompt}, Launch: &LaunchSpec{Subcommand: "cline-cli"}},
@@ -1263,9 +1371,24 @@ var registry = map[string]Capability{
 		Proxy:       &ProxyRoute{Kind: RouteProviderJSON, EnvVar: "", Suffix: "/up/openrouter/api/v1", Launcher: "observer hermes", Note: "routes via a user-config `observer` provider (providers: section) in ~/.hermes/config.yaml with key_env (secret-free); launcher writes the provider additively, never a key; needs a matching [proxy.upstreams] upstream (default openrouter)"},
 		Routability: RouteStatusRoutableNow,
 		Hook:        HookSpec{Mechanism: HookHermesPlugin, AutoWired: true}, // embedded plugin via `observer init --hermes`.
-		MCP:         &MCPTarget{Format: MCPHermesYAML, PathHint: ".hermes/config.yaml", Implemented: true},
-		Native:      NativeRails{},
-		TokenTier:   TokenTier{Best: "sqlite"}, // post_api_request token rows; full.
+		// Remote grounded 2026-09-24 against hermes-agent.nousresearch.com/
+		// docs/user-guide/features/mcp: `mcp_servers.<name>: {url: …,
+		// headers: {…}}` (transport inferred; `auth: oauth` optional). The
+		// stdio target above is Implemented because internal/hook's
+		// RegisterHermesMCP (`observer init --hermes`) writes it — but that
+		// writer has NO remote variant and internal/mcp/locate carries no
+		// hermes row, so the Registrar cannot project a remote entry today:
+		// Remote.Implemented=false (honest zero, doc3 §12.1 R8.24.u — doc3
+		// does NOT claim hermes remote projection until a locate row + a
+		// YAML remote writer land).
+		MCP: &MCPTarget{Format: MCPHermesYAML, PathHint: ".hermes/config.yaml", Implemented: true, Remote: &MCPRemoteTarget{
+			Transports:  []MCPRemoteTransport{MCPRemoteStreamableHTTP, MCPRemoteSSE},
+			Headers:     true,
+			Implemented: false,
+			Note:        "hermes docs 2026-09-24: url + headers (transport inferred); NO writer — internal/hook's YAML writer is stdio-only and locate has no hermes row",
+		}},
+		Native:    NativeRails{},
+		TokenTier: TokenTier{Best: "sqlite", GenerationTiming: GenTimingNative, ReportsCost: true}, // post_api_request token rows; full. api_duration (float s) -> gen_ms.
 		// P0.1 FULL: state.db messages(role, content, tool_calls) active=1
 		// (reader = P2 tranche).
 		// No InjectPrompt lane: hermes' TUI (`--tui` / HERMES_TUI=1) takes NO
@@ -1345,7 +1468,8 @@ var registry = map[string]Capability{
 		// linux+darwin, or $HERMES_HOME). ~/.hermes holds the schema-v14 SQLite
 		// store and the OpenRouter credentials the agent needs — bound rw as one
 		// dir.
-		Sandbox: SandboxSpec{StateRW: []string{".hermes"}},
+		// plugins/ is auto-discovered Python (internal/hook/hermesplugin).
+		Sandbox: SandboxSpec{StateRW: []string{".hermes"}, ProtectRODirs: []string{".hermes/plugins"}},
 		// GUI launch row (plan §2.2): Hermes Desktop shares ~/.hermes with
 		// this row's CLI ("one agent, one memory, every surface"). UNVERIFIED
 		// layout ⇒ Grounded=false, empty Binary, never launchable.
@@ -1391,7 +1515,7 @@ var registry = map[string]Capability{
 		Hook:        HookSpec{Mechanism: HookNone},
 		MCP:         nil,
 		Native:      NativeRails{},
-		TokenTier:   TokenTier{Best: "transcript", Gap: "capture depth un-audited"},
+		TokenTier:   TokenTier{Best: "transcript", Gap: "capture depth un-audited", GenerationTiming: GenTimingNative}, // result.duration_api_ms, single-model results only
 		// P0.1 FULL: audit.jsonl user/assistant records (Windows
 		// cross-mount; reader = P2 tranche).
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile}},
@@ -1527,7 +1651,7 @@ var registry = map[string]Capability{
 		// internal/adapter/gemini/adapter.go defaultRoots (<home>/.gemini/tmp) —
 		// ~/.gemini is the whole CLI state dir (settings, oauth creds, per-project
 		// tmp/ chats). Bound rw as one dir; it holds this tool's own credentials.
-		Sandbox: SandboxSpec{StateRW: []string{".gemini"}},
+		Sandbox: SandboxSpec{StateRW: []string{".gemini"}, ProtectRO: []string{".gemini/settings.json"}},
 	},
 	"openclaw": {
 		Tool:       "openclaw",
@@ -1718,7 +1842,7 @@ var registry = map[string]Capability{
 		Hook:        HookSpec{Mechanism: HookNone},
 		MCP:         nil,
 		Native:      NativeRails{},
-		TokenTier:   TokenTier{Best: "transcript", Gap: "capture depth un-audited"},
+		TokenTier:   TokenTier{Best: "transcript", Gap: "capture depth un-audited", ReportsCost: true},
 		// P0.1 FULL: sessions/<slug>/<ts>_<id>.jsonl message records
 		// (reader = P2 tranche).
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile, InjectPrompt}, Launch: &LaunchSpec{Subcommand: "pi"}},
@@ -1797,7 +1921,7 @@ var registry = map[string]Capability{
 		// ABSENT for the standalone IDE build, which wrote only the
 		// encrypted .pb + the transcript that day (no usage anywhere; the
 		// .pb cipher stays parked, IDE-12).
-		TokenTier: TokenTier{Best: "sqlite", Gap: "standalone-IDE conversations (no .db) carry no usage: transcript.jsonl has none, .pb still decrypt-gated"},
+		TokenTier: TokenTier{Best: "sqlite", Gap: "standalone-IDE conversations (no .db) carry no usage: transcript.jsonl has none, .pb still decrypt-gated", SynthesizedTimestamps: true},
 		// Desktop transcript.jsonl is readable plaintext → text + actions
 		// present; tokens only for agy-backed (.db) conversations → partial.
 		Handoff: HandoffCapability{Transcript: TranscriptPartial, Inject: []InjectKind{InjectFile}, Note: "desktop transcript.jsonl plaintext (text + actions); tokens only when an agy .db exists (VS Code extension), absent for the standalone IDE"},
@@ -2052,7 +2176,7 @@ var registry = map[string]Capability{
 		// internal/adapter/qwencode/adapter.go defaultRoots (<home>/.qwen/projects,
 		// or $QWEN_HOME). ~/.qwen is the CLI's whole state dir (settings, oauth
 		// creds, per-project transcripts) and is bound rw as one dir.
-		Sandbox: SandboxSpec{StateRW: []string{".qwen"}},
+		Sandbox: SandboxSpec{StateRW: []string{".qwen"}, ProtectRO: []string{".qwen/settings.json"}},
 	},
 	"kiro-cli": {
 		Tool:       "kiro-cli",
@@ -2469,9 +2593,12 @@ var registry = map[string]Capability{
 		// guarded-write constraint as the proxy lane.
 		MCP:    nil,
 		Native: NativeRails{},
-		// Project-local .crush/crush.db; tokens + pre-computed cost are
-		// session-cumulative (no per-message split).
-		TokenTier: TokenTier{Best: "sqlite", Gap: "session-cumulative counts only (no per-message split, no cache/reasoning breakdown)"},
+		// Project-local .crush/crush.db; ONE session-level row. The
+		// pre-computed cost is session-cumulative, but Crush OVERWRITES
+		// prompt/completion_tokens with the last step's usage, so the
+		// adapter reports tokens only for a one-step session
+		// (docs/crush-adapter.md, corrected 2026-09-27).
+		TokenTier: TokenTier{Best: "sqlite", Gap: "session-level only: the cost is cumulative, but token counts are reported only for one-step sessions; no cache/reasoning breakdown", SessionCumulative: true, ReportsCost: true},
 		// messages.parts carry full text/reasoning/tool bodies; NO seed lane
 		// (upstream charmbracelet/crush#1791) — file-lane carry only.
 		Handoff: HandoffCapability{
@@ -2541,7 +2668,7 @@ var registry = map[string]Capability{
 		// input_tokens is NET of it (input + cache_read == the node's own
 		// num_tokens_preceding), so no netting is needed. cache_creation
 		// is still null in every captured row.
-		TokenTier: TokenTier{Best: "sqlite", Gap: "cache_creation null in all captured rows; no reasoning-token split (thinking folded into output)"},
+		TokenTier: TokenTier{Best: "sqlite", Gap: "cache_creation null in all captured rows; no reasoning-token split (thinking folded into output)", GenerationTiming: GenTimingNative}, // metrics.total_time_ms
 		// ReadTranscript re-walks the message_nodes main chain (DB lane).
 		// Positional seed contract operator-verified on a real TTY 2026-07-09
 		// (`devin -- "<prompt>"`, clap last-only positional after the `--`
@@ -2753,7 +2880,7 @@ var registry = map[string]Capability{
 		// and <home>/.qoder/logs/sessions). ~/.qoder is the CLI's whole state dir
 		// — including the credential tables the adapter NEVER reads — and is
 		// bound rw as one dir.
-		Sandbox: SandboxSpec{StateRW: []string{".qoder"}},
+		Sandbox: SandboxSpec{StateRW: []string{".qoder"}, ProtectRO: []string{".qoder/settings.json"}},
 		// GUI launch row (plan §2.2). Launch is buildable today; CAPTURE for
 		// the IDE is not — its store schema is unknown (inventory §2.13,
 		// §3.1 #15) — so this row installs and launches honestly without
@@ -2847,7 +2974,7 @@ var registry = map[string]Capability{
 		// ("Tokens: 10.0k sent, ..."), format_tokens-ROUNDED; `sent` is
 		// GROSS → the adapter nets it against the cache-hit clause. Aider's
 		// own per-message Cost is carried as EstimatedCostUSD.
-		TokenTier: TokenTier{Best: "transcript", Gap: "prose-only rounded counts (unreliable precision); no reasoning split; no per-turn timestamps"},
+		TokenTier: TokenTier{Best: "transcript", Gap: "prose-only rounded counts (unreliable precision); no reasoning split; no per-turn timestamps", SynthesizedTimestamps: true, ReportsCost: true},
 		// The per-repo .aider.chat.history.md is fully re-readable, but
 		// there is NO seed lane: --message runs one turn and exits, the
 		// REPL takes no preload flag — file-lane carry only. `observer aider`
@@ -3003,7 +3130,7 @@ var registry = map[string]Capability{
 		// split. input_tokens is GROSS (cache_read ⊂ input, single-turn
 		// proof) → the adapter nets it. Token-EMPTY sessions persist on
 		// provider errors.
-		TokenTier: TokenTier{Best: "sqlite", Gap: "session-level counts only (messages.tokens null in all captures); no reasoning split; cache_write null on OpenAI"},
+		TokenTier: TokenTier{Best: "sqlite", Gap: "session-level counts only (messages.tokens null in all captures); no reasoning split; cache_write null on OpenAI", SessionCumulative: true, ReportsCost: true},
 		// messages.content_json re-readable (ReadTranscript, DB lane);
 		// `goose run -t "<seed>" -s` seed-then-interactive verified live
 		// 2026-07-09 (keyed run) → `observer goose`.
@@ -3278,11 +3405,23 @@ var registry = map[string]Capability{
 		// `remove` probe). A writer now exists (internal/mcp/register.go's
 		// generic registerJSONMCP, via the internal/mcp/locate row) so this
 		// is Implemented — parking §3.4.
-		MCP:    &MCPTarget{Format: MCPServersJSON, PathHint: ".factory/mcp.json", Implemented: true},
+		// Remote grounded 2026-09-24 against docs.factory.ai/cli/configuration/
+		// mcp + the 2026-07-29 live `droid mcp add … --type http` probe (which
+		// wrote `{"url":…,"disabled":false,"type":"http"}`): `type` http|sse
+		// + url + headers + disabled. Written by the shared JSON remote writer.
+		MCP: &MCPTarget{Format: MCPServersJSON, PathHint: ".factory/mcp.json", Implemented: true, Remote: &MCPRemoteTarget{
+			Transports:   []MCPRemoteTransport{MCPRemoteStreamableHTTP, MCPRemoteSSE},
+			Headers:      true,
+			TransportKey: "type",
+			Spelling:     map[MCPRemoteTransport]string{MCPRemoteStreamableHTTP: "http", MCPRemoteSSE: "sse"},
+			Flags:        map[string]bool{"disabled": false},
+			Implemented:  true,
+			Note:         "docs.factory.ai 2026-09-24 + live probe 2026-07-29: type http|sse + url + headers + disabled:false",
+		}},
 		Native: NativeRails{},
 		// Sidecar <uuid>.settings.json carries session-level cumulative
 		// tokens only — no per-message token field in the JSONL itself.
-		TokenTier: TokenTier{Best: "jsonl", Gap: "no per-message tokens; no proxy path verified; Factory-hosted built-in-model wire shape entirely unconfirmed (no active subscription in this corpus)"},
+		TokenTier: TokenTier{Best: "jsonl", Gap: "no per-message tokens; no proxy path verified; Factory-hosted built-in-model wire shape entirely unconfirmed (no active subscription in this corpus)", SessionCumulative: true},
 		Handoff: HandoffCapability{
 			Transcript: TranscriptFull,
 			Inject:     []InjectKind{InjectFile, InjectPrompt},
@@ -3403,7 +3542,7 @@ var registry = map[string]Capability{
 		// internal/adapter/droid/adapter.go defaultRoots (<home>/.factory/
 		// sessions). ~/.factory is Factory's whole state dir (sessions, per-session
 		// settings sidecars, auth) and is bound rw as one dir.
-		Sandbox: SandboxSpec{StateRW: []string{".factory"}},
+		Sandbox: SandboxSpec{StateRW: []string{".factory"}, ProtectRO: []string{".factory/hooks.json", ".factory/mcp.json"}},
 	},
 	// Rebadged OpenAI Codex CLI Rust build, installed under
 	// ~/.openinterpreter (docs/plans/openinterpreter-adapter-plan-2026-07-29.md).
@@ -3444,7 +3583,7 @@ var registry = map[string]Capability{
 		// Rollout JSONL byte-identical to codex's; token_count event GROSS
 		// input, nets the same way — Tier 2 until proxy routability
 		// confirmed.
-		TokenTier: TokenTier{Best: "jsonl", Gap: "no proxy path verified on this fork; hook mechanism unconfirmed"},
+		TokenTier: TokenTier{Best: "jsonl", Gap: "no proxy path verified on this fork; hook mechanism unconfirmed", ReasoningDisjoint: true, GenerationTiming: GenTimingTranscript},
 		// GUI launch row: the Interpreter DESKTOP app (batch-3 T5,
 		// 2026-09-03). Two stores under one adapter: the CLI's
 		// ~/.openinterpreter/sessions (INTERPRETER_HOME) and the desktop
@@ -3599,12 +3738,26 @@ var registry = map[string]Capability{
 		// A writer already exists (internal/mcp/register.go's generic
 		// registerJSONMCP, via the internal/mcp/locate row) so this is
 		// Implemented, not a new writer.
-		MCP:    &MCPTarget{Format: MCPServersJSON, PathHint: ".commandcode/mcp.json", Implemented: true},
+		// Remote grounded 2026-09-24 against commandcode.ai/docs/mcp:
+		// `{"transport":"http","enabled":true,"url":…,"headers":{…}}` — the
+		// transport key is `transport` (not `type`), only "http" (Streamable
+		// HTTP) is documented for remote, no SSE spelling. `${VAR}` values
+		// resolve at runtime and OAuth tokens live in mcp-tokens.json, so the
+		// relay writer never needs (and never writes) a secret here.
+		MCP: &MCPTarget{Format: MCPServersJSON, PathHint: ".commandcode/mcp.json", Implemented: true, Remote: &MCPRemoteTarget{
+			Transports:   []MCPRemoteTransport{MCPRemoteStreamableHTTP},
+			Headers:      true,
+			TransportKey: "transport",
+			Spelling:     map[MCPRemoteTransport]string{MCPRemoteStreamableHTTP: "http"},
+			Flags:        map[string]bool{"enabled": true},
+			Implemented:  true,
+			Note:         "commandcode.ai/docs/mcp 2026-09-24: transport http (streamable HTTP only) + enabled + url + headers",
+		}},
 		Native: NativeRails{},
 		// Per-assistant-message usage envelope (inputTokens/outputTokens/
 		// cacheReadTokens/cacheWriteTokens/costUsd); inputTokens almost
 		// certainly GROSS (high confidence, not proxy-confirmed).
-		TokenTier: TokenTier{Best: "jsonl", Gap: "no Tier-1 proxy path; costUsd trusted as-is for open-weight models with no observer pricing table"},
+		TokenTier: TokenTier{Best: "jsonl", Gap: "no Tier-1 proxy path; costUsd trusted as-is for open-weight models with no observer pricing table", ReportsCost: true},
 		Handoff: HandoffCapability{
 			Transcript: TranscriptFull,
 			Inject:     []InjectKind{InjectFile, InjectPrompt},
@@ -3673,7 +3826,8 @@ var registry = map[string]Capability{
 		// internal/adapter/commandcode/adapter.go defaultRoots
 		// (<home>/.commandcode/projects). ~/.commandcode is the CLI's whole state
 		// dir (per-project transcripts + config.json) and is bound rw as one dir.
-		Sandbox: SandboxSpec{StateRW: []string{".commandcode"}},
+		// mods/ is jiti-loaded TypeScript (register.go HookCommandCodeMod).
+		Sandbox: SandboxSpec{StateRW: []string{".commandcode"}, ProtectRO: []string{".commandcode/mcp.json"}, ProtectRODirs: []string{".commandcode/mods"}},
 	},
 	// Meta's Muse Code CLI (docs/muse-adapter.md). Phase-0 grounded
 	// 2026-08-06 against a live `Muse Code 0.1.0 (0.1.0-R708.1)` install on
@@ -3736,6 +3890,11 @@ var registry = map[string]Capability{
 			Best: "transcript",
 			Gap: "no Tier-1 proxy path (login-minted base URL); no pricing " +
 				"entry for muse-* models, so cost rows resolve as unknown",
+			// model_completed usage is DUAL-netted (output excludes
+			// reasoning) and model_completed.duration_ms is the call's own
+			// duration (S10-SPEED).
+			ReasoningDisjoint: true,
+			GenerationTiming:  GenTimingNative,
 		},
 		// The log re-reads in full (prompts, assistant text, tool bodies) so
 		// a completed session is a usable handoff source. No Launch: the
@@ -3879,6 +4038,7 @@ var registry = map[string]Capability{
 				"published); no pricing entries for the prime-inference / " +
 				"openrouter model ids seen, so cost rows resolve as unknown " +
 				"apart from the provider-reported usage.cost.total",
+			ReportsCost: true,
 		},
 		// The log re-reads in full — prompts, assistant text, thinking
 		// blocks, tool bodies and shell output — so a completed session is
@@ -3991,7 +4151,7 @@ var registry = map[string]Capability{
 		// LlmResponseMetadataEvent.modelUsage[] in events.jsonl — no cache
 		// tier is stated (CacheInputTokens/CacheCreateTokens both observed
 		// zero in the Phase-0 capture, so nothing to report as a gap yet).
-		TokenTier: TokenTier{Best: "events_jsonl"},
+		TokenTier: TokenTier{Best: "events_jsonl", ReportsCost: true},
 		// events.jsonl reconstructs the full turn (verbatim prompt, agent
 		// narration, terminal/file/result blocks) — a genuinely re-readable
 		// transcript, same tier as cline's api_conversation_history.json.
@@ -4065,6 +4225,8 @@ var registry = map[string]Capability{
 		TokenTier: TokenTier{
 			Best: "trajectory_ndjson",
 			Gap:  "no Tier-1 proxy path (IDE-driven, no base-URL knob); no pricing entry for poolside/laguna-* models",
+			// tool_call.inference.start -> .end, same parse window only.
+			GenerationTiming: GenTimingNative,
 		},
 		// The trajectory re-reads in full (prompts, reasoning, assistant
 		// text, every tool call + outcome) — a genuinely re-readable
@@ -4233,7 +4395,7 @@ var registry = map[string]Capability{
 		// field. The adapter emits one session-level token event per
 		// session (netInput = session_prompt_tokens - session_cached_
 		// tokens), MAX-upgraded as the session grows.
-		TokenTier: TokenTier{Best: "session_meta", Gap: "no per-message usage field; one session-level token row, MAX-upgraded as the session grows"},
+		TokenTier: TokenTier{Best: "session_meta", Gap: "no per-message usage field; one session-level token row, MAX-upgraded as the session grows", SessionCumulative: true, SynthesizedTimestamps: true, ReportsCost: true},
 		// messages.jsonl reconstructs the full turn (prompt, tool calls +
 		// results). Launcher `observer vibe`: --continue-from seeds a
 		// distilled handover as vibe's bare positional [PROMPT]
@@ -4320,7 +4482,7 @@ var registry = map[string]Capability{
 		// (~/.config/freebuff-desktop/projects/*/desktop-v2.db,
 		// messages.metrics_json.usage) carries real per-turn input /
 		// cached-input / output. Best names the better of the two.
-		TokenTier: TokenTier{Best: "sqlite", Gap: "desktop layout only — the CLI chats store has no billable usage field; the launchable CLI surface still records sessions + actions without tokens"},
+		TokenTier: TokenTier{Best: "sqlite", Gap: "desktop layout only — the CLI chats store has no billable usage field; the launchable CLI surface still records sessions + actions without tokens", SynthesizedTimestamps: true, ReportsCost: true},
 		// chat-messages.json reconstructs the full turn (prompt, reasoning,
 		// tool calls + results). NO --continue-from seed lane: freebuff
 		// exposes no positional prompt or one-shot flag to seed
@@ -4450,6 +4612,21 @@ var registry = map[string]Capability{
 		// (upgradeModelId / effort_first_compact_model_ids); they record no
 		// session's actual model, so reading one would be fabrication.
 		TokenTier: TokenTier{Best: "none", Gap: "no usage/model/cost data exists locally: the agent runs in a remote sandbox and the desktop store holds transcript text only; the grok-4.x strings on disk are Statsig feature-flag config, not per-session model attribution"},
+		// Limit AUDITED 2026-09-22, same investigation as TokenTier above:
+		// every sand-client-persistence blob filename decoded (base32 →
+		// dotted key) and every slice's content inspected — zero
+		// structured plan/tier/quota/usage/limit/billing/credit/
+		// subscription fields anywhere. Same structural cause as the
+		// TokenTier gap: the agent runs in a remote sandbox, so there is
+		// no local process to ever carry this data. Note text is kept in
+		// sync with internal/adapter/grokbot.NoLimitSource — see that
+		// package for the fuller investigation record; not imported here
+		// to keep this registry free of internal-package dependencies
+		// (internal/integration currently imports nothing but "sort").
+		Limit: LimitCapability{
+			Source: LimitSourceNoneStructural,
+			Note:   "Grok Bot runs its agent in a remote sandbox - no local file or process on this machine carries usage/quota data. Check the Grok Bot app's own account panel.",
+		},
 		// Transcript is fully re-readable (the whole conversation lives in
 		// one plaintext-JSON blob). No Launch: a GUI desktop app has no
 		// `observer <verb> --continue-from` argv contract, so it is
@@ -4626,7 +4803,7 @@ var registry = map[string]Capability{
 		// the envelope, and no pricing entry exists for zed.dev's
 		// gpt-5.6-luna (a closed, non-mainstream backend), so cost rows
 		// resolve as unknown rather than a fabricated price.
-		TokenTier: TokenTier{Best: "sqlite", Gap: "no pricing entry for zed.dev/gpt-5.6-luna"},
+		TokenTier: TokenTier{Best: "sqlite", Gap: "no pricing entry for zed.dev/gpt-5.6-luna", SynthesizedTimestamps: true},
 		// The thread re-reads in full (every user/agent message, tool
 		// call + outcome) — a genuinely re-readable transcript. No
 		// Launch/Attach/Resume/Binary: Zed IS the editor, and its
@@ -4692,6 +4869,27 @@ func Capabilities() []Capability {
 	for _, c := range registry {
 		out = append(out, c)
 	}
+	return out
+}
+
+// TranscriptTimedTools returns, sorted and de-duplicated, every tool whose
+// registry row declares GenerationTiming == GenTimingTranscript: the tools
+// whose token rows may receive their generation duration (token_usage.
+// gen_ms) in a LATER parse than the one that first inserted them. The org
+// push holds such a row back briefly (store.PushSettle) so its first push
+// carries the stamp - the org ingest is insert-only.
+func TranscriptTimedTools() []string {
+	seen := map[string]bool{}
+	for _, c := range registry {
+		if c.TokenTier.GenerationTiming == GenTimingTranscript {
+			seen[c.Tool] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for t := range seen {
+		out = append(out, t)
+	}
+	sort.Strings(out)
 	return out
 }
 

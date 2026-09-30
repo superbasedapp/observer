@@ -50,6 +50,12 @@ type Check struct {
 	Status  Status   // ok | warn | fail
 	Message string   // single-line summary
 	Details []string // optional bullet points (printed indented)
+
+	// pinned keeps the check through Report.Filter whatever the filter
+	// word: a line that explains why a scoped doctor left something out
+	// (the deferred whole-DB integrity pass) must reach the scoped output.
+	// Unexported, so it never changes the JSON shape.
+	pinned bool
 }
 
 // Report is the result of running all checks.
@@ -94,6 +100,17 @@ type DoctorOptions struct {
 	// BinaryPath is the absolute path of the running observer binary.
 	// Required for hook + MCP registration checks.
 	BinaryPath string
+	// Scope is the doctor's single argument (`observer doctor <scope>`),
+	// "" for an unscoped run. A scope whose filter would not keep the
+	// db.integrity check (a per-tool doctor such as `observer doctor
+	// cline`) DEFERS the whole-database PRAGMA quick_check instead of
+	// paying for it and then filtering its line away; see
+	// checkDBIntegrityGated.
+	Scope string
+	// ForceIntegrity runs the whole-database quick_check regardless of
+	// Scope and of [observer.db].integrity_check_max_gb (`observer doctor
+	// --integrity`).
+	ForceIntegrity bool
 	// ExtraChecks are pre-built checks the caller assembles OUTSIDE this
 	// package and appends to the report — the seam for checks that need
 	// dependencies diag must not import (e.g. the obs-plane admission check,
@@ -119,7 +136,7 @@ func Run(ctx context.Context, opts DoctorOptions) Report {
 	}
 	r := Report{}
 	r.add(checkSchema(ctx, opts.DB))
-	r.add(checkDBIntegrity(ctx, opts.DB))
+	r.add(checkDBIntegrityGated(ctx, opts))
 	r.add(checkDBSize(opts.Config, opts.HomeDir))
 	r.add(checkAdapters(opts.Config))
 	r.add(checkAntigravityFamily(opts.HomeDir, opts.Config))
@@ -127,9 +144,12 @@ func Run(ctx context.Context, opts DoctorOptions) Report {
 	r.add(checkHookCommandsBinary(opts.HomeDir, opts.BinaryPath))
 	r.add(checkMCPRegistrations(opts.HomeDir, opts.BinaryPath))
 	r.add(checkClaudeCodePlugin(opts.HomeDir, homeOverride))
+	r.add(checkCursorHooks(opts.HomeDir, homeOverride))
+	r.add(checkCursorUsage(ctx, opts.DB, cursorFinishHooksWiring(cursorHooksFiles(opts.HomeDir, homeOverride))))
 	r.add(checkPidBridge(ctx, opts.DB))
 	r.add(checkConcurrentDaemons(opts.Config))
 	r.add(checkCodexHookTrust(opts.HomeDir))
+	r.add(checkCodexProviderRoute(opts.HomeDir, codexSystemRequirementsPath()))
 	r.add(checkProxyRoutingGap(ctx, opts.DB, opts.HomeDir))
 	if c, ok := checkWindowsProxyRoutes(ctx, opts.Config); ok {
 		r.add(c)
@@ -142,6 +162,7 @@ func Run(ctx context.Context, opts DoctorOptions) Report {
 	r.add(checkCodexTeams(opts.Config))
 	r.add(checkCopilotTeams(opts.Config))
 	r.add(checkPromptGuardWiring(opts.Config))
+	r.add(checkCommitCapture(opts.Config))
 	for _, c := range opts.ExtraChecks {
 		r.add(c)
 	}
@@ -159,11 +180,24 @@ func (r Report) Filter(tool string) Report {
 	}
 	out := Report{}
 	for _, c := range r.Checks {
-		if strings.Contains(strings.ToLower(c.Name), tool) {
+		if c.pinned || strings.Contains(strings.ToLower(c.Name), tool) {
 			out.Checks = append(out.Checks, c)
 		}
 	}
 	return out
+}
+
+// Matched reports how many checks in r matched a filter on their own name,
+// i.e. excluding pinned explanatory lines. A caller uses it to tell "this
+// filter word matched nothing" apart from "only a pinned note survived".
+func (r Report) Matched() int {
+	n := 0
+	for _, c := range r.Checks {
+		if !c.pinned {
+			n++
+		}
+	}
+	return n
 }
 
 // checkOrgEnrolment surfaces the Teams (org) side of the agent in
@@ -397,6 +431,128 @@ func checkSchema(ctx context.Context, database *sql.DB) Check {
 		return Check{Name: "db.schema", Status: StatusFail, Message: "no migrations applied (version 0)"}
 	}
 	return Check{Name: "db.schema", Status: StatusOK, Message: fmt.Sprintf("schema version %d applied", v)}
+}
+
+// dbIntegrityCheckName is the db.integrity check's Name (the Filter key).
+const dbIntegrityCheckName = "db.integrity"
+
+// integrityDecision is one row of the ordered db.integrity gate: the first
+// row whose match holds decides whether doctor pays for the whole-database
+// PRAGMA quick_check. Adding a case is adding a row.
+type integrityDecision struct {
+	match func(integrityInput) bool
+	// skip is nil for "run the probe"; otherwise it builds the honest
+	// skipped line.
+	skip func(integrityInput) Check
+	// needsSize makes the gate stat the database file before match (only
+	// the size row does, so a scoped or forced run never stats it).
+	needsSize bool
+}
+
+// integrityInput is what the gate decides on.
+type integrityInput struct {
+	scope     string
+	force     bool
+	maxGB     int
+	overCap   bool
+	sizeBytes int64
+}
+
+// scopeExcludesIntegrity reports whether a scoped doctor's filter would drop
+// the db.integrity line (Report.Filter's substring rule).
+func scopeExcludesIntegrity(in integrityInput) bool {
+	return in.scope != "" && !strings.Contains(dbIntegrityCheckName, in.scope)
+}
+
+// integrityOnDemand is the one pointer every skip line gives.
+const integrityOnDemand = "run `observer doctor db` (or `observer doctor --integrity`) to run it on demand"
+
+var integrityDecisions = []integrityDecision{
+	{
+		// `observer doctor --integrity`: always run.
+		match: func(in integrityInput) bool { return in.force },
+	},
+	{
+		// A per-tool doctor (the scope does not select db.integrity):
+		// defer. quick_check reads every page of the database, so its cost
+		// has nothing to do with the one tool being asked about (live
+		// finding D8: `observer doctor cline` took 751 s on a 27 GB DB for
+		// two lines of output). Pinned so the scoped output says so.
+		match: scopeExcludesIntegrity,
+		skip: func(in integrityInput) Check {
+			return Check{
+				Name:    dbIntegrityCheckName,
+				Status:  StatusOK,
+				Message: fmt.Sprintf("skipped: `observer doctor %s` is scoped to one tool and the whole-database PRAGMA quick_check is not; %s", in.scope, integrityOnDemand),
+				pinned:  true,
+			}
+		},
+	},
+	{
+		// An explicit `observer doctor db` is the on-demand probe the
+		// daemon's startup skip line points at: run it whatever the size.
+		match: func(in integrityInput) bool { return in.scope != "" },
+	},
+	{
+		// Unscoped doctor over [observer.db].integrity_check_max_gb:
+		// honour the same gate the daemon's startup pass does.
+		match:     func(in integrityInput) bool { return in.overCap },
+		needsSize: true,
+		skip: func(in integrityInput) Check {
+			return Check{
+				Name:   dbIntegrityCheckName,
+				Status: StatusOK,
+				Message: fmt.Sprintf("skipped: database is %.1f GB, over [observer.db].integrity_check_max_gb = %d (the same gate as the daemon's startup check); %s",
+					float64(in.sizeBytes)/(1<<30), in.maxGB, integrityOnDemand),
+			}
+		},
+	},
+}
+
+// checkDBIntegrityGated decides, through integrityDecisions, whether this
+// doctor run pays for the whole-database PRAGMA quick_check. The size gate
+// is db.IntegrityCheckShouldSkip, the one owner the daemon's automatic
+// startup pass also asks. A skipped line carries the most recently recorded
+// probe verdict (db.LastIntegrityVerdict) when one exists, so skipping never
+// hides a known result.
+func checkDBIntegrityGated(ctx context.Context, opts DoctorOptions) Check {
+	in := integrityInput{
+		scope: strings.ToLower(strings.TrimSpace(opts.Scope)),
+		force: opts.ForceIntegrity,
+		maxGB: opts.Config.Observer.DB.IntegrityCheckMaxGB,
+	}
+	sized := false
+	for _, row := range integrityDecisions {
+		if row.needsSize && !sized {
+			in.overCap, in.sizeBytes = db.IntegrityCheckShouldSkip(expandHomePath(opts.Config.Observer.DBPath, opts.HomeDir), in.maxGB)
+			sized = true
+		}
+		if !row.match(in) {
+			continue
+		}
+		if row.skip == nil {
+			c := checkDBIntegrity(ctx, opts.DB)
+			// A forced probe under a per-tool scope must still print.
+			c.pinned = scopeExcludesIntegrity(in)
+			return c
+		}
+		c := row.skip(in)
+		if opts.DB != nil {
+			if v, ok, err := db.LastIntegrityVerdict(ctx, opts.DB); err == nil && ok {
+				c.Details = append(c.Details, fmt.Sprintf("last recorded quick_check: %s at %s", v.Status, v.CheckedAt.UTC().Format(time.RFC3339)))
+			}
+		}
+		return c
+	}
+	return checkDBIntegrity(ctx, opts.DB)
+}
+
+// expandHomePath resolves a leading "~/" against homeDir (checkDBSize's rule).
+func expandHomePath(path, homeDir string) string {
+	if strings.HasPrefix(path, "~/") && homeDir != "" {
+		return filepath.Join(homeDir, path[2:])
+	}
+	return path
 }
 
 // checkDBIntegrity runs PRAGMA quick_check.

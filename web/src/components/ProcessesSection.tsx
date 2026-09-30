@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Pill } from "@/components/primitives";
+import type { ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "@/components/DataTable";
+import { Icon, InlineLoading, Pill, Spinner, Tooltip } from "@/components/primitives";
+import { severityTone } from "@shared/lib/guardCatalog";
+import { VocabPill } from "@shared/lib/vocabPill";
 import {
   ProcessTree,
   flattenProcessNodes,
@@ -16,6 +20,7 @@ import type {
   SessionNetworkResponse,
   SessionProcessResponse,
 } from "@/lib/types";
+import { ChevronDown, ChevronRight, TriangleAlert } from "lucide-react";
 
 // ProcessesSection — the Process Observability panel in the session-detail
 // slide-over (docs/process-observability.md §13.1). The whole section is a
@@ -31,20 +36,13 @@ import type {
 // capture-diagnostics panel (with its Settings deep-links), findings list,
 // network egress list and the /processes fetch stay node-side.
 
-type PillVariant = "neutral" | "success" | "warn" | "danger" | "info" | "accent";
-
 const SECTION_OPEN_KEY = "sb_proc_section_open";
-
-const SEVERITY_VARIANT: Record<string, PillVariant> = {
-  high: "danger",
-  warn: "warn",
-  info: "info",
-};
 
 function FindingRow({ f }: { f: ProcessFinding }) {
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px]">
-      <Pill variant={SEVERITY_VARIANT[f.severity] ?? "neutral"}>{f.severity}</Pill>
+      {/* Process findings share the guard severity scale (info / warn / high). */}
+      <VocabPill vocab="guardSeverity" value={f.severity} tone={severityTone(f.severity)} />
       <span className="font-mono text-fg-2">{f.rule_id.replace(/^process\./, "")}</span>
       {f.exe_basename && <span className="text-fg-1">{f.exe_basename}</span>}
       {f.detail && <span className="text-fg-3">{f.detail}</span>}
@@ -100,7 +98,7 @@ function ProcessDiagnosticsPanel({
           <Link to={processURL} className="text-accent hover:underline">
             Settings → Process
           </Link>{" "}
-          and enable <code className="rounded bg-bg-1 px-1">Process table</code>.
+          and enable <code className="rounded-1 bg-bg-3 px-1">Process table</code>.
         </p>
       )}
       {!diagnostics.process_network_enabled && (
@@ -109,7 +107,7 @@ function ProcessDiagnosticsPanel({
           <Link to={processURL} className="text-accent hover:underline">
             Settings → Process → Network capture
           </Link>{" "}
-          with <code className="rounded bg-bg-1 px-1">Enabled</code> on.
+          with <code className="rounded-1 bg-bg-3 px-1">Enabled</code> on.
         </p>
       )}
       {diagnostics.process_network_enabled && !diagnostics.process_network_body_capture && (
@@ -163,6 +161,69 @@ function NetworkEventsPanel({ sessionId }: { sessionId: string }) {
     [selected],
   );
   const events = list.data?.events ?? [];
+  // The list is the most recent events in capture order, so no column sorts.
+  const columns = useMemo<ColumnDef<NetworkEventRow, unknown>[]>(
+    () => [
+      {
+        id: "time",
+        header: "Time",
+        enableSorting: false,
+        cell: ({ row }) => (
+          <span className="whitespace-nowrap tabular-nums text-fg-3">
+            {fmtClock(row.original.timestamp)}
+          </span>
+        ),
+      },
+      {
+        id: "target",
+        header: "Target",
+        enableSorting: false,
+        meta: { mono: true },
+        cell: ({ row }) => (
+          <span className="block max-w-[300px] truncate" title={row.original.target}>
+            {row.original.target || "-"}
+          </span>
+        ),
+      },
+      {
+        id: "source",
+        header: "Source",
+        enableSorting: false,
+        cell: ({ row }) => (
+          <span className="text-fg-3">
+            {row.original.exe_basename ||
+              (row.original.process_key.startsWith("proxy:") ? "proxy" : "process")}
+          </span>
+        ),
+      },
+      {
+        id: "body",
+        header: "Body",
+        enableSorting: false,
+        cell: ({ row }) => (
+          <Pill variant={row.original.has_body ? "accent" : "neutral"}>
+            {row.original.has_body ? "captured" : "metadata"}
+          </Pill>
+        ),
+      },
+      {
+        id: "view",
+        header: () => <span className="sr-only">Detail</span>,
+        enableSorting: false,
+        meta: { align: "right" },
+        cell: ({ row }) => (
+          <button
+            type="button"
+            onClick={() => setSelected((v) => (v === row.original.id ? null : row.original.id))}
+            className="text-accent hover:underline"
+          >
+            {selected === row.original.id ? "hide" : "view"}
+          </button>
+        ),
+      },
+    ],
+    [selected],
+  );
   if (!list.loading && events.length === 0) return null;
   return (
     <div className="space-y-2 rounded-3 border border-line-2 bg-bg-2 p-3">
@@ -171,55 +232,23 @@ function NetworkEventsPanel({ sessionId }: { sessionId: string }) {
           Network egress · on demand
         </div>
         <span className="text-[10px] text-fg-3">
-          {list.loading ? "loading…" : `${fmtInt(events.length)} recent`}
+          {list.loading ? <Spinner size="xs" label="Loading network egress" /> : `${fmtInt(events.length)} recent`}
         </span>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[680px] text-left text-[11px]">
-          <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
-            <tr className="border-b border-line-2">
-              <th className="py-1 font-medium">time</th>
-              <th className="py-1 font-medium">target</th>
-              <th className="py-1 font-medium">source</th>
-              <th className="py-1 font-medium">body</th>
-              <th className="py-1 font-medium"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((ev) => (
-              <tr key={ev.id} className="border-b border-line-1/60 last:border-b-0">
-                <td className="py-1 pr-2 whitespace-nowrap tabular-nums text-fg-3">
-                  {fmtClock(ev.timestamp)}
-                </td>
-                <td className="max-w-[300px] truncate py-1 pr-2 font-mono text-fg-2" title={ev.target}>
-                  {ev.target || "-"}
-                </td>
-                <td className="py-1 pr-2 text-fg-3">
-                  {ev.exe_basename || (ev.process_key.startsWith("proxy:") ? "proxy" : "process")}
-                </td>
-                <td className="py-1 pr-2">
-                  <Pill variant={ev.has_body ? "accent" : "neutral"}>
-                    {ev.has_body ? "captured" : "metadata"}
-                  </Pill>
-                </td>
-                <td className="py-1 text-right">
-                  <button
-                    type="button"
-                    onClick={() => setSelected((v) => (v === ev.id ? null : ev.id))}
-                    className="text-accent hover:underline"
-                  >
-                    {selected === ev.id ? "hide" : "view"}
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <DataTable<NetworkEventRow>
+        data={events}
+        columns={columns}
+        rowKey={(ev) => String(ev.id)}
+        minWidth={680}
+        loading={list.loading}
+        rowClassName={(ev) => (selected === ev.id ? "bg-accent/10" : undefined)}
+      />
       {selected && (
         <ChartState
           loading={detail.loading && !detail.data}
           error={detail.error}
+          denied={detail.denied}
+          deniedPermission={detail.deniedPermission}
           empty={!detail.data}
           emptyHint="Network event not found."
           height={80}
@@ -233,17 +262,19 @@ function NetworkEventsPanel({ sessionId }: { sessionId: string }) {
   );
 }
 
+type NetworkEventRow = SessionNetworkResponse["events"][number];
+
 function NetworkEventDetail({ event }: { event: ProcessNetworkEvent }) {
   const body = event.body;
   if (!body) {
     return (
-      <div className="rounded-2 border border-line-1 bg-bg-1 p-2 text-[11px] text-fg-3">
+      <div className="rounded-2 border border-line-2 bg-bg-3/40 p-2 text-caption text-fg-3">
         Metadata-only event. Payload/response were not captured for this flow.
       </div>
     );
   }
   return (
-    <div className="space-y-2 rounded-2 border border-line-1 bg-bg-1 p-2 text-[11px]">
+    <div className="space-y-2 rounded-2 border border-line-2 bg-bg-3/40 p-2 text-caption">
       <div className="flex flex-wrap items-center gap-2 text-fg-3">
         <Pill variant="accent">{body.capture_source}</Pill>
         {body.status_code ? <span>status {body.status_code}</span> : null}
@@ -356,25 +387,24 @@ export function ProcessesSection({
   // an onFocusMessage handler the tree renders a plain, non-interactive id.
   const renderMessageLink = onFocusMessage
     ? (id: string) => (
-        <button
-          type="button"
-          onClick={() => onFocusMessage(id)}
-          className="font-mono text-[11px] text-accent hover:underline focus:outline-none"
-          title={`Jump to the message that spawned this process (${id})`}
-        >
-          {id}
-        </button>
+        <Tooltip content={`Jump to the message that spawned this process (${id})`}>
+          <button
+            type="button"
+            onClick={() => onFocusMessage(id)}
+            className="font-mono text-caption text-accent hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-ring"
+          >
+            {id}
+          </button>
+        </Tooltip>
       )
     : undefined;
 
   const summary = data
     ? `${fmtInt(data.total)} captured · ${fmtInt(runningCount)} running${
         withMetrics > 0 ? ` · ${fmtInt(withMetrics)} with metrics` : ""
-      }${data.network_total ? ` · net ${fmtInt(data.network_total)}` : ""}${
-        findings.length > 0 ? ` · ⚠ ${fmtInt(findings.length)}` : ""
-      }`
+      }${data.network_total ? ` · net ${fmtInt(data.network_total)}` : ""}`
     : open
-      ? "Loading…"
+      ? <InlineLoading size="sm" label="Loading processes" />
       : "click to load OS-level process tree";
 
   return (
@@ -387,10 +417,19 @@ export function ProcessesSection({
           aria-expanded={open}
         >
           <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">
-            <span className="select-none text-fg-3">{open ? "▾" : "▸"}</span>
+            <Icon icon={open ? ChevronDown : ChevronRight} size="xs" className="text-fg-3" />
             Processes
           </span>
-          <span className="text-[10.5px] text-fg-3">{summary}</span>
+          <span className="inline-flex items-center gap-1 text-[10.5px] text-fg-3">
+            {summary}
+            {data && findings.length > 0 && (
+              <>
+                {" · "}
+                <Icon icon={TriangleAlert} size={10} label="findings" className="text-warn" />
+                {fmtInt(findings.length)}
+              </>
+            )}
+          </span>
         </button>
       </h3>
 
@@ -398,6 +437,8 @@ export function ProcessesSection({
         <ChartState
           loading={procs.loading && !data}
           error={procs.error}
+          denied={procs.denied}
+          deniedPermission={procs.deniedPermission}
           empty={!data}
           emptyHint="No process diagnostics loaded yet."
           height={120}

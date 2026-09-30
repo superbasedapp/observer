@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/mcp"
 )
@@ -128,10 +129,68 @@ func (s *Server) handleToolsStatus(w http.ResponseWriter, r *http.Request) {
 		return strings.Compare(a.Tool, b.Tool)
 	})
 
-	writeJSON(w, map[string]any{
+	missingDefaults, missingNote := s.missingDefaultAdapters()
+	resp := map[string]any{
 		"tools":        out,
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
-	})
+		// missing_default_adapters/_remediation/_note are the Invariant
+		// #51 diagnostic (a default adapter absent from this operator's
+		// explicit enabled_adapters list — grokbot's 2026-09-22 capture
+		// gap was exactly this). Every row above ALREADY carries the
+		// per-tool fact via Enabled==false; these three top-level fields
+		// add the SAME fact pre-filtered to "missing from the compiled-in
+		// defaults" (as opposed to a non-default tool, or a default the
+		// operator deliberately turned off) plus the one-command fix, so
+		// the Connected-tools panel can render a single actionable
+		// banner instead of making the operator infer it row by row.
+		"missing_default_adapters": missingDefaults,
+	}
+	if len(missingDefaults) > 0 {
+		resp["missing_default_remediation"] = config.AdoptDefaultsRemediationCmd
+	}
+	if missingNote != "" {
+		resp["missing_default_note"] = missingNote
+	}
+	writeJSON(w, resp)
+}
+
+// missingDefaultAdapters reports which compiled-in default adapters
+// (s.opts.ToolCatalog — the same adapterdefaults.Adapters() names
+// cmd/observer/main.go's warnMissingDefaultsFromAllowList and `observer
+// config adopt-defaults` both use) are absent from this operator's
+// EXPLICIT [observer.watch] enabled_adapters array in config.toml.
+//
+// Deliberately reuses config.AdoptEnabledAdapters — the one pure,
+// I/O-free diff this whole diagnostic already has ONE owner for — in its
+// read-only mode (the returned newBody is discarded; this handler never
+// writes config.toml). That keeps this endpoint's report byte-for-byte
+// consistent with the daemon startup WARN and the CLI's own preview,
+// rather than a second, independently-drifting implementation of "is
+// this adapter missing."
+//
+// note is non-empty only when config.toml has an enabled_adapters array
+// AdoptEnabledAdapters could not safely parse (AdoptResult.Skipped) — in
+// that case names is nil, which must NOT be read as "nothing missing";
+// callers surface note instead. A missing/unreadable config.toml, or one
+// with no explicit enabled_adapters key at all, honestly reports zero
+// missing (config.Default() already covers every adapter in both cases).
+func (s *Server) missingDefaultAdapters() (names []string, note string) {
+	body, err := os.ReadFile(s.opts.ConfigPath) //nolint:gosec // operator's own config.toml
+	if err != nil {
+		return nil, ""
+	}
+	defaults := make([]string, len(s.opts.ToolCatalog))
+	for i, entry := range s.opts.ToolCatalog {
+		defaults[i] = entry.Tool
+	}
+	_, res, err := config.AdoptEnabledAdapters(string(body), defaults)
+	if err != nil {
+		return nil, ""
+	}
+	if res.Skipped {
+		return nil, res.SkipReason
+	}
+	return res.Missing, ""
 }
 
 // attachIntegrationProbes fills the hooks / MCP / proxy probes for

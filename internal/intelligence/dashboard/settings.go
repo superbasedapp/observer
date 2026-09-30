@@ -810,10 +810,9 @@ func applySectionUpdate(cfg *config.Config, name string, body []byte, configPath
 		// this save path clobber it. Decode the editable subset, then
 		// restore Pricing from the prior cfg.
 		var sec struct {
-			CodeGraph        config.IntelligenceCodeGraphConfig `json:"CodeGraph"` //nolint:staticcheck // SA1019: intentional — decode the legacy [intelligence.code_graph] block during the one-release migration window (docs/codeintel/migration-from-codegraph.md).
-			APIKeyEnv        string                             `json:"APIKeyEnv"`
-			SummaryModel     string                             `json:"SummaryModel"`
-			MonthlyBudgetUSD float64                            `json:"MonthlyBudgetUSD"`
+			APIKeyEnv        string  `json:"APIKeyEnv"`
+			SummaryModel     string  `json:"SummaryModel"`
+			MonthlyBudgetUSD float64 `json:"MonthlyBudgetUSD"`
 			// Pointer so absence is distinguishable from empty: the
 			// Settings intelligence form doesn't carry the budget map,
 			// and a nil here must PRESERVE the stored budgets (the D14
@@ -824,7 +823,6 @@ func applySectionUpdate(cfg *config.Config, name string, body []byte, configPath
 		if err := json.Unmarshal(body, &sec); err != nil {
 			return fmt.Errorf("decode intelligence: %w", err)
 		}
-		cfg.Intelligence.CodeGraph = sec.CodeGraph
 		cfg.Intelligence.APIKeyEnv = sec.APIKeyEnv
 		cfg.Intelligence.SummaryModel = sec.SummaryModel
 		cfg.Intelligence.MonthlyBudgetUSD = sec.MonthlyBudgetUSD
@@ -1471,6 +1469,7 @@ func (s *Server) handleBackfillStatus(w http.ResponseWriter, r *http.Request) {
 		{"clinecli-rescan", "--clinecli-rescan", "Fast rescan of the Cline CLI tree only — re-walks sessions.db + each session's messages.json, re-emitting session/prompt/tool/metrics rows. Useful for importing sessions that pre-date adapter install. Idempotent"},
 		{"cache-rescan", "--cache-rescan", "Re-walk claude-code transcripts through the Tier-2 cache observation engine to populate historical cache_segments / cache_entries / cache_events. Use after enabling [cachetrack] on a daemon with historical traffic, or after upgrading past a cachetrack fix. Proxy-observed turns are skipped (no double-write); idempotent"},
 		{"zed-rescan", "--zed-rescan", "Fast rescan of the Zed native-agent tree only — re-walks every threads.db under the configured Zed watch roots from watermark 0, forcing every thread to re-emit regardless of its stored updated_at cursor. threads.db is a watermark store, so a thread that predates the daemon first observing its file is never re-read until its NEXT turn — this is the only retroactive path for pre-existing Zed conversations. Idempotent via (source_file, source_event_id) UNIQUE"},
+		{"crush-rescan", "--crush-rescan", "Re-walk every Crush crush.db, then correct the crush token rows already stored: each crush.db holding token rows is re-parsed and the rows of the sessions it observed are made equal to the fixed parser (changed rows updated in place and re-sent to the org; rows the parser no longer emits deleted as a correction). Needed because the token upsert never lowers a count: a multi-step session stored before 2026-09-27 keeps its last-step context snapshot until this runs. Crush rows only; idempotent"},
 		{"openclaw-project-root", "--openclaw-project-root", "Re-attribute openclaw action / session rows to the correct project when sessions.json workspaceDir previously collapsed to the [openclaw] placeholder or a foreign-OS path"},
 		{"openclaw-session-id", "--openclaw-session-id", "Collapse historical openclaw split sessions where sessions.json used the raw sessionId but JSONL / task_runs used the alias session key"},
 		{"codex-project-root", "--codex-project-root", "Re-attribute codex action / token / session rows to the correct project when their cwd was a Windows-style path that previously misresolved to observer's own repo"},

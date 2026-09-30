@@ -181,11 +181,9 @@ export function TerminalKeyBar({
     onMods(clearOneShots(mods));
   }
 
-  // Terminal chrome is ALWAYS dark (the panel hardcodes #0b0b0f / #14141a
-  // rather than theme tokens, because a terminal is dark in both themes). So
-  // the key bar uses white-alpha + literal accent hexes too: `text-fg-2` /
-  // `text-accent` resolve to DARK values under the light theme and would be
-  // near-invisible on this surface.
+  // The key bar renders inside the terminal panel's data-theme-scope, so
+  // accent / fg-* / line-* / overlay-* resolve to the TERMINAL's theme (dark
+  // or light, following the app unless pinned) and always match the canvas.
   // ARMED and LOCKED must be tellable apart at a glance — "this applies to my
   // next key" and "this applies until I turn it off" are different promises,
   // and a two-step alpha ramp was not enough to distinguish them (verified on
@@ -194,10 +192,10 @@ export function TerminalKeyBar({
   // rest on colour alone.
   const modCls = (s: ModState) =>
     s === "lock"
-      ? "border-[#7c9eff] bg-[#7c9eff] text-[#0b0b0f]"
+      ? "border-accent bg-accent text-accent-on"
       : s === "once"
-        ? "border-[#7c9eff] bg-transparent text-[#a9c0ff]"
-        : "border-white/10 text-white/85";
+        ? "border-accent bg-transparent text-accent-strong"
+        : "border-line-2 text-fg-1";
   const modLabel = (base: string, s: ModState) =>
     s === "lock" ? `${base} ⇩` : base;
 
@@ -208,7 +206,7 @@ export function TerminalKeyBar({
       // double-tap-zoom delay so a double-tap on Ctrl reads as "lock" rather
       // than a page zoom, but pan-y ALSO refuses horizontal panning that starts
       // here — which is what Chrome's edge-swipe-back gesture rides on (D14).
-      className="shrink-0 border-t border-white/10 bg-[#14141a] px-1.5 py-1 [touch-action:pan-y]"
+      className="shrink-0 border-t border-line-2 bg-term-chrome px-1.5 py-1 [touch-action:pan-y]"
       // Keep the xterm helper textarea focused: a blur would dismiss the soft
       // keyboard on every key-bar tap. Preventing the default of the pointer-down
       // stops the focus transfer while still letting the click through.
@@ -291,7 +289,7 @@ export function TerminalKeyBar({
           44px tap floor and would cost a whole extra row; the switch itself
           lives in the header's ⋯ menu, which is already the touch home for
           secondary actions. */}
-      <p className="mt-1 truncate text-center text-[10px] leading-[14px] text-white/40">
+      <p className="mt-1 truncate text-center text-[10px] leading-[14px] text-fg-3">
         {platform === "mac" ? CMD_NOTE : "PC keys (Ctrl/Alt) · Mac labels under ⋯"}
       </p>
     </div>
@@ -337,8 +335,8 @@ function Key({
       onClick={onPress}
       className={
         `${TAP} flex flex-col items-center justify-center rounded-2 border px-0.5 font-medium leading-tight ` +
-        "focus:outline-none active:bg-white/25 " +
-        (cls ?? "border-white/10 text-white/85 hover:bg-white/10")
+        "focus:outline-none active:bg-overlay-2 " +
+        (cls ?? "border-line-2 text-fg-1 hover:bg-overlay-1")
       }
     >
       <span

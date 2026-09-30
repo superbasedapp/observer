@@ -207,7 +207,7 @@ func (a *Adapter) parseLine(sourceFile string, line rawLine, lineNum int, state 
 			state.Model = attrs.Model
 		}
 		if attrs.InputTokens != 0 || attrs.OutputTokens != 0 {
-			res.TokenEvents = append(res.TokenEvents, models.TokenEvent{
+			tok := models.TokenEvent{
 				SourceFile:    sourceFile,
 				SourceEventID: firstNonEmpty(line.SpanID, fmt.Sprintf("usage:L%d", lineNum)),
 				SessionID:     state.SessionID,
@@ -220,7 +220,21 @@ func (a *Adapter) parseLine(sourceFile string, line rawLine, lineNum int, state 
 				OutputTokens:  attrs.OutputTokens,
 				Source:        models.TokenSourceJSONL,
 				Reliability:   models.ReliabilityApproximate,
-			})
+			}
+			// line.DurationMS ("dur") is this llm_request OTel span's own
+			// duration, ALREADY MILLISECONDS (same scale as "ts", both
+			// Unix-epoch-ms): verified against adapter_test.go's fixture,
+			// where llm_request ts=1776928112610 + dur=42356 lands EXACTLY
+			// on the following agent_response's ts=1776928154966 — i.e.
+			// dur spans precisely this one call's request-to-reply window
+			// (which is what produced attrs.InputTokens/OutputTokens on
+			// this same record), not tool execution time.
+			if line.DurationMS > 0 {
+				tok.GenMs = line.DurationMS
+				tok.GenBasis = models.GenBasisNative
+				tok.GenTimingV = 1
+			}
+			res.TokenEvents = append(res.TokenEvents, tok)
 		}
 	case "agent_response":
 		output := extractAssistantText(attrs.Response)

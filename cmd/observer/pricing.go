@@ -169,25 +169,33 @@ func runPricingSync(ctx context.Context, st *store.Store, enrolled bool, opts pr
 	}
 
 	env := res.Envelope
-	// VERSION MONOTONICITY. The signature binds FeedVersion, but binding it only
-	// helps if we check it: an intermediary could replay an older correctly
-	// signed body over a newer one, and every turn priced afterwards would carry
-	// the wrong rate permanently. Equal is fine (a corrected-in-place rate at the
-	// same version arrives as a 200 because its digest changed). Lower is ALWAYS
-	// a replay — refused, cache kept.
+	// VERSION MONOTONICITY + THE COMPILED FLOOR. The signature binds FeedVersion,
+	// but binding it only helps if we check it: an intermediary could replay an
+	// older correctly signed body over a newer one, and every turn priced
+	// afterwards would carry the wrong rate permanently. The check is the ONE
+	// shared rule, cost.FeedVersionRefusal (round-2 finding 1):
+	//   - below cost.SnapshotMinFeedVersion is refused even on a FRESH node - the
+	//     compiled seed already reflects everything older, so a validly signed
+	//     v1 would roll corrected rates back;
+	//   - lower than the held version is a replay;
+	//   - the SAME version with a different digest is refused too: the publisher
+	//     bumps the version on every content change, so that body is not newer,
+	//     it is different (the generator refuses it the same way).
 	//
 	// There is NO key-rotation exemption (finding F9). A rotation does NOT
 	// restart the publisher's version lineage: during the overlap window BOTH the
 	// current and previous vendor keys verify (vendorkey.go), so exempting a key
 	// change would let a body signed by the old key replay an older version over
-	// a newer one — exactly the hole this check closes. FeedVersion is the single
-	// monotonic lineage regardless of which accepted key signed the body, and the
-	// org PRICING importer has no such exemption either.
-	if cache.Have && env.FeedVersion < cache.Version {
+	// a newer one. FeedVersion is the single monotonic lineage regardless of
+	// which accepted key signed the body.
+	if why := cost.FeedVersionRefusal(env.FeedVersion, env.Digest, cache.Have, cache.Version, cache.Digest); why != "" {
+		held := "the seed table"
+		if cache.Have {
+			held = fmt.Sprintf("the applied v%d", cache.Version)
+		}
 		return pricingSyncResult{
-			State: pricingSyncUnverified,
-			Message: fmt.Sprintf("refusing pricing feed v%d, older than the applied v%d (replay); keeping the applied prices.",
-				env.FeedVersion, cache.Version),
+			State:   pricingSyncUnverified,
+			Message: fmt.Sprintf("refusing pricing feed v%d: %s; keeping %s.", env.FeedVersion, why, held),
 		}, nil
 	}
 

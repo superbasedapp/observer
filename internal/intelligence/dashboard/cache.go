@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/cachetrack"
 	"github.com/marmutapp/superbased-observer/internal/cachewarmsvc"
 	"github.com/marmutapp/superbased-observer/internal/store"
+	"github.com/marmutapp/superbased-observer/internal/timebucket"
 )
 
 // CacheStatusResponse is the payload for GET /api/cache/status. It serves
@@ -620,7 +622,8 @@ type CacheOverviewSessionRow struct {
 // share a fold over a single events-and-sessions join; the
 // per-project and worst-sessions surfaces use the same scan and
 // fold in different dimensions. Honors the standard
-// days / tool / project query params so the Cache page agrees
+// window (days / hours / since / until) + tool / project query
+// params so the Cache page agrees
 // with every other dashboard surface when the operator scopes
 // the TopBar.
 func (s *Server) handleCacheOverview(w http.ResponseWriter, r *http.Request) {
@@ -640,6 +643,13 @@ func (s *Server) handleCacheOverview(w http.ResponseWriter, r *http.Request) {
 		PeriodOffsetDays: offset,
 		Tool:             r.URL.Query().Get("tool"),
 		Project:          r.URL.Query().Get("project"),
+	}
+	if offset == 0 {
+		// The global window (since / hours / days + until), so a 1h window
+		// never serves all time; days=0 (and no window param) stays the
+		// all-time sentinel. The prior-period fetch (period_offset_days)
+		// keeps its day-grained shift.
+		q.Since, q.Until = windowRange(r, 0, 0, 36500)
 	}
 
 	events, err := loadOverviewEvents(ctx, s.db(), q)
@@ -662,11 +672,39 @@ func (s *Server) handleCacheOverview(w http.ResponseWriter, r *http.Request) {
 // prior-period comparison fetch on the Cache page. Days=30 +
 // PeriodOffsetDays=30 returns [now − 60d, now − 30d). Ignored
 // when Days==0 (full corpus has no meaningful "prior" period).
+//
+// Since / Until, when either is set, are the resolved global window
+// (windowRange) and take precedence over Days / PeriodOffsetDays; zero
+// Since is unbounded (all time) and zero Until is now.
 type cacheOverviewQuery struct {
 	Days             int
 	PeriodOffsetDays int
+	Since, Until     time.Time
 	Tool             string
 	Project          string
+}
+
+// timeWhere renders the window predicate over ce.timestamp.
+func (q cacheOverviewQuery) timeWhere() (where []string, args []any) {
+	since, until := q.Since, q.Until
+	if since.IsZero() && until.IsZero() && q.Days > 0 {
+		// Window: [now − (Days + Offset)days, now − Offset days).
+		// When Offset == 0, the upper bound is "now" — original behavior.
+		now := time.Now().UTC()
+		since = now.Add(-time.Duration(q.Days+q.PeriodOffsetDays) * 24 * time.Hour)
+		if q.PeriodOffsetDays > 0 {
+			until = now.Add(-time.Duration(q.PeriodOffsetDays) * 24 * time.Hour)
+		}
+	}
+	if !since.IsZero() {
+		where = append(where, "ce.timestamp >= ?")
+		args = append(args, since.UTC().Format(time.RFC3339Nano))
+	}
+	if !until.IsZero() {
+		where = append(where, "ce.timestamp < ?")
+		args = append(args, until.UTC().Format(time.RFC3339Nano))
+	}
+	return where, args
 }
 
 // overviewEvent is the join-shaped row used by the overview
@@ -696,21 +734,7 @@ type tokenPair struct {
 // handleStatusScoped + handleCost do, so cross-page filter
 // behavior agrees.
 func loadOverviewEvents(ctx context.Context, db *sql.DB, q cacheOverviewQuery) ([]overviewEvent, error) {
-	where := []string{}
-	args := []any{}
-	if q.Days > 0 {
-		// Window: [now − (Days + Offset)days, now − Offset days).
-		// When Offset == 0, the upper bound is "now" — original behavior.
-		now := time.Now().UTC()
-		since := now.Add(-time.Duration(q.Days+q.PeriodOffsetDays) * 24 * time.Hour).Format(time.RFC3339Nano)
-		where = append(where, "ce.timestamp >= ?")
-		args = append(args, since)
-		if q.PeriodOffsetDays > 0 {
-			until := now.Add(-time.Duration(q.PeriodOffsetDays) * 24 * time.Hour).Format(time.RFC3339Nano)
-			where = append(where, "ce.timestamp < ?")
-			args = append(args, until)
-		}
-	}
+	where, args := q.timeWhere()
 	if q.Tool != "" {
 		where = append(where, "s.tool = ?")
 		args = append(args, q.Tool)
@@ -755,10 +779,10 @@ func loadOverviewEvents(ctx context.Context, db *sql.DB, q cacheOverviewQuery) (
 }
 
 // CacheTimeseriesPoint is one bucket in the cache_events
-// timeseries — drives the sparklines on the four headline tiles
-// of the Cache page.
+// timeseries. T is the bucket start (epoch ms).
 type CacheTimeseriesPoint struct {
 	Bucket        string `json:"bucket"`
+	T             int64  `json:"t"`
 	ReadTokens    int64  `json:"read_tokens"`
 	WrittenTokens int64  `json:"written_tokens"`
 	EventCount    int64  `json:"event_count"`
@@ -766,61 +790,108 @@ type CacheTimeseriesPoint struct {
 }
 
 // CacheTimeseriesResponse is the payload for GET
-// /api/cache/timeseries?days=&tool=&project=&bucket=day.
+// /api/cache/timeseries?days=|hours=|since=&until=&gran=&tz=&tool=&project=.
+// The bucket metadata (bucket = the granularity token, bucket_ms, tz,
+// gran_auto, since, until) comes from internal/timebucket.Spec.Meta.
 type CacheTimeseriesResponse struct {
-	Metric string                 `json:"metric"`
-	Bucket string                 `json:"bucket"`
-	Days   int                    `json:"days"`
-	Series []CacheTimeseriesPoint `json:"series"`
+	Metric     string                 `json:"metric"`
+	Bucket     string                 `json:"bucket"`
+	BucketMS   int64                  `json:"bucket_ms"`
+	TZ         string                 `json:"tz"`
+	TZFallback bool                   `json:"tz_fallback,omitempty"`
+	GranAuto   bool                   `json:"gran_auto"`
+	Since      string                 `json:"since"`
+	Until      string                 `json:"until"`
+	Days       int                    `json:"days"`
+	Series     []CacheTimeseriesPoint `json:"series"`
 }
 
 // handleCacheTimeseries serves /api/cache/timeseries. Buckets
-// cache_events by day and returns four series — read_tokens,
-// written_tokens, event_count, rewrite_count — over the same
-// days / tool / project filter the overview handler uses.
-// Drives sparklines on the headline Cache-page tiles so each
-// tile carries a visible trajectory in addition to its absolute
-// value (matches the Cost-page tile rhythm).
-//
-// Bucket granularity is fixed at "day" for now — the cache
-// engine emits per-turn events; hourly aggregation rarely adds
-// signal to a sparkline-shaped surface and would require a
-// dedicated bucket=hour code path the Cost handler still
-// maintains for its own legacy reasons.
+// cache_events by the requested granularity (gran=auto|5m|1h|1d|1w in
+// the viewer's tz) and returns four series — read_tokens,
+// written_tokens, event_count, rewrite_count — over the global window
+// (days / hours / since+until; days=0 = all time, the Cache page's
+// "all" sentinel) and the tool / project filter the overview handler
+// uses. The grid is zero-filled. Drives the Cache-page traffic / events /
+// ratio charts and the headline-tile sparklines.
 func (s *Server) handleCacheTimeseries(w http.ResponseWriter, r *http.Request) {
-	days := intArg(r, "days", 30, 1, 36500)
-	q := cacheOverviewQuery{
-		Days:    days,
+	days := intArg(r, "days", 30, 0, 36500)
+	since, until := windowRange(r, 30, 0, 36500)
+	spec, err := bucketSpec(r, since, until)
+	if err != nil {
+		writeBucketErr(w, err)
+		return
+	}
+	q := cacheTimeseriesQuery{
+		Since:   since,
+		Until:   until,
+		Spec:    spec,
 		Tool:    r.URL.Query().Get("tool"),
 		Project: r.URL.Query().Get("project"),
 	}
 
-	series, err := loadCacheTimeseries(r.Context(), s.db(), q)
+	sparse, err := loadCacheTimeseries(r.Context(), s.db(), q)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("load cache timeseries: %v", err), http.StatusInternalServerError)
 		return
 	}
+	byKey := make(map[string]CacheTimeseriesPoint, len(sparse))
+	starts := make(map[string]time.Time, len(sparse))
+	for _, p := range sparse {
+		byKey[p.Bucket] = p
+		starts[p.Bucket] = time.UnixMilli(p.T)
+	}
+	slots := bucketSlots(spec, starts)
+	series := make([]CacheTimeseriesPoint, 0, len(slots))
+	for _, sl := range slots {
+		p, ok := byKey[sl.Key]
+		if !ok {
+			p = CacheTimeseriesPoint{Bucket: sl.Key}
+		}
+		p.T = millis(sl.T)
+		series = append(series, p)
+	}
+	meta := spec.Meta()
 	writeJSON(w, CacheTimeseriesResponse{
-		Metric: "cache",
-		Bucket: "day",
-		Days:   days,
-		Series: series,
+		Metric:     "cache",
+		Bucket:     string(spec.Gran),
+		BucketMS:   spec.Gran.Millis(),
+		TZ:         spec.TZ,
+		TZFallback: spec.TZFallback,
+		GranAuto:   spec.Auto,
+		Since:      meta["since"].(string),
+		Until:      meta["until"].(string),
+		Days:       days,
+		Series:     series,
 	})
 }
 
-// loadCacheTimeseries buckets cache_events by ISO date,
-// applying the same days / tool / project scope as
-// loadOverviewEvents. The rewrite_count column sums every
+// cacheTimeseriesQuery scopes loadCacheTimeseries: the resolved window
+// (zero Since = no lower bound; zero Until = no upper bound), the bucket
+// spec, and the overview's tool / project filters.
+type cacheTimeseriesQuery struct {
+	Since, Until time.Time
+	Spec         timebucket.Spec
+	Tool         string
+	Project      string
+}
+
+// loadCacheTimeseries buckets cache_events by q.Spec (sparse: only
+// buckets with events; the handler zero-fills), applying the same tool /
+// project scope as loadOverviewEvents. The rewrite_count column sums every
 // non-baseline kind (invalidation_rewrite / expiry_rewrite /
-// model_switch_rewrite) so the surface aligns with the Worst
-// sessions ranking.
-func loadCacheTimeseries(ctx context.Context, db *sql.DB, q cacheOverviewQuery) ([]CacheTimeseriesPoint, error) {
+// model_switch_rewrite) so the surface aligns with the Worst sessions
+// ranking.
+func loadCacheTimeseries(ctx context.Context, db *sql.DB, q cacheTimeseriesQuery) ([]CacheTimeseriesPoint, error) {
 	where := []string{}
 	args := []any{}
-	if q.Days > 0 {
-		since := time.Now().UTC().Add(-time.Duration(q.Days) * 24 * time.Hour).Format(time.RFC3339Nano)
+	if !q.Since.IsZero() {
 		where = append(where, "ce.timestamp >= ?")
-		args = append(args, since)
+		args = append(args, q.Since.UTC().Format(time.RFC3339Nano))
+	}
+	if !q.Until.IsZero() {
+		where = append(where, "ce.timestamp < ?")
+		args = append(args, q.Until.UTC().Format(time.RFC3339Nano))
 	}
 	if q.Tool != "" {
 		where = append(where, "s.tool = ?")
@@ -834,10 +905,11 @@ func loadCacheTimeseries(ctx context.Context, db *sql.DB, q cacheOverviewQuery) 
 	if len(where) > 0 {
 		whereClause = " WHERE " + strings.Join(where, " AND ")
 	}
-	//nolint:gosec // G202: WHERE fragment is built from code constants; every value is bound via ? args.
+	slot := q.Spec.Slot()
+	//nolint:gosec // G202: the bucket expression is rendered by internal/timebucket and the WHERE fragment from code constants; every value is bound via ? args.
 	query := `
 		SELECT
-			substr(ce.timestamp, 1, 10) AS bucket,
+			` + slot.SQLiteExpr("ce.timestamp") + ` AS bucket,
 			COALESCE(SUM(ce.tokens_read), 0),
 			COALESCE(SUM(ce.tokens_written), 0),
 			COUNT(*),
@@ -845,24 +917,44 @@ func loadCacheTimeseries(ctx context.Context, db *sql.DB, q cacheOverviewQuery) 
 		FROM cache_events ce
 		LEFT JOIN sessions s ON s.id = ce.session_id
 		LEFT JOIN projects p ON p.id = s.project_id` + whereClause + `
-		GROUP BY bucket
-		ORDER BY bucket ASC`
+		GROUP BY bucket`
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("loadCacheTimeseries: query: %w", err)
 	}
 	defer rows.Close()
-	out := []CacheTimeseriesPoint{}
+	byKey := map[string]*CacheTimeseriesPoint{}
 	for rows.Next() {
+		var label sql.NullInt64
 		var p CacheTimeseriesPoint
-		if err := rows.Scan(&p.Bucket, &p.ReadTokens, &p.WrittenTokens, &p.EventCount, &p.RewriteCount); err != nil {
+		if err := rows.Scan(&label, &p.ReadTokens, &p.WrittenTokens, &p.EventCount, &p.RewriteCount); err != nil {
 			return nil, fmt.Errorf("loadCacheTimeseries: scan: %w", err)
 		}
-		out = append(out, p)
+		b, ok := slot.IndexBucket(label.Int64, label.Valid)
+		if !ok {
+			continue
+		}
+		key := q.Spec.Key(b)
+		if cur, ok := byKey[key]; ok {
+			// Several UTC slots fold into one bucket (hours into a day).
+			cur.ReadTokens += p.ReadTokens
+			cur.WrittenTokens += p.WrittenTokens
+			cur.EventCount += p.EventCount
+			cur.RewriteCount += p.RewriteCount
+			continue
+		}
+		p.Bucket = key
+		p.T = b.UnixMilli()
+		byKey[key] = &p
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("loadCacheTimeseries: rows: %w", err)
 	}
+	out := make([]CacheTimeseriesPoint, 0, len(byKey))
+	for _, p := range byKey {
+		out = append(out, *p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].T < out[j].T })
 	return out, nil
 }
 
@@ -1182,7 +1274,7 @@ type CacheEventRow struct {
 }
 
 // CacheEventsResponse is the paginated payload for
-// GET /api/cache/events?limit=N&offset=N&days=N&tool=&project=.
+// GET /api/cache/events?limit=N&offset=N&days=N|hours=N|since=&until=&tool=&project=.
 type CacheEventsResponse struct {
 	Rows   []CacheEventRow `json:"rows"`
 	Total  int64           `json:"total"`
@@ -1192,7 +1284,8 @@ type CacheEventsResponse struct {
 
 // handleCacheEvents serves /api/cache/events. Returns the most
 // recent cache_events rows (newest first) under the standard
-// days/tool/project filters, with limit + offset pagination.
+// window (days / hours / since / until) + tool / project filters,
+// with limit + offset pagination.
 // Default page size 50; max 200 — same Compression "Recent events"
 // pagination footprint so the dashboard rhythm reads uniformly.
 func (s *Server) handleCacheEvents(w http.ResponseWriter, r *http.Request) {
@@ -1205,6 +1298,9 @@ func (s *Server) handleCacheEvents(w http.ResponseWriter, r *http.Request) {
 		Tool:    r.URL.Query().Get("tool"),
 		Project: r.URL.Query().Get("project"),
 	}
+	// The global window (since / hours / days + until); days=0 stays all
+	// time.
+	q.Since, q.Until = windowRange(r, 0, 0, 36500)
 
 	rows, total, err := loadCacheEvents(ctx, s.db(), q, limit, offset)
 	if err != nil {
@@ -1221,13 +1317,7 @@ func (s *Server) handleCacheEvents(w http.ResponseWriter, r *http.Request) {
 // scope. Returns rows DESC by id (proxy for chronological newest-
 // first; id is monotonically increasing per migration 036).
 func loadCacheEvents(ctx context.Context, db *sql.DB, q cacheOverviewQuery, limit, offset int) ([]CacheEventRow, int64, error) {
-	where := []string{}
-	args := []any{}
-	if q.Days > 0 {
-		since := time.Now().UTC().Add(-time.Duration(q.Days) * 24 * time.Hour).Format(time.RFC3339Nano)
-		where = append(where, "ce.timestamp >= ?")
-		args = append(args, since)
-	}
+	where, args := q.timeWhere()
 	if q.Tool != "" {
 		where = append(where, "s.tool = ?")
 		args = append(args, q.Tool)

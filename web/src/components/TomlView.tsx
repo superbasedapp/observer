@@ -32,7 +32,7 @@ export function TomlView({
   return (
     <pre
       className={
-        "m-0 overflow-auto whitespace-pre rounded-2 border border-line-1 bg-bg-1 px-3 py-2 font-mono text-[11.5px] text-fg-1 " +
+        "m-0 overflow-auto whitespace-pre rounded-2 border border-line-2 bg-bg-3 px-3 py-2 font-mono text-[11.5px] text-fg-1 " +
         (className ?? "")
       }
       style={{ maxHeight }}

@@ -1,0 +1,15 @@
+{
+  "name": "empty grant set compiles to deny-all",
+  "spec": {
+    "registry": {"issuer": "https://auth.acme.superbased.app", "org": "acme", "gateway_base_uri": "https://mcp-gw.acme.superbased.app", "policy_gen": 41,
+      "vservers": [{"id": "vs-gh", "slug": "gh", "sender_constraint": "bearer"}]},
+    "grants": []
+  },
+  "principal_defaults": {"issuer": "https://auth.acme.superbased.app", "org": "acme", "audience": ["https://mcp-gw.acme.superbased.app/mcp/gh"], "policy_gen": 99,
+    "subject": "u1", "product": "claude-code", "client_attestation": "process_attested"},
+  "rows": [
+    {"name": "deny: create_issue", "input": {"vserver": "vs-gh", "action": "call", "name": "create_issue"}, "want": "deny"},
+    {"name": "deny: list", "input": {"vserver": "vs-gh", "action": "list"}, "want": "deny"},
+    {"name": "deny: tasks/cancel", "input": {"vserver": "vs-gh", "action": "tasks/cancel", "name": "t1"}, "want": "deny"}
+  ]
+}

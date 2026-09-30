@@ -1,7 +1,9 @@
+import { RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Button, Pill, SegmentedControl, Tooltip } from "@/components/primitives";
+import { Button, ErrorState, InlineLoading, Pill, SegmentedControl, Spinner, Tooltip } from "@/components/primitives";
 import { CopyOnClick } from "@/components/CopyOnClick";
+import { Summary } from "@/components/Summary";
 import { useApi } from "@/lib/useApi";
 import { fmtDateTime, fmtRelative, fmtShortId } from "@/lib/format";
 import { fetchJSON, apiReason } from "@/lib/api";
@@ -18,10 +20,30 @@ const CLOUD_ID_TOOLTIP = "This is the pseudonym the cloud service knows this ses
 
 type Submit = (purpose: CloudPurpose, digest?: string) => Promise<void>;
 
+const CLOUD_ACTIVE_POLL_MS = 5000;
+const CLOUD_SETTLED_POLL_MS = 30_000;
+
+// SETTLED_CLOUD_STATES are progress states that change only on an operator
+// action (or a rare background auto-sync), so they need no 5 s poll. Every
+// other state, including an unknown or missing one, keeps the fast poll.
+const SETTLED_CLOUD_STATES = new Set(["idle", "complete", "failed_terminal", "cancelled", "reconfirmation_required"]);
+
+function isSettledCloudState(state: string | undefined): boolean {
+  return state != null && SETTLED_CLOUD_STATES.has(state);
+}
+
 // One operation owner covers quick consent, preview/confirm and retry. Durable
 // node progress survives closing/reopening the panel and is shared with the list.
 export function CloudRow({ sessionId, onChanged }: { sessionId: string; onChanged?: () => void }) {
-  const cloud = useApi<CloudSessionResponse>(`/api/cloud/session/${encodeURIComponent(sessionId)}`, undefined, [sessionId], { refreshMs: 5000, retainErrorOnRefresh: true });
+  // Poll fast (5 s) only while something can move without the operator: an
+  // operation of ours, a request queued / uploading / awaiting its result /
+  // waiting to retry, or an unknown state. A settled state (not enriched,
+  // complete, failed for good, cancelled, needs review) is re-checked every
+  // 30 s, which still catches a background auto-sync picking the session up.
+  // `settled` is derived from the previous render's data (useApi reads
+  // refreshMs on every render), so the cadence follows the state.
+  const [settled, setSettled] = useState(false);
+  const cloud = useApi<CloudSessionResponse>(`/api/cloud/session/${encodeURIComponent(sessionId)}`, undefined, [sessionId], { refreshMs: settled ? CLOUD_SETTLED_POLL_MS : CLOUD_ACTIVE_POLL_MS, retainErrorOnRefresh: true });
   const [reenrich, setReenrich] = useState(false);
   const [operation, setOperation] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,6 +62,10 @@ export function CloudRow({ sessionId, onChanged }: { sessionId: string; onChange
   const meta = cloudProgressMeta(awaitingStatus ? { state: "pending" } : progress);
   const blocked = !!operation || awaitingStatus || meta.blocksEnrichment || !!cloud.error;
   const refresh = () => { cloud.reload(); onChanged?.(); };
+  const nowSettled = !!d && !operation && !awaitingStatus && !cloud.error && isSettledCloudState(progress?.state);
+  useEffect(() => {
+    setSettled(nowSettled);
+  }, [nowSettled]);
 
   async function sync() {
     const st = await runCloudSync(sessionId);
@@ -77,9 +103,10 @@ export function CloudRow({ sessionId, onChanged }: { sessionId: string; onChange
     finally { operationLock.current = false; setOperation(null); }
   }
 
-  if (!d) return <div className="space-y-2 p-4 text-[12px] text-fg-3" role="status">
-    <p>{cloud.error ? "Could not load enrichment status." : "Loading enrichment status…"}</p>
-    {cloud.error && <Button size="sm" onClick={refresh}>Retry status</Button>}
+  if (!d) return <div className="p-4">
+    {cloud.error
+      ? <ErrorState title="Could not load enrichment status." onRetry={refresh} className="py-2" />
+      : <InlineLoading label="Loading enrichment status" />}
   </div>;
   const auth = cloudAuthorityMeta(d.authority);
   const state = awaitingStatus ? "pending" : progress?.state;
@@ -93,7 +120,7 @@ export function CloudRow({ sessionId, onChanged }: { sessionId: string; onChange
     </div>
     {d.excluded ? <p className="text-[11.5px] text-fg-3">Excluded from personal cloud enrichment: {d.excluded_reason || "organization-owned or unknown data authority."}</p> : <div className="space-y-3">
       <div role="status" aria-live="polite" aria-atomic="true" className="space-y-2">
-        <p className="text-[13px] font-semibold text-fg-1">{operation || meta.label}</p>
+        <p className="flex items-center gap-1.5 text-[13px] font-semibold text-fg-1">{(operation || meta.inFlight) && <Spinner label="" />}{operation || meta.label}</p>
         <p className="text-[11.5px] leading-relaxed text-fg-3">{operation ? "This request is in progress. You do not need to click Enrich again." : meta.message}</p>
         {["pending", "sending", "sent", "complete"].includes(state || "") && <ol aria-label="Enrichment stages" className="grid grid-cols-3 gap-2 text-[10.5px]">
           {["Queued", "Uploaded", "Result ready"].map((label, i) => <li key={label} aria-current={i === stage ? "step" : undefined} className={`border-t-2 pt-1.5 ${i <= stage ? "border-accent text-fg-1" : "border-line-2 text-fg-4"}`}>{label}</li>)}
@@ -103,7 +130,7 @@ export function CloudRow({ sessionId, onChanged }: { sessionId: string; onChange
       {blocked && <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="primary" disabled>{operation || meta.label}</Button>
         {!operation && !awaitingStatus && meta.syncLabel && <Button size="sm" onClick={() => void retryOrCheck()}>{meta.syncLabel}</Button>}
-        {!operation && (cloud.error || state === "unknown" || !state) && <Button size="sm" onClick={refresh}>Refresh status</Button>}
+        {!operation && (cloud.error || state === "unknown" || !state) && <Button size="sm" iconLeft={RefreshCw} onClick={refresh}>Refresh status</Button>}
       </div>}
       {cloud.error && <p role="alert" className="text-[11px] text-warn">Status could not be refreshed. The last known state is shown; check status before submitting again.</p>}
       {error && <p role="alert" className="rounded-2 border border-danger/30 bg-danger-soft p-2 text-[11px] text-danger">{error}</p>}
@@ -120,7 +147,7 @@ export function CloudRow({ sessionId, onChanged }: { sessionId: string; onChange
       </div>
       <p className="text-[10px] text-fg-4">Status refreshes automatically while this panel is open. Uploads and result retrieval use cloud sync.</p>
       {d.outbox.length > 0 && <details className="border-t border-line-2 pt-2">
-        <summary className="w-fit cursor-pointer text-[11px] text-fg-3">Request history</summary>
+        <Summary className="w-fit text-caption text-fg-3">Request history</Summary>
         <div className="mt-2 space-y-2">
           {d.outbox.map((o) => { const m = cloudStateMeta(o.state); return <div key={o.id} className="flex flex-wrap items-center gap-2"><Tooltip content={m.meaning}><span tabIndex={0}><Pill variant={m.variant}>{m.label}</Pill></span></Tooltip><span className="text-[10px] text-fg-4">{o.updated_at ? fmtDateTime(o.updated_at) : ""}</span></div>; })}
           {d.cloud_session_id && <CopyOnClick value={d.cloud_session_id} title={CLOUD_ID_TOOLTIP} className="text-[10px] text-fg-3">{fmtShortId(d.cloud_session_id)}</CopyOnClick>}
@@ -139,7 +166,7 @@ function CloudEnrichControls({ sessionId, submit, disabled, forcePreview, previe
     {quick ? <>
       <Button size="sm" variant="primary" onClick={() => void submit(cloudPurposeForLevel(policy.level) ?? "structural_activity_insights")}>Enrich now</Button>
       <p className="text-[10.5px] text-fg-4">Uses your setting: {CLOUD_ENRICH_LEVEL_LABELS[policy.level] ?? policy.level}. <Link to="/settings?section=cloud" className="text-accent">Change enrichment settings</Link></p>
-      <details className="rounded-2 border border-line-2 p-2"><summary className="cursor-pointer text-[11px] text-fg-3">Preview or change data for this request</summary><ManualEnrichPanel sessionId={sessionId} submit={submit} signedIn={signedIn} previewVersion={previewVersion} /></details>
+      <details className="rounded-2 border border-line-2 p-2"><Summary className="text-caption text-fg-3">Preview or change data for this request</Summary><ManualEnrichPanel sessionId={sessionId} submit={submit} signedIn={signedIn} previewVersion={previewVersion} /></details>
     </> : <ManualEnrichPanel sessionId={sessionId} submit={submit} signedIn={signedIn} previewVersion={previewVersion} />}
   </fieldset>;
 }
@@ -173,7 +200,7 @@ function ManualEnrichPanel({ sessionId, submit, signedIn, previewVersion }: { se
     </div>
     {!signedIn && <Link to="/settings?section=cloud" className="text-[11px] text-accent">Sign in under Settings → Cloud Intelligence</Link>}
     {shown && <details open className="rounded-2 border border-line-2 bg-bg-3">
-      <summary className="cursor-pointer px-2 py-1 text-[11px] text-fg-3">Exactly what would leave this machine</summary>
+      <Summary className="px-2 py-1 text-caption text-fg-3">Exactly what would leave this machine</Summary>
       <pre className="max-h-[20rem] overflow-auto whitespace-pre-wrap break-all border-t border-line-2 p-2 font-mono text-[10.5px] text-fg-2">{preview?.data.output || "(no output)"}</pre>
       {preview?.data.truncated && <p className="p-2 text-[11px] text-warn">Preview was truncated. Generate a complete preview before confirming.</p>}
     </details>}
@@ -224,12 +251,9 @@ function CloudResultBlock({
       {aiTags.length > 0 && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1">
           {aiTags.slice(0, 12).map((t, i) => (
-            <span
-              key={`${t}-${i}`}
-              className="rounded-pill border border-line-2 bg-bg-2 px-1.5 py-px text-[10px] text-fg-2"
-            >
+            <Pill key={`${t}-${i}`} className="normal-case">
               {t}
-            </span>
+            </Pill>
           ))}
         </div>
       )}

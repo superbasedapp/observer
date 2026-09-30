@@ -2,6 +2,232 @@
 // tables, tooltips. Locale is locked to en-US for now since the
 // current dashboard is en-US only.
 
+// ---------------------------------------------------------------------------
+// Cached Intl formatters (perf audit 2026-09-29).
+//
+// Date.prototype.toLocaleString / toLocaleDateString / toLocaleTimeString and
+// Number.prototype.toLocaleString build a brand-new Intl formatter on EVERY
+// call whenever an options object is passed (the engine only caches the
+// no-options form), and building one costs far more than formatting with it.
+// On a 50-row table or a chart re-render that was a top self-time item
+// (Sessions fmtTimestamp ~370 ms per load, chart shortDate ~700 ms).
+//
+// These helpers keep ONE formatter per (locales, options) and reproduce the
+// native methods byte-for-byte, including their option defaulting (ECMA-402
+// CreateDateTimeFormat "required"/"defaults"), which differs per method:
+//
+//   new Intl.DateTimeFormat  required any,  defaults date
+//   toLocaleString           required any,  defaults all (date AND time)
+//   toLocaleDateString       required date, defaults date
+//   toLocaleTimeString       required time, defaults time
+//
+// An invalid Date renders "Invalid Date" (the native methods' output; a
+// formatter's format() would throw). A formatter captures the default time
+// zone when it is built, like every module-level formatter in this file.
+// Parity with the native methods is pinned by web/src/lib/cachedFormat.test.ts.
+// ---------------------------------------------------------------------------
+
+type Locales = string | readonly string[] | undefined;
+type DateFieldOptions = Intl.DateTimeFormatOptions & {
+  // Spec-listed fields, typed loosely so an older lib.d.ts still compiles.
+  dayPeriod?: unknown;
+  fractionalSecondDigits?: unknown;
+};
+
+const FORMATTER_CACHE_MAX = 256;
+const dtfCache = new Map<string, Intl.DateTimeFormat>();
+const nfCache = new Map<string, Intl.NumberFormat>();
+
+// cacheKey serializes (locales, options) stably: sorted keys, undefined
+// values dropped (the spec reads an undefined option as absent).
+function cacheKey(locales: Locales, options: object | undefined): string {
+  let key = locales == null ? "" : typeof locales === "string" ? locales : locales.join(",");
+  key += "|";
+  if (options) {
+    const o = options as Record<string, unknown>;
+    const keys = Object.keys(o).sort();
+    for (const k of keys) {
+      const v = o[k];
+      if (v === undefined) continue;
+      key += `${k}=${String(v)}:${typeof v};`;
+    }
+  }
+  return key;
+}
+
+function remember<V>(cache: Map<string, V>, key: string, make: () => V): V {
+  let v = cache.get(key);
+  if (v === undefined) {
+    v = make();
+    // Bounded: call sites use a handful of fixed option sets, so the cap is
+    // a leak guard, not an eviction policy.
+    if (cache.size >= FORMATTER_CACHE_MAX) cache.clear();
+    cache.set(key, v);
+  }
+  return v;
+}
+
+/** cachedDateTimeFormat returns a shared `new Intl.DateTimeFormat(locales, options)`. */
+export function cachedDateTimeFormat(
+  locales?: Locales,
+  options?: Intl.DateTimeFormatOptions,
+): Intl.DateTimeFormat {
+  return remember(dtfCache, cacheKey(locales, options), () =>
+    new Intl.DateTimeFormat(locales as string | string[] | undefined, options),
+  );
+}
+
+/** cachedNumberFormat returns a shared `new Intl.NumberFormat(locales, options)`. */
+export function cachedNumberFormat(
+  locales?: Locales,
+  options?: Intl.NumberFormatOptions,
+): Intl.NumberFormat {
+  return remember(nfCache, cacheKey(locales, options), () =>
+    new Intl.NumberFormat(locales as string | string[] | undefined, options),
+  );
+}
+
+type RequiredFields = "date" | "time" | "any";
+type DefaultFields = "date" | "time" | "all";
+
+const DATE_FIELDS = ["weekday", "year", "month", "day"] as const;
+const TIME_FIELDS = ["dayPeriod", "hour", "minute", "second", "fractionalSecondDigits"] as const;
+
+// withDateDefaults applies ECMA-402's option defaulting for one of the
+// Date.prototype methods, returning options that a plain Intl.DateTimeFormat
+// (required any, defaults date) formats identically with. Returns null for
+// the combinations the native method rejects with a TypeError, so the caller
+// defers to the native method and throws exactly as it would.
+function withDateDefaults(
+  options: Intl.DateTimeFormatOptions | undefined,
+  required: RequiredFields,
+  defaults: DefaultFields,
+): Intl.DateTimeFormatOptions | null {
+  const o = (options ?? {}) as DateFieldOptions;
+  if (required === "date" && o.timeStyle !== undefined) return null;
+  if (required === "time" && o.dateStyle !== undefined) return null;
+  let needDefaults = o.dateStyle === undefined && o.timeStyle === undefined;
+  if (needDefaults && (required === "date" || required === "any")) {
+    for (const f of DATE_FIELDS) if (o[f] !== undefined) needDefaults = false;
+  }
+  if (needDefaults && (required === "time" || required === "any")) {
+    for (const f of TIME_FIELDS) if (o[f] !== undefined) needDefaults = false;
+  }
+  if (!needDefaults) return options ?? {};
+  const out: Intl.DateTimeFormatOptions = { ...options };
+  if (defaults === "date" || defaults === "all") {
+    out.year = "numeric";
+    out.month = "numeric";
+    out.day = "numeric";
+  }
+  if (defaults === "time" || defaults === "all") {
+    out.hour = "numeric";
+    out.minute = "numeric";
+    out.second = "numeric";
+  }
+  return out;
+}
+
+type DateMethod = "string" | "date" | "time";
+
+const METHOD_FIELDS: Record<DateMethod, [RequiredFields, DefaultFields]> = {
+  string: ["any", "all"],
+  date: ["date", "date"],
+  time: ["time", "time"],
+};
+
+// One memo per (method, locales, options): the defaulting above runs once.
+// null marks a combination the native method throws on.
+const methodCache = new Map<string, Intl.DateTimeFormat | null>();
+
+function dateMethod(
+  method: DateMethod,
+  value: Date | number,
+  locales: Locales,
+  options: Intl.DateTimeFormatOptions | undefined,
+): string {
+  const d = typeof value === "number" ? new Date(value) : value;
+  const key = method + "#" + cacheKey(locales, options);
+  let fmt = methodCache.get(key);
+  if (fmt === undefined) {
+    const [required, defaults] = METHOD_FIELDS[method];
+    const eff = withDateDefaults(options, required, defaults);
+    fmt = eff == null ? null : cachedDateTimeFormat(locales, eff);
+    if (methodCache.size >= FORMATTER_CACHE_MAX) methodCache.clear();
+    methodCache.set(key, fmt);
+  }
+  if (fmt === null) {
+    const loc = locales as string | string[] | undefined;
+    if (method === "string") return d.toLocaleString(loc, options);
+    if (method === "date") return d.toLocaleDateString(loc, options);
+    return d.toLocaleTimeString(loc, options);
+  }
+  if (Number.isNaN(d.getTime())) return "Invalid Date";
+  return fmt.format(d);
+}
+
+/** Byte-identical, cached `date.toLocaleString(locales, options)`. */
+export function localeString(
+  date: Date | number,
+  locales?: Locales,
+  options?: Intl.DateTimeFormatOptions,
+): string {
+  return dateMethod("string", date, locales, options);
+}
+
+/** Byte-identical, cached `date.toLocaleDateString(locales, options)`. */
+export function localeDateString(
+  date: Date | number,
+  locales?: Locales,
+  options?: Intl.DateTimeFormatOptions,
+): string {
+  return dateMethod("date", date, locales, options);
+}
+
+/** Byte-identical, cached `date.toLocaleTimeString(locales, options)`. */
+export function localeTimeString(
+  date: Date | number,
+  locales?: Locales,
+  options?: Intl.DateTimeFormatOptions,
+): string {
+  return dateMethod("time", date, locales, options);
+}
+
+/** Byte-identical, cached `n.toLocaleString(locales, options)` for a number. */
+export function localeNumber(
+  n: number,
+  locales?: Locales,
+  options?: Intl.NumberFormatOptions,
+): string {
+  return cachedNumberFormat(locales, options).format(n);
+}
+
+// fmtShortDay's per-input memo: a chart asks for the same few dozen bucket
+// labels (axis ticks + tooltip) on every render.
+const shortDayMemo = new Map<string, string>();
+
+/**
+ * fmtShortDay renders an instant (typically an ISO day bucket "2026-05-15")
+ * as "May 15" in the reader's local time zone, or returns the input unchanged
+ * when it does not parse:
+ * `new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric" })`.
+ * Charts no longer use it: every time-series axis/tooltip labels its buckets
+ * through shared/lib/granularity.ts fmtBucket, which also handles sub-day
+ * and week buckets and reads a "YYYY-MM-DD" key as the LOCAL date (this
+ * helper reads it as UTC midnight). Kept for non-chart date stamps.
+ */
+export function fmtShortDay(s: string): string {
+  let out = shortDayMemo.get(s);
+  if (out !== undefined) return out;
+  const d = new Date(s);
+  out = Number.isNaN(d.getTime())
+    ? s
+    : localeDateString(d, "en-US", { month: "short", day: "numeric" });
+  if (shortDayMemo.size >= 2048) shortDayMemo.clear();
+  shortDayMemo.set(s, out);
+  return out;
+}
+
 const compactFmt = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 1,
@@ -92,7 +318,7 @@ export function fmtClock(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("en-US", {
+  return localeString(d, "en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -183,7 +409,7 @@ export function fmtDateRange(
   const sameYear = a.getFullYear() === b.getFullYear();
   const sameMonth = sameYear && a.getMonth() === b.getMonth();
   if (sameMonth && a.getDate() === b.getDate()) return dateOnlyFmt.format(a);
-  const md = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+  const md = cachedDateTimeFormat("en-US", { month: "short", day: "numeric" });
   if (sameMonth) return `${md.format(a)}–${b.getDate()}, ${b.getFullYear()}`;
   if (sameYear) return `${md.format(a)} – ${md.format(b)}, ${b.getFullYear()}`;
   return `${dateOnlyFmt.format(a)} – ${dateOnlyFmt.format(b)}`;
@@ -222,7 +448,7 @@ export function fmtYearMonth(value: string | null | undefined): string {
   const ym = /^(\d{4})-(\d{2})$/.exec(s);
   const d = ym ? new Date(Number(ym[1]), Number(ym[2]) - 1, 1) : parseInstant(s);
   if (!d || Number.isNaN(d.getTime())) return value;
-  return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long" }).format(d);
+  return cachedDateTimeFormat("en-US", { year: "numeric", month: "long" }).format(d);
 }
 
 // fmtShortId abbreviates an opaque identifier for a table cell or a caption:

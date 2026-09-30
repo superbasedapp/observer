@@ -19,8 +19,8 @@ import {
 export function ManagedBanner({ gov }: { gov: Governance | null }) {
   if (!isManaged(gov)) return null;
   return (
-    <div className="flex items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-1.5 text-[11.5px] text-fg-2">
-      <span className="shrink-0 font-semibold text-amber-500">Managed</span>
+    <div className="flex items-center gap-2 border-b border-warn/40 bg-warn-soft px-4 py-1.5 text-[11.5px] text-fg-2">
+      <span className="shrink-0 font-semibold text-warn">Managed</span>
       <span className="min-w-0 truncate">
         This machine is managed by {governedOrgLabel(gov)}. Your organization
         can extract activity and enforce policy here.

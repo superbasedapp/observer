@@ -48,6 +48,33 @@ type Row struct {
 	// canonical body (no map, fixed field order) so the digest and signature
 	// cover it, and it is additive under SchemaVersion 1.
 	Economics *Economics `json:"economics,omitempty"`
+
+	// History is the model's COMPLETE effective-dated price timeline
+	// (Tokenomics migration 0028, lane R2-PRICING-2): every period ascending,
+	// the one in force included, each a whole Row (its own rates,
+	// effective_from, peak, grade and - in Economics - fast multiplier) with no
+	// History of its own. A PERIOD IS A COMPLETE STATEMENT: a nil rate means
+	// the dimension did not exist in that period, never "same as today".
+	//
+	// The top-level fields above still carry the period in force when the feed
+	// was built, so a consumer that ignores History prices exactly as before;
+	// a consumer that reads it can price an OLD session at the rate that was
+	// in force at the session's own timestamp (the node cost engine, the org
+	// importer, the snapshot generator).
+	//
+	// ADDITIVE UNDER SchemaVersion 1. nil is omitted, so a row with no history
+	// is byte-identical to a pre-history row; Verify digests the RAW received
+	// row bytes, so a build that predates this field verifies a history-
+	// bearing body and simply ignores the key. (A build older than the
+	// verify-over-received-bytes fix re-marshals and refuses it - the same
+	// named cutover residual as the peak field; see
+	// docs/plans/peak-off-peak-pricing-plan-2026-09-20.md §3.4.)
+	//
+	// It SHADOWS the embedded orgcontract.PricingPolicyRow.History (the org
+	// rail's own history, of plain policy rows): Go and encoding/json both
+	// resolve the shallower field, so on this rail "history" decodes into
+	// feed Rows, which is what carries a per-period fast multiplier.
+	History []Row `json:"history,omitempty"`
 }
 
 // Economics carries per-model economic shape the bare rate vocabulary cannot

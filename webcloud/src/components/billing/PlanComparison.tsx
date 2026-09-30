@@ -14,8 +14,16 @@ import { Pill } from "@shared/primitives/Pill";
 import {
   PLAN_COMPARISON_FOOTNOTE,
   PLAN_COMPARISON_ROWS,
+  PLAN_FEATURE_CELL,
+  PLAN_FEATURE_TONE,
   isPlusPlan,
 } from "./util";
+import { Button } from "@shared/primitives/Button";
+import { Card } from "@shared/primitives/Card";
+import { Icon } from "@shared/primitives/Icon";
+import { PORTAL_METRIC_ICONS } from "../../lib/metricIcons";
+import { vocabIcon } from "@shared/lib/vocabIcons";
+import { Check, Sparkles } from "lucide-react";
 
 // PlanComparison renders the "Plans" row: two side-by-side cards (Free /
 // Plus) sharing the design-system card surface, each a proper definition
@@ -25,6 +33,13 @@ import {
 // "Current plan" state when the reader is already on a live Plus
 // subscription, or the honest unavailable copy when this deployment has no
 // checkout catalogue configured.
+//
+// Showcase (design-kit WS10): the Plus card is the featured card (accent
+// border, soft glow, a "Recommended" tag unless it is already the reader's
+// plan); a yes / no comparison cell draws its planFeature glyph (Check /
+// Minus) beside the words; "Current plan" is a status, never a disabled
+// primary button (Button.tsx: a disabled button reads as "not allowed", and
+// this is not an action at all).
 
 const PADDLE_JS_SRC = "https://cdn.paddle.com/paddle/v2/paddle.js";
 
@@ -129,14 +144,31 @@ function PriceDisplay({
   );
 }
 
-const cardClass = "bg-bg-2 border border-line-1 rounded-xl p-5";
 const rowsClass = "mt-3 divide-y divide-line-1 text-[12px]";
+
+// PlanCell renders one comparison value: a yes / no cell (PLAN_FEATURE_CELL)
+// gets its planFeature glyph beside the unchanged words; any other value
+// (a count, a window) stays plain text.
+function PlanCell({ text }: { text: string }) {
+  const feature = PLAN_FEATURE_CELL[text];
+  if (!feature) return <>{text}</>;
+  return (
+    <span className="inline-flex items-center justify-end gap-1">
+      <Icon
+        icon={vocabIcon("planFeature", feature)}
+        size="xs"
+        className={`shrink-0 ${PLAN_FEATURE_TONE[feature]}`}
+      />
+      {text}
+    </span>
+  );
+}
 
 function ComparisonRows({ pick }: { pick: "free" | "plus" }) {
   return (
     <DefinitionList className={rowsClass}>
       {PLAN_COMPARISON_ROWS.map((row) => (
-        <DefinitionRow key={row.label} label={row.label} value={row[pick]} />
+        <DefinitionRow key={row.label} label={row.label} value={<PlanCell text={row[pick]} />} />
       ))}
     </DefinitionList>
   );
@@ -246,11 +278,12 @@ export function PlanComparison({
 
   return (
     <section>
-      <h2 className="text-[13px] font-semibold uppercase tracking-[0.06em] text-fg-3">
+      <h2 className="flex items-center gap-1.5 text-[13px] font-semibold uppercase tracking-[0.06em] text-fg-3">
+        <Icon icon={PORTAL_METRIC_ICONS.plan} size="sm" className="shrink-0" />
         Plans
       </h2>
       <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className={cardClass}>
+        <Card>
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-[14px] font-semibold text-fg-0">Free</h3>
             {currentIsPlus === false && <Pill variant="accent">Your plan</Pill>}
@@ -259,12 +292,16 @@ export function PlanComparison({
             Runs at no cost, forever.
           </p>
           <ComparisonRows pick="free" />
-        </div>
+        </Card>
 
-        <div className={cardClass}>
+        <Card tone="featured">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-[14px] font-semibold text-fg-0">Plus</h3>
-            {currentIsPlus === true && <Pill variant="accent">Your plan</Pill>}
+            {currentIsPlus === true ? (
+              <Pill variant="accent">Your plan</Pill>
+            ) : (
+              <Pill variant="accent" icon={Sparkles}>Recommended</Pill>
+            )}
           </div>
           {checkout.available && price ? (
             <PriceDisplay price={price} trialDays={checkout.trial_days} />
@@ -277,13 +314,11 @@ export function PlanComparison({
 
           <div className="mt-4 border-t border-line-1 pt-4">
             {onLivePlus ? (
-              <button
-                type="button"
-                className="btn btn-primary w-full"
-                disabled
-              >
-                Current plan
-              </button>
+              <div className="flex justify-center">
+                <Pill variant="success" icon={Check}>
+                  Current plan
+                </Pill>
+              </div>
             ) : !checkout.available || !price ? (
               <p className="text-[11px] text-fg-3">
                 Checkout is not configured for this deployment yet, so there
@@ -346,24 +381,27 @@ export function PlanComparison({
                   Paddle&apos;s own checkout screen will ask you to confirm
                   this again before you pay.
                 </p>
-                <button
+                <Button
                   type="button"
-                  className="btn btn-primary mt-3 w-full"
-                  disabled={!accepted || busy}
+                  variant="primary"
+                  size="sm"
+                  className="mt-3 w-full"
+                  disabled={!accepted}
+                  loading={busy}
                   onClick={onUpgrade}
                 >
                   {busy
-                    ? "Opening checkout..."
+                    ? "Opening checkout"
                     : resubscribe
                       ? "Subscribe again"
                       : "Upgrade"}
-                </button>
+                </Button>
               </>
             )}
           </div>
-        </div>
+        </Card>
       </div>
-      <p className="mt-3 text-[11px] text-fg-3">{PLAN_COMPARISON_FOOTNOTE}</p>
+      <p className="mt-3 text-caption text-fg-3">{PLAN_COMPARISON_FOOTNOTE}</p>
     </section>
   );
 }

@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -22,6 +25,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/sandbox"
+	"github.com/marmutapp/superbased-observer/internal/sandboxnet"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/termsvc"
 	"github.com/marmutapp/superbased-observer/internal/toolresolve"
@@ -143,7 +147,7 @@ func newSandboxHolder(cfg config.Config, configPath, observerDir, observerBin st
 	if resolved, err := filepath.EvalSymlinks(h.managedRoot); err == nil {
 		h.managedRoot = resolved
 	}
-	h.reload(cfg.Terminal.Sandbox, cfg.Launch.Tools)
+	h.reload(cfg)
 	h.stampConfig()
 	return h
 }
@@ -153,13 +157,17 @@ func newSandboxHolder(cfg config.Config, configPath, observerDir, observerBin st
 // failure). Enabling with a runtime that will not initialize KEEPS the
 // previous seam — an operator mid-edit should not lose a working sandbox to
 // a typo — and records the error so the probe reports it verbatim.
-func (h *sandboxHolder) reload(cfg config.TerminalSandboxConfig, launchTools map[string]config.LaunchToolConfig) {
+func (h *sandboxHolder) reload(full config.Config) {
+	cfg := full.Terminal.Sandbox
 	if !cfg.Enabled {
 		h.rt.Store(nil)
 		h.initErr.Store(nil)
 		return
 	}
-	rt, err := newSandboxRuntime(cfg, launchTools, h.observerDir, h.observerBin, h.logger)
+	rt, err := newSandboxRuntime(cfg, full.Launch.Tools, h.observerDir, h.observerBin, h.logger)
+	if err == nil {
+		rt.applyDaemonConfig(full)
+	}
 	if err != nil {
 		msg := err.Error()
 		h.initErr.Store(&msg)
@@ -209,7 +217,7 @@ func (h *sandboxHolder) refresh() {
 		}
 		return
 	}
-	h.reload(cfg.Terminal.Sandbox, cfg.Launch.Tools)
+	h.reload(cfg)
 }
 
 // stampConfig records the config file's identity without rebuilding, so the
@@ -305,6 +313,18 @@ type sandboxRuntime struct {
 	observerBin     string
 	observerRealDir string
 	logger          *slog.Logger
+	// egress is the resolved [terminal.sandbox].egress tier row
+	// (SR27-SBX-1); an unknown value fails runtime construction.
+	egress sandbox.EgressProfile
+	// proxyPort is the daemon's model proxy port ([proxy].port, default
+	// 8820), forwarded into a private-namespace sandbox under the same
+	// number.
+	proxyPort int
+	// guardPolicyPaths are the daemon-config-derived guard policy paths a
+	// sandboxed agent must not rewrite (the user policy file and the
+	// trusted per-project policy dir); Rel is ABSOLUTE here, Dir marks the
+	// directory. May be empty.
+	guardPolicyPaths []sandbox.ProtectedPath
 
 	mu       sync.Mutex
 	cached   dashboard.SandboxAvailability
@@ -355,6 +375,14 @@ func newSandboxRuntime(cfg config.TerminalSandboxConfig, launchTools map[string]
 		managed = resolved
 	}
 
+	egress, err := sandbox.ResolveEgress(cfg.Egress)
+	if err != nil {
+		return nil, fmt.Errorf("newSandboxRuntime: [terminal.sandbox].egress: %w", err)
+	}
+	if _, err := sandboxnet.ParseAllowCIDRs(cfg.EgressAllowCIDRs); err != nil {
+		return nil, fmt.Errorf("newSandboxRuntime: [terminal.sandbox].egress_allow_cidrs: %w", err)
+	}
+
 	var realDir string
 	if observerBin != "" {
 		if real, err := filepath.EvalSymlinks(observerBin); err == nil && real != observerBin {
@@ -370,8 +398,48 @@ func newSandboxRuntime(cfg config.TerminalSandboxConfig, launchTools map[string]
 		observerBin:     observerBin,
 		observerRealDir: realDir,
 		logger:          logger,
+		egress:          egress,
+		proxyPort:       defaultSandboxProxyPort,
 		now:             func() time.Time { return time.Now().UTC() },
 	}, nil
+}
+
+// defaultSandboxProxyPort mirrors resolveProxyURL's default.
+const defaultSandboxProxyPort = 8820
+
+// applyDaemonConfig copies the non-sandbox daemon settings the sandbox needs
+// (the proxy port it forwards, the guard policy files it protects) onto a
+// freshly built runtime, before the runtime is published.
+func (r *sandboxRuntime) applyDaemonConfig(full config.Config) {
+	if p := full.Proxy.Port; p > 0 && p <= 65535 {
+		r.proxyPort = p
+	}
+	home, _ := os.UserHomeDir()
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = resolved
+	}
+	r.guardPolicyPaths = nil
+	for _, gp := range []sandbox.ProtectedPath{
+		{Rel: full.Guard.Rules.UserPolicy},
+		{Rel: full.Guard.Rules.TrustedProjectDir, Dir: true},
+	} {
+		if abs := expandSandboxHome(gp.Rel, home); abs != "" {
+			r.guardPolicyPaths = append(r.guardPolicyPaths, sandbox.ProtectedPath{Rel: abs, Dir: gp.Dir})
+		}
+	}
+}
+
+// expandSandboxHome resolves a "~/"-prefixed or absolute config path to an
+// absolute one; anything else (empty, relative) yields "".
+func expandSandboxHome(p, home string) string {
+	p = strings.TrimSpace(p)
+	switch {
+	case strings.HasPrefix(p, "~/") && home != "":
+		return filepath.Join(home, p[2:])
+	case filepath.IsAbs(p):
+		return filepath.Clean(p)
+	}
+	return ""
 }
 
 // workspacesDir returns the canonical managed-workspaces root, so buildTerminal
@@ -405,6 +473,7 @@ func (r *sandboxRuntime) ProbeSandbox(ctx context.Context) dashboard.SandboxAvai
 			Verdict:   sandbox.VerdictDisabledByConfig,
 			Reason:    "[terminal.sandbox].enabled is false on this daemon",
 			HomeMode:  r.homeMode(),
+			Egress:    string(r.egress.Mode),
 			DefaultOn: r.cfg.DefaultOn,
 			Sources:   r.sources(),
 			Tools:     r.tools(),
@@ -427,6 +496,7 @@ func (r *sandboxRuntime) ProbeSandbox(ctx context.Context) dashboard.SandboxAvai
 		Backend:        av.Backend,
 		BackendVersion: av.BackendVersion,
 		HomeMode:       r.homeMode(),
+		Egress:         string(r.egress.Mode),
 		DefaultOn:      r.cfg.DefaultOn,
 		Sources:        r.sources(),
 		Tools:          r.tools(),
@@ -450,8 +520,20 @@ func (r *sandboxRuntime) sandboxEnv(ctx context.Context) sandbox.Env {
 		}
 		return "bwrap"
 	}
+	var netCanary func() error
+	if r.egress.UnshareNet {
+		netCanary = func() error {
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			//nolint:gosec // fixed, server-derived smoke argv; the binary
+			// path came from exec.LookPath, never client input.
+			return exec.CommandContext(cctx, resolve(),
+				"--ro-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-net", "--die-with-parent", "--", "true").Run()
+		}
+	}
 	return sandbox.Env{
-		GOOS: runtime.GOOS,
+		NetCanary: netCanary,
+		GOOS:      runtime.GOOS,
 		LookBwrap: func() (string, error) {
 			p, err := exec.LookPath("bwrap")
 			if err == nil {
@@ -473,7 +555,7 @@ func (r *sandboxRuntime) sandboxEnv(ctx context.Context) sandbox.Env {
 			//nolint:gosec // fixed, server-derived smoke argv (plan §7); the
 			// binary path came from exec.LookPath, never client input.
 			return exec.CommandContext(cctx, resolve(),
-				"--ro-bind", "/", "/", "--tmpfs", "/tmp", "--die-with-parent", "--", "true").Run()
+				"--ro-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--tmpfs", "/tmp", "--die-with-parent", "--", "true").Run()
 		},
 	}
 }
@@ -604,7 +686,7 @@ func (r *sandboxRuntime) Prepare(ctx context.Context, req termsvc.PrepareRequest
 		dest = resolved
 	}
 
-	wrapArgv, err := r.buildWrapArgv(req.Tool, dest)
+	wrapArgv, err := r.buildWrapArgv(req.Tool, dest, id)
 	if err != nil {
 		return termsvc.PrepareResult{}, err
 	}
@@ -612,7 +694,7 @@ func (r *sandboxRuntime) Prepare(ctx context.Context, req termsvc.PrepareRequest
 	return termsvc.PrepareResult{
 		Dir:      dest,
 		WrapArgv: wrapArgv,
-		Note:     fmt.Sprintf("sandbox: source=%s workspace=%s", src, dest),
+		Note:     fmt.Sprintf("sandbox: source=%s workspace=%s egress=%s", src, dest, r.egress.Mode),
 	}, nil
 }
 
@@ -621,7 +703,7 @@ func (r *sandboxRuntime) Prepare(ctx context.Context, req termsvc.PrepareRequest
 // prefix: [bwrapPath, <flags...>, "--"]. termsession.Spec.argv() prepends this
 // before [BinPath, Subcommand, ...ExtraArgs], yielding
 // `bwrap <flags...> -- observer <verb> ...` (D2 seam).
-func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot string) ([]string, error) {
+func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string) ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("terminal_sandbox: resolve home: %w", err)
@@ -651,7 +733,35 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot string) ([]string, er
 		return nil, fmt.Errorf("terminal_sandbox: bwrap not found on PATH: %w", err)
 	}
 
+	netReq := sandbox.NetRequest{Egress: r.egress.Mode, ProxyPort: r.proxyPort, EgressAllowCIDRs: r.cfg.EgressAllowCIDRs}
+	if r.egress.ForwardProxy || r.egress.Gateway {
+		// Per-run socket dir in the HOST temp dir: invisible inside the
+		// sandbox (its /tmp is a private tmpfs) except where BuildPlan binds
+		// it read-only. The host helper creates it (refusing a pre-existing
+		// path) and removes it on exit. The random run id makes it
+		// unguessable.
+		netReq.HostSocketDir = filepath.Join(os.TempDir(), "observer-sbx-"+runID)
+	}
+
+	overlays, err := r.overlays(home, workspaceRoot, spec.Sandbox)
+	if err != nil {
+		return nil, err
+	}
+	hostMasks, err := hostSocketMasks(os.Getuid())
+	if err != nil {
+		return nil, err
+	}
+	sweeps, err := socketSweeps()
+	if err != nil {
+		return nil, err
+	}
+
 	plan, err := sandbox.BuildPlan(sandbox.Request{
+		Net:           netReq,
+		Overlays:      overlays,
+		SocketSweeps:  sweeps,
+		HostMasks:     hostMasks,
+		HostMaskKeep:  hostMaskKeep(hostMasks),
 		Home:          home,
 		ObserverDir:   r.observerDir,
 		WorkspaceRoot: workspaceRoot,
@@ -678,11 +788,366 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot string) ([]string, er
 	if len(composed) < 2 || composed[len(composed)-1] != sentinel {
 		return nil, fmt.Errorf("terminal_sandbox: bwrap plan composition failed")
 	}
-	flags := composed[:len(composed)-1] // [flags..., "--"]
-	wrap := make([]string, 0, len(flags)+1)
+	flags := composed[:len(composed)-1] // [flags..., "--", (guest helper...)]
+	// A tier that forwards anything, or a launch with protected paths that do
+	// not exist yet, runs bwrap under the host-side helper, which owns the
+	// per-run sockets and the placeholders: [observer sandbox-host ... --]
+	// bwrap ...
+	host, err := plan.HostArgv(r.observerBin)
+	if err != nil {
+		return nil, err
+	}
+	wrap := make([]string, 0, len(host)+len(flags)+1)
+	wrap = append(wrap, host...)
 	wrap = append(wrap, bwrapPath)
 	wrap = append(wrap, flags...)
 	return wrap, nil
+}
+
+// sandboxObserverSecrets are observer-dir entries a sandboxed process never
+// needs and must never read (SR27-SBX-1): remote-access + standing-terminal
+// secrets, the org bearer and cloud credential fallback stores, the VS Code
+// LOC editor token, and the session-attach control socket (whose dir would
+// let a sandboxed agent attach to, and type into, an UNSANDBOXED terminal).
+// Hidden unconditionally: nothing inside the sandbox uses them (a
+// daemon-launched launcher never dials the attach socket), so it costs
+// nothing. A missing entry gets a placeholder (SR27-SBX-2): the sandboxed
+// process must not be able to plant a secret the daemon would later adopt.
+var sandboxObserverSecrets = []sandbox.ProtectedPath{
+	{Rel: "remote-secret"},
+	{Rel: "remote-standing-terminal-secret"},
+	{Rel: "org-bearer", Dir: true},
+	{Rel: "cloud-cred", Dir: true},
+	{Rel: "loc-editor-token"},
+	{Rel: "attach", Dir: true},
+}
+
+// sandboxObserverExecState are observer-dir entries the DAEMON (or the
+// operator's shell, or a later hook) trusts or executes and a sandboxed
+// process only ever reads: the daemon config, the user guard policy and
+// trusted per-project guard policies, the hook integrity registry, the
+// shell-wrap PATH shims, the browser native-messaging host, and the org
+// governance sidecars (features-effective.json, and governance-effective.json,
+// whose pins every later config load applies, guard mode included).
+// Re-bound read-only unless [terminal.sandbox].allow_tool_config_writes. The
+// node DB and hook logs stay writable (hook capture writes them).
+var sandboxObserverExecState = []sandbox.ProtectedPath{
+	{Rel: "config.toml"},
+	{Rel: "guard-policy.toml"},
+	{Rel: "guard-project-policies", Dir: true},
+	{Rel: "hook_checksums.json"},
+	{Rel: "shims", Dir: true},
+	{Rel: "browser-host", Dir: true},
+	{Rel: "features-effective.json"},
+	{Rel: "governance-effective.json"},
+	{Rel: "policy-resource", Dir: true},
+	{Rel: "policy-state-seq"},
+}
+
+// remedyToolConfigWrites is appended to a symlink refusal for a path whose
+// protection allow_tool_config_writes lifts.
+const remedyToolConfigWrites = ", or set [terminal.sandbox].allow_tool_config_writes = true"
+
+// protectedRow is one resolved row of the protection table for one launch.
+type protectedRow struct {
+	path   string
+	kind   sandbox.OverlayKind
+	dir    bool
+	remedy string
+}
+
+// overlays composes the protective overlays for one launch: secrets hidden
+// always; executed state re-bound read-only unless the operator opted into
+// tool config writes. bwrap applies them after every rw bind, so no rw bind
+// can re-open them. Each row is resolved by protectPath: an existing path is
+// protected in place, a missing one under a writable bind gets a placeholder
+// the host helper creates first, and a symlink under a writable bind refuses
+// the launch (a symlink cannot be mounted read-only, and replacing it is
+// exactly the escape).
+func (r *sandboxRuntime) overlays(home, workspaceRoot string, spec integration.SandboxSpec) ([]sandbox.Overlay, error) {
+	var rows []protectedRow
+	for _, pp := range sandboxObserverSecrets {
+		kind := sandbox.OverlayHideFile
+		if pp.Dir {
+			kind = sandbox.OverlayHideDir
+		}
+		rows = append(rows, protectedRow{path: filepath.Join(r.observerDir, pp.Rel), kind: kind, dir: pp.Dir})
+	}
+	if !r.cfg.AllowToolConfigWrites {
+		ro := func(p string, dir bool) {
+			rows = append(rows, protectedRow{path: p, kind: sandbox.OverlayReadOnly, dir: dir, remedy: remedyToolConfigWrites})
+		}
+		for _, pp := range sandboxObserverExecState {
+			ro(filepath.Join(r.observerDir, pp.Rel), pp.Dir)
+		}
+		for _, gp := range r.guardPolicyPaths {
+			ro(gp.Rel, gp.Dir)
+		}
+		for _, rel := range spec.ProtectRO {
+			ro(filepath.Join(home, rel), false)
+		}
+		for _, rel := range spec.ProtectRODirs {
+			ro(filepath.Join(home, rel), true)
+		}
+		for _, pp := range sandbox.WorkspaceExecState {
+			ro(filepath.Join(workspaceRoot, pp.Rel), pp.Dir)
+		}
+	}
+
+	rw := r.rwRoots(home, workspaceRoot, spec)
+	var out []sandbox.Overlay
+	seen := map[string]bool{}
+	for _, row := range rows {
+		o, ok, err := protectPath(row, rw)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || o.Path == "" || seen[o.Path] {
+			continue
+		}
+		seen[o.Path] = true
+		out = append(out, o)
+	}
+	return out, nil
+}
+
+// rwRoots lists the bind targets a sandboxed process can write through: the
+// observer dir, the workspace, the tool's writable state and the operator's
+// extra rw binds.
+func (r *sandboxRuntime) rwRoots(home, workspaceRoot string, spec integration.SandboxSpec) []string {
+	out := []string{r.observerDir, workspaceRoot}
+	for _, rel := range spec.StateRW {
+		out = append(out, filepath.Join(home, rel))
+	}
+	return append(out, r.cfg.ExtraRWBinds...)
+}
+
+// protectPath resolves one protected row against the filesystem. It returns
+// the overlay to apply, ok=false when nothing needs protecting (a missing
+// path that no writable bind could create), or an error that refuses the
+// launch.
+//
+//   - existing file or dir: protected in place (hide or read-only);
+//   - symlink under a writable bind: refused, naming the path and the fix;
+//   - missing: walk up to the first existing ancestor. If that ancestor is
+//     not under a writable bind, nothing inside can create the path. If it
+//     is a directory, the topmost missing component becomes a placeholder
+//     (a directory when it has children below it or the row is a dir); if
+//     it is a file (a .git gitfile, say), that file is protected instead.
+func protectPath(row protectedRow, rw []string) (sandbox.Overlay, bool, error) {
+	fi, err := os.Lstat(row.path)
+	switch {
+	case err == nil:
+		if fi.Mode()&os.ModeSymlink != 0 {
+			if !withinAny(row.path, rw) {
+				return sandbox.Overlay{}, false, nil
+			}
+			return sandbox.Overlay{}, false, symlinkRefusal(row.path, row.remedy)
+		}
+		return sandbox.Overlay{Path: row.path, Kind: fitOverlayKind(row.kind, fi.IsDir())}, true, nil
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR):
+	default:
+		return sandbox.Overlay{}, false, fmt.Errorf("terminal_sandbox: cannot inspect protected path %s: %w", row.path, err)
+	}
+
+	missing := row.path
+	for {
+		parent := filepath.Dir(missing)
+		if parent == missing {
+			return sandbox.Overlay{}, false, nil
+		}
+		pfi, perr := os.Lstat(parent)
+		if perr != nil {
+			if errors.Is(perr, fs.ErrNotExist) || errors.Is(perr, syscall.ENOTDIR) {
+				missing = parent
+				continue
+			}
+			return sandbox.Overlay{}, false, fmt.Errorf("terminal_sandbox: cannot inspect %s (for protected path %s): %w", parent, row.path, perr)
+		}
+		if !withinAny(parent, rw) {
+			// Nothing a sandboxed process can write reaches here: in a
+			// tmpfs home the path would land in the tmpfs, in a read-only
+			// home it cannot be created at all.
+			return sandbox.Overlay{}, false, nil
+		}
+		isDir := pfi.IsDir()
+		if pfi.Mode()&os.ModeSymlink != 0 {
+			if !equalsAny(parent, rw) {
+				return sandbox.Overlay{}, false, symlinkRefusal(parent, row.remedy)
+			}
+			// A bind target itself: the mount pins it, it cannot be
+			// replaced. Resolve it to learn what it is.
+			sfi, serr := os.Stat(parent)
+			if serr != nil {
+				return sandbox.Overlay{}, false, fmt.Errorf("terminal_sandbox: cannot resolve %s (for protected path %s): %w", parent, row.path, serr)
+			}
+			isDir = sfi.IsDir()
+		}
+		if !isDir {
+			if equalsAny(parent, rw) {
+				return sandbox.Overlay{}, false, nil
+			}
+			return sandbox.Overlay{Path: parent, Kind: fitOverlayKind(row.kind, false)}, true, nil
+		}
+		dir := row.dir || missing != row.path
+		ph := sandbox.PlaceholderFile
+		if dir {
+			ph = sandbox.PlaceholderDir
+		}
+		return sandbox.Overlay{Path: missing, Kind: fitOverlayKind(row.kind, dir), Placeholder: ph}, true, nil
+	}
+}
+
+// fitOverlayKind adapts a hide kind to the shape of what it covers (a dir
+// is hidden with a tmpfs, a file with /dev/null); read-only fits both.
+func fitOverlayKind(kind sandbox.OverlayKind, isDir bool) sandbox.OverlayKind {
+	switch {
+	case kind == sandbox.OverlayHideFile && isDir:
+		return sandbox.OverlayHideDir
+	case kind == sandbox.OverlayHideDir && !isDir:
+		return sandbox.OverlayHideFile
+	}
+	return kind
+}
+
+// symlinkRefusal is the honest launch refusal for a protected symlink.
+func symlinkRefusal(path, remedy string) error {
+	return fmt.Errorf("terminal_sandbox: protected path %s is a symlink inside a writable bind; "+
+		"a sandboxed process could replace it and a later unsandboxed session would trust the replacement, "+
+		"and a symlink cannot be mounted read-only. Replace the symlink with the file or directory it points to%s", path, remedy)
+}
+
+// withinAny reports whether p equals or lies under any root.
+func withinAny(p string, roots []string) bool {
+	p = filepath.Clean(p)
+	for _, r := range roots {
+		if r == "" {
+			continue
+		}
+		r = filepath.Clean(r)
+		if p == r || r == "/" || strings.HasPrefix(p, r+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// equalsAny reports whether p is exactly one of roots.
+func equalsAny(p string, roots []string) bool {
+	p = filepath.Clean(p)
+	for _, r := range roots {
+		if r != "" && filepath.Clean(r) == p {
+			return true
+		}
+	}
+	return false
+}
+
+// hostSocketMasks resolves sandbox.HostSocketPaths for uid into hide_dir
+// overlays: each path resolved through symlinks, kept only when it exists and
+// is a directory (socket FILES are dropped by socketSweeps instead).
+func hostSocketMasks(uid int) ([]sandbox.Overlay, error) {
+	var out []sandbox.Overlay
+	seen := map[string]bool{}
+	for _, p := range sandbox.ExpandHostSocketPaths(uid) {
+		real, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+				continue
+			}
+			return nil, fmt.Errorf("terminal_sandbox: cannot resolve host socket path %s: %w", p, err)
+		}
+		if seen[real] {
+			continue
+		}
+		fi, err := os.Stat(real)
+		if err != nil {
+			return nil, fmt.Errorf("terminal_sandbox: cannot inspect host socket path %s: %w", real, err)
+		}
+		if !fi.IsDir() {
+			continue
+		}
+		seen[real] = true
+		out = append(out, sandbox.Overlay{Path: real, Kind: sandbox.OverlayHideDir})
+	}
+	return out, nil
+}
+
+// socketSweeps lists each existing, non-symlink sandbox.SocketSweepDirs
+// directory with the entries to put back: directories and regular files are
+// re-bound, symlinks are recreated unless they resolve to a socket, FIFO or
+// device, and every socket, FIFO or device is dropped. An entry whose name
+// could not be passed to bwrap safely is dropped too (hidden, never an
+// error).
+func socketSweeps() ([]sandbox.DirRebuild, error) {
+	var out []sandbox.DirRebuild
+	for _, dir := range sandbox.SocketSweepDirs {
+		fi, err := os.Lstat(dir)
+		if err != nil || !fi.IsDir() {
+			continue
+		}
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, fmt.Errorf("terminal_sandbox: cannot list %s to drop its sockets: %w", dir, err)
+		}
+		d := sandbox.DirRebuild{Path: dir}
+		for _, e := range ents {
+			name := e.Name()
+			if badSweepName(name) {
+				continue
+			}
+			full := filepath.Join(dir, name)
+			lfi, err := os.Lstat(full)
+			if err != nil {
+				continue // vanished since the listing
+			}
+			switch mode := lfi.Mode(); {
+			case mode.IsDir(), mode.IsRegular():
+				d.Keep = append(d.Keep, sandbox.RebuildEntry{Name: name})
+			case mode&os.ModeSymlink != 0:
+				target, err := os.Readlink(full)
+				if err != nil || badSweepName(strings.ReplaceAll(target, "/", "x")) || strings.HasPrefix(target, "-") {
+					continue
+				}
+				if tfi, err := os.Stat(full); err == nil && tfi.Mode()&(os.ModeSocket|os.ModeNamedPipe|os.ModeDevice|os.ModeCharDevice) != 0 {
+					continue
+				}
+				d.Keep = append(d.Keep, sandbox.RebuildEntry{Name: name, Symlink: target})
+			}
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+// badSweepName reports a directory entry name that is not a plain single
+// component safe to hand to bwrap.
+func badSweepName(name string) bool {
+	if name == "" || name == "." || name == ".." || strings.HasPrefix(name, "-") || strings.Contains(name, "/") {
+		return true
+	}
+	for _, r := range name {
+		if r <= ' ' || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// hostMaskKeep returns the files a host mask would hide that the sandboxed
+// process still needs read-only: today the resolver config, which WSL points
+// into /mnt/wsl.
+func hostMaskKeep(masks []sandbox.Overlay) []string {
+	real, err := filepath.EvalSymlinks("/etc/resolv.conf")
+	if err != nil {
+		return nil
+	}
+	for _, m := range masks {
+		if withinAny(real, []string{m.Path}) && real != m.Path {
+			return []string{real}
+		}
+	}
+	return nil
 }
 
 // toolBinDirs resolves the directories a tool's binary + its real (symlink)

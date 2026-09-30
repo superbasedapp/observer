@@ -45,6 +45,38 @@ type sessionRow struct {
 	RewindCount      int64
 	Archived         int64
 	ParentSessionID  sql.NullString
+	// AuxUsage carries the session's AUXILIARY-call spend rows from
+	// session_model_usage (task != ''): vision, compression,
+	// title_generation, background_review, ... Hermes records those
+	// calls ONLY there - record_auxiliary_usage writes "WITHOUT
+	// touching the sessions summary row" (hermes_state_usage.py,
+	// v2026.9.24, issue #23270) - so the aggregate columns above never
+	// include them. Empty on a pre-session_model_usage schema (the
+	// grounded v16 store has no such table).
+	AuxUsage []auxUsageRow
+}
+
+// auxUsageRow is one session_model_usage row with a non-empty task.
+// The table's primary key is (session_id, model, billing_provider,
+// billing_base_url, billing_mode, task); every counter is an
+// ACCUMULATED per-call delta sum (the upsert adds excluded.* onto the
+// row), so it only ever grows - the same monotonic shape the session
+// aggregate has, which keeps the store's MAX-upgrade conflict path
+// correct on re-emit.
+type auxUsageRow struct {
+	Model            string
+	BillingProvider  string
+	BillingBaseURL   string
+	BillingMode      string
+	Task             string
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	ReasoningTokens  int64
+	EstimatedCostUSD float64
+	ActualCostUSD    float64
+	LastSeen         sql.NullFloat64
 }
 
 // messageRow is the subset of the messages-table columns the adapter
@@ -148,7 +180,76 @@ func scanStateDB(ctx context.Context, dbPath string, fromMessageID int64) (map[s
 	if err != nil {
 		return nil, nil, maxID, fmt.Errorf("hermes.scanStateDB: sessions: %w", err)
 	}
+	if err := readAuxUsage(ctx, db, sessions); err != nil {
+		return nil, nil, maxID, fmt.Errorf("hermes.scanStateDB: aux usage: %w", err)
+	}
 	return sessions, messages, maxID, nil
+}
+
+// readAuxUsage attaches each session's auxiliary-call usage rows
+// (session_model_usage rows with a non-empty task) onto sessions[id].AuxUsage. A store
+// without the table (every schema before the per-model usage split)
+// is a silent no-op, never an error. Main-loop rows (empty task) are
+// NOT read: they are the same spend the sessions aggregate already
+// carries, split per model, so reading them too would double-count.
+func readAuxUsage(ctx context.Context, db *sql.DB, sessions map[string]sessionRow) error {
+	if len(sessions) == 0 || !tableExists(ctx, db, "session_model_usage") {
+		return nil
+	}
+	ids := make([]any, 0, len(sessions))
+	placeholders := make([]byte, 0, len(sessions)*2)
+	for id := range sessions {
+		if len(placeholders) > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+		ids = append(ids, id)
+	}
+	/* #nosec G202 -- placeholders is literal '?,' built from the sessions count above; ids bind as positional params */
+	query := `
+		SELECT session_id, COALESCE(model, ''), COALESCE(billing_provider, ''),
+		       COALESCE(billing_base_url, ''), COALESCE(billing_mode, ''), task,
+		       COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
+		       COALESCE(cache_read_tokens, 0), COALESCE(cache_write_tokens, 0),
+		       COALESCE(reasoning_tokens, 0),
+		       COALESCE(estimated_cost_usd, 0), COALESCE(actual_cost_usd, 0),
+		       last_seen
+		  FROM session_model_usage
+		 WHERE task IS NOT NULL AND task != ''
+		   AND session_id IN (` + string(placeholders) + `)
+	  ORDER BY session_id, task, model, billing_provider, billing_base_url, billing_mode`
+	rows, err := db.QueryContext(ctx, query, ids...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sid string
+		var r auxUsageRow
+		if err := rows.Scan(&sid, &r.Model, &r.BillingProvider, &r.BillingBaseURL, &r.BillingMode, &r.Task,
+			&r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.ReasoningTokens,
+			&r.EstimatedCostUSD, &r.ActualCostUSD, &r.LastSeen); err != nil {
+			return err
+		}
+		s, ok := sessions[sid]
+		if !ok {
+			continue
+		}
+		s.AuxUsage = append(s.AuxUsage, r)
+		sessions[sid] = s
+	}
+	return rows.Err()
+}
+
+// tableExists reports whether the named table is present. False on any
+// query error - callers treat an unreadable catalogue as "absent".
+func tableExists(ctx context.Context, db *sql.DB, name string) bool {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
 }
 
 // readSchemaVersion returns the integer in schema_version. False ok

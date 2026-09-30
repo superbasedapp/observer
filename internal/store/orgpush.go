@@ -23,6 +23,12 @@ const (
 	pushCursorKeyTokenUsage  = "org_push_cursor_token_usage" //nolint:gosec // G101: schema_meta cursor key name, not a credential.
 	pushCursorKeyGuardEvents = "org_push_cursor_guard_events"
 	pushCursorKeyOTelContent = "org_push_cursor_otel_content"
+	pushCursorKeyMCPRelay    = "org_push_cursor_mcp_relay"
+	// pushCursorKeyLimitSnapshots (PushCursor.LimitSnapshots, lane F-WIRE)
+	// is declared in limitgauge.go: its schema_meta key spells the snapshot
+	// table's name, which the privacy sentinel forbids in any string literal
+	// of this file.
+
 	// lastPushPayloadKey holds the JSON of the most recent successfully-pushed
 	// envelope (the content-free rollup, exactly as marshalled before gzip), so
 	// the dashboard can show the developer precisely what was shared. Overwritten
@@ -117,6 +123,18 @@ type PushCursor struct {
 	TokenUsage  int64
 	GuardEvents int64
 	OTelContent int64
+	// MCPRelay is the node relay chain's seq high-water mark (Agent Access
+	// P4 W4e): the per-record MCPRelayEvents wire is a cursor wire like
+	// GuardEvents, read through the internal/mcprelay/record seam so this
+	// file names no relay table.
+	MCPRelay int64
+	// LimitSnapshots is the node's rate-limit snapshot id high-water mark
+	// (lane F-WIRE): the per-session SessionLimitSnapshots wire is a cursor
+	// wire whose rows are COALESCED to the newest per (session, provider),
+	// read through the internal/store/limitgauge.go seam so this file names
+	// no snapshot table. Every id at or below it was shipped, superseded by a
+	// shipped newer row for the same key, or unlinked (never shippable).
+	LimitSnapshots int64
 }
 
 // PushBatch is one batch of content-free rows read from the agent DB, plus the
@@ -135,13 +153,22 @@ type PushCursor struct {
 // explicitly recorded as ungated with a reason. TestSnapGateCoversEveryGatedWire
 // fails by name on an unclassified new family.
 type PushBatch struct {
-	Cursor      PushCursor
-	Sessions    []orgcontract.SessionRow
-	Actions     []orgcontract.ActionRow
-	APITurns    []orgcontract.APITurnRow
-	TokenUsage  []orgcontract.TokenUsageRow
-	GuardEvents []orgcontract.GuardEventRow
-	OTelContent []orgcontract.OTelContentRow
+	Cursor     PushCursor
+	Sessions   []orgcontract.SessionRow
+	Actions    []orgcontract.ActionRow
+	APITurns   []orgcontract.APITurnRow
+	TokenUsage []orgcontract.TokenUsageRow
+	// Deletions are the TOMBSTONES (agent migration 141, lane R2-TOMB) for
+	// cursor-wire rows the node deleted as a correction after pushing them,
+	// and SessionManifests the `observer org resync --deletions` heal. Both
+	// are composed by internal/store/orgpushtomb.go from node-local queues
+	// this file never names (privacy sentinel), bounded with the re-send lane
+	// to half the envelope, and acknowledged only after a 200 (Acks). They
+	// are control items, not rows: counted by hasControl, not RowCount.
+	Deletions        []orgcontract.PushDeletion
+	SessionManifests []orgcontract.SessionManifest
+	GuardEvents      []orgcontract.GuardEventRow
+	OTelContent      []orgcontract.OTelContentRow
 	// RoutingSummaries is the OPTIONAL §R19.4 aggregate, attached only
 	// under ShareOptions.RoutingSummary. It rides along with row data
 	// and does not affect cursors (the server upsert is idempotent).
@@ -216,6 +243,25 @@ type PushBatch struct {
 	// the privacy sentinel forbids it here by name.
 	SessionLOC []orgcontract.SessionLOCRow
 	LOCDays    []orgcontract.LOCDayRow
+	// SessionQuality is the per-session quality score (BL2-ORG): one row per
+	// session the node's scorer wrote inside a trailing window on scored_at,
+	// so a score that lands after its sessions row already shipped still
+	// goes out. Derived numbers only - it rides the DEFAULT metadata posture
+	// like SessionLOC. Composed by store.SelectSessionQualityRows in
+	// sessionqualitysummary.go. Snapshot-recompute + server-upsert-idempotent
+	// (newest scored_at wins); no cursor effect.
+	SessionQuality []orgcontract.SessionQualityRow
+	// CommitOwnership is commit ownership (lane F-PROJ): one row per (project
+	// root, commit) this node's AI sessions contributed to inside a trailing
+	// window on committed_at, plus identity-only rows for commits that fell
+	// out of HEAD. Ids and counts ride the DEFAULT metadata posture like
+	// SessionLOC, keyed by the commit-sha HASH; the commit subject and the
+	// raw commit sha are gated on shipsRawContent() at the call site (review
+	// 2026-09-29 finding 3). Composed by store.SelectCommitOwnershipRows in
+	// commitownersummary.go, which reaches the node-local commit tables only
+	// through their owning loaders - this file names none of them.
+	// Snapshot-recompute + server-upsert-idempotent; no cursor effect.
+	CommitOwnership []orgcontract.CommitOwnershipRow
 	// UpdatePosture is the node's enum-only self-report of its own update
 	// state (enterprise-update-management plan §2.1, ruling R10). nil until
 	// cmd/observer wires the posture environment, so a node without the
@@ -250,6 +296,38 @@ type PushBatch struct {
 	// they do not affect the per-table cursors.
 	TerminalSummaries    []orgcontract.TerminalSummaryRow
 	RemoteAuditSummaries []orgcontract.RemoteAuditSummaryRow
+	// MCPRelayActivity is the OPTIONAL Agent Access P4 HMAC-only daily
+	// aggregate of the node's MCP relay decisions (doc3 §9.5), composed by
+	// store.SelectMCPRelayActivity in mcprelaysummary.go - which reads the
+	// node-local relay chain through internal/mcprelay/record; this file
+	// names no mcp_relay_* table (the privacy sentinel forbids it). Attached
+	// under ShareOptions.MCPActivity on an INDIVIDUAL node, and by
+	// shipsRawContent() posture on an enrolled teams/enterprise node
+	// (R8.30.b / R9.5). Windowed-recompute + server-REPLACE-idempotent.
+	MCPRelayActivity []orgcontract.MCPRelayActivityRow
+	// MCPRelayEvents are the per-record relay events (decision / completion
+	// / gap / gap_resolution, R14.5) - the L2 per-call wire of an enrolled
+	// teams/enterprise node, attached ONLY under shipsRawContent(). A CURSOR
+	// wire (PushCursor.MCPRelay) composed through the same seam and bounded
+	// by fits(), so it is counted by RowCount like GuardEvents.
+	MCPRelayEvents []orgcontract.MCPRelayEventRow
+	// SessionLimitSnapshots is the per-session rate-limit window wire (lane
+	// F-WIRE): the newest window observation per (session, provider) since
+	// PushCursor.LimitSnapshots, metadata only (never the auth scope hash,
+	// raw headers, status or counters). A CURSOR wire composed through the
+	// internal/store/limitgauge.go seam (this file names no such table) and
+	// bounded by the same fits() accounting, so it is counted by RowCount like
+	// MCPRelayEvents. Attached under ShareOptions.LimitGauge or
+	// shipsRawContent(); see the compose block for the gate.
+	SessionLimitSnapshots []orgcontract.SessionLimitSnapshotRow
+	// MCPInventory is the Agent Access P11 (c) configured-MCP-server
+	// inventory, composed by store.SelectMCPInventory (mcpinventory.go)
+	// through the host-bound MCPInventoryProviders seam - this file names no
+	// inventory source. Attached under ShareOptions.MCPActivity on an
+	// INDIVIDUAL node (REDUCED shape) and by shipsRawContent() posture on an
+	// enrolled teams/enterprise node (FULL shape). Snapshot-recompute +
+	// server-upsert-idempotent on (source_scope, locator_fingerprint).
+	MCPInventory []orgcontract.MCPInventoryRow
 	// RoutingDetails is the OPTIONAL Arc 4 P5d routing-detail aggregate,
 	// attached only under ShareOptions.RoutingDetail and computed by
 	// store.SelectRoutingDetail (which owns the node-local router_decisions
@@ -310,6 +388,13 @@ type PushBatch struct {
 	// counted by hasAggregates(), through hasPostures() — see there.
 	BudgetPosture *orgcontract.BudgetPostureRow
 	EstBytes      int64
+	// Acks is what an ACCEPTED push acknowledges in the node-local re-send
+	// queue (agent migration 140): the change-sequence snapshot every
+	// cursor-wire row carried as NodeRev, the id range each cursor lane
+	// shipped, and the rows the re-send lane shipped. orgclient hands it to
+	// Store.AckPushedChanges after a 200 and nowhere else, so a failed push
+	// leaves every queued change queued. Not a wire family (not a slice).
+	Acks PushAcks
 }
 
 // RowCount is the total number of rows across all row-bearing tables in the
@@ -317,7 +402,8 @@ type PushBatch struct {
 // recompute idempotently and don't gate batch progress).
 func (b PushBatch) RowCount() int {
 	return len(b.Sessions) + len(b.Actions) + len(b.APITurns) + len(b.TokenUsage) +
-		len(b.GuardEvents) + len(b.OTelContent) +
+		len(b.GuardEvents) + len(b.OTelContent) + len(b.MCPRelayEvents) +
+		len(b.SessionLimitSnapshots) +
 		len(b.ObsTraces) + len(b.ObsSpans) + len(b.ObsSpanEvents) + len(b.ObsContent) +
 		len(b.ObsAdmissionEvents) + len(b.ObsEvalItems) + len(b.ObsEgressDecisions)
 }
@@ -343,10 +429,19 @@ func (b PushBatch) hasAggregates() bool {
 		len(b.GuardPins) > 0 || len(b.GuardApprovals) > 0 ||
 		len(b.TerminalSummaries) > 0 || len(b.RemoteAuditSummaries) > 0 ||
 		len(b.RoutingDetails) > 0 || len(b.LimitGauges) > 0 ||
+		len(b.MCPRelayActivity) > 0 || len(b.MCPInventory) > 0 ||
 		len(b.ObsSummaries) > 0 ||
 		len(b.ObsEvalRuns) > 0 || len(b.ObsEndUserSpend) > 0 ||
 		len(b.ObsAdmissionPolicies) > 0 ||
 		b.hasSessionAggregates() || b.hasPostures()
+}
+
+// hasControl reports whether the batch carries control items (agent migration
+// 141): tombstones or resync session manifests. They are neither rows nor
+// aggregates, but a batch carrying only them must still push, or a node with
+// nothing new would never deliver its deletions.
+func (b PushBatch) hasControl() bool {
+	return len(b.Deletions) > 0 || len(b.SessionManifests) > 0
 }
 
 // hasPostures reports whether the batch carries an envelope-level POSTURE row
@@ -384,12 +479,15 @@ func (b PushBatch) hasSessionAggregates() bool {
 		len(b.SessionCacheEvents) > 0 ||
 		len(b.SessionProcesses) > 0 || len(b.SessionNetworkEvents) > 0 ||
 		len(b.SessionTaskItems) > 0 || len(b.SessionTaskTransitions) > 0 ||
-		len(b.SessionToolAccounts) > 0
+		len(b.SessionToolAccounts) > 0 || len(b.SessionQuality) > 0 ||
+		len(b.CommitOwnership) > 0
 }
 
 // Empty reports whether the batch carries nothing to push — no rows AND no
 // aggregate rollups. An aggregate-only batch is NOT empty (see hasAggregates).
-func (b PushBatch) Empty() bool { return b.RowCount() == 0 && !b.hasAggregates() }
+func (b PushBatch) Empty() bool {
+	return b.RowCount() == 0 && !b.hasAggregates() && !b.hasControl()
+}
 
 // PushLogEntry is one row of org_push_log, surfaced to the dashboard.
 type PushLogEntry struct {
@@ -413,6 +511,9 @@ func pushCursorFields(c *PushCursor) map[string]*int64 {
 		pushCursorKeyTokenUsage:  &c.TokenUsage,
 		pushCursorKeyGuardEvents: &c.GuardEvents,
 		pushCursorKeyOTelContent: &c.OTelContent,
+		pushCursorKeyMCPRelay:    &c.MCPRelay,
+		// Per-session rate-limit windows (lane F-WIRE).
+		pushCursorKeyLimitSnapshots: &c.LimitSnapshots,
 	}
 }
 
@@ -488,6 +589,14 @@ func (s *Store) SavePushCursor(ctx context.Context, c PushCursor) error {
 	if err := writePushCursorTx(ctx, tx, c); err != nil {
 		return fmt.Errorf("store.SavePushCursor: %w", err)
 	}
+	// A cursor MOVER also moves the re-send floor with it (agent migration
+	// 140): enrolment's seed is exactly the line below which rows were
+	// deliberately never shared, and a backfill reset to 0 deliberately
+	// shares everything. Same transaction, so the triggers never see a
+	// cursor without its floor.
+	if err := resetPushTrackingTx(ctx, tx, c); err != nil {
+		return fmt.Errorf("store.SavePushCursor: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store.SavePushCursor: commit: %w", err)
 	}
@@ -553,6 +662,20 @@ func (s *Store) CurrentMaxIDs(ctx context.Context) (PushCursor, error) {
 			return PushCursor{}, fmt.Errorf("store.CurrentMaxIDs: %w", err)
 		}
 	}
+	// The relay chain's high-water mark comes through its one-owner seam
+	// (mcprelaysummary.go) rather than a table name here - the privacy
+	// sentinel forbids the relay tables in this file.
+	seq, err := s.mcpRelayHeadSeq(ctx)
+	if err != nil {
+		return PushCursor{}, fmt.Errorf("store.CurrentMaxIDs: %w", err)
+	}
+	c.MCPRelay = seq
+	// Same for the rate-limit snapshot log: limitgauge.go owns that read.
+	lim, err := s.limitSnapshotHeadID(ctx)
+	if err != nil {
+		return PushCursor{}, fmt.Errorf("store.CurrentMaxIDs: %w", err)
+	}
+	c.LimitSnapshots = lim
 	return c, nil
 }
 
@@ -752,6 +875,10 @@ func (s *Store) ClearLastPushState(ctx context.Context) error {
 type ScopeOptions struct {
 	ProjectRootAllowlist []string
 	ProjectRootDenylist  []string
+	// Settle is the token_usage settle holdback (pushsettle.go): which
+	// rows are not yet ELIGIBLE this tick because their generation timing
+	// may still be stamped. Zero value = no holdback.
+	Settle PushSettle
 }
 
 // IsScoped reports whether either list is non-empty (the query path
@@ -876,7 +1003,9 @@ type ShareOptions struct {
 	// rate-limit utilization) computed by store.SelectLimitGauges — which owns
 	// the node-local limit_snapshots read; this file never names that table.
 	// Content-free (utilization stats only). Default false; node-opt-in
-	// individual, org-raisable (extract.managed) managed.
+	// individual, org-raisable (extract.managed) managed. It also gates the
+	// per-session sibling PushBatch.SessionLimitSnapshots (lane F-WIRE), which
+	// additionally ships under shipsRawContent().
 	LimitGauge bool
 	// CodeintelDetail ships the Arc 4 P5f codeintel-detail aggregate (per
 	// project-hash × language file/symbol/edge counts) computed by
@@ -934,6 +1063,20 @@ type ShareOptions struct {
 	// extract.tool_accounts authority. Reverses migration 111's node-local
 	// pin under this explicit tier.
 	ToolAccountDetail bool
+	// MCPActivity opts an INDIVIDUAL (non-org-enrolled) node's HMAC-only
+	// daily MCP relay aggregate (MCPRelayActivityRow) onto the wire - Agent
+	// Access ruling R8.30.b, [org_client.share].mcp_activity, default false.
+	// It applies ONLY to an individual node: an enrolled teams/enterprise
+	// node ships the aggregate AND the per-record L2 events by capture
+	// posture (shipsRawContent(), R9.5 / R11.10 - the raise on an already-
+	// enrolled node is the SIGNED governance grant, EnterpriseGranted, never
+	// a config rewrite), and this flag neither adds nor removes anything
+	// there. Deliberately NOT an org-raisable share tier (absent from the
+	// node-governance share vocabulary): there is nothing for an org to
+	// raise on a node it does not manage. Composed by
+	// store.SelectMCPRelayActivity, which owns the read; this file never
+	// names the relay tables.
+	MCPActivity bool
 }
 
 // shipsRawContent reports whether raw content-bearing columns ship under these
@@ -1063,21 +1206,55 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 		return batch, nil
 	}
 
+	// --- change tracking (agent migration 140, lane R2-RESEND) ---
+	// rev is the node's change-sequence snapshot, read ONCE before any row:
+	// every cursor-wire row below carries it as NodeRev so the org applies a
+	// row only when it is newer than the copy it holds. tracking is nil on a
+	// node that is not enrolled (no floors), which disables the re-send lane.
+	//
+	// Tombstones (agent migration 141) settle FIRST, before the snapshot: a
+	// tombstone whose identity is live again becomes an ordinary re-send at
+	// a fresh sequence, which this batch's snapshot then covers.
+	if err := s.settleOrgPushDeletions(ctx); err != nil {
+		return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: %w", err)
+	}
+	rev, tracking, err := s.loadPushTracking(ctx)
+	if err != nil {
+		return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: %w", err)
+	}
+	batch.Acks = PushAcks{Rev: rev, scopeFilter: scopeFilter}
+	if tracking != nil {
+		batch.Acks.tracked, batch.Acks.floor = true, tracking.floor
+	}
+
+	// --- re-send lane ---
+	// Rows at or below the cursor that CHANGED after they shipped (queued by
+	// migration 140's triggers). Composed through the SAME select heads and
+	// per-row scan + privacy strip as the cursor lane below, so a re-send is
+	// byte-for-byte the shape a first send of the same row would have today.
+	// Capped (pushResendRowCap rows, half the envelope) so a large queue - an
+	// `observer org resync`, a backfill that rewrote many rows - drains over
+	// several pushes instead of crowding out new rows.
+	if tracking != nil {
+		if err := s.composeResends(ctx, &batch, budget, cur, rev, *tracking, scopeFilter, share, orgID, userEmail); err != nil {
+			return PushBatch{}, err
+		}
+		// --- tombstone + manifest lanes (agent migration 141, R2-TOMB) ---
+		// Deletions the node made as corrections after pushing the rows, and
+		// the resync heal's per-session identity manifests. Identity fields
+		// only (hashes, ids) - never a raw path or body - and scope-filtered
+		// like every other lane.
+		if err := s.composeDeletions(ctx, &batch, budget, rev, scopeFilter); err != nil {
+			return PushBatch{}, err
+		}
+		if err := s.composeManifests(ctx, &batch, budget, rev, scopeFilter); err != nil {
+			return PushBatch{}, err
+		}
+	}
+
 	// --- sessions ---
 	if !budgetHit {
-		q := `SELECT s.rowid, s.id,
-		             COALESCE(p.root_path_hash,''), COALESCE(p.git_remote_hash,''),
-		             COALESCE(p.root_path,''),      COALESCE(p.git_remote,''),
-		             s.tool,
-		             COALESCE(s.model,''), COALESCE(s.git_branch,''), s.started_at,
-		             COALESCE(s.ended_at,''), COALESCE(s.total_actions,0),
-		             COALESCE(p.git_upstream_remote_hash,''), COALESCE(p.git_remote_owner_hash,''),
-		             COALESCE(p.git_upstream_owner_hash,''), COALESCE(p.root_commit_hash,''),
-		             COALESCE(p.content_fingerprint_hash,''), COALESCE(p.git_upstream_remote,''),
-		             COALESCE(s.workspace_hash,''), COALESCE(s.workspace,''), COALESCE(s.is_worktree,0),
-		             COALESCE(s.surface,''), COALESCE(s.surface_host,'')
-		        FROM sessions s JOIN projects p ON s.project_id = p.id
-		       WHERE s.rowid > ?`
+		q := sessionPushSelect + ` WHERE s.rowid > ?`
 		if scopeFilter != "" {
 			q += ` AND p.id IN (` + scopeFilter + `)`
 		}
@@ -1087,58 +1264,11 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: sessions: %w", err)
 		}
 		for rows.Next() {
-			var rowid int64
-			var r orgcontract.SessionRow
-			var isWorktree int
-			if err := rows.Scan(&rowid, &r.ID,
-				&r.ProjectRootHash, &r.GitRemoteHash,
-				&r.ProjectRoot, &r.GitRemote,
-				&r.Tool,
-				&r.Model, &r.GitBranch, &r.StartedAt, &r.EndedAt, &r.TotalActions,
-				&r.GitUpstreamRemoteHash, &r.GitRemoteOwnerHash,
-				&r.GitUpstreamOwnerHash, &r.RootCommitHash,
-				&r.ContentFingerprintHash, &r.GitUpstreamRemote,
-				&r.WorkspaceHash, &r.Workspace, &isWorktree,
-				&r.Surface, &r.SurfaceHost); err != nil {
+			rowid, r, err := scanSessionPushRow(rows, share, orgID, userEmail, rev)
+			if err != nil {
 				_ = rows.Close()
 				return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: scan session: %w", err)
 			}
-			r.IsWorktree = isWorktree != 0
-			// Closed-vocabulary gate on the capture-surface HOST (PRIV-2,
-			// codebase audit 2026-09-16). surface_host ships in EVERY posture
-			// on the grounds that it is a bounded host token; this is what
-			// makes that true rather than merely conventional. Unrecognized ⇒
-			// "other"; empty stays empty (unstamped, not unknown-host). See
-			// knownSurfaceHosts at the bottom of this file.
-			r.SurfaceHost = surfaceHostForWire(r.SurfaceHost)
-			// Privacy seam: strip raw paths when not opted into full-content
-			// sharing. The hash counterparts (already scanned) carry the
-			// signal the server needs. git_branch is stripped outright — it has
-			// no hash counterpart and no server feature keys on it, yet branch
-			// names routinely encode client/codename/ticket identifiers, so in
-			// the default metadata-only posture it must not ship raw (it was
-			// previously leaking, inconsistent with git_remote here).
-			// git_upstream_remote / workspace (Project Identity Resolver v2,
-			// §3.2) join the same strip: they are the ONLY two resolver-v2
-			// fields with a raw counterpart on the wire. The other resolver-v2
-			// fields (the four owner/root-commit/fingerprint hashes plus
-			// IsWorktree) have no raw counterpart at all — they stay above
-			// this gate and always ship, exactly like ProjectRootHash /
-			// GitRemoteHash do. root_commit_sha and content_fingerprint (the
-			// raw pre-images) are never selected into r in the first place.
-			// Capture surface (W1, agent 107 / server 139) is likewise NOT in
-			// this strip: surface is a closed vocabulary (models.KnownSurface)
-			// and surface_host a bounded host token, so they are METADATA and
-			// ship in every posture. Empty stays empty — an unstamped session
-			// must reach the org as UNKNOWN, never as a defaulted "cli".
-			if !share.shipsRawContent() {
-				r.ProjectRoot = ""
-				r.GitRemote = ""
-				r.GitBranch = ""
-				r.GitUpstreamRemote = ""
-				r.Workspace = ""
-			}
-			r.OrgID, r.UserEmail = orgID, userEmail
 			sz := jsonSize(r)
 			if !fits(sz) {
 				budgetHit = true
@@ -1155,19 +1285,7 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 
 	// --- actions ---
 	if !budgetHit {
-		q := `SELECT a.id, a.session_id,
-		             COALESCE(a.target_hash,''), COALESCE(a.source_file_hash,''),
-		             COALESCE(a.source_file,''), COALESCE(a.source_event_id,''),
-		             a.timestamp, a.tool, a.action_type,
-		             COALESCE(a.target,''),
-		             COALESCE(a.turn_index,0), COALESCE(a.success,1), COALESCE(a.duration_ms,0),
-		             COALESCE(a.is_sidechain,0),
-		             COALESCE(a.raw_tool_input,''), COALESCE(a.raw_tool_output,''),
-		             COALESCE(a.preceding_reasoning,''), COALESCE(a.error_message,''),
-		             COALESCE(json_extract(a.metadata,'$.effort_level'),''),
-		             COALESCE(json_extract(a.metadata,'$.stop_reason'),''),
-		             COALESCE(a.message_id,'')
-		        FROM actions a WHERE a.id > ?`
+		q := actionPushSelect + ` WHERE a.id > ?`
 		if scopeFilter != "" {
 			q += ` AND a.project_id IN (` + scopeFilter + `)`
 		}
@@ -1177,42 +1295,11 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: actions: %w", err)
 		}
 		for rows.Next() {
-			var id, success, sidechain int64
-			var r orgcontract.ActionRow
-			if err := rows.Scan(&id, &r.SessionID,
-				&r.TargetHash, &r.SourceFileHash,
-				&r.SourceFile, &r.SourceEventID,
-				&r.Timestamp, &r.Tool, &r.ActionType,
-				&r.Target, &r.TurnIndex,
-				&success, &r.DurationMs, &sidechain,
-				&r.RawToolInput, &r.RawToolOutput,
-				&r.PrecedingReasoning, &r.ErrorMessage,
-				&r.EffortLevel, &r.StopReason, &r.MessageID); err != nil {
+			id, r, err := scanActionPushRow(rows, share, orgID, userEmail, rev)
+			if err != nil {
 				_ = rows.Close()
 				return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: scan action: %w", err)
 			}
-			r.Success = success != 0
-			r.IsSidechain = sidechain != 0
-			// Privacy seam:
-			//   - SourceFile is a filesystem path → strip when not opted in.
-			//   - Target is per-action: in full-content mode, always ship;
-			//     in metadata-only mode, ship only when the action type is
-			//     in the explicit TargetActionAllowlist (e.g. read_file).
-			//   - The four body columns ship ONLY under the distinct
-			//     shipsToolBodies() tier (never under shipsRawContent alone).
-			if !share.shipsRawContent() {
-				r.SourceFile = ""
-			}
-			if !share.targetAllowed(r.ActionType) {
-				r.Target = ""
-			}
-			if !share.shipsToolBodies() {
-				r.RawToolInput = ""
-				r.RawToolOutput = ""
-				r.PrecedingReasoning = ""
-				r.ErrorMessage = ""
-			}
-			r.OrgID, r.UserEmail = orgID, userEmail
 			sz := jsonSize(r)
 			if !fits(sz) {
 				budgetHit = true
@@ -1229,20 +1316,7 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 
 	// --- api_turns ---
 	if !budgetHit {
-		q := `SELECT t.id, COALESCE(t.session_id,''),
-		             COALESCE(p.root_path_hash,''), COALESCE(p.root_path,''),
-		             t.timestamp,
-		             t.provider, COALESCE(t.model,''), COALESCE(t.request_id,''),
-		             t.input_tokens, t.output_tokens, COALESCE(t.cache_read_tokens,0),
-		             COALESCE(t.cache_creation_tokens,0), COALESCE(t.cache_creation_1h_tokens,0),
-		             COALESCE(t.web_search_requests,0), COALESCE(t.cost_usd,0),
-		             COALESCE(t.message_count,0), COALESCE(t.tool_use_count,0),
-		             COALESCE(t.system_prompt_hash,''), COALESCE(t.message_prefix_hash,''),
-		             COALESCE(t.time_to_first_token_ms,0), COALESCE(t.total_response_ms,0),
-		             COALESCE(t.stop_reason,''), COALESCE(t.http_status,0), COALESCE(t.error_class,''),
-		             COALESCE(t.route,''), COALESCE(t.routing_generation,0), COALESCE(t.authority_source,'')
-		        FROM api_turns t LEFT JOIN projects p ON t.project_id = p.id
-		       WHERE t.id > ?`
+		q := apiTurnPushSelect + ` WHERE t.id > ?`
 		if scopeFilter != "" {
 			q += ` AND t.project_id IN (` + scopeFilter + `)`
 		}
@@ -1252,26 +1326,11 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: api_turns: %w", err)
 		}
 		for rows.Next() {
-			var id int64
-			var r orgcontract.APITurnRow
-			if err := rows.Scan(&id, &r.SessionID,
-				&r.ProjectRootHash, &r.ProjectRoot,
-				&r.Timestamp, &r.Provider,
-				&r.Model, &r.RequestID, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens,
-				&r.CacheCreationTokens, &r.CacheCreation1hTokens, &r.WebSearchRequests, &r.CostUSD,
-				&r.MessageCount, &r.ToolUseCount, &r.SystemPromptHash, &r.MessagePrefixHash,
-				&r.TimeToFirstTokenMS, &r.TotalResponseMS, &r.StopReason, &r.HTTPStatus,
-				&r.ErrorClass,
-				// Plane B per-turn authority stamps (content-free metadata,
-				// always shipped — never gated by shipsRawContent below).
-				&r.Route, &r.RoutingGeneration, &r.AuthoritySource); err != nil {
+			id, r, err := scanAPITurnPushRow(rows, share, orgID, userEmail, rev)
+			if err != nil {
 				_ = rows.Close()
 				return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: scan api_turn: %w", err)
 			}
-			if !share.shipsRawContent() {
-				r.ProjectRoot = ""
-			}
-			r.OrgID, r.UserEmail = orgID, userEmail
 			sz := jsonSize(r)
 			if !fits(sz) {
 				budgetHit = true
@@ -1288,59 +1347,35 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 
 	// --- token_usage ---
 	if !budgetHit {
-		q := `SELECT tu.id, tu.session_id,
-		             COALESCE(p.root_path_hash,''), COALESCE(p.root_path,''),
-		             tu.timestamp, tu.tool,
-		             COALESCE(tu.model,''), COALESCE(tu.input_tokens,0), COALESCE(tu.output_tokens,0),
-		             COALESCE(tu.cache_read_tokens,0), COALESCE(tu.cache_creation_tokens,0),
-		             COALESCE(tu.cache_creation_1h_tokens,0), COALESCE(tu.reasoning_tokens,0),
-		             COALESCE(tu.web_search_requests,0), COALESCE(tu.estimated_cost_usd,0),
-		             tu.source, COALESCE(tu.reliability,'unknown'),
-		             COALESCE(tu.source_file_hash,''), COALESCE(tu.source_file,''),
-		             COALESCE(tu.source_event_id,''), COALESCE(tu.message_id,''),
-		             COALESCE(tu.is_sidechain,0), COALESCE(tu.fast,0)
-		        FROM token_usage tu
-		        LEFT JOIN sessions s ON tu.session_id = s.id
-		        LEFT JOIN projects p ON s.project_id = p.id
-		       WHERE tu.id > ?`
+		heldSQL, heldArgs := "0", []any(nil)
+		if scope.Settle.active() {
+			heldSQL, heldArgs = scope.Settle.heldExpr()
+		}
+		//nolint:gosec // G202: the head embeds heldSQL ("0" or PushSettle.heldExpr's in-package CASE, values bound via heldArgs); scopeFilter is the resolved integer project-id list.
+		q := tokenUsagePushSelect(heldSQL) + ` WHERE tu.id > ?`
 		if scopeFilter != "" {
 			q += ` AND s.project_id IN (` + scopeFilter + `)`
 		}
 		q += ` ORDER BY tu.id ASC`
-		rows, err := s.db.QueryContext(ctx, q, cur.TokenUsage)
+		rows, err := s.db.QueryContext(ctx, q, append(heldArgs, cur.TokenUsage)...)
 		if err != nil {
 			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: token_usage: %w", err)
 		}
 		for rows.Next() {
-			var id int64
-			var fast, sidechain int
-			var r orgcontract.TokenUsageRow
-			if err := rows.Scan(&id, &r.SessionID,
-				&r.ProjectRootHash, &r.ProjectRoot,
-				&r.Timestamp, &r.Tool,
-				&r.Model, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens,
-				&r.CacheCreation1hTokens, &r.ReasoningTokens, &r.WebSearchRequests, &r.EstimatedCostUSD,
-				&r.Source, &r.Reliability,
-				&r.SourceFileHash, &r.SourceFile,
-				&r.SourceEventID, &r.MessageID, &sidechain, &fast); err != nil {
+			id, held, r, err := s.scanTokenUsagePushRow(rows, share, orgID, userEmail, rev)
+			if err != nil {
 				_ = rows.Close()
 				return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: scan token_usage: %w", err)
 			}
-			// W1 (agent 087 / server 139): the sub-agent flag is METADATA — one
-			// bool over a row that already ships — so it rides UNCONDITIONALLY,
-			// above the content gate, exactly like ActionRow.IsSidechain does.
-			r.IsSidechain = sidechain != 0
-			if !share.shipsRawContent() {
-				r.ProjectRoot = ""
-				r.SourceFile = ""
+			// S10-SPEED settle holdback (pushsettle.go): stop BEFORE the
+			// first unsettled row so the cursor never passes it; it ships
+			// on a later tick carrying its gen_ms stamp. (Since agent
+			// migration 140 a stamp that lands after the row shipped is
+			// ALSO re-sent, so the holdback now saves a round trip rather
+			// than being the only way the stamp reaches the org.)
+			if held {
+				break
 			}
-			// G1-COST(b): price the row at push time when the adapter stored
-			// $0 (most hook/transcript adapters do — the node prices
-			// read-side, the org rollup SUMs the column). Fills the EXISTING
-			// estimated_cost_usd field; no wire-shape change. The node-local
-			// `fast` flag is a pricing input only, never a wire field.
-			s.priceTokenUsageRow(&r, fast != 0)
-			r.OrgID, r.UserEmail = orgID, userEmail
 			sz := jsonSize(r)
 			if !fits(sz) {
 				// token_usage is the last table; no need to set budgetHit.
@@ -1354,6 +1389,7 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: token_usage rows: %w", err)
 		}
 	}
+	batch.Acks.recordMain(cur, batch.Cursor)
 
 	// --- guard_events (guard spec §10.2 / §14.3) ---
 	// Unlike the NODE-LOCAL cache_* / advisor_* tables, guard events DO
@@ -1477,6 +1513,78 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 		}
 	}
 
+	// --- MCP relay per-record events (Agent Access P4 W4e, R14.5) ---
+	// The seventh cursor wire. ONLY under shipsRawContent(): the per-record
+	// rows carry the plain server/tool names and the L2 payloads AS STORED
+	// (an enrolled teams/enterprise node's capture posture, R9.5 / R10.6);
+	// an individual node ships none of them and its cursor stays put. Read
+	// through the one-owner seam in mcprelaysummary.go - this file names no
+	// relay table (the privacy sentinel forbids it). The server de-dupes a
+	// replay on (source_node_key, local_record_seq, record_kind), which is
+	// what makes the cursor CAS's "keep the stored cursor" branch safe here
+	// exactly as it is for guard_events.
+	if !budgetHit && share.shipsRawContent() {
+		evs, err := s.SelectMCPRelayEvents(ctx, cur.MCPRelay, mcpRelayEventsPerBatch)
+		if err != nil {
+			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: mcp relay events: %w", err)
+		}
+		for i := range evs {
+			r := evs[i]
+			r.OrgID, r.UserEmail = orgID, userEmail
+			sz := jsonSize(r)
+			if !fits(sz) {
+				break
+			}
+			batch.MCPRelayEvents = append(batch.MCPRelayEvents, r)
+			batch.Cursor.MCPRelay = r.LocalRecordSeq
+			budget.est += sz
+		}
+	}
+
+	// --- per-session rate-limit windows (lane F-WIRE) ---
+	// The eighth cursor wire: the newest subscription-window observation per
+	// (session, provider), so the org session drawer renders the same "% of
+	// limit spent" gauge the node's session detail does. It is the
+	// per-session sibling of the limit_gauge aggregate tier, so it ships under
+	// the SAME consent: the node's limit_gauge opt-in (an individual node's
+	// own choice, or an admin raise of it on a managed node), OR a node that
+	// already ships everything (shipsRawContent(): every enrolled
+	// teams/enterprise node under the full-capture ruling). An individual node
+	// that never opted in ships nothing and its cursor stays put.
+	//
+	// Read and coalesced through the one-owner seam in limitgauge.go - this
+	// file names no snapshot table (the privacy sentinel forbids it). The
+	// scan is bounded (limitSnapshotsScanPerBatch rows), and the coalesced
+	// rows are admitted by the same budget accounting as fits(): the first
+	// row of an otherwise-empty batch always ships (forward progress), later
+	// ones only within budget.max minus the cursor slack. A row that does not
+	// fit stops the walk unconsumed, so the cursor never passes a window that
+	// did not ship.
+	if !budgetHit && (share.LimitGauge || share.shipsRawContent()) {
+		cands, err := s.SelectSessionLimitSnapshots(ctx, cur.LimitSnapshots, limitSnapshotsScanPerBatch, scopeFilter)
+		if err != nil {
+			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: session limit snapshots: %w", err)
+		}
+		for i := range cands {
+			cands[i].Row.OrgID, cands[i].Row.UserEmail = orgID, userEmail
+		}
+		first := batch.RowCount() == 0
+		var used int64
+		admit := func(extra int64) bool {
+			switch {
+			case extra <= 0, first && used == 0:
+			case budget.est+used+extra > budget.max-pushEnvelopeCursorSlack:
+				return false
+			}
+			used += extra
+			return true
+		}
+		rows, next := coalesceSessionLimitSnapshots(cands, cur.LimitSnapshots, admit)
+		batch.SessionLimitSnapshots = rows
+		batch.Cursor.LimitSnapshots = next
+		budget.est += used
+	}
+
 	// §R19.4 aggregate rollup — attached only under the node-side
 	// opt-in. Computed by store.SelectRoutingSummaries (which owns the
 	// node-local read; this file deliberately never names the source
@@ -1491,6 +1599,42 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			sums[i].OrgID, sums[i].UserEmail = orgID, userEmail
 		}
 		batch.RoutingSummaries = fitSnapshot(s, budget, snapFamRoutingSummary, sums)
+	}
+
+	// MCP relay activity aggregate (Agent Access P4 W4e, doc3 §9.5). The
+	// HMAC-only day x vserver x tool x decision x attestation counts. Two
+	// postures, ONE composition site: an INDIVIDUAL node attaches it only
+	// under its own mcp_activity opt-in (R8.30.b); an ENROLLED teams/
+	// enterprise node attaches it by capture posture (shipsRawContent(),
+	// R9.5) whatever the flag says. Composed by store.SelectMCPRelayActivity
+	// (mcprelaysummary.go), which owns the read through the
+	// internal/mcprelay/record seam - this file names no relay table.
+	if (share.MCPActivity || share.shipsRawContent()) && s.snapChanged(ctx, snapFamMCPRelayActivity) {
+		act, err := s.SelectMCPRelayActivity(ctx)
+		if err != nil {
+			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: mcp relay activity: %w", err)
+		}
+		for i := range act {
+			act[i].OrgID, act[i].UserEmail = orgID, userEmail
+		}
+		batch.MCPRelayActivity = fitSnapshot(s, budget, snapFamMCPRelayActivity, act)
+	}
+
+	// Shadow-MCP discovery inventory (Agent Access P11 (c), R12.10 / R13.8 /
+	// R14.6). Same two-posture gate as the relay aggregate above; the SHAPE
+	// is decided here by passing shipsRawContent() in - FULL (raw locator)
+	// for an enrolled teams/enterprise node, REDUCED (identity + metadata
+	// only) otherwise. Composed by store.SelectMCPInventory (mcpinventory.go)
+	// through the host-bound provider seam - this file names no source.
+	if (share.MCPActivity || share.shipsRawContent()) && s.snapChanged(ctx, snapFamMCPInventory) {
+		inv, err := s.SelectMCPInventory(ctx, orgID, share.shipsRawContent())
+		if err != nil {
+			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: mcp inventory: %w", err)
+		}
+		for i := range inv {
+			inv[i].OrgID, inv[i].UserEmail = orgID, userEmail
+		}
+		batch.MCPInventory = fitSnapshot(s, budget, snapFamMCPInventory, inv)
 	}
 
 	// Org BUDGET posture (org-budget plan §3.3d) — one enum-only envelope-level
@@ -1550,6 +1694,40 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			ld[i].OrgID, ld[i].UserEmail = orgID, userEmail
 		}
 		batch.LOCDays = fitSnapshot(s, budget, snapFamLOCDays, ld)
+	}
+
+	// Session quality score (BL2-ORG). Same DEFAULT metadata posture as the
+	// LOC aggregates above: a rule-based score, ratios and token counts, no
+	// content. Windowed on scored_at (not started_at) because the scorer
+	// writes after the session's own row has usually shipped. Composed in
+	// sessionqualitysummary.go.
+	if s.snapChanged(ctx, snapFamSessionQuality) {
+		sq, err := s.SelectSessionQualityRows(ctx, scope)
+		if err != nil {
+			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: session quality: %w", err)
+		}
+		for i := range sq {
+			sq[i].OrgID, sq[i].UserEmail = orgID, userEmail
+		}
+		batch.SessionQuality = fitSnapshot(s, budget, snapFamSessionQuality, sq)
+	}
+
+	// Commit ownership (lane F-PROJ). Same DEFAULT metadata posture as the
+	// LOC aggregates above: commit-sha hashes, session ids and counts. The
+	// commit subject and the RAW commit sha are the gated fields, decided
+	// here by passing share.shipsRawContent() into the composer; author
+	// identity and paths
+	// have no wire field at all. Composed in commitownersummary.go, which
+	// reads the node-local commit tables only through their owning loaders.
+	if s.snapChanged(ctx, snapFamCommitOwnership) {
+		co, err := s.SelectCommitOwnershipRows(ctx, scope, share.shipsRawContent(), orgCommitLinkWindow)
+		if err != nil {
+			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: commit ownership: %w", err)
+		}
+		for i := range co {
+			co[i].OrgID, co[i].UserEmail = orgID, userEmail
+		}
+		batch.CommitOwnership = fitSnapshot(s, budget, snapFamCommitOwnership, co)
 	}
 
 	// Session task/todo checklist (W2) and vendor-login observations (W3) —
@@ -1950,6 +2128,377 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 
 	batch.EstBytes = budget.est
 	return batch, nil
+}
+
+// composeResends is the RE-SEND lane of SelectUnpushedSince (agent migration
+// 140): rows at or below the cursor that changed after they shipped, oldest
+// changes first, through the SAME select heads and scan*PushRow privacy strip
+// as the cursor lane. Only queue rows with seq <= rev are read (a newer change
+// waits for the next batch, which will carry a newer rev). Bounded by
+// pushResendRowCap and half the envelope.
+func (s *Store) composeResends(ctx context.Context, batch *PushBatch, budget *envelopeBudget, cur PushCursor, rev int64, tr pushTracking, scopeFilter string, share ShareOptions, orgID, userEmail string) error {
+	limit := (budget.max - pushEnvelopeCursorSlack) / 2
+	n := 0
+	fits := func(sz int64) bool {
+		if batch.RowCount() == 0 {
+			return true
+		}
+		return n < pushResendRowCap && budget.est+sz <= limit
+	}
+	// add scans one row and appends it when it fits; ok=false means the
+	// lane is full.
+	type addFn func(rows *sql.Rows) (id int64, ok bool, err error)
+	lanes := []struct {
+		table, head, idExpr, scopeExpr string
+		ceil                           int64
+		add                            addFn
+	}{
+		{"sessions", sessionPushSelect, "s.rowid", "p.id", cur.Sessions, func(rows *sql.Rows) (int64, bool, error) {
+			id, r, err := scanSessionPushRow(rows, share, orgID, userEmail, rev)
+			if err != nil {
+				return 0, false, err
+			}
+			sz := jsonSize(r)
+			if !fits(sz) {
+				return 0, false, nil
+			}
+			batch.Sessions = append(batch.Sessions, r)
+			budget.est += sz
+			return id, true, nil
+		}},
+		{"token_usage", tokenUsagePushSelect("0"), "tu.id", "s.project_id", cur.TokenUsage, func(rows *sql.Rows) (int64, bool, error) {
+			id, _, r, err := s.scanTokenUsagePushRow(rows, share, orgID, userEmail, rev)
+			if err != nil {
+				return 0, false, err
+			}
+			sz := jsonSize(r)
+			if !fits(sz) {
+				return 0, false, nil
+			}
+			batch.TokenUsage = append(batch.TokenUsage, r)
+			budget.est += sz
+			return id, true, nil
+		}},
+		{"api_turns", apiTurnPushSelect, "t.id", "t.project_id", cur.APITurns, func(rows *sql.Rows) (int64, bool, error) {
+			id, r, err := scanAPITurnPushRow(rows, share, orgID, userEmail, rev)
+			if err != nil {
+				return 0, false, err
+			}
+			sz := jsonSize(r)
+			if !fits(sz) {
+				return 0, false, nil
+			}
+			batch.APITurns = append(batch.APITurns, r)
+			budget.est += sz
+			return id, true, nil
+		}},
+		{"actions", actionPushSelect, "a.id", "a.project_id", cur.Actions, func(rows *sql.Rows) (int64, bool, error) {
+			id, r, err := scanActionPushRow(rows, share, orgID, userEmail, rev)
+			if err != nil {
+				return 0, false, err
+			}
+			sz := jsonSize(r)
+			if !fits(sz) {
+				return 0, false, nil
+			}
+			batch.Actions = append(batch.Actions, r)
+			budget.est += sz
+			return id, true, nil
+		}},
+	}
+	for _, l := range lanes {
+		floor, tracked := tr.floor[l.table]
+		if !tracked || n >= pushResendRowCap {
+			continue
+		}
+		q := l.head + pushChangesFilter(l.table, l.idExpr)
+		if scopeFilter != "" {
+			q += ` AND ` + l.scopeExpr + ` IN (` + scopeFilter + `)`
+		}
+		q += ` ORDER BY ` + l.idExpr + ` ASC`
+		rows, err := s.db.QueryContext(ctx, q, rev, l.ceil, floor, pushResendRowCap-n)
+		if err != nil {
+			return fmt.Errorf("store.SelectUnpushedSince: resend %s: %w", l.table, err)
+		}
+		full := false
+		for rows.Next() {
+			id, ok, err := l.add(rows)
+			if err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("store.SelectUnpushedSince: resend scan %s: %w", l.table, err)
+			}
+			if !ok {
+				full = true
+				break
+			}
+			n++
+			batch.Acks.addResent(l.table, id)
+		}
+		if err := closeRows(rows); err != nil {
+			return fmt.Errorf("store.SelectUnpushedSince: resend %s rows: %w", l.table, err)
+		}
+		if full {
+			break
+		}
+	}
+	return nil
+}
+
+// Cursor-wire SELECT heads (SELECT list + FROM/JOIN, no WHERE). The cursor
+// lane in SelectUnpushedSince and the re-send lane in composeResends both
+// build their queries from these and both decode through the matching
+// scan*PushRow below, so there is ONE column list and ONE per-row privacy
+// strip per table: a re-sent row can never ship a column (or a raw value)
+// that a first send of the same row would not.
+const sessionPushSelect = `SELECT s.rowid, s.id,
+		             COALESCE(p.root_path_hash,''), COALESCE(p.git_remote_hash,''),
+		             COALESCE(p.root_path,''),      COALESCE(p.git_remote,''),
+		             s.tool,
+		             COALESCE(s.model,''), COALESCE(s.git_branch,''), s.started_at,
+		             COALESCE(s.ended_at,''), COALESCE(s.total_actions,0),
+		             COALESCE(p.git_upstream_remote_hash,''), COALESCE(p.git_remote_owner_hash,''),
+		             COALESCE(p.git_upstream_owner_hash,''), COALESCE(p.root_commit_hash,''),
+		             COALESCE(p.content_fingerprint_hash,''), COALESCE(p.git_upstream_remote,''),
+		             COALESCE(s.workspace_hash,''), COALESCE(s.workspace,''), COALESCE(s.is_worktree,0),
+		             COALESCE(s.surface,''), COALESCE(s.surface_host,''), COALESCE(s.tool_version,''),
+		             COALESCE(s.parent_thread_id,'')
+		        FROM sessions s JOIN projects p ON s.project_id = p.id`
+
+const actionPushSelect = `SELECT a.id, a.session_id,
+		             COALESCE(a.target_hash,''), COALESCE(a.source_file_hash,''),
+		             COALESCE(a.source_file,''), COALESCE(a.source_event_id,''),
+		             a.timestamp, a.tool, a.action_type,
+		             COALESCE(a.target,''),
+		             COALESCE(a.turn_index,0), COALESCE(a.success,1), COALESCE(a.duration_ms,0),
+		             COALESCE(a.is_sidechain,0),
+		             COALESCE(a.raw_tool_input,''), COALESCE(a.raw_tool_output,''),
+		             COALESCE(a.preceding_reasoning,''), COALESCE(a.error_message,''),
+		             COALESCE(json_extract(a.metadata,'$.effort_level'),''),
+		             COALESCE(json_extract(a.metadata,'$.stop_reason'),''),
+		             COALESCE(a.message_id,'')
+		        FROM actions a`
+
+const apiTurnPushSelect = `SELECT t.id, COALESCE(t.session_id,''),
+		             COALESCE(p.root_path_hash,''), COALESCE(p.root_path,''),
+		             t.timestamp,
+		             t.provider, COALESCE(t.model,''), COALESCE(t.request_id,''),
+		             t.input_tokens, t.output_tokens, COALESCE(t.cache_read_tokens,0),
+		             COALESCE(t.cache_creation_tokens,0), COALESCE(t.cache_creation_1h_tokens,0),
+		             COALESCE(t.web_search_requests,0), COALESCE(t.cost_usd,0),
+		             COALESCE(t.message_count,0), COALESCE(t.tool_use_count,0),
+		             COALESCE(t.system_prompt_hash,''), COALESCE(t.message_prefix_hash,''),
+		             COALESCE(t.time_to_first_token_ms,0), COALESCE(t.total_response_ms,0),
+		             COALESCE(t.stop_reason,''), COALESCE(t.http_status,0), COALESCE(t.error_class,''),
+		             COALESCE(t.route,''), COALESCE(t.routing_generation,0), COALESCE(t.authority_source,''),
+		             COALESCE(t.request_class,'')
+		        FROM api_turns t LEFT JOIN projects p ON t.project_id = p.id`
+
+// tokenUsagePushSelect is the token_usage head. heldSQL is the S10-SPEED
+// settle-holdback expression ("0" when the holdback is off, and always "0"
+// on the re-send lane, which never holds).
+func tokenUsagePushSelect(heldSQL string) string {
+	//nolint:gosec // G202: heldSQL is "0" or PushSettle.heldExpr's in-package CASE with ?-placeholders (values bound by the caller).
+	return `SELECT tu.id, tu.session_id,
+		             COALESCE(p.root_path_hash,''), COALESCE(p.root_path,''),
+		             tu.timestamp, tu.tool,
+		             COALESCE(tu.model,''), COALESCE(tu.input_tokens,0), COALESCE(tu.output_tokens,0),
+		             COALESCE(tu.cache_read_tokens,0), COALESCE(tu.cache_creation_tokens,0),
+		             COALESCE(tu.cache_creation_1h_tokens,0), COALESCE(tu.reasoning_tokens,0),
+		             COALESCE(tu.web_search_requests,0), COALESCE(tu.estimated_cost_usd,0),
+		             tu.source, COALESCE(tu.reliability,'unknown'),
+		             COALESCE(tu.source_file_hash,''), COALESCE(tu.source_file,''),
+		             COALESCE(tu.source_event_id,''), COALESCE(tu.message_id,''),
+		             COALESCE(tu.is_sidechain,0), COALESCE(tu.fast,0), COALESCE(tu.turn_id,''),
+		             COALESCE(tu.gen_ms,0), COALESCE(tu.gen_basis,''),
+		             ` + heldSQL + `
+		        FROM token_usage tu
+		        LEFT JOIN sessions s ON tu.session_id = s.id
+		        LEFT JOIN projects p ON s.project_id = p.id`
+}
+
+// scanSessionPushRow decodes one sessionPushSelect row into its wire shape,
+// applying the sessions privacy strip. rev is stamped as NodeRev.
+func scanSessionPushRow(rows *sql.Rows, share ShareOptions, orgID, userEmail string, rev int64) (int64, orgcontract.SessionRow, error) {
+	var rowid int64
+	var r orgcontract.SessionRow
+	var isWorktree int
+	if err := rows.Scan(&rowid, &r.ID,
+		&r.ProjectRootHash, &r.GitRemoteHash,
+		&r.ProjectRoot, &r.GitRemote,
+		&r.Tool,
+		&r.Model, &r.GitBranch, &r.StartedAt, &r.EndedAt, &r.TotalActions,
+		&r.GitUpstreamRemoteHash, &r.GitRemoteOwnerHash,
+		&r.GitUpstreamOwnerHash, &r.RootCommitHash,
+		&r.ContentFingerprintHash, &r.GitUpstreamRemote,
+		&r.WorkspaceHash, &r.Workspace, &isWorktree,
+		&r.Surface, &r.SurfaceHost, &r.ToolVersion,
+		&r.ParentThreadID); err != nil {
+		return 0, r, err
+	}
+	r.IsWorktree = isWorktree != 0
+	// Closed-vocabulary gate on the capture-surface HOST (PRIV-2,
+	// codebase audit 2026-09-16). surface_host ships in EVERY posture
+	// on the grounds that it is a bounded host token; this is what
+	// makes that true rather than merely conventional. Unrecognized ⇒
+	// "other"; empty stays empty (unstamped, not unknown-host). See
+	// knownSurfaceHosts at the bottom of this file.
+	r.SurfaceHost = surfaceHostForWire(r.SurfaceHost)
+	// Privacy seam: strip raw paths when not opted into full-content
+	// sharing. The hash counterparts (already scanned) carry the
+	// signal the server needs. git_branch is stripped outright — it has
+	// no hash counterpart and no server feature keys on it, yet branch
+	// names routinely encode client/codename/ticket identifiers, so in
+	// the default metadata-only posture it must not ship raw (it was
+	// previously leaking, inconsistent with git_remote here).
+	// git_upstream_remote / workspace (Project Identity Resolver v2,
+	// §3.2) join the same strip: they are the ONLY two resolver-v2
+	// fields with a raw counterpart on the wire. The other resolver-v2
+	// fields (the four owner/root-commit/fingerprint hashes plus
+	// IsWorktree) have no raw counterpart at all — they stay above
+	// this gate and always ship, exactly like ProjectRootHash /
+	// GitRemoteHash do. root_commit_sha and content_fingerprint (the
+	// raw pre-images) are never selected into r in the first place.
+	// Capture surface (W1, agent 107 / server 139) is likewise NOT in
+	// this strip: surface is a closed vocabulary (models.KnownSurface)
+	// and surface_host a bounded host token, so they are METADATA and
+	// ship in every posture. Empty stays empty — an unstamped session
+	// must reach the org as UNKNOWN, never as a defaulted "cli".
+	// tool_version (server 161 / pg 0027) joins the same unconditional
+	// bucket: it is not a closed vocabulary like surface, but it is a
+	// bounded, non-prose, vendor-authored token
+	// (internal/store/toolversion.go::validToolVersion rejects
+	// whitespace/control chars/prose before it ever lands in the
+	// column), so it carries no developer-authored content risk and
+	// ships in every posture, same as AgentVersion already does for
+	// the Observer binary itself. parent_thread_id (server 162 / pg
+	// 0028) joins the same unconditional bucket for a different
+	// reason: it is not a closed vocabulary or a bounded token, it
+	// is an OPAQUE vendor-minted session id, and the child session
+	// it points at already ships as its own row on the wire — so
+	// shipping the pointer adds structure (fan-out), not content.
+	// forked_from_id / thread_source (the fact/kind of a fork) stay
+	// NODE-LOCAL and are deliberately not selected above.
+	if !share.shipsRawContent() {
+		r.ProjectRoot = ""
+		r.GitRemote = ""
+		r.GitBranch = ""
+		r.GitUpstreamRemote = ""
+		r.Workspace = ""
+	}
+	r.OrgID, r.UserEmail = orgID, userEmail
+	r.NodeRev = rev
+	return rowid, r, nil
+}
+
+// scanActionPushRow decodes one actionPushSelect row into its wire shape,
+// applying the actions privacy strip. rev is stamped as NodeRev.
+func scanActionPushRow(rows *sql.Rows, share ShareOptions, orgID, userEmail string, rev int64) (int64, orgcontract.ActionRow, error) {
+	var id, success, sidechain int64
+	var r orgcontract.ActionRow
+	if err := rows.Scan(&id, &r.SessionID,
+		&r.TargetHash, &r.SourceFileHash,
+		&r.SourceFile, &r.SourceEventID,
+		&r.Timestamp, &r.Tool, &r.ActionType,
+		&r.Target, &r.TurnIndex,
+		&success, &r.DurationMs, &sidechain,
+		&r.RawToolInput, &r.RawToolOutput,
+		&r.PrecedingReasoning, &r.ErrorMessage,
+		&r.EffortLevel, &r.StopReason, &r.MessageID); err != nil {
+		return 0, r, err
+	}
+	r.Success = success != 0
+	r.IsSidechain = sidechain != 0
+	// Privacy seam:
+	//   - SourceFile is a filesystem path → strip when not opted in.
+	//   - Target is per-action: in full-content mode, always ship;
+	//     in metadata-only mode, ship only when the action type is
+	//     in the explicit TargetActionAllowlist (e.g. read_file).
+	//   - The four body columns ship ONLY under the distinct
+	//     shipsToolBodies() tier (never under shipsRawContent alone).
+	if !share.shipsRawContent() {
+		r.SourceFile = ""
+	}
+	if !share.targetAllowed(r.ActionType) {
+		r.Target = ""
+	}
+	if !share.shipsToolBodies() {
+		r.RawToolInput = ""
+		r.RawToolOutput = ""
+		r.PrecedingReasoning = ""
+		r.ErrorMessage = ""
+	}
+	r.OrgID, r.UserEmail = orgID, userEmail
+	r.NodeRev = rev
+	return id, r, nil
+}
+
+// scanAPITurnPushRow decodes one apiTurnPushSelect row into its wire shape,
+// applying the api_turns privacy strip. rev is stamped as NodeRev.
+func scanAPITurnPushRow(rows *sql.Rows, share ShareOptions, orgID, userEmail string, rev int64) (int64, orgcontract.APITurnRow, error) {
+	var id int64
+	var r orgcontract.APITurnRow
+	if err := rows.Scan(&id, &r.SessionID,
+		&r.ProjectRootHash, &r.ProjectRoot,
+		&r.Timestamp, &r.Provider,
+		&r.Model, &r.RequestID, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens,
+		&r.CacheCreationTokens, &r.CacheCreation1hTokens, &r.WebSearchRequests, &r.CostUSD,
+		&r.MessageCount, &r.ToolUseCount, &r.SystemPromptHash, &r.MessagePrefixHash,
+		&r.TimeToFirstTokenMS, &r.TotalResponseMS, &r.StopReason, &r.HTTPStatus,
+		&r.ErrorClass,
+		// Plane B per-turn authority stamps (content-free metadata,
+		// always shipped — never gated by shipsRawContent below).
+		&r.Route, &r.RoutingGeneration, &r.AuthoritySource, &r.RequestClass); err != nil {
+		return 0, r, err
+	}
+	if !share.shipsRawContent() {
+		r.ProjectRoot = ""
+	}
+	r.OrgID, r.UserEmail = orgID, userEmail
+	r.NodeRev = rev
+	return id, r, nil
+}
+
+// scanTokenUsagePushRow decodes one tokenUsagePushSelect row into its wire
+// shape, applying the token_usage privacy strip and push-time pricing. held
+// reports the settle-holdback column. rev is stamped as NodeRev.
+func (s *Store) scanTokenUsagePushRow(rows *sql.Rows, share ShareOptions, orgID, userEmail string, rev int64) (int64, bool, orgcontract.TokenUsageRow, error) {
+	var id int64
+	var fast, sidechain, held int
+	var r orgcontract.TokenUsageRow
+	if err := rows.Scan(&id, &r.SessionID,
+		&r.ProjectRootHash, &r.ProjectRoot,
+		&r.Timestamp, &r.Tool,
+		&r.Model, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens,
+		&r.CacheCreation1hTokens, &r.ReasoningTokens, &r.WebSearchRequests, &r.EstimatedCostUSD,
+		&r.Source, &r.Reliability,
+		&r.SourceFileHash, &r.SourceFile,
+		&r.SourceEventID, &r.MessageID, &sidechain, &fast, &r.TurnID,
+		&r.GenMs, &r.GenBasis, &held); err != nil {
+		return 0, false, r, err
+	}
+	// W1 (agent 087 / server 139): the sub-agent flag is METADATA — one
+	// bool over a row that already ships — so it rides UNCONDITIONALLY,
+	// above the content gate, exactly like ActionRow.IsSidechain does.
+	r.IsSidechain = sidechain != 0
+	// §7 follow-up (server 160 / pg 0026): turn_id is an opaque
+	// grouping id, METADATA by construction — rides UNCONDITIONALLY,
+	// same posture as IsSidechain/MessageID (r.TurnID already scanned
+	// above; nothing further to gate here). GenMs/GenBasis (server 174
+	// / pg 0040) are the same posture — a duration + closed enum,
+	// already scanned above; nothing further to gate here either.
+	if !share.shipsRawContent() {
+		r.ProjectRoot = ""
+		r.SourceFile = ""
+	}
+	// G1-COST(b): price the row at push time when the adapter stored
+	// $0 (most hook/transcript adapters do — the node prices
+	// read-side, the org rollup SUMs the column). Fills the EXISTING
+	// estimated_cost_usd field; no wire-shape change. The node-local
+	// `fast` flag is a pricing input only, never a wire field.
+	s.priceTokenUsageRow(&r, fast != 0)
+	r.OrgID, r.UserEmail = orgID, userEmail
+	r.NodeRev = rev
+	return id, held != 0, r, nil
 }
 
 // composeObsTiers attaches the opt-in org-tier observability rollups to the
@@ -2435,13 +2984,21 @@ var knownSurfaceHosts = map[string]bool{
 	"zed":    true,
 	"ide":    true,
 	// Claude Code (internal/adapter/claudecode): the CLI, Claude Desktop's
-	// own tab, and the Agent SDK language tokens ("sdk-ts" ⇒ "ts"). An SDK
-	// language this list has not caught up with coarsens to "other".
+	// own tab, and the Agent SDK tokens ("sdk-ts" ⇒ "ts"). An SDK token this
+	// list has not caught up with coarsens to "other".
+	//
+	// "cli" is entrypoint "sdk-cli": Claude Code's own headless / print mode
+	// (`claude -p`), which the adapter resolves to surface=sdk, host=cli.
+	// It was missing here, so every such session read `sdk · cli` on the
+	// node and `sdk · other` on the org (MCP audit #4c, 2026-09-27; 22 of
+	// the grounding host's claude-code sessions carry it). A fixed vendor
+	// token, not a path or free text.
 	"claude":         true,
 	"claude-desktop": true,
 	"sdk":            true,
 	"ts":             true,
 	"py":             true,
+	"cli":            true,
 	// Codex + its Open Interpreter rebadge (internal/adapter/codex).
 	"codex-cli":        true,
 	"codex-exec":       true,
@@ -2480,4 +3037,15 @@ func surfaceHostForWire(stored string) string {
 		return stored
 	}
 	return surfaceHostOther
+}
+
+// SurfaceHostShipsVerbatim reports whether a stored sessions.surface_host
+// token crosses the org wire as itself (it is in knownSurfaceHosts) rather
+// than coarsening to "other". Exported for PRODUCER-side drift guards only:
+// a producer's test asserts every host token it can mint ships verbatim, so a
+// new token fails a test and gets reviewed into the list above instead of
+// silently reading "other" on the org (the MCP audit #4c class). It never
+// widens the gate: the list itself stays hand-maintained.
+func SurfaceHostShipsVerbatim(host string) bool {
+	return knownSurfaceHosts[host]
 }

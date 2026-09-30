@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useApi } from "@/lib/useApi";
 import { fmtBytes, fmtCompact, fmtDateTime, fmtInt, fmtUSD, fmtYearMonth } from "@/lib/format";
 import { HeroWordmark } from "@/components/HeroWordmark";
+import { ErrorState, InlineLoading, ModelId, Table } from "@/components/primitives";
 import type { MonthlyReport, ProjectsResponse } from "@/lib/types";
 
 // Monthly statement (P6.6): a print-friendly document over
@@ -24,7 +25,7 @@ export function ReportPage() {
   const r = report.data;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 p-6 print:max-w-none print:p-0">
+    <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6 print:max-w-none print:p-0">
       {/* Screen-only controls */}
       <div className="flex flex-wrap items-center gap-2 print:hidden">
         <select
@@ -63,9 +64,14 @@ export function ReportPage() {
       </div>
 
       {report.loading ? (
-        <p className="text-[12px] text-fg-3">Building the statement…</p>
+        <InlineLoading label="Building the statement" />
       ) : !r ? (
-        <p className="text-[12px] text-danger">{report.error?.message ?? "report unavailable"}</p>
+        <ErrorState
+          variant="page"
+          title="Couldn't build this statement"
+          error={report.error?.message ?? "report unavailable"}
+          onRetry={report.reload}
+        />
       ) : (
         <article className="space-y-5 rounded-3 border border-line-2 bg-bg-2 p-6 print:border-0 print:bg-transparent print:p-0">
           <header className="border-b border-line-1 pb-3">
@@ -96,7 +102,12 @@ export function ReportPage() {
             />
           </section>
 
-          <ReportTable title="Spend by model" rows={r.by_model ?? []} keyLabel="Model" />
+          <ReportTable
+            title="Spend by model"
+            rows={r.by_model ?? []}
+            keyLabel="Model"
+            renderKey={(k) => <ModelId model={k} className="max-w-full" />}
+          />
           <ReportTable title="Spend by tool" rows={r.by_tool ?? []} keyLabel="Tool" sessions />
           {!r.project && (
             <ReportTable title="Spend by project" rows={r.by_project ?? []} keyLabel="Project" sessions mono />
@@ -128,8 +139,9 @@ export function ReportPage() {
               <h2 className="mb-1.5 text-[13px] font-semibold text-fg-0">
                 Top sessions ({Math.min(25, r.top_sessions!.length)})
               </h2>
-              <table className="w-full text-left text-[11.5px]">
-                <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
+              <Table
+                minWidth={r.project ? 360 : 520}
+                head={
                   <tr>
                     <th className="py-1 font-medium">Started</th>
                     <th className="py-1 font-medium">Tool</th>
@@ -137,21 +149,20 @@ export function ReportPage() {
                     <th className="py-1 text-right font-medium">Turns</th>
                     <th className="py-1 text-right font-medium">Cost</th>
                   </tr>
-                </thead>
-                <tbody>
-                  {r.top_sessions!.map((s) => (
-                    <tr key={s.id} className="border-t border-line-1">
-                      <td className="py-1 tabular-nums">{fmtDateTime(s.started_at)}</td>
-                      <td className="py-1">{s.tool || "-"}</td>
-                      {!r.project && (
-                        <td className="max-w-[220px] truncate py-1 font-mono text-[10.5px]">{s.project || "-"}</td>
-                      )}
-                      <td className="py-1 text-right tabular-nums">{fmtInt(s.turns)}</td>
-                      <td className="py-1 text-right tabular-nums">{fmtUSD(s.cost_usd)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                }
+              >
+                {r.top_sessions!.map((s) => (
+                  <tr key={s.id} className="border-t border-line-1">
+                    <td className="whitespace-nowrap py-1 pr-2 tabular-nums">{fmtDateTime(s.started_at)}</td>
+                    <td className="whitespace-nowrap py-1 pr-2">{s.tool || "-"}</td>
+                    {!r.project && (
+                      <td className="max-w-[220px] truncate py-1 pr-2 font-mono text-[10.5px]">{s.project || "-"}</td>
+                    )}
+                    <td className="py-1 text-right tabular-nums">{fmtInt(s.turns)}</td>
+                    <td className="py-1 text-right tabular-nums">{fmtUSD(s.cost_usd)}</td>
+                  </tr>
+                ))}
+              </Table>
             </section>
           )}
 
@@ -189,37 +200,43 @@ function ReportTable({
   keyLabel,
   sessions,
   mono,
+  renderKey,
 }: {
   title: string;
   rows: { key: string; cost_usd: number; turns: number; sessions?: number }[];
   keyLabel: string;
   sessions?: boolean;
   mono?: boolean;
+  // Optional rich key cell (e.g. ModelId with the family mark); default is
+  // the key as plain text.
+  renderKey?: (key: string) => ReactNode;
 }) {
   if (rows.length === 0) return null;
   return (
     <section>
       <h2 className="mb-1.5 text-[13px] font-semibold text-fg-0">{title}</h2>
-      <table className="w-full text-left text-[11.5px]">
-        <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
+      <Table
+        minWidth={sessions ? 360 : 300}
+        head={
           <tr>
             <th className="py-1 font-medium">{keyLabel}</th>
             {sessions && <th className="py-1 text-right font-medium">Sessions</th>}
             <th className="py-1 text-right font-medium">Turns</th>
             <th className="py-1 text-right font-medium">Cost</th>
           </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.key} className="border-t border-line-1">
-              <td className={`max-w-[300px] truncate py-1 ${mono ? "font-mono text-[10.5px]" : ""}`}>{row.key}</td>
-              {sessions && <td className="py-1 text-right tabular-nums">{fmtInt(row.sessions ?? 0)}</td>}
-              <td className="py-1 text-right tabular-nums">{fmtInt(row.turns)}</td>
-              <td className="py-1 text-right tabular-nums">{fmtUSD(row.cost_usd)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+        }
+      >
+        {rows.map((row) => (
+          <tr key={row.key} className="border-t border-line-1">
+            <td className={`max-w-[300px] truncate py-1 pr-2 ${mono ? "font-mono text-[10.5px]" : ""}`}>
+              {renderKey ? renderKey(row.key) : row.key}
+            </td>
+            {sessions && <td className="py-1 text-right tabular-nums">{fmtInt(row.sessions ?? 0)}</td>}
+            <td className="py-1 text-right tabular-nums">{fmtInt(row.turns)}</td>
+            <td className="py-1 text-right tabular-nums">{fmtUSD(row.cost_usd)}</td>
+          </tr>
+        ))}
+      </Table>
     </section>
   );
 }

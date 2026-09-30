@@ -213,6 +213,11 @@ func foldSessionLOCBuckets(buckets []locOrgBucket) []orgcontract.SessionLOCRow {
 				SessionID:       b.sessionID,
 				ProjectRootHash: b.rootHash,
 				HumanCapture:    "none",
+				// Always reported by this composer, zero included: a nil
+				// pointer on the wire means "an older agent that predates
+				// the field", which the server stores as NULL and the org
+				// rollup refuses to render as 0% comments.
+				AISidechainAddedComment: new(int64),
 			}
 			byKey[k] = r
 			order = append(order, k)
@@ -250,6 +255,7 @@ func foldSessionLOCBuckets(buckets []locOrgBucket) []orgcontract.SessionLOCRow {
 				r.AISidechainAddedCode += b.addedCode
 				r.AISidechainModifiedCode += b.modifiedCode
 				r.AISidechainDeletedCode += b.deletedCode
+				*r.AISidechainAddedComment += b.addedComment
 				continue
 			}
 			r.AIAddedCode += b.addedCode
@@ -296,6 +302,7 @@ func locRowIsEmpty(r orgcontract.SessionLOCRow) bool {
 		r.AIAddedComment == 0 && r.AIDeletedComment == 0 &&
 		r.AIWhitespace == 0 && r.AIBlank == 0 && r.AIUnknown == 0 &&
 		r.AISidechainAddedCode == 0 && r.AISidechainModifiedCode == 0 && r.AISidechainDeletedCode == 0 &&
+		(r.AISidechainAddedComment == nil || *r.AISidechainAddedComment == 0) &&
 		r.HumanAddedCode == 0 && r.HumanModifiedCode == 0 && r.HumanDeletedCode == 0 &&
 		r.SystemAddedCode == 0 && r.SystemModifiedCode == 0 && r.SystemDeletedCode == 0 &&
 		r.UnknownLines == 0 && r.DocsLines == 0 && r.ConfigLines == 0
@@ -393,6 +400,7 @@ func (s *Store) SelectLOCDaySummaries(ctx context.Context, scope ScopeOptions) (
 SELECT substr(fc.saved_at, 1, 10) AS day, COALESCE(p.root_path_hash, ''), fc.actor,
        COUNT(DISTINCT fc.file_path_hash),
        COALESCE(SUM(fc.added_code + fc.modified_code), 0),
+       COALESCE(SUM(fc.added_comment), 0),
        COALESCE(MAX(fc.classifier_version), 0),
        COALESCE(SUM(CASE WHEN fc.source = 'editor' THEN 1 ELSE 0 END), 0)
   FROM file_changes fc
@@ -412,8 +420,8 @@ SELECT substr(fc.saved_at, 1, 10) AS day, COALESCE(p.root_path_hash, ''), fc.act
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var day, root, actor string
-		var files, lines, version, editorRows int64
-		if err := rows.Scan(&day, &root, &actor, &files, &lines, &version, &editorRows); err != nil {
+		var files, lines, comments, version, editorRows int64
+		if err := rows.Scan(&day, &root, &actor, &files, &lines, &comments, &version, &editorRows); err != nil {
 			return nil, fmt.Errorf("store.SelectLOCDaySummaries: scan: %w", err)
 		}
 		if strings.TrimSpace(day) == "" {
@@ -424,7 +432,9 @@ SELECT substr(fc.saved_at, 1, 10) AS day, COALESCE(p.root_path_hash, ''), fc.act
 		k := key{day, root}
 		r, ok := byKey[k]
 		if !ok {
-			r = &orgcontract.LOCDayRow{Day: day, ProjectRootHash: root, HumanCapture: "none"}
+			// AICommentLines is always reported by this composer (zero
+			// included); nil is reserved for an agent that predates it.
+			r = &orgcontract.LOCDayRow{Day: day, ProjectRootHash: root, HumanCapture: "none", AICommentLines: new(int64)}
 			byKey[k] = r
 			order = append(order, k)
 		}
@@ -438,6 +448,7 @@ SELECT substr(fc.saved_at, 1, 10) AS day, COALESCE(p.root_path_hash, ''), fc.act
 		switch actor {
 		case LOCActorAI:
 			r.AICodeLines += lines
+			*r.AICommentLines += comments
 		case LOCActorHuman:
 			r.HumanCodeLines += lines
 		case LOCActorSystem:
@@ -451,7 +462,7 @@ SELECT substr(fc.saved_at, 1, 10) AS day, COALESCE(p.root_path_hash, ''), fc.act
 	out := make([]orgcontract.LOCDayRow, 0, len(order))
 	for _, k := range order {
 		r := byKey[k]
-		if r.AICodeLines == 0 && r.HumanCodeLines == 0 && r.SystemCodeLines == 0 {
+		if r.AICodeLines == 0 && *r.AICommentLines == 0 && r.HumanCodeLines == 0 && r.SystemCodeLines == 0 {
 			continue
 		}
 		out = append(out, *r)

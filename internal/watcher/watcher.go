@@ -900,7 +900,7 @@ func (w *Watcher) processFileMode(ctx context.Context, a adapter.Adapter, path s
 	// MAX(off, NewOffset) guards against accidental cursor regression
 	// when RetrySuggested is set with NewOffset < off (e.g. an adapter
 	// returning fromOffset on a transient miss).
-	if setErr := w.persistProcessCursor(ctx, path, off, res); setErr != nil {
+	if setErr := w.persistProcessCursor(ctx, a, path, off, res); setErr != nil {
 		return out, setErr
 	}
 	return out, nil
@@ -1109,7 +1109,19 @@ func (w *Watcher) ingestProcessResult(ctx context.Context, a adapter.Adapter, re
 
 // persistProcessCursor advances the ordinary watcher cursor without allowing
 // a retry response to regress an already stored offset.
-func (w *Watcher) persistProcessCursor(ctx context.Context, path string, off int64, res adapter.ParseResult) error {
+func (w *Watcher) persistProcessCursor(ctx context.Context, a adapter.Adapter, path string, off int64, res adapter.ParseResult) error {
+	// A rotated-in-place file (RewindsOnTruncate): the persisted cursor
+	// points past the end of the NEW file and the parse re-read it from
+	// 0, so its lower NewOffset is the truth — store it as-is. Without
+	// this the MAX rule pins the stale cursor, the poller never looks at
+	// the file again (size <= cursor), and every later pass re-reads it
+	// from 0. Gated on the adapter's declaration: such an adapter
+	// returns a NewOffset below fromOffset only when it detected the
+	// rotation (fromOffset past EOF) itself, and every other file keeps
+	// the no-regression rule.
+	if res.NewOffset < off && fileCursorSemantics(a, path).RewindMeaningful() {
+		return w.store.RewindCursor(ctx, path, res.NewOffset)
+	}
 	if res.NewOffset <= off && !res.RetrySuggested {
 		return nil
 	}
@@ -1225,10 +1237,17 @@ func (w *Watcher) pollCursors(ctx context.Context) error {
 			// surfacing lives in the dashboard's health endpoint.
 			continue
 		}
-		if fi.Size() <= c.ByteOffset {
+		if fi.Size() == c.ByteOffset {
 			continue
 		}
 		a := w.adapterFor(c.SourceFile)
+		// A file SHORTER than its cursor was truncated or rotated. Only
+		// an adapter that declared the file rotates in place
+		// (RewindsOnTruncate) gets it re-processed; for every other
+		// file the historical rule stands (nothing past the cursor).
+		if fi.Size() < c.ByteOffset && (a == nil || !fileCursorSemantics(a, c.SourceFile).RewindMeaningful()) {
+			continue
+		}
 		if a == nil {
 			// No current adapter owns this path (orphan
 			// parse_cursors row from a tightened IsSessionFile,
@@ -1247,14 +1266,32 @@ func (w *Watcher) pollCursors(ctx context.Context) error {
 				"adapter", a.Name(), "path", c.SourceFile)
 			continue
 		}
-		behind := fi.Size() - c.ByteOffset
+		sem := fileCursorSemantics(a, c.SourceFile)
 		if err := w.processFile(ctx, a, c.SourceFile, false); err != nil {
 			w.logger.Warn("watcher.poll: process failed",
 				"adapter", a.Name(), "path", c.SourceFile, "err", err)
 			continue
 		}
-		w.logger.Info("watcher.poll: caught up dropped writes",
-			"adapter", a.Name(), "path", c.SourceFile, "behind_bytes", behind)
+		// Report a catch-up only when the pass actually moved the cursor.
+		// For a watermark store (goose's sessions.db and its -wal/-shm, a
+		// messages.id watermark) `size != cursor` holds on EVERY tick — the
+		// cursor is a row id, not a byte count — so the re-parse above runs
+		// each tick and finds nothing new; logging it unconditionally was a
+		// constant-behind_bytes Info line every ~2 s per file forever (live
+		// finding D7, node-3: 7,344 lines in about an hour). The re-parse
+		// itself stays: it is the only dropped-write safety net a watermark
+		// store has between full scans, and it early-returns on an
+		// unchanged watermark.
+		after, getErr := w.store.GetCursor(ctx, c.SourceFile)
+		if getErr != nil || after == c.ByteOffset {
+			continue
+		}
+		attrs := []any{"adapter", a.Name(), "path", c.SourceFile, "cursor_from", c.ByteOffset, "cursor_to", after}
+		if sem.Kind.LagMeaningful() {
+			// behind_bytes is a real byte lag only for a byte-offset cursor.
+			attrs = append(attrs, "behind_bytes", OversizeUnreadDelta(fi.Size(), c.ByteOffset))
+		}
+		w.logger.Info("watcher.poll: caught up dropped writes", attrs...)
 	}
 	return nil
 }

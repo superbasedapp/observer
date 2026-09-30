@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { Obs } from "@/components/Obs";
 import { useApi } from "@/lib/useApi";
 import type { StatusSnapshot } from "@/lib/types";
+import { Icon } from "@/components/primitives";
+import { X } from "lucide-react";
 
 // FirstCaptureToast — delight moment D-2 (usability arc P5.1 / §9.3):
 // when the sessions count is OBSERVED going 0→1 while the dashboard is
@@ -88,7 +90,7 @@ export function FirstCaptureToast() {
         className="ml-2 self-start text-[11px] text-fg-4 hover:text-fg-2"
         aria-label="Dismiss"
       >
-        ✕
+        <Icon icon={X} size="xs" />
       </button>
     </div>
   );

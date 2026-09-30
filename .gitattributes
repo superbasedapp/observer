@@ -67,3 +67,23 @@ Dockerfile* text eol=lf
 # LOC classifier golden corpus — byte-exact fixtures (one of them is
 # deliberately CRLF); never normalize line endings here.
 internal/loc/testdata/** -text
+
+# Generated web bundles (minified Vite output). Three of these trees are
+# COMMITTED on purpose - they are the go:embed inputs for the node and org
+# dashboards and for the cloud portal, so `go install`, the Go-only CI job
+# and every `COPY . .` Dockerfile build without Node - and web/dist + web2/dist
+# are ignored build outputs (listed so a force-added copy behaves the same).
+# `-diff` makes git, and every tool that shells out to it, treat them as
+# binary: diffs and `log -p` print "Binary files differ" instead of megabytes
+# of minified JS per rebuild. It also stops coding agents from persisting
+# whole-bundle patches in their session stores: OpenCode's snapshot diff
+# reads `diff --numstat`, and a `-`/`-` (binary) row gets an EMPTY patch
+# instead of a full before/after rewrite of every content-hashed chunk
+# (post-Agent-Access backlog item 9). The CI dist gates test the exit status
+# of `diff --quiet --exit-code`, which this attribute does not change.
+# `linguist-generated` collapses them in GitHub PR diffs too.
+web/dist/**                                    -diff linguist-generated=true
+web2/dist/**                                   -diff linguist-generated=true
+webcloud/dist/**                               -diff linguist-generated=true
+internal/intelligence/dashboard/webapp/dist/** -diff linguist-generated=true
+internal/orgserver/dashboard/webapp/dist/**    -diff linguist-generated=true

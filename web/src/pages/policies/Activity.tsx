@@ -1,10 +1,14 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Pill } from "@/components/primitives";
+import type { ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "@/components/DataTable";
+import { ChartShell, EmptyState, HostMark, InlineLoading, ModelId, Pill, Tooltip } from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
 import { fmtClock } from "@/lib/format";
-import { decisionVariant, severityVariant } from "./types";
-import { Card, Muted, Select } from "./ui";
+import { decisionTone, severityTone } from "@shared/lib/guardCatalog";
+import { VocabPill } from "@shared/lib/vocabPill";
+import { EGRESS_OUTCOME } from "@/lib/vocabTones";
+import { Select } from "./ui";
 
 // Activity tab — the read-side audit surfaces that close the author → test →
 // observe loop inside the Policies module: the admission VERDICT timeline (every
@@ -58,6 +62,125 @@ const DECISION_FILTER = [
   { value: "deny", label: "deny" },
 ];
 
+// tsValue turns an audit timestamp into a sortable epoch-ms value.
+function tsValue(iso: string): number {
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) ? t : -Infinity;
+}
+
+// VERDICT_COLUMNS: rows arrive newest first; time, decision and criterion
+// sort on a header click.
+const VERDICT_COLUMNS: ColumnDef<Verdict, unknown>[] = [
+  {
+    id: "time",
+    header: "Time",
+    accessorFn: (v) => tsValue(v.ts),
+    cell: ({ row }) => <span className="whitespace-nowrap text-fg-3">{fmtClock(row.original.ts)}</span>,
+  },
+  {
+    id: "decision",
+    header: "Decision",
+    accessorKey: "decision",
+    cell: ({ row }) => {
+      const v = row.original;
+      return (
+        <span className="inline-flex items-center gap-1">
+          <VocabPill vocab="guardDecision" value={v.decision} tone={decisionTone(v.decision)} />
+          {v.severity && v.severity !== "info" && <VocabPill vocab="guardSeverity" value={v.severity} tone={severityTone(v.severity)} />}
+          {v.mode === "observe" && v.decision !== "allow" && (
+            <Pill variant="neutral" title="observe mode - recorded but not enforced">shadow</Pill>
+          )}
+        </span>
+      );
+    },
+  },
+  {
+    id: "criterion",
+    header: "Criterion",
+    accessorFn: (v) => v.criterion_id || "",
+    meta: { mono: true },
+    cell: ({ row }) => <span className="whitespace-nowrap text-[11px]">{row.original.criterion_id || "-"}</span>,
+  },
+  {
+    id: "judge",
+    header: "Judge",
+    enableSorting: false,
+    cell: ({ row }) => {
+      const v = row.original;
+      return v.judge_used ? (
+        <span className="text-fg-3">{v.latency_ms}ms{v.degraded ? " · degraded" : ""}</span>
+      ) : (
+        <span className="text-fg-3">deterministic</span>
+      );
+    },
+  },
+  {
+    id: "user",
+    header: "End-user",
+    enableSorting: false,
+    meta: { mono: true },
+    cell: ({ row }) => <span className="whitespace-nowrap text-[11px] text-fg-3">{row.original.user || "-"}</span>,
+  },
+  {
+    id: "reason",
+    header: "Reason",
+    enableSorting: false,
+    cell: ({ row }) => <span className="text-fg-3">{row.original.reason_excerpt || "-"}</span>,
+  },
+];
+
+// EGRESS_COLUMNS: rows arrive newest first; time, rule and action sort.
+const EGRESS_COLUMNS: ColumnDef<EgressDecisionRow, unknown>[] = [
+  {
+    id: "time",
+    header: "Time",
+    accessorFn: (d) => tsValue(d.ts),
+    cell: ({ row }) => <span className="whitespace-nowrap text-fg-3">{fmtClock(row.original.ts)}</span>,
+  },
+  {
+    id: "rule",
+    header: "Rule",
+    accessorKey: "rule_name",
+    cell: ({ row }) => <span className="font-semibold text-fg-1">{row.original.rule_name}</span>,
+  },
+  {
+    id: "action",
+    header: "Action",
+    accessorKey: "action",
+    meta: { mono: true },
+    cell: ({ row }) => (
+      <span className="text-[11px]">
+        {row.original.action}
+        <EgressActionDetail d={row.original} />
+      </span>
+    ),
+  },
+  {
+    id: "verdict",
+    header: "Verdict",
+    enableSorting: false,
+    cell: ({ row }) =>
+      row.original.verdict_decision ? (
+        <VocabPill vocab="guardDecision" value={row.original.verdict_decision} tone={decisionTone(row.original.verdict_decision)} />
+      ) : (
+        <span className="text-fg-3">-</span>
+      ),
+  },
+  {
+    id: "realized",
+    header: "Realized",
+    enableSorting: false,
+    cell: ({ row }) =>
+      row.original.realized_outcome ? (
+        <VocabPill vocab="egressOutcome" table={EGRESS_OUTCOME} value={row.original.realized_outcome} />
+      ) : (
+        <Tooltip content="advise-mode decisions are recorded but never routed">
+          <span tabIndex={0} className="cursor-help text-fg-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring">-</span>
+        </Tooltip>
+      ),
+  },
+];
+
 export function ActivityTab() {
   const [win, setWin] = useState("24");
   const [decision, setDecision] = useState("");
@@ -70,127 +193,87 @@ export function ActivityTab() {
 
   return (
     <div className="space-y-4">
-      <Card
+      <ChartShell
         title="Admission verdicts"
         sub="Every decision the admission policy recorded - the shadow (observe) or enforced verdict, which criterion fired, and whether the judge ran. Node-local audit; never pushed."
       >
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <Select value={win} onChange={setWin} options={WINDOWS} />
           <Select value={decision} onChange={setDecision} options={DECISION_FILTER} />
-          <button type="button" onClick={() => verdicts.reload()} className="rounded-2 border border-line-2 px-2 py-1 text-[11px] text-fg-2 hover:text-fg-1">
+          <button type="button" onClick={() => verdicts.reload()} className="rounded-2 border border-line-2 px-2 py-1 text-caption text-fg-2 hover:text-fg-1">
             Refresh
           </button>
           <span className="text-[11px] text-fg-3">{rows.length} in window</span>
         </div>
 
         {verdicts.loading && rows.length === 0 ? (
-          <Muted>Loading…</Muted>
+          <InlineLoading label="Loading verdicts" />
         ) : rows.length === 0 ? (
-          <Muted>No verdicts recorded in this window. Run a request through the app (or the Test tab, which records nothing).</Muted>
+          <EmptyState
+            variant="inline"
+            illustration="inbox"
+            illustrationSize={96}
+            title="No verdicts recorded in this window"
+            body="Run a request through the app (or the Test tab, which records nothing)."
+          />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-[12px]">
-              <thead>
-                <tr className="border-b border-line-1 text-[10.5px] uppercase tracking-[0.06em] text-fg-3">
-                  <th className="py-1.5 pr-3 font-semibold">Time</th>
-                  <th className="py-1.5 pr-3 font-semibold">Decision</th>
-                  <th className="py-1.5 pr-3 font-semibold">Criterion</th>
-                  <th className="py-1.5 pr-3 font-semibold">Judge</th>
-                  <th className="py-1.5 pr-3 font-semibold">End-user</th>
-                  <th className="py-1.5 font-semibold">Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((v) => (
-                  <tr key={v.id} className="border-b border-line-1/60 align-top">
-                    <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">{fmtClock(v.ts)}</td>
-                    <td className="py-1.5 pr-3">
-                      <span className="inline-flex items-center gap-1">
-                        <Pill variant={decisionVariant(v.decision)}>{v.decision}</Pill>
-                        {v.severity && v.severity !== "info" && <Pill variant={severityVariant(v.severity)}>{v.severity}</Pill>}
-                        {v.mode === "observe" && v.decision !== "allow" && (
-                          <span className="text-[10px] text-fg-3" title="observe mode - recorded but not enforced">shadow</span>
-                        )}
-                      </span>
-                    </td>
-                    <td className="py-1.5 pr-3 font-mono text-[11px] text-fg-2">{v.criterion_id || "-"}</td>
-                    <td className="py-1.5 pr-3">
-                      {v.judge_used ? (
-                        <span className="text-fg-3">{v.latency_ms}ms{v.degraded ? " · degraded" : ""}</span>
-                      ) : (
-                        <span className="text-fg-3">deterministic</span>
-                      )}
-                    </td>
-                    <td className="py-1.5 pr-3 font-mono text-[11px] text-fg-3">{v.user || "-"}</td>
-                    <td className="py-1.5 text-fg-3">{v.reason_excerpt || "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable<Verdict>
+            data={rows}
+            columns={VERDICT_COLUMNS}
+            rowKey={(v) => String(v.id)}
+            rowClassName={() => "align-top"}
+            minWidth={720}
+          />
         )}
-      </Card>
+      </ChartShell>
 
-      <Card
-        title={
-          <span className="inline-flex w-full items-center justify-between gap-2">
-            <span>Recent egress decisions</span>
-            <Link to="/egress" className="text-[11px] font-medium text-accent hover:underline">Full audit on Egress →</Link>
-          </span>
-        }
+      <ChartShell
+        title="Recent egress decisions"
+        right={<Link to="/egress" className="text-caption font-medium text-accent hover:underline">Full audit on Egress →</Link>}
         sub="Routing directives the egress policy produced. Advise-mode rows are recorded but never routed; enforce rows carry the proxy's realized outcome."
       >
         {egress.loading && egRows.length === 0 ? (
-          <Muted>Loading…</Muted>
+          <InlineLoading label="Loading egress decisions" />
         ) : egRows.length === 0 ? (
-          <Muted>No egress decisions yet - a row appears when an admission-judged request matches a routing rule.</Muted>
+          <EmptyState
+            variant="inline"
+            illustration="inbox"
+            illustrationSize={96}
+            title="No egress decisions yet"
+            body="A row appears when an admission-judged request matches a routing rule."
+          />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-[12px]">
-              <thead>
-                <tr className="border-b border-line-1 text-[10.5px] uppercase tracking-[0.06em] text-fg-3">
-                  <th className="py-1.5 pr-3 font-semibold">Time</th>
-                  <th className="py-1.5 pr-3 font-semibold">Rule</th>
-                  <th className="py-1.5 pr-3 font-semibold">Action</th>
-                  <th className="py-1.5 pr-3 font-semibold">Verdict</th>
-                  <th className="py-1.5 font-semibold">Realized</th>
-                </tr>
-              </thead>
-              <tbody>
-                {egRows.map((d) => (
-                  <tr key={d.id} className="border-b border-line-1/60">
-                    <td className="whitespace-nowrap py-1.5 pr-3 text-fg-3">{fmtClock(d.ts)}</td>
-                    <td className="py-1.5 pr-3 font-semibold text-fg-1">{d.rule_name}</td>
-                    <td className="py-1.5 pr-3 font-mono text-[11px] text-fg-2">
-                      {d.action}
-                      {egressActionDetail(d) && <span className="text-fg-3"> {egressActionDetail(d)}</span>}
-                    </td>
-                    <td className="py-1.5 pr-3">
-                      {d.verdict_decision ? <Pill variant={decisionVariant(d.verdict_decision)}>{d.verdict_decision}</Pill> : <span className="text-fg-3">-</span>}
-                    </td>
-                    <td className="py-1.5">
-                      {d.realized_outcome ? (
-                        <Pill variant={d.realized_outcome === "applied" ? "success" : d.realized_outcome.includes("open") || d.realized_outcome.includes("error") ? "danger" : "neutral"}>
-                          {d.realized_outcome}
-                        </Pill>
-                      ) : (
-                        <span className="text-fg-3" title="advise-mode decisions are recorded but never routed">-</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable<EgressDecisionRow>
+            data={egRows}
+            columns={EGRESS_COLUMNS}
+            rowKey={(d) => String(d.id)}
+            minWidth={560}
+          />
         )}
-      </Card>
+      </ChartShell>
     </div>
   );
 }
 
-function egressActionDetail(d: EgressDecisionRow): string {
-  if (d.upstream_id) return `→ ${d.upstream_id}`;
-  if (d.model_to) return `→ ${d.model_to}`;
-  if (d.effort) return `→ ${d.effort}`;
-  return "";
+// EgressActionDetail renders the action operand: an upstream id with its
+// serving-host mark (none when unknown), a target model as ModelId, or an
+// effort level.
+function EgressActionDetail({ d }: { d: EgressDecisionRow }) {
+  if (d.upstream_id) {
+    return (
+      <span className="inline-flex items-center gap-1 text-fg-3">
+        {" "}→ <HostMark host={d.upstream_id} size={11} />
+        {d.upstream_id}
+      </span>
+    );
+  }
+  if (d.model_to) {
+    return (
+      <span className="inline-flex items-center gap-1 text-fg-3">
+        {" "}→ <ModelId model={d.model_to} markSize={11} className="min-w-0" />
+      </span>
+    );
+  }
+  if (d.effort) return <span className="text-fg-3"> → {d.effort}</span>;
+  return null;
 }

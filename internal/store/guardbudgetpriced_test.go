@@ -116,12 +116,16 @@ func TestGuardBudgetSpendPriced_PreservesStoredCostAndPricesZeroRows(t *testing.
 	}
 }
 
-func TestGuardBudgetSpendPriced_DeduplicatesProxyAndWatcherByMaximum(t *testing.T) {
+// TestGuardBudgetSpendPriced_CountsAProxiedTurnOnce: a turn the proxy and the
+// watcher both captured (same model and token shape) counts once, as its
+// proxy row - the one session rule through the stored dedup verdicts - and
+// the dedup is read-time only (neither stored row is mutated).
+func TestGuardBudgetSpendPriced_CountsAProxiedTurnOnce(t *testing.T) {
 	s, db := newTestStore(t)
 	guardBudgetTestSession(t, s, "both")
 	at := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	insertGuardBudgetAPI(t, db, "both", "proxy-model", at, 10, 10, 0)
-	insertGuardBudgetUsage(t, db, "both", "watcher-model", "watcher", at, 10, 10, 0)
+	insertGuardBudgetUsage(t, db, "both", "proxy-model", "watcher", at.Add(2*time.Second), 10, 10, 0)
 	day, week, month := guardBudgetTestWindows()
 
 	spend, err := s.GuardBudgetSpendPriced(context.Background(), "both", day, week, month,
@@ -138,8 +142,8 @@ func TestGuardBudgetSpendPriced_DeduplicatesProxyAndWatcherByMaximum(t *testing.
 	assertGuardBudgetNear(t, "daily spend", spend.DailyUSD, 3)
 	assertGuardBudgetNear(t, "weekly spend", spend.WeeklyUSD, 3)
 	assertGuardBudgetNear(t, "monthly spend", spend.MonthlyUSD, 3)
-	if spend.PricedRows != 2 {
-		t.Errorf("priced rows = %d, want 2 source rows", spend.PricedRows)
+	if spend.PricedRows != 1 {
+		t.Errorf("priced rows = %d, want 1 (the transcript copy is not read)", spend.PricedRows)
 	}
 	var apiCost, tokenCost float64
 	if err := db.QueryRowContext(
@@ -460,28 +464,40 @@ func TestManagedBudgetUnpricedUsageIsScopedToItsTool(t *testing.T) {
 	}
 }
 
-// TestManagedBudgetUnpricedProxyRowStaysNodeWide pins the other half: an
-// api_turn carries no tool column, so nothing narrower than the node is
-// provable and the node-wide windows must still close.
-func TestManagedBudgetUnpricedProxyRowStaysNodeWide(t *testing.T) {
+// TestManagedBudgetUnpricedProxyRowScopedToSessionTool pins the other half:
+// an api_turn carries no tool column, so it is attributed through the
+// session it names (the org's spendCTE does the same) - its unpriced
+// coverage lands on that tool - while one outside every session proves
+// nothing narrower than the node and closes the node-wide windows.
+func TestManagedBudgetUnpricedProxyRowScopedToSessionTool(t *testing.T) {
 	t.Parallel()
 	st, database := newTestStore(t)
 	guardBudgetTestSession(t, st, "proxy-session")
 	day, week, month := guardBudgetTestWindows()
 	insertManagedGuardBudgetAPI(t, database, "proxy-session", "model-without-a-rate", day.Add(time.Hour), 100, 20)
 
-	spend, err := st.GuardBudgetSpendPriced(context.Background(), "proxy-session", day, week, month,
-		func(string, time.Time, PushTokenSplit) (float64, string, bool) { return 0, "miss", false },
+	price := func(string, time.Time, PushTokenSplit) (float64, string, bool) { return 0, "miss", false }
+	spend, err := st.GuardBudgetSpendPriced(context.Background(), "proxy-session", day, week, month, price,
 		GuardBudgetReadOptions{Managed: true})
 	if err != nil {
 		t.Fatalf("GuardBudgetSpendPriced: %v", err)
 	}
 	want := GuardBudgetUnavailableWindows{Session: true, Daily: true, Weekly: true, Monthly: true}
-	if spend.UnpricedWindows != want {
-		t.Fatalf("node-wide windows = %+v, want %+v", spend.UnpricedWindows, want)
+	if got := spend.UnpricedTools["claude-code"]; got != want {
+		t.Fatalf("session-tool windows = %+v, want %+v", got, want)
 	}
-	if len(spend.UnpricedTools) != 0 {
-		t.Fatalf("a row with no tool was attributed to one: %+v", spend.UnpricedTools)
+	if spend.UnpricedWindows != (GuardBudgetUnavailableWindows{}) {
+		t.Fatalf("a proxy row naming a session closed the node-wide windows: %+v", spend.UnpricedWindows)
+	}
+
+	insertManagedGuardBudgetAPI(t, database, "", "model-without-a-rate", day.Add(2*time.Hour), 100, 20)
+	spend, err = st.GuardBudgetSpendPriced(context.Background(), "proxy-session", day, week, month, price,
+		GuardBudgetReadOptions{Managed: true})
+	if err != nil {
+		t.Fatalf("GuardBudgetSpendPriced: %v", err)
+	}
+	if want := (GuardBudgetUnavailableWindows{Daily: true, Weekly: true, Monthly: true}); spend.UnpricedWindows != want {
+		t.Fatalf("session-less proxy row: node-wide windows = %+v, want %+v", spend.UnpricedWindows, want)
 	}
 }
 
@@ -514,25 +530,26 @@ func TestManagedBudgetInvalidToolRowStaysNodeWide(t *testing.T) {
 	}
 }
 
-// TestManagedBudgetProxyAndNativeOverlapTotalsByMaximum pins the removal of
-// the sources==3 rule. Every tool the daemon launches through the proxy AND
-// parses from its own store produces this shape; MAX(proxy, watcher) is the
-// established de-duplication and the window stays available.
-func TestManagedBudgetProxyAndNativeOverlapTotalsByMaximum(t *testing.T) {
+// TestManagedBudgetProxyAndNativeOverlapCountsTheTurnOnce pins the removal
+// of the sources==3 rule. Every tool the daemon launches through the proxy
+// AND parses from its own store produces this shape - the same turn in both
+// substrates; the one session rule (the stored sessionmsg dedup verdicts)
+// counts it once, as its proxy row, and the window stays available.
+func TestManagedBudgetProxyAndNativeOverlapCountsTheTurnOnce(t *testing.T) {
 	t.Parallel()
 	st, database := newTestStore(t)
 	guardBudgetTestSession(t, st, "overlap")
 	day, week, month := guardBudgetTestWindows()
 	at := day.Add(3 * time.Hour)
 	insertManagedGuardBudgetAPI(t, database, "overlap", "proxy-model", at, 200, 20)
-	insertManagedGuardBudgetUsage(t, database, "overlap", "opencode", "native-model", "overlap-native", at, 200, 20)
+	insertManagedGuardBudgetUsage(t, database, "overlap", "opencode", "proxy-model", "overlap-native", at.Add(2*time.Second), 200, 20)
 
 	spend, err := st.GuardBudgetSpendPriced(context.Background(), "overlap", day, week, month,
 		func(model string, _ time.Time, _ PushTokenSplit) (float64, string, bool) {
 			if model == "proxy-model" {
 				return 0.30, "exact", true
 			}
-			return 0.20, "org", true
+			return 9, "org", true // never asked: the transcript copy is not counted
 		}, GuardBudgetReadOptions{Managed: true})
 	if err != nil {
 		t.Fatalf("GuardBudgetSpendPriced: %v", err)

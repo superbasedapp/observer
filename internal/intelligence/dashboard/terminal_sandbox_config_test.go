@@ -130,6 +130,10 @@ func TestTerminalSandboxConfigPutRejectsInvalidValues(t *testing.T) {
 		{"negative retention", `{"backend":"bwrap","home_mode":"tmpfs","workspace_retention_days":-1,"prep_timeout_seconds":300}`},
 		{"relative workspaces dir", `{"backend":"bwrap","home_mode":"tmpfs","workspaces_dir":"relative","prep_timeout_seconds":300}`},
 		{"relative rw bind", `{"backend":"bwrap","home_mode":"tmpfs","extra_rw_binds":["relative"],"prep_timeout_seconds":300}`},
+		{"unknown egress tier", `{"backend":"bwrap","home_mode":"tmpfs","egress":"wide-open","prep_timeout_seconds":300}`},
+		{"public egress allow cidr", `{"backend":"bwrap","home_mode":"tmpfs","egress_allow_cidrs":["8.8.8.0/24"],"prep_timeout_seconds":300}`},
+		{"loopback egress allow cidr", `{"backend":"bwrap","home_mode":"tmpfs","egress_allow_cidrs":["127.0.0.0/8"],"prep_timeout_seconds":300}`},
+		{"non-cidr egress allow entry", `{"backend":"bwrap","home_mode":"tmpfs","egress_allow_cidrs":["registry.corp"],"prep_timeout_seconds":300}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -150,5 +154,81 @@ func TestTerminalSandboxConfigPutRequiresConfirmation(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("unconfirmed PUT = %d, want 403", rec.Code)
+	}
+}
+
+// TestTerminalSandboxConfigEgressRoundTrip pins the SR27-SBX-1 knobs: the GET
+// reports the effective tier ("internet" for the default), an explicit PUT
+// persists both knobs, and a PUT from a client that predates them (fields
+// omitted) KEEPS the saved values instead of resetting them.
+func TestTerminalSandboxConfigEgressRoundTrip(t *testing.T) {
+	s, h := newManageServer(t)
+	load := func() config.TerminalSandboxConfig {
+		t.Helper()
+		cfg, err := config.Load(config.LoadOptions{GlobalPath: s.opts.ConfigPath})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Terminal.Sandbox
+	}
+
+	code, out := putSandboxConfig(t, h, `{"backend":"bwrap","home_mode":"tmpfs","prep_timeout_seconds":300,"egress":"proxy_only","allow_tool_config_writes":true}`)
+	if code != http.StatusOK {
+		t.Fatalf("PUT = %d: %v", code, out)
+	}
+	if got := load(); got.Egress != "proxy_only" || !got.AllowToolConfigWrites {
+		t.Fatalf("explicit PUT persisted %+v", got)
+	}
+	sb, _ := out["sandbox"].(map[string]any)
+	if sb["egress"] != "proxy_only" || sb["allow_tool_config_writes"] != true {
+		t.Fatalf("PUT response sandbox = %v", sb)
+	}
+
+	code, out = putSandboxConfig(t, h, `{"enabled":true,"backend":"bwrap","home_mode":"tmpfs","prep_timeout_seconds":300}`)
+	if code != http.StatusOK {
+		t.Fatalf("legacy PUT = %d: %v", code, out)
+	}
+	if got := load(); got.Egress != "proxy_only" || !got.AllowToolConfigWrites || !got.Enabled {
+		t.Fatalf("a PUT omitting the new fields reset them: %+v", got)
+	}
+}
+
+// TestTerminalSandboxConfigEgressAllowCIDRsRoundTrip pins the private
+// destination allow-list: an explicit PUT persists it (trimmed, deduped),
+// the GET reports it, and a PUT that omits the field keeps it.
+func TestTerminalSandboxConfigEgressAllowCIDRsRoundTrip(t *testing.T) {
+	s, h := newManageServer(t)
+	load := func() config.TerminalSandboxConfig {
+		t.Helper()
+		cfg, err := config.Load(config.LoadOptions{GlobalPath: s.opts.ConfigPath})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Terminal.Sandbox
+	}
+	code, out := putSandboxConfig(t, h, `{"backend":"bwrap","home_mode":"tmpfs","prep_timeout_seconds":300,"egress_allow_cidrs":[" 10.20.0.0/16 ","10.20.0.0/16","fd00:1::/32",""]}`)
+	if code != http.StatusOK {
+		t.Fatalf("PUT = %d: %v", code, out)
+	}
+	if got := load().EgressAllowCIDRs; len(got) != 2 || got[0] != "10.20.0.0/16" || got[1] != "fd00:1::/32" {
+		t.Fatalf("persisted egress_allow_cidrs = %v", got)
+	}
+	code, out = putSandboxConfig(t, h, `{"enabled":true,"backend":"bwrap","home_mode":"tmpfs","prep_timeout_seconds":300}`)
+	if code != http.StatusOK {
+		t.Fatalf("legacy PUT = %d: %v", code, out)
+	}
+	if got := load().EgressAllowCIDRs; len(got) != 2 {
+		t.Fatalf("a PUT omitting egress_allow_cidrs reset it: %v", got)
+	}
+	sb, _ := out["sandbox"].(map[string]any)
+	if list, _ := sb["egress_allow_cidrs"].([]any); len(list) != 2 {
+		t.Fatalf("response egress_allow_cidrs = %v", sb["egress_allow_cidrs"])
+	}
+	code, _ = putSandboxConfig(t, h, `{"backend":"bwrap","home_mode":"tmpfs","prep_timeout_seconds":300,"egress_allow_cidrs":[]}`)
+	if code != http.StatusOK {
+		t.Fatalf("clearing PUT = %d", code)
+	}
+	if got := load().EgressAllowCIDRs; len(got) != 0 {
+		t.Fatalf("an explicit empty list did not clear: %v", got)
 	}
 }

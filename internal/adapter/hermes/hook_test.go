@@ -383,6 +383,61 @@ func TestBuildTokenEvent_HappyPath(t *testing.T) {
 	if tok.Reliability != models.ReliabilityApproximate {
 		t.Errorf("Reliability = %q", tok.Reliability)
 	}
+	// No api_duration field in this payload -> no gen-timing stamp.
+	if tok.GenMs != 0 || tok.GenBasis != "" || tok.GenTimingV != 0 {
+		t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want zero (no api_duration)", tok.GenMs, tok.GenBasis, tok.GenTimingV)
+	}
+}
+
+// TestBuildTokenEvent_GenMs is table-driven over the api_duration ->
+// GenMs stamping decision. api_duration is hookPayload.APIDuration
+// float64 `json:"api_duration"` (hook.go ~L80), FLOAT SECONDS per
+// testdata/hermes/plugin-api-source.txt ~L373 ("api_duration": 1.234),
+// covering exactly the one API call this post_api_request event's usage
+// block reports on.
+func TestBuildTokenEvent_GenMs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		apiDuration string // raw JSON literal, or "" to omit the field
+		wantGenMs   int64
+		wantStamped bool
+	}{
+		{name: "positive duration stamps ms-rounded", apiDuration: `1.234`, wantGenMs: 1234, wantStamped: true},
+		{name: "sub-millisecond rounds up", apiDuration: `0.0006`, wantGenMs: 1, wantStamped: true},
+		{name: "field omitted leaves unset", apiDuration: "", wantGenMs: 0, wantStamped: false},
+		{name: "zero duration leaves unset", apiDuration: `0`, wantGenMs: 0, wantStamped: false},
+		{name: "negative duration leaves unset", apiDuration: `-1.5`, wantGenMs: 0, wantStamped: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			durField := ""
+			if tt.apiDuration != "" {
+				durField = `"api_duration": ` + tt.apiDuration + `,`
+			}
+			body := []byte(`{
+				"event": "api_request",
+				"session_id": "s1",
+				"api_call_count": 1,
+				` + durField + `
+				"usage": {"input_tokens": 100, "output_tokens": 50}
+			}`)
+			tok, ok, err := BuildTokenEvent(EventAPIRequest, body)
+			if err != nil {
+				t.Fatalf("BuildTokenEvent: %v", err)
+			}
+			if !ok {
+				t.Fatal("ok = false")
+			}
+			if tt.wantStamped {
+				if tok.GenMs != tt.wantGenMs || tok.GenBasis != models.GenBasisNative || tok.GenTimingV != 1 {
+					t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want %d/native/1", tok.GenMs, tok.GenBasis, tok.GenTimingV, tt.wantGenMs)
+				}
+			} else if tok.GenMs != 0 || tok.GenBasis != "" || tok.GenTimingV != 0 {
+				t.Errorf("GenMs/GenBasis/GenTimingV = %d/%q/%d, want zero value (no stamp)", tok.GenMs, tok.GenBasis, tok.GenTimingV)
+			}
+		})
+	}
 }
 
 // TestBuildTokenEvent_CacheCreationLegacyKey pins the

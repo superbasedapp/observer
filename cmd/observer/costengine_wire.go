@@ -5,13 +5,14 @@ import (
 	"database/sql"
 	"log/slog"
 	"sync"
-	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/orgpricing"
+	"github.com/marmutapp/superbased-observer/internal/pricewire"
+	"github.com/marmutapp/superbased-observer/internal/pricingfeed"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -223,15 +224,47 @@ func feedOrgRows(ctx context.Context, st *store.Store, logger *slog.Logger) (cos
 	if !cache.Have || len(cache.Envelope.Rows) == 0 {
 		return cost.OrgRows{}, false
 	}
-	rows := make([]orgcontract.PricingPolicyRow, 0, len(cache.Envelope.Rows))
-	for _, r := range cache.Envelope.Rows {
-		rows = append(rows, r.PricingPolicyRow)
+	// A body persisted before this build's compiled floor existed (e.g. a v1
+	// cached by an older binary) must not be applied on restart either: the
+	// same rule the fetch enforces (round-2 finding 1). The seed stays.
+	if why := cost.FeedVersionRefusal(cache.Envelope.FeedVersion, cache.Envelope.Digest, false, 0, ""); why != "" {
+		if logger != nil {
+			logger.Warn("pricing feed: cached feed refused; pricing from the seed table", "reason", why)
+		}
+		return cost.OrgRows{}, false
 	}
 	return cost.OrgRows{
-		Rows:          orgPriceRowsOf(rows),
+		Rows:          feedRowsOf(cache.Envelope.Rows),
 		Version:       cache.Envelope.FeedVersion,
 		Authoritative: false,
 	}, true
+}
+
+// feedRowsOf projects the public feed's rows - and each row's price HISTORY,
+// when it carries one - onto the engine's input type, through the feed rail's
+// presence rule ([feedPriceRowsOf]). The feed also states the latency-premium
+// multiplier, in its Economics object (the org wire has no such field): a
+// stated value applies (0 = no fast tier), an absent one keeps the seed's -
+// per history period as much as on the row itself.
+func feedRowsOf(in []pricingfeed.Row) []cost.OrgPrice {
+	rows := make([]orgcontract.PricingPolicyRow, 0, len(in))
+	for _, r := range in {
+		rows = append(rows, r.PricingPolicyRow)
+	}
+	priced := feedPriceRowsOf(rows)
+	for i, r := range in {
+		applyFeedFastMultiplier(&priced[i], r.Economics)
+		if len(r.History) >= 2 {
+			priced[i].History = feedRowsOf(r.History)
+		}
+	}
+	return priced
+}
+
+func applyFeedFastMultiplier(p *cost.OrgPrice, e *pricingfeed.Economics) {
+	if e != nil && e.FastMultiplier != nil && *e.FastMultiplier >= 0 {
+		p.FastMultiplier, p.Set.FastMultiplier = *e.FastMultiplier, true
+	}
 }
 
 // budgetEnforcementGranted resolves whether this node's governance grant
@@ -261,85 +294,16 @@ func budgetEnforcementGranted(ctx context.Context, cfg config.Config, database *
 	return ngov.Effective(ctx).GrantsBudgetEnforcement()
 }
 
-// orgPriceRowsOf projects the wire rows onto the engine's input type.
-//
-// It is a plain field copy and stays that way: the two field sets are
-// deliberately identical (orgcontract.PricingPolicyRow is authored in
-// cost.Pricing's vocabulary), so anything clever here would be arithmetic
-// nobody asked for on a number an org negotiated.
-//
-// The one thing it MUST carry across is which rates the org actually QUOTED
-// (server migration 135): a nil wire rate is "the org quotes nothing here" and
-// the engine falls through to the seed or the developer's own override for it,
-// while a rate SET to zero is a negotiated FREE rate. Collapsing the two here
-// would put the whole cut-over back where it started, silently.
+// orgPriceRowsOf projects the ORG rail's wire rows onto the engine's input
+// type. The projection moved to internal/pricewire so the org server prices
+// its stored rows through the SAME function (org re-price, gap
+// PRICE-REPRICE-1); see [pricewire.OrgPriceRows] for the presence rule.
 func orgPriceRowsOf(rows []orgcontract.PricingPolicyRow) []cost.OrgPrice {
-	out := make([]cost.OrgPrice, 0, len(rows))
-	for _, r := range rows {
-		p := cost.OrgPrice{
-			Model:         r.Model,
-			EffectiveFrom: r.EffectiveFrom,
-			Pricing:       cost.Pricing{LongContextThreshold: r.LongContextThreshold},
-		}
-		for _, f := range []struct {
-			src *float64
-			dst *float64
-			set *bool
-		}{
-			{r.InputPerMTok, &p.Input, &p.Set.Input},
-			{r.OutputPerMTok, &p.Output, &p.Set.Output},
-			{r.CacheReadPerMTok, &p.CacheRead, &p.Set.CacheRead},
-			{r.CacheWritePerMTok, &p.CacheCreation, &p.Set.CacheCreation},
-			{r.CacheWrite1hPerMTok, &p.CacheCreation1h, &p.Set.CacheCreation1h},
-			{r.LongContextInputPerMTok, &p.LongContextInput, &p.Set.LongContextInput},
-			{r.LongContextOutputPerMTok, &p.LongContextOutput, &p.Set.LongContextOutput},
-			{r.LongContextCacheReadPerMTok, &p.LongContextCacheRead, &p.Set.LongContextCacheRead},
-			{r.LongContextCacheWritePerMTok, &p.LongContextCacheCreation, &p.Set.LongContextCacheCreation},
-			{r.LongContextCacheWrite1hPerMTok, &p.LongContextCacheCreation1h, &p.Set.LongContextCacheCreation1h},
-			{r.WebSearchPerRequest, &p.WebSearchPerRequest, &p.Set.WebSearchPerRequest},
-		} {
-			if f.src != nil {
-				*f.dst, *f.set = *f.src, true
-			}
-		}
-		p.Peak = peakRatesToCost(r.Peak)
-		out = append(out, p)
-	}
-	return out
+	return pricewire.OrgPriceRows(rows)
 }
 
-// peakRatesToCost translates the wire's peak variant into the node engine's
-// own vocabulary (a plain field copy, mirroring orgPriceRowsOf's own rule —
-// the two shapes are deliberately identical, see orgcontract.RateSet's doc).
-// nil in, nil out: a wire row that carries no Peak field composes no peak at
-// all, which is what lets [cost.OrgPrice]'s overlay wholesale-replace a
-// seed's peak variant with "no peak" for a model the org negotiated flat.
-func peakRatesToCost(pr *orgcontract.PeakRates) *cost.PeakRates {
-	if pr == nil {
-		return nil
-	}
-	out := &cost.PeakRates{
-		RateSet: cost.RateSet{
-			Input:           pr.Input,
-			Output:          pr.Output,
-			CacheRead:       pr.CacheRead,
-			CacheCreation:   pr.CacheCreation,
-			CacheCreation1h: pr.CacheCreation1h,
-
-			LongContextThreshold:       pr.LongContextThreshold,
-			LongContextInput:           pr.LongContextInput,
-			LongContextOutput:          pr.LongContextOutput,
-			LongContextCacheRead:       pr.LongContextCacheRead,
-			LongContextCacheCreation:   pr.LongContextCacheCreation,
-			LongContextCacheCreation1h: pr.LongContextCacheCreation1h,
-		},
-	}
-	for _, w := range pr.Schedule.Windows {
-		out.Schedule.Windows = append(out.Schedule.Windows, cost.PeakWindow{
-			Days:     append([]time.Weekday(nil), w.Days...),
-			StartUTC: w.StartUTC,
-			EndUTC:   w.EndUTC,
-		})
-	}
-	return out
+// feedPriceRowsOf is the STANDALONE PUBLIC FEED's projection; see
+// [pricewire.FeedPriceRows].
+func feedPriceRowsOf(rows []orgcontract.PricingPolicyRow) []cost.OrgPrice {
+	return pricewire.FeedPriceRows(rows)
 }

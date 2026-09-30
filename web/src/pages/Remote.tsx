@@ -1,6 +1,20 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { ChartShell, Pill } from "@/components/primitives";
-import { HelpInd, TitleWithHelp } from "@/components/HelpInd";
+import {
+  ChartShell,
+  ConfirmButton,
+  CopyOnClick,
+  Icon,
+  InlineLoading,
+  PageHeader,
+  Pill,
+  Table,
+  Toggle,
+  Tooltip,
+} from "@/components/primitives";
+import type { ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "@/components/DataTable";
+import { navIcon } from "@/lib/nav";
+import { TitleWithHelp } from "@/components/HelpInd";
 import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
 import { markRestartPending } from "@/lib/restartPending";
@@ -10,6 +24,8 @@ import {
   type Status as LaunchTerminalStatus,
 } from "@/components/LaunchTerminal";
 import { useLaunchDock, type DockSession } from "@/components/LaunchDock";
+import { CircleCheck } from "lucide-react";
+import { Summary } from "@/components/Summary";
 
 // Remote page (dashboard-management-surface plan §9-§11). Arms/disarms tailnet
 // remote access, reveals the one-time pairing URL + QR, and manages live device
@@ -132,6 +148,11 @@ type ApproveReveal = {
 };
 
 const APPROVE_REVEAL_MS = 60_000;
+
+// REVOKE_WRITER_NOTE is what a terminal-control revoke does, shown beside the
+// armed ConfirmButton (it replaced a window.confirm prompt).
+const REVOKE_WRITER_NOTE =
+  "Ends the remote writer immediately and unpairs the device (it must scan a new QR to reconnect).";
 
 // StandingStatus mirrors GET /api/remote/standing-terminal — the opt-in durable
 // terminal-control secret + the two lease-policy toggles.
@@ -431,17 +452,16 @@ export function RemotePage() {
 
   // resetAndUnpair is the RARE, destructive reset — a new secret that
   // disconnects EVERY device (use it only if a secret leaked). Gated behind an
-  // explicit count-aware confirm that points at "Pair a device" for the normal
-  // case.
+  // explicit count-aware in-place confirm (ConfirmButton + resetNote) that
+  // points at "Pair a device" for the normal case.
   function resetAndUnpair() {
-    const n = sessions.data?.sessions.length ?? 0;
-    const msg =
-      n > 0
-        ? `Reset the pairing secret and unpair all devices?\n\nThis DISCONNECTS all ${n} currently-paired device${n === 1 ? "" : "s"} - each must scan a new QR to reconnect.\n\nOnly do this if a secret leaked. To pair another device WITHOUT disconnecting these, use "Pair a device" instead.`
-        : `Reset the pairing secret?\n\nThe previous QR stops working and a fresh one is minted.`;
-    if (!window.confirm(msg)) return;
     void arm("rotate");
   }
+  const pairedCount = sessions.data?.sessions.length ?? 0;
+  const resetNote =
+    pairedCount > 0
+      ? `This DISCONNECTS all ${pairedCount} currently-paired device${pairedCount === 1 ? "" : "s"} - each must scan a new QR to reconnect. Only do this if a secret leaked; to pair another device without disconnecting these, use "Pair a device" instead.`
+      : "The previous QR stops working and a fresh one is minted.";
 
   async function setupServe() {
     if (!confirmToken) {
@@ -594,14 +614,8 @@ export function RemotePage() {
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  // revoke is gated by the row's in-place ConfirmButton (never window.confirm).
   async function revoke(fingerprint: string) {
-    if (
-      !window.confirm(
-        "Revoke this device now? It ends any live remote session and unpairs the device (it must scan a new QR to reconnect).",
-      )
-    ) {
-      return;
-    }
     try {
       await fetchJSON(`/api/remote/sessions/${fingerprint}`, undefined, { method: "DELETE" });
       sessions.reload();
@@ -623,25 +637,26 @@ export function RemotePage() {
   }
 
   return (
-    <div className="space-y-4 p-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="inline-flex items-center text-[15px] font-semibold text-fg-1">
-            Remote access
-            <HelpInd id="glossary.connect_a_device" />
-          </h1>
-          <p className="mt-0.5 text-[12px] text-fg-3">
+    <div className="space-y-6 p-4 sm:p-6">
+      <PageHeader
+        title="Remote access"
+        icon={navIcon("remote")}
+        helpId="glossary.connect_a_device"
+        sub={
+          <>
             Open this dashboard on your phone or laptop over your tailnet (Tailscale HTTPS, read-only).
             Turning it on/off and pairing devices are owner actions - they only work from this machine.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Pill variant={c?.enabled ? "success" : "neutral"}>{c?.enabled ? "armed" : "off"}</Pill>
-          {c?.enabled && (
-            <Pill variant={c?.ready ? "success" : "warn"}>{c?.ready ? "listener ready" : "restart to bind"}</Pill>
-          )}
-        </div>
-      </div>
+          </>
+        }
+        right={
+          <div className="flex items-center gap-2">
+            <Pill variant={c?.enabled ? "success" : "neutral"}>{c?.enabled ? "armed" : "off"}</Pill>
+            {c?.enabled && (
+              <Pill variant={c?.ready ? "success" : "warn"}>{c?.ready ? "listener ready" : "restart to bind"}</Pill>
+            )}
+          </div>
+        }
+      />
 
       {err && (
         <div className="rounded-2 border border-danger/40 bg-danger/10 px-3 py-2 text-[12px] text-danger">
@@ -666,7 +681,7 @@ export function RemotePage() {
         >
           <div className="flex flex-col gap-4 p-1 sm:flex-row sm:items-start">
             <div className="flex-1 space-y-2">
-              <div className="break-all rounded-2 border border-line-2 bg-bg-1 px-3 py-2 font-mono text-[12px] text-fg-2">
+              <div className="break-all rounded-2 border border-line-2 bg-bg-3 px-3 py-2 font-mono text-[12px] text-fg-2">
                 {masked ? "•••••••••••••• (hidden - click Reveal)" : pairing.pairing_url}
               </div>
               <div className="flex gap-2">
@@ -679,13 +694,13 @@ export function RemotePage() {
                     Reveal
                   </button>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => navigator.clipboard?.writeText(pairing.pairing_url ?? "")}
-                    className="rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
+                  <CopyOnClick
+                    value={pairing.pairing_url ?? ""}
+                    title="Copy the one-time pairing link"
+                    className="rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-caption text-fg-2 hover:bg-bg-3"
                   >
                     Copy link
-                  </button>
+                  </CopyOnClick>
                 )}
                 <button
                   type="button"
@@ -708,16 +723,16 @@ export function RemotePage() {
                     Point Tailscale at the backend (run once on this machine), then restart the daemon:
                   </div>
                   <div className="flex items-center gap-2">
-                    <code className="flex-1 break-all rounded-2 border border-line-2 bg-bg-1 px-2 py-1 font-mono text-[11px] text-fg-2">
+                    <code className="flex-1 break-all rounded-2 border border-line-2 bg-bg-3 px-2 py-1 font-mono text-[11px] text-fg-2">
                       {pairing.tailscale_serve}
                     </code>
-                    <button
-                      type="button"
-                      onClick={() => navigator.clipboard?.writeText(pairing.tailscale_serve ?? "")}
-                      className="rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
+                    <CopyOnClick
+                      value={pairing.tailscale_serve ?? ""}
+                      title="Copy the command"
+                      className="rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-caption text-fg-2 hover:bg-bg-3"
                     >
                       Copy
-                    </button>
+                    </CopyOnClick>
                   </div>
                 </div>
               )}
@@ -753,47 +768,43 @@ export function RemotePage() {
                 <Field label="require TLS" value={String(c.require_tls)} />
                 <div>
                   <div className="text-[10px] uppercase tracking-wide text-fg-3">allow terminal</div>
-                  <label
-                    className="mt-0.5 inline-flex items-center gap-1.5"
-                    title="Enables the execute-tier remote terminal - expands the remote execution authority. Takes effect after a daemon restart."
-                  >
-                    <input
-                      type="checkbox"
-                      checked={termOverride ?? c.allow_terminal}
-                      disabled={busy !== null || !c.config_writable}
-                      onChange={(e) => saveAllowTerminal(e.target.checked)}
-                      className="h-3.5 w-3.5 disabled:opacity-50"
-                    />
-                    <span className="font-mono text-[12px] text-fg-2">
-                      {busy === "allow-terminal"
-                        ? "saving…"
-                        : (termOverride ?? c.allow_terminal)
-                          ? "on"
-                          : "off"}
+                  <Tooltip content="Enables the execute-tier remote terminal - expands the remote execution authority. Takes effect after a daemon restart.">
+                    <span className="mt-0.5 inline-flex">
+                      <Toggle
+                        on={termOverride ?? c.allow_terminal}
+                        disabled={busy !== null || !c.config_writable}
+                        onChange={(next) => saveAllowTerminal(next)}
+                        labelClassName="font-mono text-small text-fg-2"
+                        label={
+                          busy === "allow-terminal"
+                            ? "saving…"
+                            : (termOverride ?? c.allow_terminal)
+                              ? "on"
+                              : "off"
+                        }
+                      />
                     </span>
-                  </label>
+                  </Tooltip>
                 </div>
                 <div>
                   <div className="text-[10px] uppercase tracking-wide text-fg-3">allow terminal view</div>
-                  <label
-                    className="mt-0.5 inline-flex items-center gap-1.5"
-                    title="On by default - a switch you can turn OFF. Lets a paired device SEE (read-only) attach/resume terminals like Claude Code and Codex. Strictly weaker than Allow terminal: driving still needs Allow terminal + a per-terminal Grant. Hot-reloads; no restart."
-                  >
-                    <input
-                      type="checkbox"
-                      checked={termViewOverride ?? c.allow_terminal_view}
-                      disabled={busy !== null || !c.config_writable}
-                      onChange={(e) => saveAllowTerminalView(e.target.checked)}
-                      className="h-3.5 w-3.5 disabled:opacity-50"
-                    />
-                    <span className="font-mono text-[12px] text-fg-2">
-                      {busy === "allow-terminal-view"
-                        ? "saving…"
-                        : (termViewOverride ?? c.allow_terminal_view)
-                          ? "on"
-                          : "off"}
+                  <Tooltip content="On by default - a switch you can turn OFF. Lets a paired device SEE (read-only) attach/resume terminals like Claude Code and Codex. Strictly weaker than Allow terminal: driving still needs Allow terminal + a per-terminal Grant. Hot-reloads; no restart.">
+                    <span className="mt-0.5 inline-flex">
+                      <Toggle
+                        on={termViewOverride ?? c.allow_terminal_view}
+                        disabled={busy !== null || !c.config_writable}
+                        onChange={(next) => saveAllowTerminalView(next)}
+                        labelClassName="font-mono text-small text-fg-2"
+                        label={
+                          busy === "allow-terminal-view"
+                            ? "saving…"
+                            : (termViewOverride ?? c.allow_terminal_view)
+                              ? "on"
+                              : "off"
+                        }
+                      />
                     </span>
-                  </label>
+                  </Tooltip>
                 </div>
                 <Field label="rate limit/min" value={String(c.rate_limit_per_min ?? "-")} />
                 <Field label="secret" value={c.secret_present ? c.secret_fingerprint : "none"} />
@@ -841,14 +852,15 @@ export function RemotePage() {
                 >
                   {busy === "disable" ? "turning off…" : "Turn off remote access"}
                 </button>
-                <button
-                  type="button"
+                <ConfirmButton
+                  variant="danger-outline"
                   disabled={busy !== null}
-                  onClick={resetAndUnpair}
-                  className="rounded-2 border border-danger/40 bg-danger/10 px-3 py-1 text-[12px] text-danger hover:bg-danger/20 disabled:opacity-50"
+                  onConfirm={resetAndUnpair}
+                  confirmLabel={pairedCount > 0 ? "Confirm reset & unpair?" : "Confirm reset?"}
+                  armedNote={resetNote}
                 >
                   {busy === "rotate" ? "resetting…" : "Reset & unpair all devices"}
-                </button>
+                </ConfirmButton>
               </div>
               {/* Honest pair-gating hint: name the exact missing Tailscale step
                   (known-unreachable → button disabled above) or warn that serve
@@ -904,7 +916,7 @@ export function RemotePage() {
                     setHostEdited(true);
                   }}
                   placeholder="my-machine.tailnet-name.ts.net"
-                  className="w-full rounded-2 border border-line-2 bg-bg-1 px-2 py-1 font-mono text-[12px] text-fg-1 outline-none focus:border-accent"
+                  className="w-full rounded-2 border border-line-2 bg-bg-3 px-2 py-1 font-mono text-[12px] text-fg-1 outline-none focus:border-accent"
                 />
                 {!host.trim() && (
                   <span className="mt-1 block text-[11px] text-warn">
@@ -1010,14 +1022,16 @@ export function RemotePage() {
         title="Paired devices"
         sub="Live device sessions. Revoke takes effect instantly - no restart."
         right={
-          <button
-            type="button"
-            onClick={revokeAll}
+          <ConfirmButton
+            variant="secondary"
+            size="sm"
+            onConfirm={() => void revokeAll()}
             disabled={!sessions.data?.controller_live || (sessions.data?.sessions.length ?? 0) === 0}
-            className="rounded-2 border border-line-2 bg-bg-2 px-2 py-0.5 text-[11px] text-fg-2 hover:bg-bg-3 disabled:opacity-40"
+            confirmLabel="Revoke all?"
+            armedNote="Ends every paired device session at once."
           >
             Revoke all
-          </button>
+          </ConfirmButton>
         }
       >
         <div className="p-1 text-[12px]">
@@ -1029,34 +1043,12 @@ export function RemotePage() {
           ) : (sessions.data?.sessions.length ?? 0) === 0 ? (
             <div className="text-fg-3">No paired devices.</div>
           ) : (
-            <table className="w-full text-left">
-              <thead className="text-[11px] text-fg-3">
-                <tr>
-                  <th className="py-1">fingerprint</th>
-                  <th className="py-1">created</th>
-                  <th className="py-1">last seen</th>
-                  <th className="py-1"></th>
-                </tr>
-              </thead>
-              <tbody className="font-mono text-fg-2">
-                {sessions.data?.sessions.map((s) => (
-                  <tr key={s.fingerprint} className="border-t border-line-1">
-                    <td className="py-1">{s.fingerprint}…</td>
-                    <td className="py-1">{fmtDateTime(s.created_at)}</td>
-                    <td className="py-1">{fmtDateTime(s.last_seen)}</td>
-                    <td className="py-1 text-right">
-                      <button
-                        type="button"
-                        onClick={() => revoke(s.fingerprint)}
-                        className="rounded-2 border border-line-2 bg-bg-2 px-2 py-0.5 text-[11px] text-fg-2 hover:bg-bg-3"
-                      >
-                        revoke
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataTable<SessionRow>
+              data={sessions.data?.sessions ?? []}
+              columns={pairedColumns(revoke)}
+              rowKey={(s) => s.fingerprint}
+              minWidth={520}
+            />
           )}
         </div>
       </ChartShell>
@@ -1066,25 +1058,30 @@ export function RemotePage() {
         title="Access audit"
         sub="Recent remote-access + management events (metadata only). Not compliance-immutable - a local owner can edit the underlying SQLite."
       >
-        <div className="max-h-[280px] overflow-auto p-1 text-[11px]">
+        <div className="p-1">
           {(audit.data?.events.length ?? 0) === 0 ? (
-            <div className="text-fg-3">No events yet.</div>
+            <div className="text-[11px] text-fg-3">No events yet.</div>
           ) : (
-            <table className="w-full text-left font-mono">
-              <thead className="text-fg-3">
+            <Table
+              size="sm"
+              maxHeight={280}
+              stickyHead
+              minWidth={560}
+              tableClassName="font-mono"
+              head={
                 <tr>
-                  <th className="py-1">ts</th>
-                  <th className="py-1">kind</th>
-                  <th className="py-1">principal</th>
-                  <th className="py-1">decision</th>
-                  <th className="py-1">route</th>
-                  <th className="py-1">detail</th>
+                  <th className="py-1 pr-2 font-medium">ts</th>
+                  <th className="py-1 pr-2 font-medium">kind</th>
+                  <th className="py-1 pr-2 font-medium">principal</th>
+                  <th className="py-1 pr-2 font-medium">decision</th>
+                  <th className="py-1 pr-2 font-medium">route</th>
+                  <th className="py-1 font-medium">detail</th>
                 </tr>
-              </thead>
-              <tbody className="text-fg-2">
+              }
+            >
                 {audit.data?.events.map((e, i) => (
-                  <tr key={i} className="border-t border-line-1">
-                    <td className="py-1 pr-2">{fmtClock(e.ts)}</td>
+                  <tr key={i} className="border-b border-line-1/60 text-fg-2 last:border-0">
+                    <td className="whitespace-nowrap py-1 pr-2">{fmtClock(e.ts)}</td>
                     <td className="py-1 pr-2">{e.kind}</td>
                     <td className="py-1 pr-2">{e.principal}</td>
                     <td className="py-1 pr-2">{e.decision}</td>
@@ -1092,13 +1089,57 @@ export function RemotePage() {
                     <td className="py-1">{e.detail}</td>
                   </tr>
                 ))}
-              </tbody>
-            </table>
+            </Table>
           )}
         </div>
       </ChartShell>
     </div>
   );
+}
+
+// pairedColumns builds the paired-device table's columns around the page's
+// revoke action (dates sort by their ISO strings, which order correctly).
+function pairedColumns(revoke: (fingerprint: string) => Promise<void>): ColumnDef<SessionRow, unknown>[] {
+  return [
+    {
+      id: "fingerprint",
+      header: "fingerprint",
+      accessorKey: "fingerprint",
+      meta: { mono: true },
+      cell: ({ row }) => <>{row.original.fingerprint}…</>,
+    },
+    {
+      id: "created_at",
+      header: "created",
+      accessorKey: "created_at",
+      meta: { mono: true },
+      cell: ({ row }) => fmtDateTime(row.original.created_at),
+    },
+    {
+      id: "last_seen",
+      header: "last seen",
+      accessorKey: "last_seen",
+      meta: { mono: true },
+      cell: ({ row }) => fmtDateTime(row.original.last_seen),
+    },
+    {
+      id: "revoke",
+      header: "",
+      enableSorting: false,
+      meta: { align: "right" },
+      cell: ({ row }) => (
+        <ConfirmButton
+          variant="secondary"
+          size="sm"
+          onConfirm={() => void revoke(row.original.fingerprint)}
+          confirmLabel="Revoke?"
+          armedNote="Ends any live remote session and unpairs the device (it must scan a new QR to reconnect)."
+        >
+          revoke
+        </ConfirmButton>
+      ),
+    },
+  ];
 }
 
 function Field({ label, value }: { label: string; value: string }) {
@@ -1173,7 +1214,7 @@ function TailscaleCard({
   if (!data) {
     return (
       <ChartShell title="Tailscale" sub="Detecting…">
-        <div className="p-1 text-[12px] text-fg-3">Checking `tailscale status`…</div>
+        <InlineLoading label="Checking `tailscale status`" className="p-1" />
       </ChartShell>
     );
   }
@@ -1294,9 +1335,9 @@ function TailscaleCard({
 
           {/* Fallback: run it yourself. */}
           <details className="text-[11px] text-fg-3">
-            <summary className="cursor-pointer">…or run it yourself</summary>
+            <Summary>…or run it yourself</Summary>
             <div className="mt-1 flex items-center gap-2">
-              <code className="flex-1 rounded-2 border border-line-2 bg-bg-1 px-2 py-1 font-mono text-[11px] text-fg-2">
+              <code className="flex-1 rounded-2 border border-line-2 bg-bg-3 px-2 py-1 font-mono text-[11px] text-fg-2">
                 tailscale up
               </code>
               <CopyButton text="tailscale up" />
@@ -1344,7 +1385,8 @@ function TailscaleCard({
         {serveActive && (
           <div className="space-y-2 rounded-2 border border-success/40 bg-success/10 px-3 py-2">
             <p className="text-[12px] text-success">
-              ✅ Serve is active - the dashboard is reachable over your tailnet at{" "}
+              <Icon icon={CircleCheck} size="sm" className="mr-1 inline-block -translate-y-px align-middle" />
+              Serve is active - the dashboard is reachable over your tailnet at{" "}
               <a href={tailnetURL} target="_blank" rel="noreferrer" className="font-mono underline">
                 {tailnetURL || "your tailnet host"}
               </a>
@@ -1487,9 +1529,9 @@ function TailscaleCard({
             {/* Fallback: the exact command, for platforms where daemon-run serve
                 is unreliable (e.g. WSL2 ↔ Windows tailscaled). */}
             <details className="text-[11px] text-fg-3">
-              <summary className="cursor-pointer">…or run it yourself</summary>
+              <Summary>…or run it yourself</Summary>
               <div className="mt-1 flex items-center gap-2">
-                <code className="flex-1 break-all rounded-2 border border-line-2 bg-bg-1 px-2 py-1 font-mono text-[11px] text-fg-2">
+                <code className="flex-1 break-all rounded-2 border border-line-2 bg-bg-3 px-2 py-1 font-mono text-[11px] text-fg-2">
                   {data.serve_command}
                 </code>
                 <CopyButton text={data.serve_command ?? ""} />
@@ -1580,13 +1622,9 @@ function DeviceTailscaleLinks() {
 
 function CopyButton({ text }: { text: string }) {
   return (
-    <button
-      type="button"
-      onClick={() => navigator.clipboard?.writeText(text)}
-      className="rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
-    >
+    <CopyOnClick value={text} title="Copy the command" className="rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-caption text-fg-2 hover:bg-bg-3">
       Copy
-    </button>
+    </CopyOnClick>
   );
 }
 
@@ -1677,13 +1715,7 @@ function RemoteTerminalControl({
 
   async function revoke(fingerprint: string) {
     if (!fingerprint || fingerprint === "local") return;
-    if (
-      !window.confirm(
-        "Revoke this device's control now? It ends the remote writer immediately and unpairs the device (it must scan a new QR to reconnect).",
-      )
-    ) {
-      return;
-    }
+    // Confirmed in place by the calling ConfirmButton (never window.confirm).
     setBusy("revoke:" + fingerprint);
     setErr(null);
     try {
@@ -1734,34 +1766,36 @@ function RemoteTerminalControl({
         {sessions.length === 0 ? (
           <div className="text-fg-3">No live terminals. Launch or continue a session to manage terminal control.</div>
         ) : (
-          <table className="w-full text-left">
-            <thead className="text-[11px] text-fg-3">
+          <Table
+            minWidth={620}
+            tableClassName="text-[12px] text-fg-2"
+            head={
               <tr>
-                <th className="py-1">terminal</th>
-                <th className="py-1">controller</th>
-                <th className="py-1">viewers</th>
-                <th className="py-1">grant device</th>
-                <th className="py-1"></th>
+                <th className="py-1 pr-2 font-medium">terminal</th>
+                <th className="py-1 pr-2 font-medium">controller</th>
+                <th className="py-1 pr-2 font-medium">viewers</th>
+                <th className="py-1 pr-2 font-medium">grant device</th>
+                <th className="py-1 font-medium"></th>
               </tr>
-            </thead>
-            <tbody className="text-fg-2">
+            }
+          >
               {sessions.map((s) => {
                 const holder = holderLabel(s.writer_holder);
                 const remoteHeld = !!s.writer_holder && s.writer_holder !== "local";
                 return (
                   <Fragment key={s.token}>
-                  <tr className="border-t border-line-1 align-top">
-                    <td className="py-1.5">
+                  <tr className="border-b border-line-1/60 align-top">
+                    <td className="py-1.5 pr-2">
                       <span className="font-mono text-fg-1">{s.subcommand || "terminal"}</span>
                       <span className="ml-1 font-mono text-[10.5px] text-fg-3" title={s.token}>
                         {fmtShortId(s.token, 8)}
                       </span>
                     </td>
-                    <td className="py-1.5">
+                    <td className="py-1.5 pr-2">
                       <Pill variant={holder.variant}>{holder.text}</Pill>
                     </td>
-                    <td className="py-1.5">{s.viewers ?? 0}</td>
-                    <td className="py-1.5">
+                    <td className="py-1.5 pr-2 tabular-nums">{s.viewers ?? 0}</td>
+                    <td className="py-1.5 pr-2">
                       <select
                         value={pickDevice[s.token] ?? ""}
                         disabled={!controllerLive || devices.length === 0}
@@ -1794,36 +1828,39 @@ function RemoteTerminalControl({
                         >
                           {busy === "approve:" + s.token ? "granting…" : "Grant control"}
                         </button>
-                        <button
-                          type="button"
+                        <ConfirmButton
+                          variant="danger-outline"
+                          size="sm"
                           disabled={!remoteHeld || busy !== null}
                           title={
                             remoteHeld
                               ? "Revoke this device's control of this terminal now"
                               : "No remote device is currently controlling this terminal - writer control is single-use and ends when the device's socket closes (e.g. a phone refresh). To revoke a device entirely, use “Paired devices” below."
                           }
-                          onClick={() => revoke(s.writer_holder as string)}
-                          className="rounded-2 border border-danger/40 bg-danger/10 px-2 py-0.5 text-[11px] text-danger hover:bg-danger/20 disabled:opacity-40"
+                          onConfirm={() => void revoke(s.writer_holder as string)}
+                          confirmLabel="Revoke?"
+                          armedNote={REVOKE_WRITER_NOTE}
                         >
                           {busy === "revoke:" + s.writer_holder ? "revoking…" : "Revoke"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onTakeOver(s.token, s.subcommand || "terminal", s.session_id || "", !!s.has_project_root)
-                          }
-                          title="Open this terminal locally - you take control back (demotes any remote writer)"
-                          className="rounded-2 border border-line-2 bg-bg-2 px-2 py-0.5 text-[11px] text-fg-2 hover:bg-bg-3"
-                        >
-                          Take over
-                        </button>
+                        </ConfirmButton>
+                        <Tooltip content="Open this terminal locally - you take control back (demotes any remote writer)">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onTakeOver(s.token, s.subcommand || "terminal", s.session_id || "", !!s.has_project_root)
+                            }
+                            className="rounded-2 border border-line-2 bg-bg-2 px-2 py-0.5 text-caption text-fg-2 hover:bg-bg-3"
+                          >
+                            Take over
+                          </button>
+                        </Tooltip>
                       </div>
                     </td>
                   </tr>
                   {/* Per-row one-time reveal — rendered under the exact terminal
                       the operator granted control on. Masked after ~60s. */}
                   {reveal?.handle === s.token && (
-                    <tr className="border-t border-line-1">
+                    <tr className="border-b border-line-1/60">
                       <td colSpan={5} className="py-2">
                         <div className="space-y-2 rounded-2 border border-accent/40 bg-accent/10 p-3">
                           <div className="text-[11px] text-fg-2">
@@ -1859,8 +1896,7 @@ function RemoteTerminalControl({
                   </Fragment>
                 );
               })}
-            </tbody>
-          </table>
+          </Table>
         )}
 
         {/* Paired devices. A device is revocable whenever it is paired — NOT
@@ -1868,7 +1904,7 @@ function RemoteTerminalControl({
             single-use and die on a phone refresh, so the per-terminal Revoke
             above is disabled most of the time). Revoking a device here ends any
             control it holds AND unpairs it. */}
-        <div className="rounded-2 border border-line-2 bg-bg-1 p-3">
+        <div className="rounded-2 border border-line-2 bg-bg-3 p-3">
           <div className="mb-1 text-[11px] font-medium text-fg-2">Paired devices</div>
           <div className="mb-2 text-[11px] text-fg-3">
             Revoke a device to unpair it and immediately end any terminal control it holds. A revoked
@@ -1883,15 +1919,17 @@ function RemoteTerminalControl({
                   <code className="flex-1 rounded-2 border border-line-2 bg-bg-0 px-2 py-1 font-mono text-[11px] text-fg-2">
                     {d.fingerprint}
                   </code>
-                  <button
-                    type="button"
+                  <ConfirmButton
+                    variant="danger-outline"
+                    size="sm"
                     disabled={busy !== null}
-                    onClick={() => revoke(d.fingerprint)}
+                    onConfirm={() => void revoke(d.fingerprint)}
                     title="Unpair this device and end any control it holds now"
-                    className="rounded-2 border border-danger/40 bg-danger/10 px-2 py-1 text-[11px] text-danger hover:bg-danger/20 disabled:opacity-40"
+                    confirmLabel="Revoke?"
+                    armedNote={REVOKE_WRITER_NOTE}
                   >
                     {busy === "revoke:" + d.fingerprint ? "revoking…" : "Revoke device"}
-                  </button>
+                  </ConfirmButton>
                 </div>
               ))}
             </div>
@@ -1977,13 +2015,7 @@ function StandingTerminalAccess({
       setErr("No confirm token - reload the page.");
       return;
     }
-    if (
-      !window.confirm(
-        "Revoke standing terminal-control access? This deletes the secret and immediately drops every remote writer that acquired control through it.",
-      )
-    ) {
-      return;
-    }
+    // Confirmed in place by the calling ConfirmButton (never window.confirm).
     setBusy("revoke");
     setErr(null);
     try {
@@ -2162,14 +2194,15 @@ function StandingTerminalAccess({
                 : "Enable standing access"}
           </button>
           {st?.enabled && (
-            <button
-              type="button"
+            <ConfirmButton
+              variant="danger-outline"
               disabled={!canManage || busy !== null}
-              onClick={revoke}
-              className="rounded-2 border border-danger/40 bg-danger/10 px-3 py-1 text-[12px] text-danger hover:bg-danger/20 disabled:opacity-40"
+              onConfirm={() => void revoke()}
+              confirmLabel="Confirm revoke?"
+              armedNote="Deletes the secret and immediately drops every remote writer that acquired control through it."
             >
               {busy === "revoke" ? "revoking…" : "Revoke standing access"}
-            </button>
+            </ConfirmButton>
           )}
         </div>
       </div>
@@ -2192,16 +2225,14 @@ function CopyField({
     <div>
       <div className="mb-0.5 text-[10px] uppercase tracking-wide text-fg-3">{label}</div>
       <div className="flex items-center gap-2">
-        <code className="flex-1 break-all rounded-2 border border-line-2 bg-bg-1 px-2 py-1 font-mono text-[11px] text-fg-2">
+        <code className="flex-1 break-all rounded-2 border border-line-2 bg-bg-3 px-2 py-1 font-mono text-[11px] text-fg-2">
           {masked ? "•••••••••••••• (hidden - click Reveal)" : value}
         </code>
-        <button
-          type="button"
-          onClick={() => navigator.clipboard?.writeText(value)}
-          className="rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
-        >
+        {/* title stays generic: the default CopyOnClick tooltip would
+            print the value, and this may be a masked secret. */}
+        <CopyOnClick value={value} title={`Copy the ${label}`} className="rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-caption text-fg-2 hover:bg-bg-3">
           Copy
-        </button>
+        </CopyOnClick>
       </div>
     </div>
   );

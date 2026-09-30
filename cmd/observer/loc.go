@@ -135,6 +135,16 @@ func formatLOCStats(st loc.Stats) string {
 	)
 }
 
+// formatAuthoredSplit renders one code-vs-comment split. An empty scope
+// reads "none" rather than "0% comments", matching the absent share.
+func formatAuthoredSplit(sp loc.AuthoredSplit) string {
+	if sp.CommentShare == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%d code, %d comment (%.0f%% comments)",
+		sp.CodeLines, sp.CommentLines, *sp.CommentShare*100)
+}
+
 // parseLOCSince accepts an RFC3339 timestamp or a bare YYYY-MM-DD date.
 func parseLOCSince(s string) (time.Time, error) {
 	s = strings.TrimSpace(s)
@@ -211,6 +221,11 @@ func newLOCShowCmd() *cobra.Command {
 						b.Overwrites)
 				}
 			}
+			// The code-vs-comment split of the AI's code-category lines
+			// (internal/loc.SplitAuthored). It needs no human measurement,
+			// so it prints whatever the capture state.
+			fmt.Fprintf(out, "AI code vs comments (code files only): main %s | subagent %s\n",
+				formatAuthoredSplit(res.AISplit), formatAuthoredSplit(res.AISidechainSplit))
 			return nil
 		},
 	}

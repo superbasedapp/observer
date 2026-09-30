@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/marmutapp/superbased-observer/internal/guard"
+	"github.com/marmutapp/superbased-observer/internal/spendverdict"
 )
 
 // Guard-layer persistence helpers per docs/plans/
@@ -783,23 +784,23 @@ func (s *Store) LatestGuardPolicyStates(ctx context.Context) ([]GuardPolicyState
 	return out, nil
 }
 
-// GuardBudgetSpend returns the spend-so-far pair the §12.1 budget
-// rules compare against: the session's total and the calendar-day
-// total since dayStart (caller-supplied so the day boundary policy —
-// UTC midnight — lives at the composition site). Read-only over
-// api_turns (proxy ground truth, cost_usd) and token_usage (watcher
-// tiers, estimated_cost_usd); a session observed by BOTH sources
-// counts ONCE at the larger of its two sums — summing both would
-// double-count the same turns, taking a global max would drop
-// disjoint sessions (documented approximation; backs the injected
-// guard.BudgetLookup).
+// GuardBudgetSpend returns the spend-so-far the §12.1 budget rules compare
+// against: the session's total and the node-wide totals since dayStart /
+// weekStart / monthStart (caller-supplied so the day boundary policy — UTC
+// midnight — lives at the composition site). Read-only over api_turns
+// (proxy, cost_usd) and token_usage (watcher tiers, estimated_cost_usd),
+// each arm filtered by the stored sessionmsg dedup verdicts
+// (spendUnionRecordedSQL), so a turn captured by BOTH sources counts once -
+// the session header's rule, not the per-session MAX(proxy, watcher) fold
+// this used to apply (lane R2-ONERULE). Backs the injected
+// guard.BudgetLookup when no pricer is wired (GuardBudgetSpendPriced).
 func (s *Store) GuardBudgetSpend(ctx context.Context, sessionID string, dayStart, weekStart, monthStart time.Time) (spend GuardBudgetWindows, err error) {
+	s.refreshSpendVerdictsBounded(ctx)
 	if sessionID != "" {
+		//nolint:gosec // G202: spendUnionRecordedSQL is closed constant SQL; values bind via args.
 		err = s.db.QueryRowContext(ctx, `
-			SELECT MAX(
-			    (SELECT COALESCE(SUM(COALESCE(cost_usd,0)),0) FROM api_turns WHERE session_id = ?),
-			    (SELECT COALESCE(SUM(COALESCE(estimated_cost_usd,0)),0) FROM token_usage WHERE session_id = ?))`,
-			sessionID, sessionID).Scan(&spend.SessionUSD)
+			SELECT COALESCE(SUM(c), 0) FROM (`+spendUnionRecordedSQL+`) u WHERE u.sid = ?`,
+			sessionID).Scan(&spend.SessionUSD)
 		if err != nil {
 			return spend, fmt.Errorf("store.GuardBudgetSpend: session: %w", err)
 		}
@@ -816,12 +817,23 @@ func (s *Store) GuardBudgetSpend(ctx context.Context, sessionID string, dayStart
 	return spend, nil
 }
 
+// spendUnionRecordedSQL is the node's deduplicated recorded-cost substrate
+// for the guard's un-priced reads: every api_turns and token_usage row the
+// stored sessionmsg dedup verdicts count, as (sid, ts, c = recorded cost).
+// api_turns.session_id is nullable (unattributed proxy turns) — COALESCE'd to
+// the empty string so those rows still group and count; they are outside every session and
+// always count. It binds nothing.
+var spendUnionRecordedSQL = `
+	SELECT COALESCE(session_id, '') sid, timestamp ts, COALESCE(cost_usd, 0) c
+	  FROM api_turns WHERE ` + spendverdict.CountedProxyRowOf("api_turns") + `
+	UNION ALL
+	SELECT session_id sid, timestamp ts, COALESCE(estimated_cost_usd, 0) c
+	  FROM token_usage WHERE ` + spendverdict.CountedTokenRow("token_usage")
+
 // GuardBudgetWindows is the spend-so-far bundle the §12.1 budget rows
 // compare against: the current session's total plus the node-wide
-// totals in the day / rolling-7-day / calendar-month windows. The
-// window totals share GuardBudgetSpend's per-session MAX(api_turns,
-// token_usage) de-dup (a session seen by both sources counts once at
-// the larger sum).
+// totals in the day / rolling-7-day / calendar-month windows, over the rows
+// the stored dedup verdicts count (a turn seen by both sources counts once).
 type GuardBudgetWindows struct {
 	SessionUSD float64
 	DailyUSD   float64
@@ -829,26 +841,16 @@ type GuardBudgetWindows struct {
 	MonthlyUSD float64
 }
 
-// windowSpendSince returns the node-wide spend since `since`, de-duped
-// per session at the larger of the proxy (api_turns.cost_usd) and
-// watcher (token_usage.estimated_cost_usd) sums. A zero `since`
-// (window disabled) still runs — the caller gates on the configured
-// threshold, and the query is bounded by the 30s guard cache.
-// api_turns.session_id is nullable (unattributed proxy turns) —
-// COALESCE to ” so those rows still group, join and count.
+// windowSpendSince returns the node-wide recorded spend since `since` over
+// spendUnionRecordedSQL. A zero `since` (window disabled) still runs — the
+// caller gates on the configured threshold, and the query is bounded by the
+// 30s guard cache.
 func (s *Store) windowSpendSince(ctx context.Context, since time.Time) (float64, error) {
-	ts := timestamp(since)
 	var total float64
+	//nolint:gosec // G202: spendUnionRecordedSQL is closed constant SQL; values bind via args.
 	err := s.db.QueryRowContext(ctx, `
-		WITH p AS (SELECT COALESCE(session_id,'') sid, SUM(COALESCE(cost_usd,0)) c
-		             FROM api_turns WHERE timestamp >= ? GROUP BY COALESCE(session_id,'')),
-		     u AS (SELECT session_id sid, SUM(COALESCE(estimated_cost_usd,0)) c
-		             FROM token_usage WHERE timestamp >= ? GROUP BY session_id)
-		SELECT COALESCE(SUM(MAX(COALESCE(p.c,0), COALESCE(u.c,0))),0)
-		FROM (SELECT sid FROM p UNION SELECT sid FROM u) s
-		LEFT JOIN p ON p.sid = s.sid
-		LEFT JOIN u ON u.sid = s.sid`,
-		ts, ts).Scan(&total)
+		SELECT COALESCE(SUM(c), 0) FROM (`+spendUnionRecordedSQL+`) u WHERE u.ts >= ?`,
+		timestamp(since)).Scan(&total)
 	if err != nil {
 		return 0, err
 	}
@@ -883,11 +885,9 @@ func (s *Store) LatestLimitWindows(ctx context.Context) (util5h, util7d float64,
 // GuardBudgetObserved is the observed-spend basis for the G2.4 budget
 // suggestions: distributions over per-session totals and per-calendar-
 // day totals in a trailing window, on the SAME substrate and dedup
-// discipline as GuardBudgetSpend — per-session cost takes the larger
-// of the proxy and watcher sums (the B-601 comparison shape); daily
-// totals sum per-(day, session) maxima (the B-602 shape). Zero-cost
-// sessions/days are excluded: they're observationally vacant for
-// sizing a budget threshold.
+// discipline as GuardBudgetSpend (spendUnionRecordedSQL: the rows the
+// stored sessionmsg dedup verdicts count). Zero-cost sessions/days are
+// excluded: they're observationally vacant for sizing a budget threshold.
 type GuardBudgetObserved struct {
 	Sessions      int
 	SessionP95USD float64
@@ -905,32 +905,21 @@ func (s *Store) GuardBudgetObservedStats(ctx context.Context, since time.Time) (
 	var out GuardBudgetObserved
 	ts := timestamp(since)
 
+	s.refreshSpendVerdictsBounded(ctx)
+	//nolint:gosec // G202: spendUnionRecordedSQL is closed constant SQL; values bind via args.
 	sessVals, err := s.queryFloats(ctx, `
-		WITH p AS (SELECT COALESCE(session_id,'') sid, SUM(COALESCE(cost_usd,0)) c
-		             FROM api_turns WHERE timestamp >= ? GROUP BY COALESCE(session_id,'')),
-		     u AS (SELECT session_id sid, SUM(COALESCE(estimated_cost_usd,0)) c
-		             FROM token_usage WHERE timestamp >= ? GROUP BY session_id)
-		SELECT MAX(COALESCE(p.c,0), COALESCE(u.c,0)) c
-		FROM (SELECT sid FROM p UNION SELECT sid FROM u) k
-		LEFT JOIN p ON p.sid = k.sid
-		LEFT JOIN u ON u.sid = k.sid
-		WHERE MAX(COALESCE(p.c,0), COALESCE(u.c,0)) > 0`, ts, ts)
+		SELECT SUM(c) FROM (`+spendUnionRecordedSQL+`) u
+		 WHERE u.ts >= ? GROUP BY u.sid HAVING SUM(c) > 0`, ts)
 	if err != nil {
 		return out, fmt.Errorf("store.GuardBudgetObservedStats: sessions: %w", err)
 	}
 	out.Sessions = len(sessVals)
 	out.SessionP95USD, out.SessionMaxUSD = p95AndMax(sessVals)
 
+	//nolint:gosec // G202: spendUnionRecordedSQL is closed constant SQL; values bind via args.
 	dayVals, err := s.queryFloats(ctx, `
-		WITH p AS (SELECT COALESCE(session_id,'') sid, DATE(timestamp) d, SUM(COALESCE(cost_usd,0)) c
-		             FROM api_turns WHERE timestamp >= ? GROUP BY COALESCE(session_id,''), DATE(timestamp)),
-		     u AS (SELECT session_id sid, DATE(timestamp) d, SUM(COALESCE(estimated_cost_usd,0)) c
-		             FROM token_usage WHERE timestamp >= ? GROUP BY session_id, DATE(timestamp)),
-		     m AS (SELECT k.sid, k.d, MAX(COALESCE(p.c,0), COALESCE(u.c,0)) c
-		             FROM (SELECT sid, d FROM p UNION SELECT sid, d FROM u) k
-		             LEFT JOIN p ON p.sid = k.sid AND p.d = k.d
-		             LEFT JOIN u ON u.sid = k.sid AND u.d = k.d)
-		SELECT SUM(c) FROM m GROUP BY d HAVING SUM(c) > 0`, ts, ts)
+		SELECT SUM(c) FROM (`+spendUnionRecordedSQL+`) u
+		 WHERE u.ts >= ? GROUP BY DATE(u.ts) HAVING SUM(c) > 0`, ts)
 	if err != nil {
 		return out, fmt.Errorf("store.GuardBudgetObservedStats: days: %w", err)
 	}

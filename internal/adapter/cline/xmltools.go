@@ -66,10 +66,11 @@ type xmlTool struct {
 // package-level actionMap the `tool_use` path uses, so a tag and a
 // block of the same name can never disagree about action_type.
 //
-// KNOWN GAP (deliberate, documented): `list_code_definition_names`,
-// `new_task` and `plan_mode_respond` are real Cline tags with no row
-// in actionMap and no row in internal/tooltax, so they classify as
-// models.ActionUnknown. Emitting them as `unknown` tool rows is
+// KNOWN GAP (deliberate, documented): `new_task` and
+// `plan_mode_respond` are real Cline tags with no row in actionMap and
+// no row in internal/tooltax, so they classify as models.ActionUnknown
+// (`list_code_definition_names` was the third until 2026-09-28, when
+// it gained a search_files row). Emitting them as `unknown` tool rows is
 // strictly better than the pre-scanner behaviour (swallowed into
 // prose, invisible), and adding a classification would require a
 // paired internal/tooltax row — out of this ticket's file ownership.

@@ -432,6 +432,79 @@ func TestLoadFacts_ProxyJSONLDedup(t *testing.T) {
 	}
 }
 
+// TestLoadFacts_DedupFollowsDerive pins the loader onto the one session
+// rule, sessionmsg.DeriveVerdicts (lane R2-PARITY-2). The old RAW-output
+// shape key missed a reasoning-split twin (the transcript's output is NET of
+// reasoning, the proxy's gross), and its set membership dropped EVERY
+// same-shape transcript row where Derive claims one twin per proxy row.
+func TestLoadFacts_DedupFollowsDerive(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "d.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	st := store.New(database)
+	if _, err := st.UpsertProject(ctx, "/tmp/proj", ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := st.UpsertSession(ctx, models.Session{ID: "sess-rs", ProjectID: 1, Tool: "codex", Model: "gpt-5.4", StartedAt: now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	turnAt := now.Add(-40 * time.Minute)
+	if _, err := st.InsertAPITurn(ctx, models.APITurn{
+		SessionID: "sess-rs", ProjectID: 1, Timestamp: turnAt, Provider: "openai", Model: "gpt-5.4",
+		RequestID: "resp_1", InputTokens: 1000, OutputTokens: 300,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tok := func(id string, at time.Time, in, out, reasoning int64) models.TokenEvent {
+		return models.TokenEvent{
+			SourceFile: "/x/r.jsonl", SourceEventID: id, SessionID: "sess-rs", Timestamp: at,
+			Tool: "codex", Model: "gpt-5.4", InputTokens: in, OutputTokens: out, ReasoningTokens: reasoning,
+			Source: models.TokenSourceJSONL, Reliability: models.ReliabilityApproximate,
+		}
+	}
+	evs := []models.TokenEvent{
+		tok("tk:L1", turnAt.Add(5*time.Second), 1000, 250, 50),  // the proxy turn's twin: counted once
+		tok("tk:L2", turnAt.Add(10*time.Minute), 1000, 250, 50), // same shape, its own turn: kept
+		tok("tk:L3", turnAt.Add(11*time.Minute), 100, 10, 0),
+		tok("tk:L4", turnAt.Add(12*time.Minute), 110, 11, 0),
+		tok("tk:L5", turnAt.Add(13*time.Minute), 120, 12, 0),
+	}
+	if _, err := st.InsertTokenEvents(ctx, evs); err != nil {
+		t.Fatal(err)
+	}
+	f, err := LoadFacts(ctx, database, Options{WindowDays: 14}.withDefaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(f.Sessions))
+	}
+	rows := f.Sessions[0].Rows
+	if len(rows) != 5 {
+		t.Fatalf("rows = %d, want 5 (proxy + tk:L2..L5; tk:L1 is the twin): %+v", len(rows), rows)
+	}
+	var proxy *TurnFact
+	in1000 := 0
+	for i := range rows {
+		if rows[i].Source == "proxy" {
+			proxy = &rows[i]
+		}
+		if rows[i].Input == 1000 {
+			in1000++
+		}
+	}
+	if proxy == nil || proxy.Output != 250 || proxy.Reasoning != 50 {
+		t.Errorf("proxy row = %+v, want output 250 / reasoning 50 (its twin's split)", proxy)
+	}
+	if in1000 != 2 {
+		t.Errorf("rows with input 1000 = %d, want 2 (proxy + the distinct same-shape turn)", in1000)
+	}
+}
+
 // TestLoadFacts_RowsOrderedWithoutSQLSort pins the T2.1 de-spill contract:
 // LoadFacts's api_turns/token_usage queries no longer carry
 // `ORDER BY session_id, timestamp` (removed to avoid a temp B-tree spill

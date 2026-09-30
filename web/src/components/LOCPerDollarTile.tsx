@@ -3,6 +3,7 @@ import { fmtInt, fmtUSD } from "@/lib/format";
 import { useApi } from "@/lib/useApi";
 import { HelpInd } from "@/components/HelpInd";
 import type { CostSummary, LOCSummaryResponse } from "@/lib/types";
+import { CodeCommentSplit } from "@shared/primitives/CodeCommentSplit";
 
 // LOCPerDollarTile — AI code lines per dollar over the window
 // (docs/plans/lines-of-code-tracking-plan-2026-09-07.md §3.4).
@@ -40,7 +41,12 @@ export function LOCPerDollarTile({
   const cost = useApi<CostSummary>("/api/models", { days }, [days]);
 
   const loading = (loc.loading && !loc.data) || (cost.loading && !cost.data);
-  const lines = loc.data?.ai_code_touched ?? 0;
+  // The numerator is CODE lines only: the server's split.code_lines (the one
+  // derivation, internal/loc.SplitAuthored), equal to ai_code_touched by
+  // construction; ai_code_touched is the fallback for an older daemon.
+  // Comment lines never inflate the ratio.
+  const lines =
+    loc.data?.ai_split?.code_lines ?? loc.data?.ai_code_touched ?? 0;
   const spend = cost.data?.total_cost_usd ?? 0;
   // No rows at all is NOT "zero lines" - it means nothing has been counted.
   const uncounted = !!loc.data && loc.data.buckets.length === 0;
@@ -67,18 +73,27 @@ export function LOCPerDollarTile({
               ? "no line counts yet"
               : `${fmtInt(lines)} AI code lines ÷ ${fmtUSD(spend)}`}
           </span>
+          {!uncounted && loc.data?.ai_split && (
+            <div className="mt-1.5">
+              <CodeCommentSplit split={loc.data.ai_split} compact />
+              <span className="mt-0.5 block text-[9.5px] text-fg-3">
+                Comment lines are shown for context and are not in the ratio.
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="max-w-xl space-y-1 text-[10px] leading-relaxed text-fg-3">
           <p>
             Code lines the agent added or modified, divided by total spend over
-            the same window. A ratio, not a rating - a low number can mean
+            the same window. Comment, blank and whitespace-only lines are not
+            counted as code. A ratio, not a rating - a low number can mean
             careful work on hard code, and a high one can mean boilerplate.
           </p>
           {uncounted && (
             <p>
               No line counts exist for this window. Run{" "}
-              <code className="rounded-1 bg-bg-1 px-1 py-0.5 font-mono text-[9.5px] text-fg-2">
+              <code className="rounded-1 bg-bg-3 px-1 py-0.5 font-mono text-[9.5px] text-fg-2">
                 observer backfill --loc
               </code>{" "}
               to populate history.

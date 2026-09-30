@@ -186,8 +186,4 @@ func TestConfigProfilesGuards(t *testing.T) {
 		`{"key":"observer.db_path","value":"/tmp/evil.db"}`); rr.Code != 400 {
 		t.Errorf("non-compression key: got %d want 400", rr.Code)
 	}
-	if rr := profilesReq(t, server, http.MethodPatch, "/api/config/profiles/dup",
-		`{"key":"compression.code_graph.enabled","value":"false"}`); rr.Code != 400 {
-		t.Errorf("code_graph key: got %d want 400", rr.Code)
-	}
 }

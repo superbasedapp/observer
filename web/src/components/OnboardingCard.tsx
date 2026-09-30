@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { Obs } from "@/components/Obs";
 import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
+import { Icon } from "@/components/primitives";
+import { X } from "lucide-react";
 
 // OnboardingCard — F1 + delight moment D-1 (usability arc P5.1):
 // the empty-DB Overview's first-run checklist. Replaces the dead-end
@@ -130,7 +132,7 @@ export function OnboardingCard({ sessions }: { sessions: number | null }) {
           className="shrink-0 text-[11px] text-fg-4 hover:text-fg-2"
           aria-label="Dismiss welcome"
         >
-          ✕
+          <Icon icon={X} size="xs" />
         </button>
       </div>
     </section>

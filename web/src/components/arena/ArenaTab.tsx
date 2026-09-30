@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchJSON } from "../../lib/api";
+import { ConfirmButton, ModelId, Pill, Tooltip } from "@/components/primitives";
+import { Summary } from "@/components/Summary";
+import { toneOf, type Tone } from "@shared/lib/tone";
 import type { ProjectsResponse } from "../../lib/types";
 
 // Agent Arena tab (plan: agent-arena-terminal-multi-harness-2026-08-22.md):
@@ -58,33 +61,32 @@ const HARNESS_OPTIONS = [
   { tool: "aider", label: "aider" },
 ];
 
-const STATUS_COLORS: Record<string, string> = {
-  pending: "text-fg-3",
-  running: "text-blue-400",
-  done: "text-green-400",
-  failed: "text-red-400",
-  timeout: "text-orange-400",
-  judged: "text-cyan-400",
-  kept: "text-green-300",
-  discarded: "text-fg-3",
-  running_run: "text-blue-400",
-  complete: "text-green-400",
+// ARENA_STATUS_TONE: the one table for run and candidate statuses (both
+// vocabularies share the pill). Semantic tones, so the colours follow the
+// theme; an unknown status stays neutral (unknown means unknown).
+const ARENA_STATUS_TONE: Readonly<Record<string, Tone>> = {
+  pending: "neutral",
+  running: "info",
+  done: "success",
+  failed: "danger",
+  timeout: "warn",
+  judged: "accent",
+  kept: "success",
+  discarded: "neutral",
+  running_run: "info",
+  complete: "success",
 };
 
 function StatusPill({ status }: { status: string }) {
-  return (
-    <span className={`rounded-[6px] border border-line-2 px-1.5 py-0.5 text-[11px] ${STATUS_COLORS[status] ?? "text-fg-2"}`}>
-      {status}
-    </span>
-  );
+  return <Pill variant={toneOf(ARENA_STATUS_TONE, status)}>{status}</Pill>;
 }
 
 function ScoreBar({ label, value }: { label: string; value: number }) {
   return (
     <div className="flex items-center gap-2 text-[11px]">
       <span className="w-20 text-fg-3">{label}</span>
-      <div className="h-1.5 w-28 rounded bg-bg-3">
-        <div className="h-1.5 rounded bg-accent" style={{ width: `${value * 10}%` }} />
+      <div className="h-1.5 w-28 rounded-1 bg-bg-3">
+        <div className="h-1.5 rounded-1 bg-accent" style={{ width: `${value * 10}%` }} />
       </div>
       <span className="text-fg-2">{value}/10</span>
     </div>
@@ -162,7 +164,7 @@ function NewRunForm({ onCreated }: { onCreated: (id: string) => void }) {
       <div className="grid gap-3 md:grid-cols-2">
         <label className="flex flex-col gap-1">
           <span className="text-fg-3">Project folder</span>
-          <select value={projectRoot} onChange={(e) => setProjectRoot(e.target.value)} className="rounded bg-bg-1 p-1.5 text-fg-1">
+          <select value={projectRoot} onChange={(e) => setProjectRoot(e.target.value)} className="rounded-1 bg-bg-1 p-1.5 text-fg-1">
             {projects.length === 0 && <option value="">no known projects</option>}
             {projects.map((p) => (
               <option key={p} value={p}>{p}</option>
@@ -171,7 +173,7 @@ function NewRunForm({ onCreated }: { onCreated: (id: string) => void }) {
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-fg-3">Judge harness</span>
-          <select value={judgeTool} onChange={(e) => setJudgeTool(e.target.value)} className="rounded bg-bg-1 p-1.5 text-fg-1">
+          <select value={judgeTool} onChange={(e) => setJudgeTool(e.target.value)} className="rounded-1 bg-bg-1 p-1.5 text-fg-1">
             {HARNESS_OPTIONS.map((h) => (
               <option key={h.tool} value={h.tool}>{h.label}</option>
             ))}
@@ -183,7 +185,7 @@ function NewRunForm({ onCreated }: { onCreated: (id: string) => void }) {
         onChange={(e) => setPrompt(e.target.value)}
         placeholder="The single prompt every candidate will receive…"
         rows={3}
-        className="mt-3 w-full rounded bg-bg-1 p-2 text-fg-1"
+        className="mt-3 w-full rounded-1 bg-bg-1 p-2 text-fg-1"
       />
       <label className="mt-3 flex flex-col gap-1">
         <span className="text-fg-3">Context files</span>
@@ -191,34 +193,34 @@ function NewRunForm({ onCreated }: { onCreated: (id: string) => void }) {
           value={contextFiles}
           onChange={(e) => setContextFiles(e.target.value)}
           placeholder="project-relative paths, separated by commas"
-          className="rounded bg-bg-1 p-1.5 text-fg-1"
+          className="rounded-1 bg-bg-1 p-1.5 text-fg-1"
         />
       </label>
       <div className="mt-3 flex flex-wrap gap-3">
         {HARNESS_OPTIONS.map((h) => (
-          <label key={h.tool} className="flex items-center gap-2 rounded border border-line-2 px-2 py-1">
+          <label key={h.tool} className="flex items-center gap-2 rounded-1 border border-line-2 px-2 py-1">
             <input type="checkbox" checked={tools.includes(h.tool)} onChange={() => toggleTool(h.tool)} />
             <span>{h.label}</span>
             <input
               value={models[h.tool] ?? ""}
               onChange={(e) => setModels((cur) => ({ ...cur, [h.tool]: e.target.value }))}
               placeholder="model (default)"
-              className="w-32 rounded bg-bg-1 p-0.5"
+              className="w-32 rounded-1 bg-bg-1 p-0.5"
             />
           </label>
         ))}
         <label className="flex items-center gap-2">
           <span className="text-fg-3">timeout</span>
-          <input type="number" min={1} max={120} value={timeoutMin} onChange={(e) => setTimeoutMin(Number(e.target.value))} className="w-16 rounded bg-bg-1 p-0.5" />
+          <input type="number" min={1} max={120} value={timeoutMin} onChange={(e) => setTimeoutMin(Number(e.target.value))} className="w-16 rounded-1 bg-bg-1 p-0.5" />
           <span className="text-fg-3">min</span>
         </label>
       </div>
-      {err && <p className="mt-2 text-[11px] text-red-400">{err}</p>}
+      {err && <p className="mt-2 text-caption text-danger">{err}</p>}
       <button
         type="button"
         onClick={submit}
         disabled={busy}
-        className="mt-3 rounded bg-bg-3 px-3 py-1.5 text-fg-1 hover:bg-bg-3/80 disabled:opacity-50"
+        className="mt-3 rounded-1 bg-bg-3 px-3 py-1.5 text-fg-1 hover:bg-bg-3/80 disabled:opacity-50"
       >
         {busy ? "Starting…" : "Start arena run"}
       </button>
@@ -275,26 +277,37 @@ function CandidateCard({ runId, runStatus, cand, onChanged }: { runId: string; r
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="font-medium text-fg-1">{cand.tool}</span>
-          {cand.model && <span className="text-[11px] text-fg-3">{cand.model}</span>}
+          {cand.model && <ModelId model={cand.model} mono={false} className="min-w-0 text-[11px]" />}
           <StatusPill status={cand.status} />
         </div>
         <div className="flex items-center gap-2">
-          <select value={strategy} onChange={(e) => setStrategy(e.target.value)} disabled={!canKeep} className="rounded bg-bg-1 p-0.5 text-[11px] disabled:opacity-40" title="merge strategy">
-            <option value="squash">squash merge</option>
-            <option value="judge_merge">judge-managed merge</option>
-          </select>
-          <button type="button" onClick={() => act("keep")} disabled={!canKeep} className="rounded border border-line-2 px-2 py-0.5 text-[11px] text-fg-1 hover:bg-bg-2 disabled:opacity-40">
+          <Tooltip content="Merge strategy">
+            <select value={strategy} onChange={(e) => setStrategy(e.target.value)} disabled={!canKeep} aria-label="Merge strategy" className="rounded-1 bg-bg-1 p-0.5 text-caption disabled:opacity-40">
+              <option value="squash">squash merge</option>
+              <option value="judge_merge">judge-managed merge</option>
+            </select>
+          </Tooltip>
+          <button type="button" onClick={() => act("keep")} disabled={!canKeep} className="rounded-1 border border-line-2 px-2 py-0.5 text-[11px] text-fg-1 hover:bg-bg-2 disabled:opacity-40">
             Keep → main
           </button>
-          <button type="button" onClick={() => act("discard")} disabled={!canDiscard} className="rounded border border-line-2 px-2 py-0.5 text-[11px] text-fg-3 hover:bg-bg-2 disabled:opacity-40">
+          {/* Discard removes the candidate's worktree and branch, so it
+              takes the shared two-step in-place confirm. */}
+          <ConfirmButton
+            variant="secondary"
+            size="sm"
+            onConfirm={() => void act("discard")}
+            disabled={!canDiscard}
+            confirmLabel="Discard?"
+            armedNote="Deletes this candidate's worktree and branch."
+          >
             Discard
-          </button>
+          </ConfirmButton>
         </div>
       </div>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-fg-3">
         <span>{cand.wall_ms.toLocaleString()} ms</span>
-        {cand.timed_out && <span className="text-orange-400">timed out</span>}
-        {cand.exit_code !== 0 && <span className="text-red-400">exit {cand.exit_code}</span>}
+        {cand.timed_out && <span className="text-warn">timed out</span>}
+        {cand.exit_code !== 0 && <span className="text-danger">exit {cand.exit_code}</span>}
         <span>{cand.diff_files} files · +{cand.diff_added} / −{cand.diff_removed}</span>
         {(cand.input_tokens > 0 || cand.output_tokens > 0) && (
           <span>{cand.input_tokens.toLocaleString()} in / {cand.output_tokens.toLocaleString()} out · ≈${cand.cost_usd.toFixed(4)}</span>
@@ -318,7 +331,7 @@ function CandidateCard({ runId, runStatus, cand, onChanged }: { runId: string; r
       {cand.verdict && <p className="mt-2 text-[11px] text-fg-2">{cand.verdict}</p>}
       {msg && <p className="mt-1 text-[11px] text-fg-3">{msg}</p>}
       {patch !== null && (
-        <pre className="mt-2 max-h-80 overflow-auto rounded bg-bg-1 p-2 text-[10px] leading-relaxed text-fg-2">{patch}</pre>
+        <pre className="mt-2 max-h-80 overflow-auto rounded-1 bg-bg-1 p-2 text-[10px] leading-relaxed text-fg-2">{patch}</pre>
       )}
     </div>
   );
@@ -327,11 +340,11 @@ function CandidateCard({ runId, runStatus, cand, onChanged }: { runId: string; r
 function RunCard({ run, refresh }: { run: ArenaRun; refresh: () => void }) {
   return (
     <details className="rounded-2 border border-line-2 bg-bg-1 p-3" open>
-      <summary className="cursor-pointer text-[12px] text-fg-1">
+      <Summary className="text-small text-fg-1">
         <span className="font-medium">{run.id}</span>
         <span className="ml-2 text-fg-3">{run.project_root}</span>
         <span className="ml-2"><StatusPill status={run.status} /></span>
-      </summary>
+      </Summary>
       <p className="mt-1 whitespace-pre-wrap text-[11px] text-fg-2">{run.prompt}</p>
       <div className="mt-2 grid gap-2">
         {[...run.candidates]

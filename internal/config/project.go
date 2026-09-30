@@ -21,11 +21,9 @@ import (
 // CONSTRUCTION — the file parses into a narrow struct holding only
 // [profiles] and [compression]; db_path, upstreams, hook commands and
 // every other daemon-level key simply do not exist in the parse
-// target and cannot take effect. On top of that, two compression keys
-// stay pinned: [compression.code_graph] (install capability — binary
-// and DB paths) is always the daemon's own, and conversation.enabled
-// is AND-guarded — a project can turn compression OFF for its
-// traffic, never ON (the master switch is the operator's).
+// target and cannot take effect. On top of that, conversation.enabled
+// stays pinned: it is AND-guarded — a project can turn compression OFF
+// for its traffic, never ON (the master switch is the operator's).
 
 // ProjectOverlayFilename is the repo-local override file looked up
 // under a project root.
@@ -165,15 +163,14 @@ func ProjectProfiles(global ProfilesConfig, raw []byte) ProfilesConfig {
 
 // ProjectCompression overlays the project file's [compression] keys
 // on base (the already-resolved profile parameters), enforcing the
-// pinned guards: code_graph stays base's, and conversation.enabled
-// can only be turned OFF by a project, never on.
+// pinned guard: conversation.enabled can only be turned OFF by a
+// project, never on.
 func ProjectCompression(base CompressionConfig, raw []byte) (CompressionConfig, error) {
 	doc := projectOverlayDoc{Compression: base}
 	if err := toml.Unmarshal(raw, &doc); err != nil {
 		return base, fmt.Errorf("config: project overlay: %w", err)
 	}
 	out := doc.Compression
-	out.CodeGraph = base.CodeGraph
 	out.Conversation.Enabled = base.Conversation.Enabled && out.Conversation.Enabled
 	return out, nil
 }

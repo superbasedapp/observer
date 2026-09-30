@@ -22,10 +22,8 @@ import (
 // NATIVE codeintel index seeded inline with V7-15 ranking cases.
 // project_root is a temp dir; the codeintel_files rows are keyed off
 // the abs path inside that root so file-resolution works end-to-end.
-// (Phase 4: the fixture seeds the native store directly via the same
-// store seam the indexer uses — replacing the old hand-built codegraph
-// graph.db. The synthetic node/edge DSL is unchanged so every existing
-// assertion still holds.)
+// The fixture seeds the native store directly via the same store seam
+// the indexer uses.
 type getSymbolsFixture struct {
 	s       *Server
 	root    string
@@ -58,8 +56,7 @@ type edgeSeed struct {
 }
 
 // seedCodeIntel persists the synthetic symbolSeed/edgeSeed graph into
-// the NATIVE codeintel store, replacing the old hand-built codegraph
-// graph.db. Each seed file's nodes become codeintel_nodes; each CALLS
+// the NATIVE codeintel store. Each seed file's nodes become codeintel_nodes; each CALLS
 // edge becomes a call site enclosed by its source symbol whose callee
 // name is the edge target's name, then the project-level name-matched
 // resolver fills in the edge's dst — reproducing the caller/callee

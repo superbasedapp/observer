@@ -341,6 +341,79 @@ type MCPTarget struct {
 	// (e.g. Cline) can reach a WSL-resident observer MCP server over stdio.
 	// A capability FLAG, not a tool branch (CLAUDE.md #3).
 	CrossOSBridge bool
+	// Remote describes the client's grounded REMOTE (url-addressed) MCP
+	// server shape — what the Agent Access relay projects into the client's
+	// config (doc3 §12.1: `{type:"http", url:"http://127.0.0.1:8820/mcp/
+	// <vserver>"}` in loopback mode, never a secret). nil = no grounded
+	// remote target (the honesty rule: zero value = no capability, never a
+	// fabricated writer). The per-format writers in internal/mcp dispatch
+	// on THIS row's spelling table, never on the tool name (CLAUDE.md #3).
+	Remote *MCPRemoteTarget
+}
+
+// MCPRemoteTransport is the client-agnostic transport vocabulary for a
+// remote MCP server. Each client spells these differently on disk
+// (claude-code/droid "http", cline "streamableHttp", command-code
+// `transport:"http"`, cursor/codex/opencode/hermes infer from the url) —
+// the MCPRemoteTarget.Spelling table owns the per-client spelling so the
+// writer never branches on tool name.
+type MCPRemoteTransport string
+
+const (
+	// MCPRemoteStreamableHTTP is MCP's current Streamable HTTP transport.
+	MCPRemoteStreamableHTTP MCPRemoteTransport = "streamable_http"
+	// MCPRemoteSSE is the legacy HTTP+SSE transport.
+	MCPRemoteSSE MCPRemoteTransport = "sse"
+)
+
+// MCPRemoteTarget is the grounded remote-server shape of one client's MCP
+// config (Agent Access W4a). Every field is DATA read off the vendor's own
+// config docs or a live install (the grounding date + source live in the
+// registry row comment); the writer in internal/mcp turns it into the
+// on-disk entry. Fields that are absent for a client (no transport key, no
+// flags) are simply zero — the writer omits them.
+type MCPRemoteTarget struct {
+	// Transports lists the transports the client's config grounds, in the
+	// client's own preference order. A transport absent here is refused by
+	// the writer (e.g. codex and command-code ground Streamable HTTP only).
+	Transports []MCPRemoteTransport
+	// Headers is true when the client honours a per-server request-header
+	// map in config. The relay still injects Authorization itself; this only
+	// says the client CAN carry static headers (e.g. a vserver hint).
+	Headers bool
+	// TransportKey is the entry field that carries the transport ("type" for
+	// claude-code/cline/droid, "transport" for command-code). Empty means the
+	// client infers the transport from the url and the writer emits none.
+	TransportKey string
+	// Spelling maps each grounded transport to the client's on-disk spelling
+	// under TransportKey (e.g. streamable_http → "http" vs "streamableHttp").
+	// Ignored when TransportKey is empty.
+	Spelling map[MCPRemoteTransport]string
+	// Flags are static boolean fields the client's own tooling writes on a
+	// remote entry (`disabled:false` for droid/cline, `enabled:true` for
+	// command-code). Emitted verbatim; nil for clients that write none.
+	Flags map[string]bool
+	// Implemented is true when internal/mcp's Registrar can project this
+	// target TODAY (RegisterRemote has a writer for the parent Format AND a
+	// locate row resolves the file). false = grounded-capable, no writer
+	// (hermes: its YAML writer lives in internal/hook's init path and has no
+	// remote variant, and locate carries no hermes row).
+	Implemented bool
+	// Note documents the grounding (source + date) and any caveat.
+	Note string
+}
+
+// Supports reports whether transport is one the client's config grounds.
+func (m *MCPRemoteTarget) Supports(transport MCPRemoteTransport) bool {
+	if m == nil {
+		return false
+	}
+	for _, t := range m.Transports {
+		if t == transport {
+			return true
+		}
+	}
+	return false
 }
 
 // NativeRails is the three-rail native-console telemetry bitset
@@ -485,6 +558,7 @@ func (h HandoffCapability) Lanes() []InjectKind {
 type TokenTier struct {
 	// Best names the strongest capture source: "proxy" (api_turns wall-clock
 	// + exact usage), "debug_log", "events_jsonl", "sqlite", "transcript",
+	// "hook" (vendor-reported per-request usage on a hook payload),
 	// "proto" (decrypt-gated). "none" = AUDITED and no local token source
 	// exists (e.g. qoder's server-side-only usage — distinct from "",
 	// which means the audit itself hasn't happened).
@@ -493,6 +567,115 @@ type TokenTier struct {
 	// e.g. "no cache tier", "model often blank", "decrypt-gated",
 	// "sparse task tokens", "OpenAI-gross net-vs-cached fix pending".
 	Gap string
+	// OutputOnlyShadow is true when the adapter emits, beside a FULL usage
+	// row for a turn, a second OUTPUT-ONLY token_usage row for the same
+	// turn (input == 0, cache == 0, output identical) - the Copilot family's
+	// streaming-completion echo. Every consumer that must not double-count
+	// (the process cost engine, the node session-detail messages path, the
+	// org message rollup) dispatches on THIS flag and pairs shadow rows
+	// one-to-one with their full row by output count; none of them names
+	// the tool (CLAUDE.md "branch on capabilities, never on source
+	// identity"). Audited 2026-09-22 (Sol reviews R9 / P7).
+	OutputOnlyShadow bool
+	// SessionCumulative is true when the adapter's JSONL token row is a
+	// RUNNING TOTAL for the whole session (one row, MAX-upgraded as the
+	// session grows) rather than a per-call delta — droid, goose, crush,
+	// mistral-code. internal/sessionmsg's session-cumulative
+	// reconciliation (reconcileCumulative) dispatches on THIS flag
+	// (combined with the adapter's own "tokens:"-prefixed turn id) to
+	// decide whether a JSONL row must be resolved winner-take-all against
+	// that session's proxy rows rather than turn-deduped individually. A
+	// tool whose rows merely happen to share the "tokens:" id prefix
+	// convention without being session-cumulative (aider — per-exchange,
+	// "tokens:<chat-key>:<seq>") leaves this false and falls through to
+	// the ordinary per-turn dedup pass instead (2026-09-22 rework finding
+	// #8 — capability, not a bare id-prefix sniff, decides the routing).
+	SessionCumulative bool
+	// ReasoningDisjoint is true when this adapter's token_usage
+	// output_tokens and reasoning_tokens are AUDITED disjoint (reasoning
+	// netted out of output, or reasoning never stamped), so a row's
+	// generated tokens are Output + Reasoning. False = unaudited: the
+	// Tok/s numerator (internal/sessionmsg Speed) counts Output only, so
+	// an adapter whose output already includes reasoning is never
+	// double-counted. S10-SPEED, 2026-09-23.
+	ReasoningDisjoint bool
+	// GenerationTiming names where a per-call GENERATION DURATION comes
+	// from on this adapter's token rows (token_usage.gen_ms / gen_basis,
+	// agent migration 136): GenTimingNative (the tool's own store records the call's
+	// duration or start+end), GenTimingTranscript (derived from transcript
+	// record order, stamped only when provable in-window), GenTimingNone
+	// (audited: no duration exists) or "" (unaudited). Declarative data
+	// pinned by registry_coverage_test.go: the Tok/s math reads the per-row
+	// duration, never this field. The one consumer is the org push's settle
+	// holdback (TranscriptTimedTools): a transcript-timed row can be stamped
+	// AFTER its first insert, so it is briefly held back from the push.
+	GenerationTiming string
+	// SynthesizedTimestamps is true when the adapter FABRICATES per-row
+	// timestamps (base + index steps, interpolation, one repeated session
+	// stamp) because the store has no real per-message clock. Such an
+	// adapter may never declare GenTimingTranscript (pinned by
+	// registry_coverage_test.go): a 1 ms synthetic step would read as a
+	// million tokens per second.
+	SynthesizedTimestamps bool
+	// ReportsCost is true when the adapter records the TOOL'S OWN stated cost
+	// for a call in token_usage.estimated_cost_usd (a vendor gateway's billed
+	// figure, the harness's per-message cost field) rather than leaving it at
+	// 0 for Observer's cost engine to price. A non-zero stored cost from such
+	// an adapter is authoritative capture data: the opt-in stored-cost
+	// re-price (internal/reprice, gap PRICE-REPRICE-1) never overwrites it,
+	// on the node or on the org's copy. The zero value is the grounded claim
+	// "this adapter never stores a cost of its own", kept honest by
+	// registry_reportscost_test.go, which pins the set of adapter packages
+	// that assign EstimatedCostUSD against the set of rows flagged here.
+	ReportsCost bool
+}
+
+// GenerationTiming values (TokenTier.GenerationTiming).
+const (
+	GenTimingNone       = "none"
+	GenTimingNative     = "native"
+	GenTimingTranscript = "transcript"
+)
+
+// LimitSourceKind names how a tool's OWN subscription-window / rate-limit
+// state (docs/cost-predictor.md's 5h/weekly gauge) could ever surface
+// LOCALLY, mirroring TokenTier's convention: "" = not yet audited (the
+// honest floor), a non-empty value = audited and the answer is a
+// permanent negative. This field never records a POSITIVE capability — a
+// working source is discovered structurally, by the proxy-header
+// snapshot or the transcript fallback in
+// internal/intelligence/dashboard/predict.go::loadLimitGauge actually
+// producing a window, never by a registry flag. Only a non-empty Source
+// short-circuits that ladder.
+type LimitSourceKind string
+
+const (
+	// LimitSourceUnaudited (zero value): not yet audited for a local
+	// limit signal. Falls through to loadLimitGauge's existing proxy-
+	// snapshot / transcript-fallback / needs-proxy ladder UNCHANGED —
+	// this is the correct default for nearly every row: an unaudited
+	// Anthropic-family tool must keep showing "needs proxy", never
+	// silently render "not visible" with no real investigation behind it.
+	LimitSourceUnaudited LimitSourceKind = ""
+	// LimitSourceNoneRemote: a limit/quota genuinely exists but is visible
+	// ONLY in the vendor's own hosted dashboard or account API — nothing
+	// local (config file, CLI subcommand, IPC surface) exposes it.
+	LimitSourceNoneRemote LimitSourceKind = "none_remote"
+	// LimitSourceNoneStructural: no local signal can exist even in
+	// principle, because the tool's inference never runs on this machine
+	// (e.g. a remote-sandbox execution model).
+	LimitSourceNoneStructural LimitSourceKind = "none_structural"
+)
+
+// LimitCapability records an AUDITED negative finding for the 5h/weekly
+// usage-limit gauge. A zero value means "not audited" and MUST NOT be
+// read as "no source" — only a non-empty Source short-circuits
+// loadLimitGauge's ladder with Note as the operator-facing reason. Note
+// is REQUIRED (non-empty) whenever Source != LimitSourceUnaudited
+// (registry_coverage_test.go TestLimitCapabilityHonesty pins this).
+type LimitCapability struct {
+	Source LimitSourceKind
+	Note   string
 }
 
 // AttachSpec declares that `observer <Subcommand> --attach` can hand the
@@ -875,6 +1058,26 @@ type SandboxSpec struct {
 	// StateRO lists dirs the tool only READS: versioned installs, shared
 	// caches. Bound read-only (ro-bind-try) inside the sandbox.
 	StateRO []string
+	// ProtectRO lists HOME-relative files/dirs INSIDE a StateRW entry that
+	// a later UNSANDBOXED session of the tool executes: hook config, MCP
+	// server config, auto-discovered plugins/mods. The sandbox re-binds
+	// them read-only after the rw binds (security ledger SR27-SBX-1), so a
+	// sandboxed agent cannot plant a command its next unsandboxed run
+	// executes. Grounded from the files observer's own hook/MCP registrars
+	// write (internal/hook/register.go, internal/mcp/locate, the hermes
+	// plugin writer) - never guessed. A file the tool rewrites on every run
+	// (e.g. claude-code's .claude.json, which also carries user MCP
+	// servers) cannot be listed without breaking the tool; that residual is
+	// documented in docs/sandboxed-terminals.md. Empty for a tool whose
+	// executed config observer has not grounded. Entries here are FILES;
+	// directories go in ProtectRODirs. The distinction only matters when the
+	// path does not exist at launch: the sandbox then creates a read-only
+	// placeholder of that shape so the sandboxed process cannot create it
+	// (SR27-SBX-2).
+	ProtectRO []string
+	// ProtectRODirs is ProtectRO for directories (auto-discovered plugin or
+	// mod dirs). Same rules: HOME-relative, strictly inside a StateRW entry.
+	ProtectRODirs []string
 	// Note is REQUIRED when both StateRW and StateRO are empty (the
 	// honest zero) — it must say why the row is unmapped, never left
 	// silently blank.

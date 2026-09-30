@@ -196,8 +196,7 @@ func newServeCmd() *cobra.Command {
 			// Wire the code-intelligence provider into the MCP layer
 			// (get_symbols / get_relations / check_file_freshness +
 			// get_file_history structure enrichment). The NATIVE codeintel
-			// engine is the only provider (Phase 4 decommissioned the
-			// external code-graph dependency); it self-heals as projects
+			// engine is the only provider; it self-heals as projects
 			// are indexed. Best-effort: an unavailable provider just
 			// degrades enrichment.
 			mcpOpts.CodeIntel = buildCodeIntelProvider(cfg, database, logger)

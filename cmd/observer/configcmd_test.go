@@ -175,6 +175,16 @@ func TestConfigAdoptDefaults_WriteAppendsAndBacksUp(t *testing.T) {
 	if !strings.Contains(out, "backup written to "+cfgPath+".bak") {
 		t.Errorf("--write should report the backup path:\n%s", out)
 	}
+	// enabled_adapters is read once at daemon startup and is NOT part of
+	// the live /api/config/reload contract (only [profiles]/compression
+	// are) — the write path must never claim it already applies, only
+	// that it will once the daemon restarts.
+	if !strings.Contains(out, "restart the daemon") {
+		t.Errorf("--write should tell the operator a restart is required for enabled_adapters to take effect:\n%s", out)
+	}
+	if strings.Contains(out, "daemon reloaded") || strings.Contains(out, "applies to new sessions now") {
+		t.Errorf("--write must not claim the newly-added adapter(s) are already being watched:\n%s", out)
+	}
 
 	backup, err := os.ReadFile(cfgPath + ".bak")
 	if err != nil {

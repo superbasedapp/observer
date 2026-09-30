@@ -1,0 +1,946 @@
+{
+  "available": true,
+  "status": {
+    "enabled": true,
+    "mode": "stdio_wrapper",
+    "audit_mode": "async",
+    "gateway_url": "https://gw.acme",
+    "table_loaded": true,
+    "table_version": 3,
+    "table_mode": "enforce",
+    "table_rows": 1,
+    "policy_gen": 5,
+    "cache_path": "/home/dev/.observer/mcp-node-table.json",
+    "effective_hash": "c15961d2f41ebbf84997f77e366af5e699b8ece89837c64cb3b8f78ce0cd8299",
+    "point_status": "effective",
+    "approved_vservers": [
+      "vs-gh"
+    ],
+    "chain_head": 0,
+    "pending_loss": 0,
+    "launch_specs": 2,
+    "projected_clients": [
+      "cursor",
+      "opencode"
+    ],
+    "remote_forwarding": {
+      "wired": false,
+      "reason": "no agent-access key in the keychain slot (run observer org enroll)"
+    },
+    "coverage": {
+      "best-effort": 58,
+      "hook-only": 4,
+      "mediated": 4,
+      "planned": 2,
+      "uncovered": 46
+    }
+  },
+  "daemon_relay": true,
+  "remote_source": "daemon",
+  "enrolled": false,
+  "managed": false,
+  "chain_verified": false,
+  "coverage_rows": [
+    {
+      "client": "aider",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "aider",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "aider",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "aider",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "aider",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "aider",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "claude-code",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "hook-only",
+      "point": "hook-pretooluse",
+      "note": "PreToolUse deny of an unapproved mcp__* call; parses known tool shapes only"
+    },
+    {
+      "client": "claude-code",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "claude-code",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "hook-only",
+      "point": "hook-pretooluse",
+      "note": "no relay-mediated remote entry; PreToolUse deny of an unapproved mcp__* call is the only pre-execution lever (known tool shapes only)"
+    },
+    {
+      "client": "claude-code",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "claude-code",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "claude-code",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "cline",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "wrap writer exists but no stdio wrap is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "cline",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "uncovered",
+      "note": "wrap writer exists but no stdio wrap is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "cline",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "remote entry projectable but no relay remote entry is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "cline",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "uncovered",
+      "note": "remote entry projectable but no relay remote entry is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "cline",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "cline",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "cline-cli",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "cline-cli",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "cline-cli",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "cline-cli",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "cline-cli",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "cline-cli",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "codex",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "wrap writer exists but no stdio wrap is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "codex",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "codex",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "remote entry projectable but no relay remote entry is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "codex",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "codex",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "codex",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "command-code",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "wrap writer exists but no stdio wrap is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "command-code",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "uncovered",
+      "note": "wrap writer exists but no stdio wrap is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "command-code",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "remote entry projectable but no relay remote entry is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "command-code",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "uncovered",
+      "note": "remote entry projectable but no relay remote entry is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "command-code",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "command-code",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "copilot-cli",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "copilot-cli",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "copilot-cli",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "copilot-cli",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "copilot-cli",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "copilot-cli",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "crush",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "crush",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "crush",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "crush",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "crush",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "crush",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "cursor",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "mediated",
+      "point": "node-mcp-relay",
+      "note": "stdio wrapper replaces the spawn (process_attested); local PDP + decision record before the child sees the call"
+    },
+    {
+      "client": "cursor",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "mediated",
+      "point": "node-mcp-relay",
+      "note": "stdio wrapper replaces the spawn (process_attested); local PDP + decision record before the child sees the call"
+    },
+    {
+      "client": "cursor",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "hook-only",
+      "point": "hook-pretooluse",
+      "note": "no relay-mediated remote entry; PreToolUse deny of an unapproved mcp__* call is the only pre-execution lever (known tool shapes only)"
+    },
+    {
+      "client": "cursor",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "uncovered",
+      "note": "remote entry projectable but no relay remote entry is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "cursor",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "hook-only",
+      "point": "hook-pretooluse",
+      "note": "PreToolUse deny of an unapproved mcp__* call; parses known tool shapes only"
+    },
+    {
+      "client": "cursor",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "droid",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "wrap writer exists but no stdio wrap is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "droid",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "uncovered",
+      "note": "wrap writer exists but no stdio wrap is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "droid",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "remote entry projectable but no relay remote entry is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "droid",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "uncovered",
+      "note": "remote entry projectable but no relay remote entry is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "droid",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "droid",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "gemini-cli",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "gemini-cli",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "gemini-cli",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "gemini-cli",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "gemini-cli",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "gemini-cli",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "goose",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "goose",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "goose",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "goose",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "goose",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "goose",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "grok",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "grok",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "grok",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "grok",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "grok",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "grok",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "hermes",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "planned",
+      "phase": "P4 W4a (per-format writer)",
+      "note": "registry format known, no projection writer yet; until then hook/proxy best-effort only"
+    },
+    {
+      "client": "hermes",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "planned",
+      "phase": "P4 W4a (per-format writer)",
+      "note": "registry format known, no projection writer yet; until then hook/proxy best-effort only"
+    },
+    {
+      "client": "hermes",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "hermes",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "hermes",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "hermes",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "kimi-code",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "kimi-code",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "kimi-code",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "kimi-code",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "kimi-code",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "kimi-code",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "opencode",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "mediated",
+      "point": "node-mcp-relay",
+      "note": "stdio wrapper replaces the spawn (process_attested); local PDP + decision record before the child sees the call"
+    },
+    {
+      "client": "opencode",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "mediated",
+      "point": "node-mcp-relay",
+      "note": "stdio wrapper replaces the spawn (process_attested); local PDP + decision record before the child sees the call"
+    },
+    {
+      "client": "opencode",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "remote entry projectable but no relay remote entry is verified on disk on this node (not applied, the config write failed or was edited since: observer mcp-relay enable)"
+    },
+    {
+      "client": "opencode",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "opencode",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "opencode",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "pi",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "pi",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "pi",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "pi",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "pi",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "pi",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "prime-agent",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "prime-agent",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "prime-agent",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "prime-agent",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "prime-agent",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "prime-agent",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "qwen-code",
+      "transport": "stdio",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "qwen-code",
+      "transport": "stdio",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "qwen-code",
+      "transport": "remote-http",
+      "method": "governed",
+      "coverage": "uncovered",
+      "note": "no node-side control sees this combination; only MDM/EDR + network egress enforcement closes it"
+    },
+    {
+      "client": "qwen-code",
+      "transport": "remote-http",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "disallowed mcp__* declarations stripped from tools[] on proxied inference; the client's own tools/list is not seen"
+    },
+    {
+      "client": "qwen-code",
+      "transport": "hosted-connector",
+      "method": "governed",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    },
+    {
+      "client": "qwen-code",
+      "transport": "hosted-connector",
+      "method": "catalogue",
+      "coverage": "best-effort",
+      "point": "proxy-tools-filter",
+      "note": "provider dials the connector itself; the proxy refuses a non-approved connector on the inference request and strips disallowed mcp__* decls - only for traffic routed through :8820"
+    }
+  ],
+  "vservers": [
+    {
+      "id": "vs-gh",
+      "slug": "github",
+      "sender_constraint": "bearer",
+      "servers": [
+        {
+          "id": "gh",
+          "target": "https://mcp.github.com/mcp",
+          "credential_mode": "vault_user",
+          "pinned": false,
+          "per_user_connect": true
+        }
+      ]
+    }
+  ],
+  "effective_state": {
+    "status": "effective",
+    "reason": "ok",
+    "mode": "enforce",
+    "running_version": 3,
+    "effective_hash": "c15961d2f41ebbf84997f77e366af5e699b8ece89837c64cb3b8f78ce0cd8299",
+    "restart_required": false
+  },
+  "connect": {
+    "unavailable": "this node is not enrolled with an organization, so there is no org dashboard to connect a server in",
+    "connectable_servers": [
+      {
+        "server_id": "gh",
+        "vservers": [
+          "vs-gh"
+        ]
+      }
+    ]
+  }
+}

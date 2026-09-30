@@ -489,7 +489,7 @@ func (s *Store) buildFileChanges(ctx context.Context, a locActionRow) ([]FileCha
 			SessionID:    a.SessionID,
 			ProjectID:    a.ProjectID,
 			ActionID:     a.ID,
-			FilePathHash: sha256Hex(RelativeProjectPath(a.ProjectRoot, fs.Path)),
+			FilePathHash: loc.PathHash(a.ProjectRoot, fs.Path),
 			InputDigest:  fs.InputDigest,
 			Language:     string(fs.Lang),
 			Category:     string(fs.Category),
@@ -714,34 +714,12 @@ func isLOCActionType(t string) bool {
 // save and the agent edit it echoes would never join, and the deferred
 // editor-echo reconciliation could not work.
 //
-// Normalization, in order:
-//
-//  1. Both separators become "/", so a Windows session's
-//     `C:\repo\src\a.go` and a WSL session's `/repo/src/a.go` reduce the
-//     same way. (The corpus really does mix them: 3 sessions here span
-//     Windows and Linux roots.)
-//  2. The project root prefix is stripped when present, case-insensitively
-//     — Windows paths are case-insensitive in practice and a drive-letter
-//     case difference must not fork the hash.
-//  3. A leading "./" and any leading "/" are stripped.
-//
-// A path that is NOT under the root (an absolute path in another tree, an
-// "[external]/…" pseudo-path) is returned normalized but unstripped, so it
-// hashes distinctly and never collides with a project file.
+// This is a thin shim over internal/loc.RelativeProjectPath — the pure
+// package owns the normalization rules (see its doc comment) so pure
+// packages that also need this join key (internal/commitlog) can import
+// it without pulling in internal/store.
 func RelativeProjectPath(projectRoot, path string) string {
-	p := strings.ReplaceAll(strings.TrimSpace(path), `\`, "/")
-	if p == "" {
-		return ""
-	}
-	root := strings.TrimSuffix(strings.ReplaceAll(strings.TrimSpace(projectRoot), `\`, "/"), "/")
-	if root != "" && len(p) > len(root) &&
-		strings.EqualFold(p[:len(root)], root) &&
-		(p[len(root)] == '/') {
-		p = p[len(root)+1:]
-	}
-	p = strings.TrimPrefix(p, "./")
-	p = strings.TrimLeft(p, "/")
-	return p
+	return loc.RelativeProjectPath(projectRoot, path)
 }
 
 // parseLOCTime decodes an actions.timestamp value, falling back to the

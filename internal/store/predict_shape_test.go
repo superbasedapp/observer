@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"testing"
+	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/predict"
 )
 
@@ -21,6 +24,11 @@ type seedRow struct {
 	// token_usage.source_event_id for a JSONL row — the exact-match
 	// dedup key.
 	eventID string
+	// promptID is api_turns.prompt_id (migration 139) for a proxy row.
+	promptID string
+	// reasoning is token_usage.reasoning_tokens for a JSONL row (the
+	// transcript's output is NET of it; the proxy's is gross).
+	reasoning int64
 }
 
 // TestLoadSessionShape_TurnSubstrate is the regression pin for the
@@ -168,6 +176,47 @@ func TestLoadSessionShape_TurnSubstrate(t *testing.T) {
 			wantSamples: []predict.TurnSample{{FreshInput: 100, Output: 20}},
 			wantTPM:     []int{1},
 		},
+		{
+			// Prompt-id grouping (migration 139) is EXACT and wins over
+			// timestamp bucketing: the one user_prompt boundary would bucket
+			// all five turns into a single message, but the client said
+			// they served two prompts. Groups come back in first-seen order,
+			// and a zero-token row does not count toward its prompt.
+			name: "prompt_id_groups_win",
+			rows: []seedRow{
+				{source: "proxy", ts: "2026-08-28T16:00:01Z", model: "claude-sonnet-5", input: 100, output: 5, promptID: "p-a"},
+				{source: "proxy", ts: "2026-08-28T16:00:02Z", model: "claude-sonnet-5", input: 100, output: 5, promptID: "p-a"},
+				{source: "proxy", ts: "2026-08-28T16:00:03Z", model: "claude-sonnet-5", input: 100, output: 5, promptID: "p-a"},
+				{source: "proxy", ts: "2026-08-28T16:00:04Z", model: "claude-sonnet-5", input: 0, output: 0, promptID: "p-b"},
+				{source: "proxy", ts: "2026-08-28T16:00:05Z", model: "claude-sonnet-5", input: 100, output: 5, promptID: "p-b"},
+				{source: "proxy", ts: "2026-08-28T16:00:06Z", model: "claude-sonnet-5", input: 100, output: 5, promptID: "p-b"},
+			},
+			promptTimes: []string{"2026-08-28T16:00:00Z"},
+			wantModel:   "claude-sonnet-5",
+			wantSamples: []predict.TurnSample{
+				{FreshInput: 100, Output: 5},
+				{FreshInput: 100, Output: 5},
+				{FreshInput: 100, Output: 5},
+				{FreshInput: 100, Output: 5},
+				{FreshInput: 100, Output: 5},
+			},
+			wantTPM: []int{3, 2},
+		},
+		{
+			// Prompt ids also cover a session with NO user_prompt actions
+			// at all - the ~68% the timestamp path cannot bucket.
+			name: "prompt_id_without_user_prompt_actions",
+			rows: []seedRow{
+				{source: "proxy", ts: "2026-08-28T17:00:01Z", model: "claude-sonnet-5", input: 100, output: 5, promptID: "p-1"},
+				{source: "proxy", ts: "2026-08-28T17:00:02Z", model: "claude-sonnet-5", input: 100, output: 5, promptID: "p-2"},
+			},
+			wantModel: "claude-sonnet-5",
+			wantSamples: []predict.TurnSample{
+				{FreshInput: 100, Output: 5},
+				{FreshInput: 100, Output: 5},
+			},
+			wantTPM: []int{1, 1},
+		},
 	}
 
 	for _, tc := range tests {
@@ -209,6 +258,39 @@ func TestLoadSessionShape_TurnSubstrate(t *testing.T) {
 	}
 }
 
+// TestLoadSessionShape_DedupFollowsDerive pins the predictor substrate onto
+// the one session rule, sessionmsg.DeriveVerdicts (lane R2-PARITY-2). The
+// old SQL NOT EXISTS compared the transcript's RAW output with the proxy's
+// gross output, so a codex-shaped reasoning-split twin survived and the turn
+// was sampled twice; and it dropped EVERY same-shape transcript row, where
+// Derive claims one twin per proxy row.
+func TestLoadSessionShape_DedupFollowsDerive(t *testing.T) {
+	st := newPredictTestStore(t)
+	seedShapeSession(t, st, "sess-d", "gpt-5.4", []seedRow{
+		{source: "proxy", ts: "2026-08-28T10:00:00Z", model: "gpt-5.4", input: 1000, output: 300, eventID: "resp_1"},
+		// The same turn from the transcript: output net of 50 reasoning.
+		{source: "jsonl", ts: "2026-08-28T10:00:05Z", model: "gpt-5.4", input: 1000, output: 250, reasoning: 50, eventID: "tk:L1"},
+		// A distinct transcript-only turn with the proxy turn's exact shape:
+		// one proxy row claims ONE twin, so this one must stay.
+		{source: "jsonl", ts: "2026-08-28T10:20:00Z", model: "gpt-5.4", input: 1000, output: 250, reasoning: 50, eventID: "tk:L2"},
+	}, nil)
+	got, err := st.LoadSessionShape(context.Background(), "sess-d")
+	if err != nil {
+		t.Fatalf("LoadSessionShape: %v", err)
+	}
+	// The proxy row carries its twin's visible output (the header's output
+	// bucket), then the transcript-only turn.
+	want := []predict.TurnSample{{FreshInput: 1000, Output: 250}, {FreshInput: 1000, Output: 250}}
+	if len(got.TurnSamples) != len(want) {
+		t.Fatalf("TurnSamples = %+v, want %+v (twin once, second turn kept)", got.TurnSamples, want)
+	}
+	for i := range want {
+		if got.TurnSamples[i] != want[i] {
+			t.Errorf("TurnSamples[%d] = %+v, want %+v", i, got.TurnSamples[i], want[i])
+		}
+	}
+}
+
 // TestLoadToolProjectPrior_CountsProxyOnlySessions pins the sibling half
 // of the same defect: the cross-session fan-out prior gated on
 // EXISTS(token_usage), so proxy-only sessions were invisible to it and a
@@ -245,6 +327,40 @@ func TestLoadToolProjectPrior_CountsProxyOnlySessions(t *testing.T) {
 	}
 }
 
+// TestLoadToolProjectPrior_UsesPromptIDs pins the prior's prompt-id rung:
+// sessions whose proxied turns carry prompt ids join the prior even with no
+// user_prompt actions, at tagged turns / distinct prompt ids.
+func TestLoadToolProjectPrior_UsesPromptIDs(t *testing.T) {
+	st := newPredictTestStore(t)
+	ctx := context.Background()
+
+	// Three sessions, each 6 tagged turns over 2 prompts => fan-out 3.
+	// No user_prompt actions anywhere.
+	for _, id := range []string{"q1", "q2", "q3"} {
+		var rows []seedRow
+		for i, pid := range []string{"a", "a", "a", "b", "b", "b"} {
+			rows = append(rows, seedRow{
+				source: "proxy", ts: "2026-08-20T10:00:0" + string(rune('1'+i)) + "Z",
+				model: "claude-sonnet-5", input: 100, output: 10, promptID: id + "-" + pid,
+			})
+		}
+		seedShapeSession(t, st, id, "", rows, nil)
+	}
+
+	prior, err := st.LoadToolProjectPrior(ctx, "claude-code", 1, 0)
+	if err != nil {
+		t.Fatalf("LoadToolProjectPrior: %v", err)
+	}
+	if len(prior) != 3 {
+		t.Fatalf("prior = %v, want 3 samples (prompt-id sessions must count)", prior)
+	}
+	for i, v := range prior {
+		if v != 3 {
+			t.Errorf("prior[%d] = %d, want 3 (6 tagged turns / 2 prompt ids)", i, v)
+		}
+	}
+}
+
 // seedShapeSession plants one session plus its turn rows and user_prompt
 // boundaries. Session ids share project 1 / tool claude-code so the prior
 // test's scoping works.
@@ -269,22 +385,26 @@ func seedShapeSession(t *testing.T, st *Store, id, model string, rows []seedRow,
 	for i, r := range rows {
 		switch r.source {
 		case "proxy":
-			var reqID any
+			var reqID, promptID any
 			if r.eventID != "" {
 				reqID = r.eventID
 			}
+			if r.promptID != "" {
+				promptID = r.promptID
+			}
 			exec(`INSERT INTO api_turns
 			        (session_id, timestamp, provider, model, request_id,
-			         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-			      VALUES (?, ?, 'anthropic', ?, ?, ?, ?, ?, ?)`,
-				id, r.ts, r.model, reqID, r.input, r.output, r.cacheRead, r.cacheCreation)
+			         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+			         prompt_id)
+			      VALUES (?, ?, 'anthropic', ?, ?, ?, ?, ?, ?, ?)`,
+				id, r.ts, r.model, reqID, r.input, r.output, r.cacheRead, r.cacheCreation, promptID)
 		case "jsonl":
 			exec(`INSERT INTO token_usage
 			        (session_id, timestamp, tool, model, source, source_file, source_event_id,
-			         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-			      VALUES (?, ?, 'claude-code', ?, 'jsonl', ?, ?, ?, ?, ?, ?)`,
+			         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, reasoning_tokens)
+			      VALUES (?, ?, 'claude-code', ?, 'jsonl', ?, ?, ?, ?, ?, ?, ?)`,
 				id, r.ts, r.model, id+"-file", r.eventID,
-				r.input, r.output, r.cacheRead, r.cacheCreation)
+				r.input, r.output, r.cacheRead, r.cacheCreation, r.reasoning)
 		default:
 			t.Fatalf("row %d: unknown source %q", i, r.source)
 		}
@@ -292,5 +412,45 @@ func seedShapeSession(t *testing.T, st *Store, id, model string, rows []seedRow,
 	for _, ts := range promptTimes {
 		exec(`INSERT INTO actions (session_id, project_id, timestamp, tool, action_type, success)
 		      VALUES (?, 1, ?, 'claude-code', 'user_prompt', 1)`, id, ts)
+	}
+}
+
+// TestInsertAPITurn_PersistsPromptID pins the store half of migration 139:
+// the proxy's prompt id lands in api_turns.prompt_id, and an absent one is
+// NULL (so the predictor's prompt-id rung stays empty for untagged turns).
+func TestInsertAPITurn_PersistsPromptID(t *testing.T) {
+	st := newPredictTestStore(t)
+	ctx := context.Background()
+	seedShapeSession(t, st, "sess-p", "", nil, nil)
+	for _, pid := range []string{"4b8f1c2e-9d3a-4f6b-8e21-7c5d0a9b3e14", ""} {
+		if _, err := st.InsertAPITurn(ctx, models.APITurn{
+			SessionID: "sess-p", Timestamp: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC),
+			Provider: "anthropic", Model: "claude-sonnet-5", RequestID: "req-" + pid,
+			InputTokens: 10, OutputTokens: 2, PromptID: pid,
+		}); err != nil {
+			t.Fatalf("InsertAPITurn: %v", err)
+		}
+	}
+	rows, err := st.db.QueryContext(ctx, `SELECT prompt_id FROM api_turns WHERE session_id = 'sess-p' ORDER BY id`)
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	defer rows.Close()
+	var got []sql.NullString
+	for rows.Next() {
+		var v sql.NullString
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, v)
+	}
+	if len(got) != 2 {
+		t.Fatalf("rows = %d, want 2", len(got))
+	}
+	if !got[0].Valid || got[0].String != "4b8f1c2e-9d3a-4f6b-8e21-7c5d0a9b3e14" {
+		t.Errorf("tagged turn prompt_id = %+v, want the uuid", got[0])
+	}
+	if got[1].Valid {
+		t.Errorf("untagged turn prompt_id = %q, want NULL", got[1].String)
 	}
 }

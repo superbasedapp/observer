@@ -25,6 +25,47 @@
 //	layoutTranscript .cursor/projects/<slug>/agent-transcripts/<c>/<c>.jsonl  ide / cursor
 //	layoutStateDB    <...>/Cursor/User/globalStorage/state.vscdb              ide / cursor
 //	layoutStoreDB    .cursor/chats/<ws-hash>/<conv>/store.db                  cli / cursor-agent
+//	layoutCLIUsage   <tmp>/cursor-agent-logs-<user>/session-*.log             cli / cursor-agent
+//	layoutHooksLog   <Cursor userData>/logs/*/window*/output_*/cursor.hooks*.log  (no stamp)
+//
+// layoutCLIUsage (cli_usage.go + cli_turns.go) is the cursor-agent debug
+// log, one file per process: headless turn-outcome records carry usage,
+// and a turn that never finished (quit mid-retry, killed) - which has NO
+// usage anywhere on disk - becomes turn_aborted / api_error evidence rows
+// that internal/cursorusage turns into the session page's reason.
+//
+// layoutHooksLog (hookslog.go) is the IDE's hooks output channel: Cursor
+// records every hook INPUT payload there, including the per-request
+// usage on stop / afterAgentResponse. It is replayed through the live
+// hook's own builders (same source identity, so it dedups against the
+// live rows) as the durable backstop for payloads the live receiver
+// failed to persist. It stamps no surface, exactly like the hook path.
+// It declares a streaming, rewinding no-actions cursor, so the watcher's
+// max_file_bytes guard bounds the UNREAD TAIL (the logs grow to ~30 MB
+// before Cursor rotates them) and a rotation rewinds the cursor. The
+// watcher only tails: a log FIRST SEEN with more than max_file_bytes
+// unread (history from before this reader, or a Cursor launch while the
+// daemon was down) is skipped by that guard and is the job of
+// `observer backfill --cursor-hook-usage`. The replay adds action rows
+// only for a conversation no transcript / state.vscdb row already
+// covers (WithSessionTranscriptChecker); its usage and outcomes always
+// replay.
+//
+// # Root-less conversations
+//
+// Empty-window chats and Cursor Cloud Agents (`bc-<uuid>`) have no
+// workspace folder; their payloads carry `workspace_roots: []` and
+// state.vscdb has no composerHeaders root for them. They are filed under
+// SyntheticProjectRoot ("[cursor]") so a session row exists at all
+// (store.Ingest drops an empty ProjectRoot). Lifecycle-only events
+// (sessionStart / sessionEnd) never bootstrap under the placeholder, and
+// the guard sees an empty project root for them, never "[cursor]". A
+// root-less payload for a conversation the store already knows under a
+// folder resolves to that folder (ResolveSyntheticRoots: same-batch
+// root, then the stored session's root), never flipping it onto the
+// placeholder; and a root-less state.vscdb composerData row bootstraps
+// only when it has content (a header entry, a bubble, or a `bc-` id), so
+// drafts and unused chats stay dropped.
 //
 // The first two are written by the Cursor IDE (the VS Code fork); the
 // third by the `cursor-agent` CLI. layoutUnknown gets no stamp — an

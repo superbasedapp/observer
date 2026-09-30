@@ -1,0 +1,19 @@
+Prints the node relay's state: the compiled tools.mcp_access table and
+the vservers it approves, remote forwarding (an idempotent registration
+against the org server unless --no-remote), which client configs are
+VERIFIED projected, the relay point's effective state and hash, the
+hash-chained decision record, and the coverage matrix.
+
+With [mcp_relay].enabled = false it reports the relay disabled and makes
+no org-server call; it still lists client configs the journal shows as
+wrapped (switched off without `observer mcp unwrap`).
+
+Usage:
+  observer mcp status [flags]
+
+Flags:
+      --config string   path to config.toml (default ~/.observer/config.toml)
+  -h, --help            help for status
+      --json            print JSON
+      --no-matrix       omit the coverage matrix
+      --no-remote       do not probe remote forwarding (no org-server registration call)

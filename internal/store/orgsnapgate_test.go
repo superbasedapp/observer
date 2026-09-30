@@ -77,11 +77,19 @@ var gatedWireFamilies = map[string]snapFamily{
 	// wires use.
 	"SessionLOC": snapFamSessionLOC,
 	"LOCDays":    snapFamLOCDays,
+	// BL2-ORG session quality score, probed on MAX(scored_at).
+	"SessionQuality": snapFamSessionQuality,
+	// Commit ownership (lane F-PROJ), probed over commits + AI line changes.
+	"CommitOwnership": snapFamCommitOwnership,
 	// Node session-detail trickle-up W2/W3. The two task wires share ONE
 	// probe over their single source family, the benchmark arrangement.
 	"SessionTaskItems":       snapFamSessionTasks,
 	"SessionTaskTransitions": snapFamSessionTasks,
 	"SessionToolAccounts":    snapFamSessionToolAccount,
+	// Agent Access P4: the relay activity aggregate probes the chain head.
+	"MCPRelayActivity": snapFamMCPRelayActivity,
+	// Agent Access P11 (c) shadow-MCP discovery inventory (mcpinventory.go).
+	"MCPInventory": snapFamMCPInventory,
 }
 
 // ungatedWireFamilies names the wire families that DELIBERATELY keep the
@@ -105,12 +113,21 @@ var ungatedWireFamilies = map[string]string{
 	"ObsEgressDecisions":   "obs provider seam (T8)",
 	// Cursor wires are bounded by the fits() guard and read only rows above a
 	// persisted watermark — they are already O(new) and must never be gated.
-	"Sessions":    "cursor wire",
-	"Actions":     "cursor wire",
-	"APITurns":    "cursor wire",
-	"TokenUsage":  "cursor wire",
-	"GuardEvents": "cursor wire",
-	"OTelContent": "cursor wire",
+	"Sessions":       "cursor wire",
+	"Actions":        "cursor wire",
+	"APITurns":       "cursor wire",
+	"TokenUsage":     "cursor wire",
+	"GuardEvents":    "cursor wire",
+	"OTelContent":    "cursor wire",
+	"MCPRelayEvents": "cursor wire (PushCursor.MCPRelay; Agent Access P4 per-record relay events)",
+	// Lane F-WIRE: newest window per (session, provider) above
+	// PushCursor.LimitSnapshots, coalesced in limitgauge.go. O(new) like
+	// every cursor wire; the limit_gauge AGGREGATE sibling stays gated.
+	"SessionLimitSnapshots": "cursor wire (PushCursor.LimitSnapshots; per-session rate-limit windows)",
+	// Queue-driven control lanes (agent migration 141): O(queued), acked
+	// after a 200, never a recompute.
+	"Deletions":        "tombstone queue (org_push_deletions); O(queued)",
+	"SessionManifests": "resync manifest queue (org_push_manifests); O(queued)",
 }
 
 // TestSnapGateCoversEveryGatedWire is the structural sentinel: every slice

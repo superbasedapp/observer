@@ -1419,6 +1419,204 @@ func TestRegisterCursorWindowsSelfHealPreservesGenuineForeignEntry(t *testing.T)
 	}
 }
 
+// TestIsOrphanedObserverCursorHTTPHook is the table for the
+// IsOrphanedObserverCursorHTTPHook predicate: it must recognise the lost
+// 2026-09-08 build's loopback-HTTP hook shape and nothing else — in
+// particular a user's own curl hook to a different host, path, or without
+// the observer token header must never be misclassified as ours.
+func TestIsOrphanedObserverCursorHTTPHook(t *testing.T) {
+	t.Parallel()
+	const orphan = `curl.exe -sS --max-time 3 -X POST -H "Content-Type: application/json" ` +
+		`-H "X-Observer-Token: aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899" ` +
+		`--data-binary '@-' http://127.0.0.1:8081/api/cursor/hook/beforeSubmitPrompt`
+
+	cases := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"orphan http hook, curl.exe, 127.0.0.1", orphan, true},
+		{"orphan http hook, bare curl, localhost", strings.Replace(
+			strings.Replace(orphan, "curl.exe", "curl", 1),
+			"127.0.0.1", "localhost", 1), true},
+		{"orphan http hook, IPv6 loopback", strings.Replace(orphan, "127.0.0.1", "[::1]", 1), true},
+		{"different event name still matches (path-based, not event-scoped)", strings.Replace(
+			orphan, "beforeSubmitPrompt", "stop", 1), true},
+		{"non-loopback host stays foreign", strings.Replace(orphan, "127.0.0.1", "10.0.0.5", 1), false},
+		{"loopback but no X-Observer-Token header stays foreign", strings.Replace(
+			orphan, ` -H "X-Observer-Token: aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"`, "", 1), false},
+		{"loopback + token but different path stays foreign", strings.Replace(
+			orphan, "/api/cursor/hook/beforeSubmitPrompt", "/api/other/route", 1), false},
+		{"not a curl invocation stays foreign", strings.Replace(orphan, "curl.exe", "wget.exe", 1), false},
+		{"canonical bridge command is not the http shape", `wsl.exe -d Ubuntu-20.04 -- /home/u/observer hook cursor stop`, false},
+		{"user's own curl hook to a real remote service", `curl.exe -X POST -H "X-Observer-Token: whatever" https://example.com/api/cursor/hook/stop`, false},
+		{"empty command", "", false},
+		// Codex S10-CURSOR pass 2 finding 9: the exact lost-build grammar only.
+		{"token not 64 hex stays foreign", strings.Replace(orphan,
+			"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899", "my-own-token", 1), false},
+		{"token 63 hex stays foreign", strings.Replace(orphan,
+			"aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899", "abbccddeeff00112233445566778899aabbccddeeff00112233445566778899", 1), false},
+		{"path embedded deeper stays foreign", strings.Replace(orphan,
+			"/api/cursor/hook/beforeSubmitPrompt", "/proxy/api/cursor/hook/beforeSubmitPrompt", 1), false},
+		{"extra path segment stays foreign", strings.Replace(orphan,
+			"/api/cursor/hook/beforeSubmitPrompt", "/api/cursor/hook/beforeSubmitPrompt/x", 1), false},
+		{"unknown event segment stays foreign", strings.Replace(orphan,
+			"/api/cursor/hook/beforeSubmitPrompt", "/api/cursor/hook/myOwnThing", 1), false},
+		{"query string stays foreign", orphan + "?fwd=1", false},
+		{"https stays foreign", strings.Replace(orphan, "http://", "https://", 1), false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := IsOrphanedObserverCursorHTTPHook(tc.cmd); got != tc.want {
+				t.Errorf("IsOrphanedObserverCursorHTTPHook(%q) = %v, want %v", tc.cmd, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRegisterCursorWindowsSelfHealsOrphanedHTTPHook covers the live
+// incident this predicate fixes: a Windows-side hooks.json where every
+// Cursor event holds only the lost 2026-09-08 build's loopback-HTTP curl
+// entry (a route no committed build has ever served, so every such hook
+// silently drops). registerCursorWindows must heal every event to the
+// canonical wsl.exe bridge command with NO --force and no error.
+func TestRegisterCursorWindowsSelfHealsOrphanedHTTPHook(t *testing.T) {
+	t.Parallel()
+	wslHome := t.TempDir()
+	winHome := nestedWinHome(t, wslHome)
+	cursorDir := filepath.Join(winHome, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	hooks := map[string][]cursorHookEntry{}
+	for _, event := range cursorEvents {
+		hooks[event] = []cursorHookEntry{
+			{Command: fmt.Sprintf(
+				`curl.exe -sS --max-time 3 -X POST -H "Content-Type: application/json" `+
+					`-H "X-Observer-Token: aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899" `+
+					`--data-binary '@-' http://127.0.0.1:8081/api/cursor/hook/%s`, event,
+			)},
+		}
+	}
+	body, err := json.Marshal(map[string]any{"version": 1, "hooks": hooks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooksPath := filepath.Join(cursorDir, "hooks.json")
+	if err := os.WriteFile(hooksPath, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := NewRegistry(Options{
+		BinaryPath:        "/home/marmutapp/superbased-observer/bin/observer",
+		HomeDir:           wslHome,
+		ChecksumsPath:     filepath.Join(wslHome, ".observer", "hook_checksums.json"),
+		WindowsCursorHome: winHome,
+		WSLDistro:         "Ubuntu-20.04",
+		ConfigPath:        "/home/marmutapp/.observer/config.toml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := r.Register("cursor-windows")
+	if res.Error != nil {
+		t.Fatalf("Register (Force=false) on an all-orphaned-HTTP-hook file: %v", res.Error)
+	}
+	if len(res.HooksAdded) != len(cursorEvents) {
+		t.Errorf("HooksAdded = %d want %d (%v)", len(res.HooksAdded), len(cursorEvents), res.HooksAdded)
+	}
+
+	written, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(written, &settings); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, written)
+	}
+	hooksBlock, _ := settings["hooks"].(map[string]any)
+	for _, event := range cursorEvents {
+		entries, _ := hooksBlock[event].([]any)
+		if len(entries) != 1 {
+			t.Fatalf("event %s: got %d entries after heal, want exactly 1: %v", event, len(entries), entries)
+		}
+		m, _ := entries[0].(map[string]any)
+		cmd, _ := m["command"].(string)
+		if !strings.HasPrefix(cmd, "wsl.exe -d Ubuntu-20.04 -- ") || !strings.Contains(cmd, " hook cursor "+event) {
+			t.Errorf("event %s: healed command = %q, want the canonical wsl.exe bridge", event, cmd)
+		}
+		if strings.Contains(cmd, "curl") {
+			t.Errorf("event %s: orphaned curl entry survived healing: %q", event, cmd)
+		}
+	}
+}
+
+// TestRegisterCursorWindowsRejectsForeignCurlHook is the negative
+// counterpart: a curl-based hook that is close to the orphaned shape but
+// fails one of the three required conditions (loopback host, observer
+// token header, /api/cursor/hook/ path) must still be treated as a
+// genuine foreign entry — registerCursorWindows must refuse without
+// --force, exactly like any other user-authored hook.
+func TestRegisterCursorWindowsRejectsForeignCurlHook(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{"non-loopback host", `curl.exe -H "X-Observer-Token: abc" http://10.0.0.5:8081/api/cursor/hook/stop`},
+		{"loopback without observer token header", `curl.exe http://127.0.0.1:8081/api/cursor/hook/stop`},
+		{"loopback+token but unrelated path", `curl.exe -H "X-Observer-Token: abc" http://127.0.0.1:8081/api/other/route`},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			wslHome := t.TempDir()
+			winHome := nestedWinHome(t, wslHome)
+			cursorDir := filepath.Join(winHome, ".cursor")
+			if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			hooks := map[string][]cursorHookEntry{}
+			for _, event := range cursorEvents {
+				hooks[event] = []cursorHookEntry{{Command: tc.cmd}}
+			}
+			body, err := json.Marshal(map[string]any{"version": 1, "hooks": hooks})
+			if err != nil {
+				t.Fatal(err)
+			}
+			hooksPath := filepath.Join(cursorDir, "hooks.json")
+			if err := os.WriteFile(hooksPath, body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			r, err := NewRegistry(Options{
+				BinaryPath:        "/home/marmutapp/superbased-observer/bin/observer",
+				HomeDir:           wslHome,
+				ChecksumsPath:     filepath.Join(wslHome, ".observer", "hook_checksums.json"),
+				WindowsCursorHome: winHome,
+				WSLDistro:         "Ubuntu-20.04",
+				ConfigPath:        "/home/marmutapp/.observer/config.toml",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			res := r.Register("cursor-windows")
+			if res.Error == nil {
+				t.Fatalf("expected a non-observer conflict error for %q, got nil", tc.cmd)
+			}
+			if !strings.Contains(res.Error.Error(), "non-observer") {
+				t.Errorf("error message = %q want it to mention 'non-observer'", res.Error)
+			}
+		})
+	}
+}
+
 // TestRecordAutoRegisterResult pins the F3 persistence contract:
 // last_result/last_error land in hook_checksums.json for BOTH
 // outcomes, an existing entry's sha256/registered/binary_path keys

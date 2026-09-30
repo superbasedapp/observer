@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -231,6 +232,70 @@ func TestHiddenUnicode(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := HiddenUnicode(tc.in); got != tc.want {
 				t.Errorf("HiddenUnicode = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMCPRules_AccessFindings is the doc3 §12.6 conformance table for the
+// Agent Access rows R-306/R-307: they apply to the MCP CALL (KindMCPCall),
+// flag in observe, DENY in enforce, and never fire on a config-scan event
+// or without the finding the guard's MCP-access seam stamps.
+func TestMCPRules_AccessFindings(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		kind     EventKind
+		finding  string
+		wantRule string
+		wantSev  Severity
+	}{
+		{name: "R-306 hit: unapproved server on an mcp_call", kind: KindMCPCall, finding: MCPFindingUnapprovedServer, wantRule: "R-306", wantSev: SeverityHigh},
+		{name: "R-307 hit: org grant denied on an mcp_call", kind: KindMCPCall, finding: MCPFindingOrgGrantDenied, wantRule: "R-307", wantSev: SeverityCritical},
+		{name: "near-miss: access finding on a config_change event", kind: KindConfigChange, finding: MCPFindingUnapprovedServer},
+		{name: "near-miss: mcp_call without a finding", kind: KindMCPCall, finding: ""},
+		{name: "near-miss: config finding kind on an mcp_call", kind: KindMCPCall, finding: MCPFindingNewServer},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ev := Event{
+				Kind:       tc.kind,
+				ActionType: "mcp_call",
+				Tool:       "claude-code",
+				Target:     "mcp__github__create_issue",
+				SessionID:  "s1",
+				Caps:       Capabilities{PreExecution: true, CanBlock: true, CanAsk: true},
+				Now:        time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC),
+			}
+			if tc.finding != "" {
+				ev.MCPFindings = []MCPFinding{{Kind: tc.finding, Server: "github", Client: "claude-code", Detail: "node table: no row matched"}}
+			}
+			for _, mode := range []Mode{ModeObserve, ModeEnforce} {
+				eng, err := New(Config{Mode: mode, Home: "/home/u"})
+				if err != nil {
+					t.Fatalf("New %s: %v", mode, err)
+				}
+				v := eng.Evaluate(ev)
+				if tc.wantRule == "" {
+					if v.RuleID == "R-306" || v.RuleID == "R-307" {
+						t.Fatalf("%s: want no access-rule hit, got %+v", mode, v)
+					}
+					continue
+				}
+				want := DecisionFlag
+				if mode == ModeEnforce {
+					want = DecisionDeny
+				}
+				if v.RuleID != tc.wantRule || v.Decision != want {
+					t.Errorf("%s = %s/%s, want %s/%s (reason %q)", mode, v.RuleID, v.Decision, tc.wantRule, want, v.Reason)
+				}
+				if v.RuleID == tc.wantRule && v.Severity != tc.wantSev {
+					t.Errorf("%s severity = %s, want %s", mode, v.Severity, tc.wantSev)
+				}
+				if v.RuleID == tc.wantRule && !strings.Contains(v.Reason, "node table: no row matched") {
+					t.Errorf("%s reason %q does not carry the finding detail", mode, v.Reason)
+				}
 			}
 		})
 	}

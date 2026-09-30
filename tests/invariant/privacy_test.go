@@ -28,6 +28,8 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/platform/jetbrainshost"
+	"github.com/marmutapp/superbased-observer/internal/platform/vscodehost"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/toolaccount"
 )
@@ -97,21 +99,15 @@ const (
 	secGitBranch = "SECRET_GITBRANCH_antidisestablishment_bb"
 
 	// Codex fork/subagent lineage (migration 069): forked_from_id /
-	// parent_thread_id / thread_source are NODE-LOCAL — never selected by
-	// the push seam, in ANY share mode (unlike git_branch, they don't ship
-	// even under full_content). Written only via Store.SetSessionLineage.
+	// thread_source are NODE-LOCAL — never selected by the push seam, in ANY
+	// share mode (unlike git_branch, they don't ship even under
+	// full_content). Written only via Store.SetSessionLineage.
+	//
+	// parent_thread_id is the one exception (server migration 162 / pg
+	// 0028): it RECLASSIFIES to a positive canary below
+	// (canaryParentThreadID) — see that constant's doc for the ruling.
 	secForkedFrom   = "SECRET_FORKEDFROM_grandiloquent_ff"
-	secParentThread = "SECRET_PARENTTHREAD_perspicacious_pp"
 	secThreadSource = "SECRET_THREADSOURCE_sesquipedalian_ss"
-
-	// Captured tool/CLI version (migration 125): sessions.tool_version is
-	// NODE-LOCAL — never selected by the push seam, in ANY share mode
-	// (like the lineage columns above, unlike git_branch it does not ship
-	// even under full_content). Written only via
-	// Store.SetSessionToolVersion. A bounded token by policy, but stuffed
-	// here as a distinctive secret so a regression that ever selected the
-	// column onto the wire fails loudly.
-	secToolVersion = "SECRET_TOOLVERSION_grandiloquent_tv"
 
 	// User-attachment metadata (migration 126): actions.user_attachments is
 	// NODE-LOCAL — never selected by the push seam, in ANY share mode (like
@@ -154,6 +150,72 @@ const (
 	// ships. The gate's own behavior is pinned separately by
 	// TestSessionSurfaceHostClosedVocabulary.
 	canarySurfaceHost = "jetbrains-dataspell"
+
+	// canaryTurnID is the §7 follow-up CANARY (server migration 160 / pg
+	// 0026, node/org session-message parity): token_usage.turn_id is an
+	// opaque adapter-minted grouping id (agent migrations 032/033), never
+	// agent-authored text, so it ships unconditionally as metadata — same
+	// posture as is_sidechain above.
+	canaryTurnID = "CANARY_TURN_ID_perspicacious_tt"
+
+	// canaryToolVersion is the tool-version-trickle-up CANARY (server
+	// migration 161 / pg 0027): sessions.tool_version is now a POSITIVE
+	// canary, not a sentinel — the opposite polarity from how this column
+	// was originally pinned.
+	//
+	// Until this change, sessions.tool_version was NODE-LOCAL and the push
+	// seam selected it in NO share mode (treated in the same bucket as the
+	// Codex fork/lineage columns — stricter than git_branch, which ships
+	// raw under full_content). That posture had no documented
+	// content-sensitivity rationale distinguishing it from Surface /
+	// SurfaceHost (which W1 already reclassified as unconditional
+	// metadata): tool_version is not a closed vocabulary like Surface, but
+	// it IS a bounded (64-rune), non-prose, whitespace/control-char-rejected
+	// token (internal/store/toolversion.go::validToolVersion) sourced only
+	// from a vendor-authored on-disk field the adapter itself controls —
+	// never developer-typed text. The realistic disclosure risk of a
+	// version string like "0.150.0" is the same near-zero class as
+	// AgentVersion, which already ships unconditionally on every
+	// PushEnvelope for the Observer binary's own build. RULING (this
+	// change): reclassify sessions.tool_version as METADATA and ship it
+	// unconditionally, the same W1 precedent — org admins can now answer
+	// "which tool builds is the fleet running" per-AI-tool, the same
+	// fleet-management question org_node_versions already answers for
+	// Observer itself. See docs/security.md ledger row TOOLVERSION-1 for
+	// the full ruling text.
+	canaryToolVersion = "CANARY_TOOL_VERSION_perspicacious_vv"
+
+	// canaryParentThreadID is the tool-account-parity CANARY (server
+	// migration 162 / pg 0028): sessions.parent_thread_id is now a
+	// POSITIVE canary, not a sentinel — the same polarity flip as
+	// canaryToolVersion, out of the same Codex-fork/lineage bucket that
+	// forked_from_id and thread_source stay in.
+	//
+	// RULING (this change): parent_thread_id is an OPAQUE vendor-minted
+	// session id (a Cursor sub-agent's parent session, or a Codex fork
+	// parent) — never developer-typed text — and the child session it
+	// points at already ships as its own session row on the wire, so
+	// shipping the pointer adds STRUCTURE (fan-out), not content: the same
+	// distinction that let AgentVersion and tool_version ship
+	// unconditionally. It closes a real gap: the org drawer's per-session
+	// tool-account column (rollup/messageaccounts.go) could not resolve a
+	// Cursor CHILD session's account without it, unlike the node's own
+	// store.LoadMessageAccounts (internal/store/toolaccount.go), which
+	// already joins through parent_thread_id. forked_from_id and
+	// thread_source stay NODE-LOCAL sentinels — only the id itself ships,
+	// never the fact or kind of the fork. See docs/security.md ledger row
+	// LINEAGE-1 for the full ruling text.
+	canaryParentThreadID = "CANARY_PARENT_THREAD_perspicacious_ll"
+
+	// canaryGenBasis is the S10-SPEED generation-timing CANARY (server
+	// migration 174 / pg 0040): token_usage.gen_basis is a closed,
+	// adapter-minted enum (never developer-typed text), so it ships
+	// unconditionally as metadata alongside gen_ms — the same posture as
+	// canaryTurnID. gen_ms itself is a plain int64 (424242 below), so its
+	// own presence is proven by scanning for its literal JSON number rather
+	// than a string sentinel.
+	canaryGenBasis = "native"
+	canaryGenMs    = 424242
 
 	// Guard-layer additions (migration 040, guard spec §10.2): the
 	// three content-bearing guard_events columns. guard_events rows DO
@@ -214,15 +276,16 @@ const (
 // and the 2 Project Identity Resolver v2 raw-field sentinels. Every push in
 // the default (full_content=false) mode must ship NONE of these.
 //
-// canarySurface / canarySurfaceHost are deliberately NOT here: W1 moved the
-// capture-surface columns from node-local to unconditional METADATA, so they
-// are asserted PRESENT (see the canary block in TestPushPayloadCarriesNoContent
-// and TestSessionSurfaceAndSidechainTokensShipAsMetadata) rather than absent.
+// canarySurface / canarySurfaceHost / canaryToolVersion / canaryParentThreadID
+// are deliberately NOT here: W1 moved the capture-surface columns, and later
+// changes moved sessions.tool_version and then sessions.parent_thread_id,
+// from node-local to unconditional METADATA, so they are asserted PRESENT
+// (see the canary block in TestPushPayloadCarriesNoContent and
+// TestSessionSurfaceAndSidechainTokensShipAsMetadata) rather than absent.
 var allSentinels = []string{
 	secRawInput, secRawOutput, secReasoning, secErrMsg,
 	secTarget, secSourceFile, secRootPath, secGitRemote, secGitBranch,
-	secForkedFrom, secParentThread, secThreadSource,
-	secToolVersion,
+	secForkedFrom, secThreadSource,
 	secUserAttachments,
 	secGuardReason, secGuardExcerpt, secGuardTaint,
 	secOTelContent,
@@ -306,16 +369,22 @@ func TestPushPayloadCarriesNoContent(t *testing.T) {
 	// source_file is the SENTINEL (stripped in metadata-only mode);
 	// is_sidechain is the W1 CANARY on the same table — METADATA that must
 	// ship in every posture, set to 1 here so the positive assertion below is
-	// non-vacuous (the seeded rows are all sidechain=0 by default).
+	// non-vacuous (the seeded rows are all sidechain=0 by default). turn_id
+	// is the §7 follow-up CANARY (server migration 160 / pg 0026) — the same
+	// posture, an opaque grouping id that must ship unconditionally. gen_ms/
+	// gen_basis are the S10-SPEED CANARY (server migration 174 / pg 0040) —
+	// the same posture, a duration + closed enum that must ship
+	// unconditionally.
 	if _, err := database.ExecContext(ctx,
-		`UPDATE token_usage SET source_file = ?, is_sidechain = 1`, secSourceFile); err != nil {
+		`UPDATE token_usage SET source_file = ?, is_sidechain = 1, turn_id = ?, gen_ms = ?, gen_basis = ?`,
+		secSourceFile, canaryTurnID, canaryGenMs, canaryGenBasis); err != nil {
 		t.Fatalf("stuff token_usage: %v", err)
 	}
 	if _, err := database.ExecContext(ctx,
 		`UPDATE sessions SET git_branch = ?, forked_from_id = ?, parent_thread_id = ?, thread_source = ?,
 		    workspace = ?, workspace_hash = 'sha256:workspace-canary', is_worktree = 1,
 		                     surface = ?, surface_host = ?, tool_version = ?`,
-		secGitBranch, secForkedFrom, secParentThread, secThreadSource, secWorkspace, canarySurface, canarySurfaceHost, secToolVersion); err != nil {
+		secGitBranch, secForkedFrom, canaryParentThreadID, secThreadSource, secWorkspace, canarySurface, canarySurfaceHost, canaryToolVersion); err != nil {
 		t.Fatalf("stuff sessions git_branch + lineage + identity v2 + surface + tool_version: %v", err)
 	}
 	// Plane B per-turn authority stamps (Sol S5 / Luna L15, migration 095):
@@ -325,7 +394,7 @@ func TestPushPayloadCarriesNoContent(t *testing.T) {
 	// non-vacuous — there is no secret counterpart because these columns
 	// can never carry request text.
 	if _, err := database.ExecContext(ctx,
-		`UPDATE api_turns SET route = 'gateway', routing_generation = 4242, authority_source = 'gateway'`); err != nil {
+		`UPDATE api_turns SET route = 'gateway', routing_generation = 4242, authority_source = 'gateway', request_class = 'compaction'`); err != nil {
 		t.Fatalf("stamp api_turns authority: %v", err)
 	}
 	// Guard events go through the one-owner store helper (the only
@@ -511,6 +580,39 @@ func TestPushPayloadCarriesNoContent(t *testing.T) {
 	if !bytes.Contains(raw, []byte(`"is_sidechain":true`)) {
 		t.Errorf("expected token_usage.is_sidechain on the wire; W1 ships the sub-agent flag unconditionally, like actions.is_sidechain")
 	}
+	if !bytes.Contains(raw, []byte(canaryTurnID)) {
+		t.Errorf("expected token_usage.turn_id (%q) on the wire; the §7 follow-up ships the opaque grouping id unconditionally, like is_sidechain", canaryTurnID)
+	}
+	// S10-SPEED generation-timing canary (server migration 174 / pg 0040):
+	// gen_ms/gen_basis must ship unconditionally, the same posture as
+	// turn_id above. gen_timing_v has NO wire counterpart by design (a
+	// node-local upsert-precedence input) and must NEVER appear.
+	if !bytes.Contains(raw, []byte(`"gen_ms":424242`)) {
+		t.Errorf("expected token_usage.gen_ms (424242) on the wire; the S10-SPEED follow-up ships the generation duration unconditionally, like turn_id")
+	}
+	if !bytes.Contains(raw, []byte(`"gen_basis":"`+canaryGenBasis+`"`)) {
+		t.Errorf("expected token_usage.gen_basis (%q) on the wire; the S10-SPEED follow-up ships the closed basis enum unconditionally, like turn_id", canaryGenBasis)
+	}
+	if bytes.Contains(raw, []byte("gen_timing_v")) {
+		t.Errorf("gen_timing_v must never appear on the wire; it is a node-local upsert-precedence input with no wire counterpart")
+	}
+	// Tool-version trickle-up canary (server migration 161 / pg 0027): this
+	// RECLASSIFIES sessions.tool_version from "never ships" to unconditional
+	// METADATA, the same polarity flip W1 did for surface/surface_host. If a
+	// future change re-gates it behind shipsRawContent(), this assertion
+	// fails while the (now tool-version-free) sentinel scan above stays
+	// green — exactly the signal we want.
+	if !bytes.Contains(raw, []byte(canaryToolVersion)) {
+		t.Errorf("expected the session's tool_version (%q) in the payload; this change made it unconditional metadata, not gated content", canaryToolVersion)
+	}
+	// Parent-thread-id trickle-up canary (server migration 162 / pg 0028):
+	// this RECLASSIFIES sessions.parent_thread_id from "never ships" to
+	// unconditional METADATA, the same polarity flip as tool_version above —
+	// while forked_from_id / thread_source (secForkedFrom / secThreadSource)
+	// stay sentinels and must still be absent from the scan above.
+	if !bytes.Contains(raw, []byte(canaryParentThreadID)) {
+		t.Errorf("expected the session's parent_thread_id (%q) in the payload; this change made it unconditional metadata, not gated content", canaryParentThreadID)
+	}
 
 	// Guard-layer canaries (G2, guard spec §10.2): the guard event must
 	// have SHIPPED (metadata) for the guard sentinel scan above to be
@@ -576,6 +678,12 @@ func TestPushPayloadCarriesNoContent(t *testing.T) {
 	if !bytes.Contains(raw, []byte(`"routing_generation":4242`)) {
 		t.Errorf("expected the api_turn's routing_generation stamp in the payload; the content-free per-turn authority stamp must always ship")
 	}
+	// The client-declared request class (agent 144 / server 188, lane
+	// G-WIRE2) is a closed enum with no request text: it ships in the
+	// default posture too.
+	if !bytes.Contains(raw, []byte(`"request_class":"compaction"`)) {
+		t.Errorf("expected the api_turn's request_class in the payload; the closed-enum request class must always ship")
+	}
 }
 
 // TestPushPayloadCarriesContentWhenOptedIn is the inverse guard: when the
@@ -611,9 +719,13 @@ func TestPushPayloadCarriesContentWhenOptedIn(t *testing.T) {
 	}
 	bodiesNeverShip := []string{
 		secRawInput, secRawOutput, secReasoning, secErrMsg,
-		// Codex fork/subagent lineage is node-local in EVERY share mode —
-		// it must not ship even under full_content / admin_managed.
-		secForkedFrom, secParentThread, secThreadSource,
+		// Codex fork/subagent lineage (forked_from_id / thread_source) is
+		// node-local in EVERY share mode — it must not ship even under
+		// full_content / admin_managed. parent_thread_id is no longer in
+		// this bucket (server migration 162 / pg 0028): it ships
+		// unconditionally, in every posture including this one — see
+		// canaryParentThreadID.
+		secForkedFrom, secThreadSource,
 		// User-attachment metadata (migration 126) is node-local in EVERY
 		// share mode — org-wire promotion is a documented follow-up.
 		secUserAttachments,
@@ -673,7 +785,7 @@ func TestPushPayloadCarriesContentWhenOptedIn(t *testing.T) {
 			}
 			if _, err := database.ExecContext(ctx,
 				`UPDATE sessions SET git_branch = ?, forked_from_id = ?, parent_thread_id = ?, thread_source = ?, workspace = ?`,
-				secGitBranch, secForkedFrom, secParentThread, secThreadSource, secWorkspace); err != nil {
+				secGitBranch, secForkedFrom, canaryParentThreadID, secThreadSource, secWorkspace); err != nil {
 				t.Fatalf("stuff sessions git_branch + lineage + workspace: %v", err)
 			}
 			if _, err := st.InsertGuardEvents(ctx, []store.GuardEventRow{{
@@ -1550,6 +1662,11 @@ func TestSessionProcessWireCarriesMetricsMessageIDAndCapsSamples(t *testing.T) {
 // rather than a unit test: a session the node never stamped (a pre-107 agent,
 // or a transcript never re-scanned) must reach the org as EMPTY. The wire may
 // never manufacture a default — "cli" is a real answer, not a fallback.
+//
+// Also covers sessions.tool_version (server migration 161 / pg 0027), which
+// this change reclassified the same way: a bounded, non-prose,
+// vendor-authored token that now ships unconditionally, honest-empty when
+// unstamped.
 func TestSessionSurfaceAndSidechainTokensShipAsMetadata(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -1574,15 +1691,18 @@ func TestSessionSurfaceAndSidechainTokensShipAsMetadata(t *testing.T) {
 			// Exactly ONE session is stamped; the others stay unstamped so the
 			// honest-absence half of the assertion is non-vacuous. Written
 			// directly rather than through SetSessionSurface so the probe reads
-			// the COLUMN, not the store's vocabulary check.
+			// the COLUMN, not the store's vocabulary check. parent_thread_id
+			// points at a real seeded session id ('sess-cur-1'), the same
+			// opaque-vendor-pointer shape production writes via
+			// Store.SetSessionLineage.
 			if _, err := database.ExecContext(ctx,
-				`UPDATE sessions SET surface = 'ide', surface_host = 'vscode' WHERE id = 'sess-cc-1'`); err != nil {
-				t.Fatalf("stamp surface: %v", err)
+				`UPDATE sessions SET surface = 'ide', surface_host = 'vscode', tool_version = '1.2.3', parent_thread_id = 'sess-cur-1' WHERE id = 'sess-cc-1'`); err != nil {
+				t.Fatalf("stamp surface + tool_version + parent_thread_id: %v", err)
 			}
 			// Likewise exactly ONE usage row is a sub-agent row.
 			if _, err := database.ExecContext(ctx,
-				`UPDATE token_usage SET is_sidechain = 1 WHERE source_event_id = 'cc-tok-1'`); err != nil {
-				t.Fatalf("stamp is_sidechain: %v", err)
+				`UPDATE token_usage SET is_sidechain = 1, turn_id = 'turn-canary-3mode', gen_ms = 20000, gen_basis = 'native' WHERE source_event_id = 'cc-tok-1'`); err != nil {
+				t.Fatalf("stamp is_sidechain + turn_id + gen_ms/gen_basis: %v", err)
 			}
 
 			batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@acme.example",
@@ -1610,6 +1730,61 @@ func TestSessionSurfaceAndSidechainTokensShipAsMetadata(t *testing.T) {
 			if unstamped.Surface != "" || unstamped.SurfaceHost != "" {
 				t.Errorf("unstamped session carries a phantom surface %q/%q; an unknown surface must reach the org EMPTY, never defaulted to cli",
 					unstamped.Surface, unstamped.SurfaceHost)
+			}
+			// token_usage.turn_id (server migration 160 / pg 0026): the same
+			// unconditional-metadata posture in all three share modes (the
+			// sentinel review of 2026-09-22 asked for this to match the
+			// tool_version canary's rigor).
+			var turnStamped, turnUnstamped int
+			for _, tu := range batch.TokenUsage {
+				switch {
+				case tu.SourceEventID == "cc-tok-1" && tu.TurnID == "turn-canary-3mode":
+					turnStamped++
+				case tu.SourceEventID != "cc-tok-1" && tu.TurnID != "":
+					turnUnstamped++
+				}
+			}
+			if turnStamped != 1 {
+				t.Errorf("stamped token row turn_id not on the wire in mode %s (found %d)", tc.name, turnStamped)
+			}
+			if turnUnstamped != 0 {
+				t.Errorf("%d unstamped token rows carry a phantom turn_id in mode %s", turnUnstamped, tc.name)
+			}
+			// token_usage.gen_ms / gen_basis (server migration 174 / pg
+			// 0040): the same unconditional-metadata posture in all three
+			// share modes, mirroring the turn_id canary immediately above.
+			var genStamped, genUnstamped int
+			for _, tu := range batch.TokenUsage {
+				switch {
+				case tu.SourceEventID == "cc-tok-1" && tu.GenMs == 20000 && tu.GenBasis == "native":
+					genStamped++
+				case tu.SourceEventID != "cc-tok-1" && (tu.GenMs != 0 || tu.GenBasis != ""):
+					genUnstamped++
+				}
+			}
+			if genStamped != 1 {
+				t.Errorf("stamped token row gen_ms/gen_basis not on the wire in mode %s (found %d)", tc.name, genStamped)
+			}
+			if genUnstamped != 0 {
+				t.Errorf("%d unstamped token rows carry a phantom gen_ms/gen_basis in mode %s", genUnstamped, tc.name)
+			}
+			// Tool-version trickle-up (server migration 161 / pg 0027): the
+			// same unconditional-metadata / honest-absence pair, in the same
+			// three share modes.
+			if stamped.ToolVersion != "1.2.3" {
+				t.Errorf("stamped session tool_version = %q, want 1.2.3 — this change ships it in every posture", stamped.ToolVersion)
+			}
+			if unstamped.ToolVersion != "" {
+				t.Errorf("unstamped session carries a phantom tool_version %q; unknown must reach the org EMPTY, never a fabricated guess", unstamped.ToolVersion)
+			}
+			// parent_thread_id trickle-up (server migration 162 / pg 0028): the
+			// same unconditional-metadata / honest-absence pair, in the same
+			// three share modes — the tool-account-parity fix (LINEAGE-1).
+			if stamped.ParentThreadID != "sess-cur-1" {
+				t.Errorf("stamped session parent_thread_id = %q, want sess-cur-1 — this change ships it in every posture", stamped.ParentThreadID)
+			}
+			if unstamped.ParentThreadID != "" {
+				t.Errorf("unstamped session carries a phantom parent_thread_id %q; a session with no parent must reach the org EMPTY, never a fabricated guess", unstamped.ParentThreadID)
 			}
 
 			var sidechain, ordinary *orgcontract.TokenUsageRow
@@ -1661,6 +1836,10 @@ func TestSessionSurfaceHostClosedVocabulary(t *testing.T) {
 		{"known vscode token", "vscode", "vscode"},
 		{"known jetbrains product", "jetbrains-goland", "jetbrains-goland"},
 		{"known desktop token", "claude-desktop", "claude-desktop"},
+		// MCP audit #4c: Claude Code print mode (entrypoint "sdk-cli")
+		// stamps host "cli"; it must reach the org as "cli", not "other".
+		{"claude code print-mode sdk host", "cli", "cli"},
+		{"claude code sdk language host", "ts", "ts"},
 		{"unstamped stays unstamped", "", ""},
 		{"unknown vendor token coarsens", "some-new-editor-2027", "other"},
 		{"a path never crosses verbatim", "/home/dev/clients/acme-migration", "other"},
@@ -2375,9 +2554,11 @@ func TestPushPayloadStripsRoutingDetailWhenNotOptedIn(t *testing.T) {
 
 // seedLimitSnapshot inserts one limit_snapshots row with a sentinel scope_hash,
 // so a SelectUnpushedSince batch can be searched to prove the P5e aggregate
-// ships utilization stats but NEVER the raw scope hash. limit_snapshots stays
-// NODE-LOCAL; only the content-free (day, provider) utilization aggregate
-// crosses, and only under limit_gauge.
+// ships utilization stats but NEVER the raw scope hash. The raw limit_snapshots
+// log stays NODE-LOCAL; only two derived metadata shapes cross, both composed
+// in internal/store/limitgauge.go: the (day, provider) utilization aggregate
+// (limit_gauge only) and the per-session newest-window row (lane F-WIRE; see
+// TestSessionLimitSnapshotsWireShipsMetadataOnly).
 func seedLimitSnapshot(ctx context.Context, t *testing.T, database *sql.DB, scopeHash string) {
 	t.Helper()
 	if _, err := database.ExecContext(ctx,
@@ -2460,6 +2641,104 @@ func TestPushPayloadStripsLimitGaugeWhenNotOptedIn(t *testing.T) {
 	}
 }
 
+// TestSessionLimitSnapshotsWireShipsMetadataOnly pins the lane F-WIRE
+// per-session rate-limit window wire at the privacy seam. The gate: an
+// individual node with no limit_gauge opt-in ships NO row and its cursor stays
+// put; the limit_gauge opt-in or a full-capture node ships the newest window
+// per (session, provider). The content: whatever the posture, the node's
+// scope_hash (auth identity), raw header subset and status passthrough never
+// reach the marshalled batch.
+func TestSessionLimitSnapshotsWireShipsMetadataOnly(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	st := store.New(database)
+	seed(ctx, t, st)
+	// Enrolment-style cursor: every other wire at its high-water mark, so the
+	// batch carries only what this test seeds next.
+	cur, err := st.CurrentMaxIDs(ctx)
+	if err != nil {
+		t.Fatalf("CurrentMaxIDs: %v", err)
+	}
+	const (
+		secScope  = "SENTINEL_SESSLIMIT_SCOPE_qq"
+		secRaw    = "SENTINEL_SESSLIMIT_RAW_qq"
+		secStatus = "SENTINEL_SESSLIMIT_STATUS_qq"
+	)
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO limit_snapshots (scope_hash, provider, session_id, observed_at,
+		     window_5h_util, window_5h_reset, window_7d_util, window_7d_reset,
+		     req_limit, req_remaining, tok_limit, tok_remaining, status, raw)
+		 VALUES (?, 'anthropic', 'sess-cc-1', ?, 0.61, 1790012000, 0.23, 1790400000,
+		     50, 49, 400000, 399000, ?, ?)`,
+		secScope, time.Now().UTC().Unix(), secStatus, secRaw); err != nil {
+		t.Fatalf("seed limit_snapshots: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		share store.ShareOptions
+		want  int
+	}{
+		{"zero-value", store.ShareOptions{}, 0},
+		{"limit_gauge", store.ShareOptions{LimitGauge: true}, 1},
+		{"full_content", store.ShareOptions{FullContent: true}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			batch, err := st.SelectUnpushedSince(ctx, cur, 1<<20, "org-1", "dev@acme.example", tc.share, store.ScopeOptions{})
+			if err != nil {
+				t.Fatalf("SelectUnpushedSince: %v", err)
+			}
+			if got := len(batch.SessionLimitSnapshots); got != tc.want {
+				t.Fatalf("shipped %d session limit rows, want %d", got, tc.want)
+			}
+			if tc.want == 0 && batch.Cursor.LimitSnapshots != cur.LimitSnapshots {
+				t.Errorf("cursor moved to %d with the wire gated off (want %d): an individual node must not consume windows it never ships",
+					batch.Cursor.LimitSnapshots, cur.LimitSnapshots)
+			}
+			if tc.want == 1 {
+				r := batch.SessionLimitSnapshots[0]
+				if r.SessionID != "sess-cc-1" || r.Tool != models.ToolClaudeCode || r.Provider != "anthropic" ||
+					r.Window5hUtil == nil || *r.Window5hUtil != 0.61 || r.Window7dReset == nil || *r.Window7dReset != 1790400000 {
+					t.Errorf("row = %+v, want the sess-cc-1 claude-code anthropic window", r)
+				}
+			}
+			raw, err := json.Marshal(batch)
+			if err != nil {
+				t.Fatalf("marshal batch: %v", err)
+			}
+			for _, sentinel := range []string{secScope, secRaw, secStatus} {
+				if bytes.Contains(raw, []byte(sentinel)) {
+					t.Errorf("%s: sentinel %q reached the push batch - only window metadata may ship", tc.name, sentinel)
+				}
+			}
+		})
+	}
+}
+
+// TestSessionLimitSnapshotRowFieldSet pins the per-session rate-limit wire
+// row's exact field set, so a future scope_hash / raw / status / counter
+// field on the wire is a loud, reviewed change rather than a silent widening.
+func TestSessionLimitSnapshotRowFieldSet(t *testing.T) {
+	t.Parallel()
+	want := []string{
+		"OrgID", "UserEmail", "SessionID", "Tool", "Provider", "LocalID", "ObservedAt",
+		"Window5hUtil", "Window7dUtil", "Window5hReset", "Window7dReset",
+	}
+	rt := reflect.TypeOf(orgcontract.SessionLimitSnapshotRow{})
+	var got []string
+	for i := 0; i < rt.NumField(); i++ {
+		got = append(got, rt.Field(i).Name)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("SessionLimitSnapshotRow fields = %v, want %v - a new field on this wire needs a privacy review "+
+			"(scope_hash, raw headers, status and the req/tok counters must never ship)", got, want)
+	}
+}
+
 // forbiddenCacheTables names the three node-local cachetrack tables
 // that MUST NEVER appear in the org-push wire path. Spec §11:
 // cachetrack data (segments, entries, events) is local, passive,
@@ -2514,6 +2793,22 @@ var forbiddenCacheTables = []string{
 	// into the push via a function call precisely so this sentinel
 	// can keep forbidding the underlying table names here.
 	"org_routing_policies",
+	// Agent Access P4 node wave (agent migration 131, docs/plans/
+	// agent-access-implementation-plan-2026-09-23.md §3.2 "Node migration",
+	// R8.27.a / R12.7 / R14.2). All three are NODE-LOCAL by name and owned by
+	// internal/mcprelay/record. mcp_relay_state (applied policy state +
+	// pending-loss accounting) and mcp_relay_launch_spec (the journal of each
+	// AI client's ORIGINAL MCP launch: config paths, commands, env KEY names)
+	// NEVER reach the wire. mcp_relay_record - the ONE hash-chained relay
+	// record table - IS the source of two wire families
+	// (orgcontract.MCPRelayActivityRow + MCPRelayEventRow), but exactly like
+	// router_decisions above they are composed by a FUNCTION seam
+	// (internal/store/mcprelaysummary.go, through the record package) so the
+	// table name stays out of orgpush.go. Pinned by
+	// TestForbiddenCacheTablesExpectedRelaySet.
+	"mcp_relay_state",
+	"mcp_relay_launch_spec",
+	"mcp_relay_record",
 	// project_patterns (W3.3 Discovery/Patterns) is NODE-LOCAL by table
 	// name: orgpush.go must never reference it directly. A derived,
 	// capped, enterprise-raw wire row (ProjectPatternRow) DOES ship under
@@ -2565,7 +2860,7 @@ var forbiddenCacheTables = []string{
 	// — provenance-of-a-near-miss that the node operator should control
 	// disclosure of, same posture as guard_pins/guard_policy_state/
 	// guard_approvals immediately above. It gets NO paired org-server
-	// migration, by design — same posture as limit_snapshots.
+	// migration, by design — same posture as the cachetrack tables.
 	"guard_prompt_reconsider",
 	// Process-observability tables (migration 044,
 	// docs/process-observability.md §10.1) are NODE-LOCAL: they record
@@ -2578,11 +2873,22 @@ var forbiddenCacheTables = []string{
 	"process_events",
 	"process_network_bodies",
 	// Rate-limit snapshots (migration 049, the Next-Message Cost & Limit
-	// Predictor's limit half) are NODE-LOCAL: per-account subscription-
-	// window utilization + reset timestamps are personal usage telemetry
-	// (same class as the cache tables). No paired orgserver migration; a
-	// team-level "who's near their cap" view, if ever built, is a separate
-	// opt-in AGGREGATE wire shape, never this table.
+	// Predictor's limit half). The RAW log is NODE-LOCAL and its name stays
+	// forbidden in orgpush.go: scope_hash (an auth-identity hash), the raw
+	// header subset, the unified-status passthrough and the per-minute
+	// req_*/tok_* counters never cross. Two DERIVED metadata shapes do, and
+	// internal/store/limitgauge.go is the one owner of every read that feeds
+	// them (orgpush.go composes both by function call):
+	//   - LimitGaugeRow, the per (day, provider) utilization aggregate, under
+	//     the limit_gauge opt-in only;
+	//   - SessionLimitSnapshotRow (lane F-WIRE, 2026-09-28), the newest window
+	//     observation per (session, provider) - session id, observing tool,
+	//     provider, observed_at, the two windows' utilization and reset stamps
+	//     - a cursor wire (PushCursor.LimitSnapshots) under limit_gauge OR
+	//     shipsRawContent(), so the org session drawer renders the node's
+	//     "% of limit spent" gauge.
+	// Pinned data-side by TestSessionLimitSnapshotsWireShipsMetadataOnly and
+	// TestSessionLimitSnapshotRowFieldSet.
 	"limit_snapshots",
 	// Plane-A P0-5 unified policy resource, agent-side scoped persistence
 	// (migration 081, docs/plans/plane-a-p0-5-unified-policy-resource-v1-plan.md
@@ -2643,7 +2949,7 @@ var forbiddenCacheTables = []string{
 	// never leave the agent. [codeintel] config is local-only (like
 	// [routing]/[cachewarm]); these tables are pre-registered here
 	// before the schema lands so any attempt to add one to the push
-	// seam fails loudly. If a team-level code-graph rollup is ever
+	// seam fails loudly. If a team-level code-index rollup is ever
 	// built it would be a separate opt-in AGGREGATE wire shape, never
 	// these tables.
 	"codeintel_files",
@@ -2761,7 +3067,7 @@ var forbiddenCacheTables = []string{
 	// ids, resolved capability, matched route, decision) for the operator's own
 	// `observer remote status`. It never leaves the machine — no paired
 	// orgserver migration, and orgpush.go names an explicit table allow-list
-	// this is never in. Same posture as cachetrack / limit_snapshots. If a
+	// this is never in. Same posture as the cachetrack tables. If a
 	// team-level "who accessed my node remotely" view is ever wanted it is a
 	// separate opt-in AGGREGATE wire shape, never this raw table.
 	"remote_audit",
@@ -2789,8 +3095,8 @@ var forbiddenCacheTables = []string{
 	// the wire path: no paired orgserver migration exists, and orgpush.go names
 	// an explicit table allow-list neither is in. A future team-level "who ran
 	// what" view, if ever built, is a separate opt-in AGGREGATE wire shape,
-	// never these raw tables. Same posture as the remote_audit / limit_snapshots
-	// node-local tables.
+	// never these raw tables. Same posture as the remote_audit node-local
+	// table.
 	"terminal_run",
 	"terminal_run_session",
 	// Terminal command/turn boundaries (migration 065, terminal-product-
@@ -2806,7 +3112,7 @@ var forbiddenCacheTables = []string{
 	// fence. These let a paired phone survive a daemon restart without weakening
 	// the revoke/rotate/disable invariant. They never leave the machine — no
 	// paired orgserver migration, and orgpush.go names an explicit table
-	// allow-list neither is in. Same posture as remote_audit / limit_snapshots.
+	// allow-list neither is in. Same posture as remote_audit.
 	"remote_sessions",
 	"remote_session_state",
 
@@ -2911,6 +3217,52 @@ var forbiddenCacheTables = []string{
 	// TestSessionLOCWireShapeIsAggregateOnly pins the wire types' shape;
 	// TestFileChangesNeverOnTheWire is the end-to-end seeded-value pin.
 	"file_changes",
+	// project_commits / project_commit_files / project_commit_scan
+	// (agent migration 127, projects-page-roi-and-commit-alignment plan
+	// §2 R1/R12) are NODE-LOCAL BY TABLE NAME: orgpush.go must never
+	// reference them. Commit capture observes OTHER CONTRIBUTORS'
+	// metadata in a shared repository — a hashed author name (unsalted;
+	// docs/security.md ledger row COMMIT-2 records this as inadequate
+	// pseudonymisation for any future org projection), the commit
+	// subject, and the list of files it touched, at a strictly deeper
+	// grain than any existing wire surface. The ONE derived projection
+	// on the wire is commit ownership (lane F-PROJ, CommitOwnershipRow):
+	// ids and counts only, composed through the function seam
+	// store.SelectCommitOwnershipRows (commitownersummary.go), the subject
+	// gated on shipsRawContent(), and NO author hash and NO path, so these
+	// table names stay forbidden here.
+	// TestProjectCommitTablesPinnedOutOfPush and
+	// TestCommitOwnershipWireCarriesNoAuthorOrPath are the end-to-end
+	// seeded-value pins.
+	"project_commits",
+	"project_commit_files",
+	"project_commit_scan",
+	// project_prompt_grades (agent migration 128, projects-page-roi-and-
+	// commit-alignment plan §2 R6/§3.6/§4 W5a) is NODE-LOCAL BY TABLE
+	// NAME, same rule as the project_commit_* block just above: a
+	// grading verdict (delivered/missed/extra/notes) is a DERIVED
+	// disclosure of the prompt text and commit hunks it was built from,
+	// at the same sensitivity as the conversation content itself. Both
+	// the J tier (internal/intelligence/alignment) and, later, the C
+	// tier (W5b) write here under their own `tier` value; neither has a
+	// wire surface. TestProjectPromptGradesTableIsPinnedOutOfPush is the
+	// end-to-end seeded-value pin, the sibling of
+	// TestProjectCommitTablesPinnedOutOfPush above.
+	"project_prompt_grades",
+	// Skills history (agent migration 135, S10-SKILLS; docs/projects-page.md
+	// "Skills: versions across commits and sessions") is NODE-LOCAL BY
+	// TABLE NAME. The hook snapshots name private skill paths (including the
+	// operator's home-scope skills) and the reflog/tree memo records when
+	// the operator's checkout moved; none of it has a wire surface.
+	// TestSkillHistoryTablesPinnedOutOfPush is the end-to-end seeded-value
+	// pin.
+	"skill_snapshot_members",
+	"session_skill_snapshots",
+	"project_head_moves",
+	"project_skill_trees",
+	"project_skill_tree_files",
+	"project_skill_worktree",
+	"project_skill_scan",
 	// Enterprise Update Management, node side (agent migration 105,
 	// docs/plans/enterprise-update-management-plan-2026-09-07.md §3.4). Both
 	// tables are NODE-LOCAL BY TABLE NAME: orgpush.go must never reference
@@ -3097,6 +3449,34 @@ var forbiddenCacheTables = []string{
 	// under their own tier, and that the content halves (plan prose;
 	// developer identity) stay STRIPPED until the node ALSO ships raw
 	// content.
+	// Org push re-send tracking (agent migration 140, lane R2-RESEND): the
+	// NODE-LOCAL change queue and its counter. They decide WHICH wire rows
+	// re-send; they are never themselves on the wire, and orgpush.go reaches
+	// the queue only through internal/store/orgpushresend.go's
+	// pushChangesFilter, so neither name may appear in orgpush.go.
+	"org_push_changes",
+	"org_push_rev",
+	// Org push DELETE propagation (agent migration 141, lane R2-TOMB): the
+	// NODE-LOCAL tombstone queue and the resync manifest queue. The wire
+	// carries only the identity fields the rows themselves ship (hashes,
+	// ids); orgpush.go reaches both queues only through
+	// internal/store/orgpushtomb.go, so neither name may appear there.
+	"org_push_deletions",
+	"org_push_manifests",
+	// Stored spend-dedup verdicts (agent migration 143, lane R2-ONERULE):
+	// derived per-row decisions, their re-derive queue and state. The org
+	// derives its own verdicts from the rows the node ships (server 179),
+	// so none of these ever crosses the wire.
+	"spend_verdict_token",
+	"spend_verdict_proxy",
+	"spend_verdict_dirty",
+	"spend_verdict_state",
+	// Stored-cost re-price runs and their per-row change log (agent migration
+	// 145, lane G-REPRICE, gap PRICE-REPRICE-1). NODE-LOCAL audit and revert
+	// records: a re-priced api_turns.cost_usd reaches the org through the
+	// existing change queue as an ordinary wire column, never through these.
+	"reprice_runs",
+	"reprice_changes",
 }
 
 // forbiddenGatewayTables names the SERVER-SIDE gateway tables that MUST NEVER be
@@ -3475,14 +3855,137 @@ var forbiddenOrgControlPlaneTables = []string{
 	// signed GET /api/agent/pricing rail, it never pushes this. Pinned as a
 	// fixed expected member by TestForbiddenOrgControlPlaneTablesExpectedSet.
 	"org_pricing_feed_state",
-	// control_schema_data_applied is the Postgres-only ONE-SHOT marker for the
-	// DATA retrofits in controlstore/schema.go (that file is replayed on every
-	// server start, so a data statement needs a marker or it runs forever). It
+	// control_schema_data_applied is the ONE-SHOT marker for the DATA
+	// retrofits in controlstore/schema.go (that file is replayed on every
+	// server start, so a data statement needs a marker or it runs forever);
+	// since server migration 175 SQLite creates it too, to carry the one-shot
+	// pricing-feed restatement markers. It
 	// is server-side bookkeeping about the control schema itself: the node has
 	// no concept of it, so naming it in internal/store/orgpush.go would be both
 	// nonsensical and a boundary violation. Pinned as a fixed expected member
 	// by TestForbiddenOrgControlPlaneTablesExpectedSet.
 	"control_schema_data_applied",
+	// Agent Access P1 identity wave (server migration 164 / PG lineage 0030,
+	// docs/plans/agent-access-implementation-plan-2026-09-23.md §3.1/§3.4
+	// item 7). Nine CONTROL tables (the org STS key ring, the agent registry,
+	// per-device / workload credentials and their fetched-key thumbprints, the
+	// revocation authority + per-jti denylist, the settings singleton and the
+	// two SHARED replay stores) and one DATA table (the token issuance log).
+	// All ten are SERVER-ONLY with no agent pair: a node authenticates TO the
+	// STS, it never pushes identity, credential, key-ring or issuance state on
+	// the node -> server wire, so naming any of them in orgpush.go would be
+	// both nonsensical and a boundary violation. agent_credential carries
+	// secret_hash (argon2id) and agent_signing_key a private-key secretref.
+	// Pinned as fixed expected members by
+	// TestForbiddenOrgControlPlaneTablesExpectedSet.
+	"agent_signing_key",
+	"agent_definition",
+	"agent_credential",
+	"agent_credential_key",
+	"agent_invalidation_state",
+	"agent_token_revocation",
+	"agent_access_settings",
+	"actor_assertion_replay",
+	"dpop_replay",
+	"agent_token_issuance",
+	// Agent Access P2 registry + policy wave (server migration 165 / PG
+	// lineage 0031, docs/plans/agent-access-implementation-plan-2026-09-23.md
+	// §3.1/§3.4). Seven CONTROL tables owned by internal/mcpgw/regstore: the
+	// MCP server registry (upstream credential refs, persisted drift state),
+	// its approved snapshots (tool lists + schema hashes), the virtual
+	// servers and their members, the grant table, the four-eyes publication
+	// ledger and the org API-key model (secret_hash). All seven are
+	// SERVER-ONLY with no agent pair: a node calls the gateway, it never
+	// pushes registry, grant, publication or key state on the node -> server
+	// wire, so naming any of them in orgpush.go would be both nonsensical
+	// and a boundary violation. Pinned as fixed expected members by
+	// TestForbiddenOrgControlPlaneTablesExpectedSet.
+	"mcp_server",
+	"mcp_server_snapshot",
+	"mcp_virtual_server",
+	"mcp_virtual_server_member",
+	"mcp_grant",
+	"mcp_policy_publication",
+	"mcp_api_key",
+	// Agent Access P3 audit + data-plane wave (server migration 166 / PG
+	// lineage 0032, docs/plans/agent-access-implementation-plan-2026-09-23.md
+	// §3.1/§3.4/§9.4/§9.5). Two CONTROL tables owned by internal/mcpgw/
+	// auditlease (the ingress-seq allocator head + the durable replica
+	// leases) and seven DATA tables: the ONE per-org hash chain
+	// (mcp_audit_chain_head / mcp_decision with its L2 args_full /
+	// mcp_audit with its L2 result_full, error_full, elicitation_full), the
+	// gateway-minted task binding, the SIEM export checkpoint, and the two
+	// managed-node INGEST tables (mcp_node_activity_daily aggregate +
+	// mcp_node_decision_event per-call, which carry user_id / machine_fp
+	// and the L2 payloads). All nine are SERVER-ONLY with no agent pair:
+	// the node's own relay chain is mcp_relay_record (forbiddenCacheTables
+	// when the P4 node wave lands) and the ingest pair is written by
+	// internal/orgserver/ingest FROM the push - a node never names the
+	// server's tables on the node -> server wire, so naming any of them in
+	// orgpush.go would be both nonsensical and a boundary violation.
+	// (mcp_audit is ALSO a node-local table name - agent migration 030 -
+	// already in forbiddenCacheTables; both sentinels forbid it, which is
+	// harmless and intended: the same name is server-only here and
+	// node-local there.) Pinned as fixed expected members by
+	// TestForbiddenOrgControlPlaneTablesExpectedSet.
+	"mcp_audit_chain_head",
+	"mcp_decision",
+	"mcp_audit",
+	"mcp_audit_seq_allocator",
+	"mcp_audit_seq_lease",
+	"mcp_task_binding",
+	"siem_export_cursor",
+	"mcp_node_activity_daily",
+	"mcp_node_decision_event",
+	// Agent Access P5-wave group A (server migrations 167-170 / PG lineage
+	// 0033-0036, docs/plans/agent-access-implementation-plan-2026-09-23.md
+	// §3.1/§3.4/§9.4/§11.8-§11.10). Thirteen CONTROL tables, all
+	// SERVER-ONLY with no agent pair: the P5 vault (the org/service
+	// upstream credential, the forward_idp custody artifact and the
+	// per-user OAuth connection - each a sealed secretref + per-record
+	// wrapped DEK - and the single-use connect attempt with its state hash
+	// and sealed PKCE verifier), the P5b OAuth AS lifecycle (hashed codes,
+	// the CIMD cache, DCR registrations with hashed client secrets, the
+	// refresh family + per-generation token hashes), the P7b OBO trust
+	// registration + subject_token replay store, and the P6a parked
+	// approval request (request digest + redacted preview) + the MCP quota
+	// reservation. Credential / vault / authorization state never crosses
+	// the node -> server wire. Pinned as fixed expected members by
+	// TestForbiddenOrgControlPlaneTablesExpectedSet.
+	"mcp_upstream_credential",
+	"agent_idp_artifact",
+	"mcp_user_connection",
+	"mcp_connection_attempt",
+	"oauth_authz_code",
+	"oauth_client_cache",
+	"oauth_client_registration",
+	"oauth_refresh_family",
+	"oauth_refresh_token",
+	"agent_trust_issuer",
+	"subject_token_replay",
+	"mcp_approval_request",
+	"mcp_quota_reservation",
+	// Agent Access P11 (server migration 172 / PG lineage 0038): the
+	// shadow-MCP discovery queue. It is INGESTED from the node's
+	// MCPInventoryRow / GuardPinRow wire rows but is itself an org-side
+	// CONTROL table (the diff against the registry + adopt / dismiss
+	// state); the node never holds it, so orgpush.go must never name it.
+	"mcp_discovery_candidate",
+	// Commit ownership (server migration 186 / PG lineage 0052, lane F-PROJ):
+	// the org landing tables for the CommitOwnershipRow wire. Data-plane
+	// rather than control-plane, but the same rule holds: they exist only on
+	// the org server, the node composes the wire through
+	// store.SelectCommitOwnershipRows (commitownersummary.go), and orgpush.go
+	// must never name them. TestCommitOwnershipWireCarriesNoAuthorOrPath is
+	// the end-to-end seeded-value pin.
+	"commit_ownership",
+	"commit_ownership_contributors",
+	// Org stored-cost re-price (server migration 187 / PG lineage 0053, lane
+	// G-REPRICE): the org admin's re-price run record and its per-row change
+	// log. Server-only; the node has its own node-local pair (agent 145) and
+	// orgpush.go must never name either.
+	"org_reprice_runs",
+	"org_reprice_changes",
 }
 
 // TestForbiddenOrgControlPlaneTablesExpectedSet is the NON-GAMEABLE membership
@@ -3644,7 +4147,7 @@ func TestForbiddenOrgControlPlaneTablesExpectedSet(t *testing.T) {
 		"org_auth_rail_setting",
 		"org_auth_group_role_map",
 		"org_auth_failures",
-		// Enterprise pricing server-only tables (server migration 132). The
+		// Enterprise pricing server-only tables (server migration 136). The
 		// org's authored per-model rates and their monotonic document
 		// version: authored on the SERVER and distributed server -> node on a
 		// signed rail, never pushed. Dropping either from the sentinel would
@@ -3658,6 +4161,77 @@ func TestForbiddenOrgControlPlaneTablesExpectedSet(t *testing.T) {
 		// The Postgres-only one-shot DATA marker for controlstore/schema.go's
 		// retrofits: server-side bookkeeping the node has no concept of.
 		"control_schema_data_applied",
+		// Agent Access P1 (server migration 164): the nine CONTROL tables and
+		// the issuance-log DATA table. Identity, credentials (secret_hash),
+		// the signing key ring (private secretref), revocation and replay
+		// state are server-side authorization state; dropping any of these
+		// from the sentinel would stop the orgpush.go guard from noticing a
+		// seam that named them.
+		"agent_signing_key",
+		"agent_definition",
+		"agent_credential",
+		"agent_credential_key",
+		"agent_invalidation_state",
+		"agent_token_revocation",
+		"agent_access_settings",
+		"actor_assertion_replay",
+		"dpop_replay",
+		"agent_token_issuance",
+		// Agent Access P2 (server migration 165): the seven regstore CONTROL
+		// tables. Registry, grant, publication and API-key (secret_hash)
+		// state is server-side authorization state; dropping any of these
+		// from the sentinel would stop the orgpush.go guard from noticing a
+		// seam that named them.
+		"mcp_server",
+		"mcp_server_snapshot",
+		"mcp_virtual_server",
+		"mcp_virtual_server_member",
+		"mcp_grant",
+		"mcp_policy_publication",
+		"mcp_api_key",
+		// Agent Access P3 (server migration 166): the ONE-chain audit tables
+		// (L2 request / result payloads on hashed rows), the allocator +
+		// lease CONTROL pair, the task binding, the SIEM checkpoint and the
+		// two managed-node ingest tables (subject / device identifiers +
+		// L2 payloads). Dropping any of these from the sentinel would stop
+		// the orgpush.go guard from noticing a seam that named them.
+		"mcp_audit_chain_head",
+		"mcp_decision",
+		"mcp_audit",
+		"mcp_audit_seq_allocator",
+		"mcp_audit_seq_lease",
+		"mcp_task_binding",
+		"siem_export_cursor",
+		"mcp_node_activity_daily",
+		"mcp_node_decision_event",
+		// Agent Access P5-wave group A (server migrations 167-170): the
+		// vault (sealed credentials + per-record DEKs), the OAuth AS
+		// lifecycle (hashed codes / secrets / refresh tokens), the OBO trust
+		// pair and the parked approval + quota reservation. Dropping any of
+		// these from the sentinel would stop the orgpush.go guard from
+		// noticing a seam that named them.
+		"mcp_upstream_credential",
+		"agent_idp_artifact",
+		"mcp_user_connection",
+		"mcp_connection_attempt",
+		"oauth_authz_code",
+		"oauth_client_cache",
+		"oauth_client_registration",
+		"oauth_refresh_family",
+		"oauth_refresh_token",
+		"agent_trust_issuer",
+		"subject_token_replay",
+		"mcp_approval_request",
+		"mcp_quota_reservation",
+		// Agent Access P11 (server migration 172): the shadow-MCP discovery
+		// queue.
+		"mcp_discovery_candidate",
+		// Commit ownership (server migration 186, lane F-PROJ).
+		"commit_ownership",
+		"commit_ownership_contributors",
+		// Org stored-cost re-price (server migration 187, lane G-REPRICE).
+		"org_reprice_runs",
+		"org_reprice_changes",
 	}
 	have := make(map[string]struct{}, len(forbiddenOrgControlPlaneTables))
 	for _, n := range forbiddenOrgControlPlaneTables {
@@ -3746,8 +4320,8 @@ func TestGatewayWALPinnedOutOfPush(t *testing.T) {
 // crosses the wire — even under full_content (maximum disclosure
 // surface). Unlike remote_audit (which DOES ship under full_content
 // via a dedicated composed slice), this table has NO wire
-// representation at all, by design (same posture as limit_snapshots /
-// cache_segments) — so the assertion is simply "this canary never
+// representation at all, by design (same posture as cache_segments) — so
+// the assertion is simply "this canary never
 // appears anywhere in the marshaled batch."
 func TestGuardPromptReconsiderPinnedOutOfPush(t *testing.T) {
 	// (1) name pinned in the sentinel set.
@@ -4371,6 +4945,294 @@ func TestCloudLocalTablesPinnedOutOfPush(t *testing.T) {
 		if bytes.Contains(raw, []byte(sentinel)) {
 			t.Errorf("cloud-local table content leaked into the push payload under %s — the personal "+
 				"cloud plane is node-local and must never enter the org-push wire", p.name)
+		}
+	}
+}
+
+// TestProjectCommitTablesPinnedOutOfPush is the commit-capture sibling of
+// TestCloudLocalTablesPinnedOutOfPush (projects-page-roi-and-commit-
+// alignment plan, agent migration 127). It proves both halves of the
+// posture: (1) the three table names are present in the source-level AST
+// sentinel forbiddenCacheTables, which TestSelectUnpushedSinceExcludesCacheTables
+// walks against internal/store/orgpush.go's string literals; and (2) a
+// seeded sentinel value planted in every free-text column of all three
+// tables never appears in a marshaled push payload, under all three
+// ShareOptions postures (zero-value / full_content / admin_managed) — so
+// even the enterprise "ships full content" posture (CLAUDE.md "Teams /
+// org-server invariants") does not carry commit data, because there is no
+// wire surface for it at all yet (R1: an org projection is a documented,
+// additive, shipsRawContent()-gated follow-up).
+func TestProjectCommitTablesPinnedOutOfPush(t *testing.T) {
+	commitTables := []string{
+		"project_commits",
+		"project_commit_files",
+		"project_commit_scan",
+	}
+	for _, name := range commitTables {
+		found := false
+		for _, n := range forbiddenCacheTables {
+			if n == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s is not in forbiddenCacheTables — the source-level sentinel is missing", name)
+		}
+	}
+
+	const sentinel = "SBCOMMITSENT" // unmistakable; appears nowhere legitimate
+	s := func(table, col string) string { return sentinel + "_" + table + "_" + col }
+
+	ctx := context.Background()
+	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	st := store.New(database)
+	seed(ctx, t, st) // seeds sessions that DO ride the wire (e.g. sess-cc-1)
+
+	projectID, err := st.UpsertProject(ctx, s("project_commits", "root_path"), "")
+	if err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	execSeed := func(query string, args ...any) {
+		if _, err := database.ExecContext(ctx, query, args...); err != nil {
+			t.Fatalf("seed commit table: %v\nquery: %s", err, query)
+		}
+	}
+
+	execSeed(`INSERT INTO project_commits
+		  (id, project_id, sha, parents_json, author_hash, authored_at, committed_at,
+		   subject, is_merge, reachable, files_count, added, deleted, scanned_at)
+		VALUES (1, ?, ?, ?, ?, '2026-09-21T00:00:00Z', '2026-09-21T00:00:00Z', ?, 0, 1, 1, 1, 0, '2026-09-21T00:00:00Z')`,
+		projectID, s("project_commits", "sha"), s("project_commits", "parents_json"),
+		s("project_commits", "author_hash"), s("project_commits", "subject"))
+
+	execSeed(`INSERT INTO project_commit_files
+		  (commit_id, rel_path, path_hash, status, added, deleted, binary)
+		VALUES (1, ?, ?, ?, 1, 0, 0)`,
+		s("project_commit_files", "rel_path"), s("project_commit_files", "path_hash"),
+		s("project_commit_files", "status"))
+
+	execSeed(`INSERT INTO project_commit_scan
+		  (project_id, last_sha, last_committed_at, last_scan_at, last_error, consecutive_failures)
+		VALUES (?, ?, '2026-09-21T00:00:00Z', '2026-09-21T00:00:00Z', ?, 0)`,
+		projectID, s("project_commit_scan", "last_sha"), s("project_commit_scan", "last_error"))
+
+	postures := []struct {
+		name  string
+		share store.ShareOptions
+	}{
+		{"metadata_only", store.ShareOptions{}},
+		{"full_content", store.ShareOptions{FullContent: true}},
+		{"admin_managed", store.ShareOptions{AdminManaged: true}},
+	}
+	const wireCanary = "gpt-5-codex"
+	for _, p := range postures {
+		batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@x", p.share, store.ScopeOptions{})
+		if err != nil {
+			t.Fatalf("SelectUnpushedSince(%s): %v", p.name, err)
+		}
+		raw, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatalf("marshal batch(%s): %v", p.name, err)
+		}
+		if !bytes.Contains(raw, []byte(wireCanary)) {
+			t.Fatalf("positive canary %q missing from the %s push payload — the batch is empty/degenerate, "+
+				"so the commit-table-absence assertion would be vacuous", wireCanary, p.name)
+		}
+		if bytes.Contains(raw, []byte(sentinel)) {
+			t.Errorf("project_commit_* table content leaked into the push payload under %s — commit "+
+				"capture is node-local (R1/R12) and has no wire surface yet", p.name)
+		}
+	}
+}
+
+// TestSkillHistoryTablesPinnedOutOfPush is the skills-history sibling of
+// TestProjectCommitTablesPinnedOutOfPush (agent migration 135, S10-SKILLS).
+// Same two halves: (1) all seven table names are in the source-level AST
+// sentinel forbiddenCacheTables, and (2) a seeded sentinel value planted in
+// every TEXT column of every table never appears in a marshaled push
+// payload under all three ShareOptions postures. The snapshot rows are
+// planted against sess-cc-1, a session that DOES ride the wire, so a join
+// that dragged snapshot content onto a session row would be caught.
+func TestSkillHistoryTablesPinnedOutOfPush(t *testing.T) {
+	skillTables := []string{
+		"skill_snapshot_members",
+		"session_skill_snapshots",
+		"project_head_moves",
+		"project_skill_trees",
+		"project_skill_tree_files",
+		"project_skill_worktree",
+		"project_skill_scan",
+	}
+	for _, name := range skillTables {
+		found := false
+		for _, n := range forbiddenCacheTables {
+			if n == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s is not in forbiddenCacheTables — the source-level sentinel is missing", name)
+		}
+	}
+
+	const sentinel = "SBSKILLSENT" // unmistakable; appears nowhere legitimate
+	s := func(table, col string) string { return sentinel + "_" + table + "_" + col }
+
+	ctx := context.Background()
+	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	st := store.New(database)
+	seed(ctx, t, st) // seeds sessions that DO ride the wire (e.g. sess-cc-1)
+
+	projectID, err := st.UpsertProject(ctx, s("projects", "root_path"), "")
+	if err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	execSeed := func(query string, args ...any) {
+		if _, err := database.ExecContext(ctx, query, args...); err != nil {
+			t.Fatalf("seed skill table: %v\nquery: %s", err, query)
+		}
+	}
+	const ts = "2026-09-23T00:00:00.000000000Z"
+	m := "skill_snapshot_members"
+	execSeed(`INSERT INTO skill_snapshot_members
+		  (set_hash, scope, rel_path, dir_key, name, state, content_hash, blob_oid, blob_oid_lf, size_bytes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+		s(m, "set_hash"), s(m, "scope"), s(m, "rel_path"), s(m, "dir_key"), s(m, "name"),
+		s(m, "state"), s(m, "content_hash"), s(m, "blob_oid"), s(m, "blob_oid_lf"))
+	n := "session_skill_snapshots"
+	execSeed(`INSERT INTO session_skill_snapshots
+		  (session_id, tool, event, source, tool_use_id, invoked_name, observed_at, project_root, set_hash, complete, home_resolved)
+		VALUES ('sess-cc-1', ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
+		s(n, "tool"), s(n, "event"), s(n, "source"), s(n, "tool_use_id"), s(n, "invoked_name"),
+		ts, s(n, "project_root"), s(m, "set_hash"))
+	execSeed(`INSERT INTO project_head_moves (project_id, moved_at, sha, kind) VALUES (?, ?, ?, ?)`,
+		projectID, ts, s("project_head_moves", "sha"), s("project_head_moves", "kind"))
+	execSeed(`INSERT INTO project_skill_trees (project_id, sha, state, resolved_at) VALUES (?, ?, ?, ?)`,
+		projectID, s("project_skill_trees", "sha"), s("project_skill_trees", "state"), ts)
+	execSeed(`INSERT INTO project_skill_tree_files (project_id, sha, rel_path, mode, blob_oid) VALUES (?, ?, ?, ?, ?)`,
+		projectID, s("project_skill_tree_files", "sha"), s("project_skill_tree_files", "rel_path"),
+		s("project_skill_tree_files", "mode"), s("project_skill_tree_files", "blob_oid"))
+	execSeed(`INSERT INTO project_skill_worktree (project_id, rel_path, state) VALUES (?, ?, ?)`,
+		projectID, s("project_skill_worktree", "rel_path"), s("project_skill_worktree", "state"))
+	execSeed(`INSERT INTO project_skill_scan
+		  (project_id, last_scan_at, head_sha, reflog_since, ignorecase, object_format, shallow, last_error, consecutive_failures)
+		VALUES (?, ?, ?, ?, 0, ?, 0, ?, 0)`,
+		projectID, ts, s("project_skill_scan", "head_sha"), ts,
+		s("project_skill_scan", "object_format"), s("project_skill_scan", "last_error"))
+
+	postures := []struct {
+		name  string
+		share store.ShareOptions
+	}{
+		{"metadata_only", store.ShareOptions{}},
+		{"full_content", store.ShareOptions{FullContent: true}},
+		{"admin_managed", store.ShareOptions{AdminManaged: true}},
+	}
+	const wireCanary = "gpt-5-codex"
+	for _, p := range postures {
+		batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@x", p.share, store.ScopeOptions{})
+		if err != nil {
+			t.Fatalf("SelectUnpushedSince(%s): %v", p.name, err)
+		}
+		raw, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatalf("marshal batch(%s): %v", p.name, err)
+		}
+		if !bytes.Contains(raw, []byte(wireCanary)) {
+			t.Fatalf("positive canary %q missing from the %s push payload — the batch is empty/degenerate, "+
+				"so the skill-table-absence assertion would be vacuous", wireCanary, p.name)
+		}
+		if bytes.Contains(raw, []byte(sentinel)) {
+			t.Errorf("skill-history table content leaked into the push payload under %s — skills "+
+				"history is node-local and has no wire surface", p.name)
+		}
+	}
+}
+
+// TestProjectPromptGradesTableIsPinnedOutOfPush is the alignment-grading
+// sibling of TestProjectCommitTablesPinnedOutOfPush (agent migration 128,
+// projects-page-roi-and-commit-alignment plan §2 R6/§3.6/§4 W5a). Same two
+// halves: (1) the table name is present in the source-level AST sentinel
+// forbiddenCacheTables, and (2) a seeded sentinel value planted in every
+// free-text column never appears in a marshaled push payload, under all
+// three ShareOptions postures — a grading verdict is a derived disclosure
+// of the prompt/commit evidence it was built from, and has no wire surface
+// at all yet.
+func TestProjectPromptGradesTableIsPinnedOutOfPush(t *testing.T) {
+	const tableName = "project_prompt_grades"
+	found := false
+	for _, n := range forbiddenCacheTables {
+		if n == tableName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("%s is not in forbiddenCacheTables — the source-level sentinel is missing", tableName)
+	}
+
+	const sentinel = "SBGRADESENT" // unmistakable; appears nowhere legitimate
+	s := func(col string) string { return sentinel + "_" + tableName + "_" + col }
+
+	ctx := context.Background()
+	database, err := db.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	st := store.New(database)
+	seed(ctx, t, st) // seeds sessions that DO ride the wire (e.g. sess-cc-1)
+
+	projectID, err := st.UpsertProject(ctx, s("root_path"), "")
+	if err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	resultJSON := `{"delivered":["` + s("delivered") + `"],"missed":["` + s("missed") + `"],` +
+		`"extra":["` + s("extra") + `"],"confidence":0.5,"notes":"` + s("notes") + `"}`
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO project_prompt_grades (project_id, action_id, tier, model, result_json, graded_at)
+		VALUES (?, 1, 'judge', ?, ?, '2026-09-21T00:00:00Z')`,
+		projectID, s("model"), resultJSON); err != nil {
+		t.Fatalf("seed project_prompt_grades: %v", err)
+	}
+
+	postures := []struct {
+		name  string
+		share store.ShareOptions
+	}{
+		{"metadata_only", store.ShareOptions{}},
+		{"full_content", store.ShareOptions{FullContent: true}},
+		{"admin_managed", store.ShareOptions{AdminManaged: true}},
+	}
+	const wireCanary = "gpt-5-codex"
+	for _, p := range postures {
+		batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@x", p.share, store.ScopeOptions{})
+		if err != nil {
+			t.Fatalf("SelectUnpushedSince(%s): %v", p.name, err)
+		}
+		raw, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatalf("marshal batch(%s): %v", p.name, err)
+		}
+		if !bytes.Contains(raw, []byte(wireCanary)) {
+			t.Fatalf("positive canary %q missing from the %s push payload — the batch is empty/degenerate, "+
+				"so the grade-table-absence assertion would be vacuous", wireCanary, p.name)
+		}
+		if bytes.Contains(raw, []byte(sentinel)) {
+			t.Errorf("project_prompt_grades content leaked into the push payload under %s — alignment "+
+				"grading is node-local and has no wire surface yet", p.name)
 		}
 	}
 }
@@ -5154,5 +6016,26 @@ func TestPushPayloadNeverCarriesOrgIntelCache(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPlatformSurfaceHostsShipVerbatim is the producer-side drift guard for
+// the two shared host-token tables (VS Code family, JetBrains family): every
+// host they can stamp must cross the org wire as itself, never coarsen to
+// "other" (MCP audit #4c, 2026-09-27 — the same class that hid Claude Code's
+// print-mode "cli" host). A failure means a new product row needs a reviewed
+// entry in internal/store/orgpush.go's knownSurfaceHosts.
+func TestPlatformSurfaceHostsShipVerbatim(t *testing.T) {
+	var hosts []string
+	for _, p := range vscodehost.Products() {
+		hosts = append(hosts, p.Host)
+	}
+	for _, p := range jetbrainshost.Products() {
+		hosts = append(hosts, p.Host)
+	}
+	for _, h := range hosts {
+		if !store.SurfaceHostShipsVerbatim(h) {
+			t.Errorf("host token %q would ship to the org as \"other\"", h)
+		}
 	}
 }

@@ -42,6 +42,8 @@ export default defineConfig({
       "clsx",
       "@floating-ui/react",
       "framer-motion",
+      "lucide-react",
+      "@tanstack/react-table",
     ],
   },
   server: {
@@ -89,7 +91,11 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
-    sourcemap: true,
+    // "hidden": the maps are still written to dist/ for local debugging, but
+    // the bundles carry no `//# sourceMappingURL` comment. The maps never
+    // reach the go:embed dir (scripts/sync-web-embed.sh drops *.map), so a
+    // referencing comment only pointed browsers at a 404.
+    sourcemap: "hidden",
     rollupOptions: {
       output: {
         // Peel large vendor libs out of the entry bundle so the

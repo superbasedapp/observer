@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Pill } from "@/components/primitives";
+import { CopyOnClick, Pill, SuccessCheck } from "@/components/primitives";
+import { Summary } from "@/components/Summary";
 import {
   LaunchTerminal,
   type Status as LaunchTerminalStatus,
@@ -319,7 +320,7 @@ export function ETWCapturerCard() {
               >
                 {busy ? "saving…" : "Turn on Windows process telemetry"}
               </button>
-              {enableMsg && <span className="text-[11.5px] text-success">{enableMsg}</span>}
+              {enableMsg && <SuccessCheck label={enableMsg} className="!text-[11.5px]" />}
               {err && <span className="text-[11.5px] text-danger">{err}</span>}
             </>
           )}
@@ -359,7 +360,7 @@ export function ETWCapturerCard() {
       >
         <HealthBlock data={data} />
         <details className="group text-[11px] text-fg-3">
-          <summary className="cursor-pointer">Manage the task yourself</summary>
+          <Summary>Manage the task yourself</Summary>
           <div className="mt-2 space-y-2">
             <CommandRow label="verify" text={`schtasks.exe /Query /TN "${data.task_name}" /V /FO LIST`} />
             <CommandRow label="start now" text={`schtasks.exe /Run /TN "${data.task_name}"`} />
@@ -456,7 +457,7 @@ export function ETWCapturerCard() {
 
       {data.command && (
         <details className="group text-[11px] text-fg-3">
-          <summary className="cursor-pointer">…or run it yourself, once, in an elevated Windows shell</summary>
+          <Summary>…or run it yourself, once, in an elevated Windows shell</Summary>
           <div className="mt-2 space-y-2">
             <p className="text-[11px] leading-relaxed text-fg-3">
               {data.command_cmd_shell_only ? (
@@ -511,7 +512,7 @@ function Shell({
   children: React.ReactNode;
 }) {
   return (
-    <section className="mt-6 space-y-3 rounded-3 border border-line-2 bg-bg-1 p-4">
+    <section className="mt-6 space-y-3 rounded-3 border border-line-2 bg-bg-2 p-4">
       <header className="flex items-baseline justify-between gap-3">
         <h4 className="text-[13px] font-semibold text-fg-0">Elevated ETW capturer (Windows)</h4>
         {badge}
@@ -554,13 +555,14 @@ function WithheldNote({ data }: { data: ETWStatus }) {
   );
 }
 
+const NOTE_TONE: Readonly<Record<"warn" | "danger" | "info", string>> = {
+  danger: "border-danger/40 bg-danger-soft/40",
+  warn: "border-warn/40 bg-warn-soft/40",
+  info: "border-info/30 bg-info-soft/40",
+};
+
 function Note({ tone, children }: { tone: "warn" | "danger" | "info"; children: React.ReactNode }) {
-  const cls =
-    tone === "danger"
-      ? "border-danger/40 bg-danger-soft/40"
-      : tone === "warn"
-        ? "border-warn/40 bg-warn-soft/40"
-        : "border-info/30 bg-info-soft/40";
+  const cls = NOTE_TONE[tone];
   return (
     <div className={`rounded-2 border px-3 py-2 text-[11.5px] leading-relaxed text-fg-1 ${cls}`}>
       {children}
@@ -569,25 +571,20 @@ function Note({ tone, children }: { tone: "warn" | "danger" | "info"; children: 
 }
 
 function CommandRow({ label, text }: { label: string; text: string }) {
-  const [copied, setCopied] = useState(false);
   return (
     <div className="space-y-1">
       <div className="text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-3">{label}</div>
       <div className="flex items-start gap-2">
-        <code className="flex-1 overflow-x-auto whitespace-pre rounded-2 border border-line-2 bg-bg-1 px-2 py-1 font-mono text-[11px] text-fg-2">
+        <code className="flex-1 overflow-x-auto whitespace-pre rounded-2 border border-line-2 bg-bg-3 px-2 py-1 font-mono text-caption text-fg-2">
           {text}
         </code>
-        <button
-          type="button"
-          className="shrink-0 rounded-2 border border-line-2 bg-bg-2 px-2 py-1 text-[11px] text-fg-2 hover:bg-bg-3"
-          onClick={() => {
-            navigator.clipboard?.writeText(text);
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1200);
-          }}
+        <CopyOnClick
+          value={text}
+          title="Copy the command"
+          className="shrink-0 rounded-2 border border-line-2 bg-bg-3 px-2 py-1 text-caption text-fg-2 hover:bg-bg-4"
         >
-          {copied ? "copied" : "copy"}
-        </button>
+          copy
+        </CopyOnClick>
       </div>
     </div>
   );
@@ -619,7 +616,7 @@ function HealthBlock({ data }: { data: ETWStatus }) {
     : `as of ${fmtAge(h.age_seconds)} ago`;
 
   return (
-    <div className="space-y-2 rounded-2 border border-line-2 bg-bg-2 px-3 py-2">
+    <div className="space-y-2 rounded-2 border border-line-2 bg-bg-3/40 px-3 py-2">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-2">
           Capturer link

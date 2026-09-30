@@ -1,9 +1,18 @@
 import clsx from "clsx";
-import { Info } from "lucide-react";
+import {
+  CircleAlert,
+  Download,
+  Info,
+  RefreshCw,
+  Server,
+  type LucideIcon,
+} from "lucide-react";
+import { VOCAB_ICONS } from "@shared/lib/vocabIcons";
 import { Link } from "react-router-dom";
 import {
   Button,
   ChartShell,
+  Icon,
   Pill,
   Table,
   Tooltip,
@@ -19,6 +28,7 @@ import { fmtDateTime } from "@/lib/format";
 import type {
   DoctorReport,
   HealthFailuresResponse,
+  IntegrityStatus,
   StatusSnapshot,
   UpdateStatusResponse,
 } from "@/lib/types";
@@ -27,8 +37,9 @@ import type {
 // (usability arc P4.8 / review row D1). Read-only; the Details lines
 // carry each check's remediation hint, exactly as the CLI prints
 // them. Runs on open and on Re-run only (the DB integrity check is
-// not free on a large observer.db).
-export function HealthSection() {
+// not free on a large observer.db). `icon` is the section glyph from the
+// Settings SECTIONS table, drawn on the Health card title.
+export function HealthSection({ icon }: { icon?: LucideIcon }) {
   return (
     <>
       <DaemonCard />
@@ -36,7 +47,7 @@ export function HealthSection() {
         <UpdateCard />
       </div>
       <div className="mt-4">
-        <DoctorCard />
+        <DoctorCard icon={icon} />
       </div>
       <div className="mt-4">
         <FailuresCard />
@@ -62,6 +73,7 @@ function DaemonCard() {
   return (
     <ChartShell
       title="Daemon"
+      icon={Server}
       sub="Restart the running daemon to load a freshly-built binary or apply saved config - without dropping to the CLI."
     >
       <div className="flex flex-wrap items-center gap-3">
@@ -97,14 +109,19 @@ function DaemonCard() {
 // does so exactly once per click. See web/src/lib/version.ts and
 // `observer privacy` for the same claim verified from the CLI side.
 function UpdateCard() {
-  const status = useApi<StatusSnapshot>("/api/status");
-  const current = status.data?.version;
+  // Only the version is read; select it so the 5 s status poll does not
+  // re-render the card.
+  const status = useApi<StatusSnapshot, string | null>("/api/status", undefined, [], {
+    select: (s) => s.version ?? null,
+  });
+  const current = status.data ?? undefined;
   const { latest, checking, error, lastCheckedAt, checkNow } =
     useUpdateCheck();
   const updateAvailable = isUpdateAvailable(current, latest);
   return (
     <ChartShell
       title="Updates"
+      icon={Download}
       sub="Checks npmjs.org only when you click below - never automatically, never in the background. No other page or timer triggers this request."
     >
       <div className="flex flex-wrap items-center gap-3">
@@ -247,16 +264,30 @@ function OrgUpdatePosture() {
   );
 }
 
-function DoctorCard() {
+// CHECK_MARK maps a doctor check status to its glyph, tone and accessible
+// name - one row per status, so a new status is one table row (an unknown
+// value falls back to the fail row rather than rendering nothing). The
+// glyphs are VOCAB_ICONS.healthCheck (the one glyph owner); the colours match
+// CHECK_STATUS in @/lib/vocabTones (ok success, warn warn, fail danger).
+const CHECK_MARK: Record<string, { icon: LucideIcon; tone: string; label: string }> = {
+  ok: { icon: VOCAB_ICONS.healthCheck.ok, tone: "text-success", label: "ok" },
+  warn: { icon: VOCAB_ICONS.healthCheck.warn, tone: "text-warn", label: "warning" },
+  fail: { icon: VOCAB_ICONS.healthCheck.fail, tone: "text-danger", label: "failed" },
+};
+
+function DoctorCard({ icon }: { icon?: LucideIcon }) {
   const report = useApi<DoctorReport>("/api/health/doctor");
-  const status = useApi<StatusSnapshot>("/api/status");
+  // Only the startup integrity verdict is read (select: see UpdateCard).
+  const status = useApi<StatusSnapshot, IntegrityStatus | null>("/api/status", undefined, [], {
+    select: (s) => s.integrity ?? null,
+  });
   const d = report.data;
   // The daemon's persisted STARTUP `PRAGMA quick_check` verdict (RES-3,
   // codebase audit 2026-09-16) is additive to the on-demand `db.integrity`
   // check above: the doctor check above runs fresh right now; this one is
   // the daemon's own background probe from when it opened the database.
   // null when the daemon has never probed (nothing to show).
-  const integrityRow = integrityHealthRow(status.data?.integrity);
+  const integrityRow = integrityHealthRow(status.data ?? undefined);
   const rows: DoctorReport["checks"] = integrityRow
     ? [
         {
@@ -270,11 +301,16 @@ function DoctorCard() {
   return (
     <ChartShell
       title="Health"
+      icon={icon}
       sub="The `observer doctor` checks: database integrity, hook checksums and binary paths, MCP registrations, pidbridge, concurrent daemons, codex hook trust, org enrolment."
     >
       <ChartState
         loading={report.loading}
+        stale={report.isStale}
+        onRetry={report.reload}
         error={report.error}
+        denied={report.denied}
+        deniedPermission={report.deniedPermission}
         empty={!report.loading && rows.length === 0}
         emptyHint="No checks returned."
       >
@@ -294,17 +330,13 @@ function DoctorCard() {
               )}
             >
               <div className="flex items-baseline gap-2">
-                <span
-                  className={clsx(
-                    "w-4 text-center text-[12px] font-bold",
-                    c.status === "ok"
-                      ? "text-success"
-                      : c.status === "warn"
-                        ? "text-warn"
-                        : "text-danger",
-                  )}
-                >
-                  {c.status === "ok" ? "✓" : c.status === "warn" ? "⚠" : "✗"}
+                <span className="flex w-4 shrink-0 justify-center self-center">
+                  <Icon
+                    icon={(CHECK_MARK[c.status] ?? CHECK_MARK.fail).icon}
+                    size="sm"
+                    label={(CHECK_MARK[c.status] ?? CHECK_MARK.fail).label}
+                    className={(CHECK_MARK[c.status] ?? CHECK_MARK.fail).tone}
+                  />
                 </span>
                 <span className="font-mono text-[11.5px] text-fg-1">
                   {c.name}
@@ -326,7 +358,7 @@ function DoctorCard() {
           ))}
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-line-1 pt-3">
-          <Button variant="secondary" size="sm" onClick={report.reload}>
+          <Button variant="secondary" size="sm" iconLeft={RefreshCw} onClick={report.reload}>
             Re-run checks
           </Button>
           {d && (
@@ -364,7 +396,7 @@ function RedactionNotice() {
       data-testid="doctor-redaction-notice"
       className="mb-2 flex items-start gap-2 rounded-2 border border-line-1 bg-bg-2 px-3 py-2 text-[11.5px] leading-relaxed text-fg-3"
     >
-      <Info className="mt-[2px] h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <Icon icon={Info} size="sm" className="mt-[2px] shrink-0" />
       <p>
         This device is connected remotely, so machine-specific paths and user
         names appear as placeholders - <code className={ph}>~</code>,{" "}
@@ -389,11 +421,16 @@ function FailuresCard() {
   return (
     <ChartShell
       title="Recent failures"
+      icon={CircleAlert}
       sub="Failed commands from the last 7 days, grouped. Recovered = a later attempt of the same command succeeded; unrecovered groups are the time sinks worth a root-cause fix."
     >
       <ChartState
         loading={failures.loading}
+        stale={failures.isStale}
+        onRetry={failures.reload}
         error={failures.error}
+        denied={failures.denied}
+        deniedPermission={failures.deniedPermission}
         empty={!failures.loading && (f?.failures ?? []).length === 0}
         emptyHint="No failures captured in the last 7 days."
       >

@@ -186,9 +186,24 @@ type PricingPolicyRow struct {
 	CacheWritePerMTok   *float64 `json:"cache_write_per_mtok,omitempty"`
 	CacheWrite1hPerMTok *float64 `json:"cache_write_1h_per_mtok,omitempty"`
 
-	// LongContextThreshold is NOT nullable: 0 already means "no long-context
-	// tier" unambiguously, so a NULL would say nothing new.
-	LongContextThreshold           int64    `json:"long_context_threshold,omitempty"`
+	// LongContextThreshold is a POINTER since server migration 175 so the org
+	// store's three states (NULL = not quoted, 0 = quoted flat, N = a tier)
+	// can be carried, but ON THIS (ORG) RAIL its absence keeps the LEGACY
+	// meaning. A server built before 175 wrote its NOT NULL DEFAULT 0 as an
+	// OMITTED field, and every node built before 175 overlaid that 0
+	// unconditionally - an org row turned the seed's long-context tier OFF.
+	// So an absent threshold still means "quoted flat" here, and the NEW
+	// state, "not quoted, keep the seed's tier", is spelled with the additive
+	// [PricingPolicyRow.LongContextThresholdUnquoted] marker. Read it through
+	// [PricingPolicyRow.OrgThreshold]; write it through
+	// [PricingPolicyRow.SetOrgThreshold], which emits a quoted flat 0 as the
+	// legacy omitted field so an old node gets byte-identical rows.
+	//
+	// The PUBLIC FEED (internal/pricingfeed, which embeds this row) is a
+	// different rail with the opposite absence rule - there an omitted
+	// threshold was always "the feed does not know the tier" - and never sets
+	// the marker; its projection reads the pointer directly.
+	LongContextThreshold           *int64   `json:"long_context_threshold,omitempty"`
 	LongContextInputPerMTok        *float64 `json:"long_context_input_per_mtok,omitempty"`
 	LongContextOutputPerMTok       *float64 `json:"long_context_output_per_mtok,omitempty"`
 	LongContextCacheReadPerMTok    *float64 `json:"long_context_cache_read_per_mtok,omitempty"`
@@ -208,15 +223,132 @@ type PricingPolicyRow struct {
 
 	// Peak is the org-authored peak (time-of-day) rate variant, mirroring
 	// internal/orgserver/pricing.Row.Peak (the peak_json org-store payload)
-	// field for field (Phase 2, plan §R2/P2-B). Nil ⇒ the org has authored no
-	// peak variant for this model — and that nil-ness is itself the signal:
-	// composing it onto the node's seed table REPLACES the seed's peak
-	// wholesale rather than leaving it, so a negotiated flat-rate model is
-	// never rebilled at the seed's peak multiplier (see cost.OrgPrice's
-	// overlay). omitempty keeps an absent peak byte-identical to a
-	// pre-Phase-2 document, so a document with no peak rows still verifies
-	// unchanged on a node built before this field existed.
+	// field for field (Phase 2, plan §R2/P2-B). Presence is the contract (the
+	// migration-135 rule, applied to the structural fields): nil = the org
+	// quoted no peak for this model and the node KEEPS the seed's peak
+	// schedule; a present Peak is quoted and replaces it, and a present peak
+	// with an empty schedule means "negotiated flat" and clears it (plan §R2
+	// R1/N2, kept for the explicit case; rework 2026-09-23). omitempty keeps
+	// an absent peak byte-identical to a pre-Phase-2 document, so a document
+	// with no peak rows still verifies unchanged on a node built before this
+	// field existed; omitempty on a POINTER omits nil only, so an explicitly
+	// empty peak survives the wire as a quoted "flat".
+	//
+	// ON THIS (ORG) RAIL an ABSENT peak keeps its LEGACY meaning too: every
+	// node built before the presence rule REPLACED the seed's peak with the
+	// org row's nil, so absence = "quoted flat". "Not quoted, keep the seed's
+	// peak" is spelled with [PricingPolicyRow.PeakUnquoted]; read through
+	// [PricingPolicyRow.OrgPeak], write through [PricingPolicyRow.SetOrgPeak].
 	Peak *PeakRates `json:"peak,omitempty"`
+
+	// LongContextThresholdUnquoted and PeakUnquoted are the org rail's
+	// PRESENCE DISCRIMINATORS (review finding F1, 2026-09-26). They are true
+	// only for a row whose org store column is NULL - "this org quotes no
+	// threshold / no peak for this model, keep the node's own" - which is a
+	// state no server before migration 175 could produce. Absent (false) is
+	// every legacy row, so an old server's document keeps meaning exactly
+	// what it meant to the node it shipped with.
+	//
+	// WHY PER ROW AND NOT A BODY-LEVEL SCHEMA FIELD: a node verifies over the
+	// RAW received `rows` bytes but re-frames the body from only version,
+	// generated_at and rows ([canonicalPricingBodyRaw]); a new body-level
+	// field would be dropped from that frame and fail verification on EVERY
+	// deployed node. A new ROW field rides through the raw rows untouched.
+	// No new signing domain is needed for the same reason: the framing is
+	// unchanged, and a new domain tag would itself freeze the fleet.
+	//
+	// Declared LAST and omitempty, so a row that sets neither marshals to the
+	// same bytes as before these fields existed.
+	LongContextThresholdUnquoted bool `json:"long_context_threshold_unquoted,omitempty"`
+	PeakUnquoted                 bool `json:"peak_unquoted,omitempty"`
+
+	// History is this model's WHOLE dated timeline in the org's price book
+	// (lane R2-PRICING-2): every org_model_prices row for the model, ascending
+	// by effective_from, each projected exactly as a top-level row is (the
+	// SetOrgThreshold / SetOrgPeak encodings included) and with no History of
+	// its own. The top-level fields above remain the row in force at
+	// GeneratedAt (the F13 flattening is unchanged), so a node that ignores
+	// History prices exactly as before; a node that reads it can price an OLD
+	// session at the org rate in force at the session's own timestamp, instead
+	// of re-pricing all of history at today's rate.
+	//
+	// The server emits it only for a model with MORE than one row, so an org
+	// with a flat price book signs byte-identical documents. It is a ROW field,
+	// declared last and omitempty, for the reason the presence markers above
+	// are: a node verifies over the raw received `rows` bytes, so an unknown
+	// row key rides through its signature check (a node older than that fix
+	// re-marshals and refuses - the named peak cutover residual).
+	History []PricingPolicyRow `json:"history,omitempty"`
+}
+
+// OrgThreshold reads this row's long-context threshold under the ORG rail's
+// rule: the [PricingPolicyRow.LongContextThresholdUnquoted] marker means "not
+// quoted" (quoted=false, the node keeps its own tier); otherwise the row
+// quotes a threshold, and an ABSENT one is the legacy spelling of 0 - "no
+// long-context tier" - which is what every pre-175 node did with it.
+func (r PricingPolicyRow) OrgThreshold() (value int64, quoted bool) {
+	if r.LongContextThresholdUnquoted {
+		return 0, false
+	}
+	if r.LongContextThreshold == nil {
+		return 0, true
+	}
+	return *r.LongContextThreshold, true
+}
+
+// SetOrgThreshold writes a stored threshold (nil = NULL, not quoted) onto the
+// row in the org rail's encoding: NULL becomes the unquoted marker; a quoted
+// 0 becomes the legacy OMITTED field (byte-identical to a pre-175 server's
+// row, which is what keeps a pre-175 node verifying and billing flat); a
+// positive threshold is written as itself.
+func (r *PricingPolicyRow) SetOrgThreshold(stored *int64) {
+	r.LongContextThreshold, r.LongContextThresholdUnquoted = nil, false
+	switch {
+	case stored == nil:
+		r.LongContextThresholdUnquoted = true
+	case *stored != 0:
+		v := *stored
+		r.LongContextThreshold = &v
+	}
+}
+
+// OrgPeak reads this row's peak under the ORG rail's rule: the
+// [PricingPolicyRow.PeakUnquoted] marker means "not quoted" (the node keeps
+// its seed's peak); otherwise the row quotes its peak, and an ABSENT one is
+// the legacy spelling of "flat, no time-of-day premium".
+func (r PricingPolicyRow) OrgPeak() (peak *PeakRates, quoted bool) {
+	if r.PeakUnquoted {
+		return nil, false
+	}
+	return r.Peak, true
+}
+
+// SetOrgPeak writes a stored peak (nil = NULL, not quoted) onto the row in the
+// org rail's encoding: NULL becomes the unquoted marker; the EMPTY peak - no
+// schedule window and every rate zero, which is the org store's "quoted
+// flat" spelling ('{}', what migration 175 turns every legacy NULL peak into)
+// - becomes the legacy OMITTED field; every other peak, INCLUDING a
+// window-less one that carries rates, is written as itself, exactly as a
+// pre-175 server wrote it.
+//
+// The one state this cannot keep byte-identical (review round 2, finding 3):
+// a pre-175 row that STORED an explicit all-zero, window-less peak object.
+// The org store decodes it to the same value as the cut-over's '{}', so the
+// two cannot be told apart here; a pre-175 server shipped the object and
+// this ships nothing. Every node bills both as flat (a window-less peak can
+// never select its rates), and a node too old to know the `peak` field
+// verifies the omitted spelling where it refused the object. Named in
+// docs/pricing.md.
+func (r *PricingPolicyRow) SetOrgPeak(stored *PeakRates) {
+	r.Peak, r.PeakUnquoted = nil, false
+	switch {
+	case stored == nil:
+		r.PeakUnquoted = true
+	case len(stored.Schedule.Windows) == 0 && stored.RateSet == (RateSet{}):
+		// quoted flat, spelled by omission as every pre-175 server did
+	default:
+		r.Peak = stored
+	}
 }
 
 // Rate boxes a quoted rate so a caller can state one inline. &0.0 is not
@@ -224,6 +356,11 @@ type PricingPolicyRow struct {
 // needs to be able to say "this rate IS set, to zero" - a negotiated free
 // model - as distinct from leaving it nil.
 func Rate(v float64) *float64 { return &v }
+
+// Threshold boxes a quoted long-context threshold, [Rate]'s token-count
+// sibling (server migration 175): a builder must be able to say "this
+// threshold IS set, to zero" - quoted flat - as distinct from nil.
+func Threshold(v int64) *int64 { return &v }
 
 // PricingPolicyBody is the signed body.
 //
@@ -263,6 +400,35 @@ type PricingPolicyDoc struct {
 	// [PricingPolicySigningMessage].
 	Signature string `json:"signature"`
 
+	// ContextWindows is the org's model context-window table (tokens), from
+	// the org's pricing-feed economics (org_pricing_feed_state
+	// .economics_json, economics.context_window_tokens - the one source the
+	// org's own session drawer gauge reads), sorted by model. It lets an
+	// ENROLLED node, which prices from this document and ignores the public
+	// feed (orgpricing.FeedApplies), size its session context gauge from the
+	// same number the org uses (internal/sessiongauge.DocWindows).
+	//
+	// UNSIGNED DISPLAY DATA, deliberately OUTSIDE [PricingPolicyBody]. It is
+	// never a rate and the cost engine never reads it; its integrity is the
+	// TLS + enrolment-bearer channel it arrives on. It sits beside the
+	// signature rather than inside the signed body because every node
+	// verifies over version, generated_at and rows only: a v1.33.0 .. rc.7
+	// node re-marshals the typed body it decoded, and an rc.8+ node re-frames
+	// the raw received `rows` bytes, and BOTH ignore an unknown top-level key,
+	// so a document carrying windows verifies on every deployed node. The
+	// earlier design (lane G-WIRE2, never released) stamped a
+	// context_window_tokens field onto each signed ROW, which a re-marshal
+	// verifier drops on decode - every pre-rc.8 node refused the document and
+	// froze its price updates, automatically for any org with feed economics
+	// (review finding, 2026-09-29).
+	//
+	// The ETag ([PricingPolicyDigest]) hashes the whole document, so a window
+	// change moves the validator and a node re-fetches. It names EVERY model
+	// the org's economics carries a positive window for, not only the price
+	// book's rows. Absent or empty = the org states no windows; each model
+	// then reads as unknown on the node, never 0.
+	ContextWindows []ModelContextWindow `json:"context_windows,omitempty"`
+
 	// rawRows holds the RAW RECEIVED bytes of the body's `rows` field,
 	// populated by [PricingPolicyDoc.UnmarshalJSON] and read only by
 	// [VerifyPricingPolicy] so it can sign over what was ACTUALLY RECEIVED
@@ -277,6 +443,14 @@ type PricingPolicyDoc struct {
 	// [SignPricingPolicy] or a test literal); Verify then falls back to the
 	// typed path, which the byte-compat property makes identical.
 	rawRows []byte
+}
+
+// ModelContextWindow is one model's context window in tokens, the element of
+// [PricingPolicyDoc.ContextWindows]. Model is normalized (trimmed,
+// lower-cased) by the server; Tokens is always positive.
+type ModelContextWindow struct {
+	Model  string `json:"model"`
+	Tokens int64  `json:"context_window_tokens"`
 }
 
 // pricingPolicyDocAlias is PricingPolicyDoc's field set without its methods,

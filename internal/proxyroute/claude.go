@@ -11,6 +11,35 @@ import (
 	"strconv"
 )
 
+// ClaudeGatewayHintEnv is Claude Code's switch for its gateway hint headers
+// (x-claude-code-request-class / -agent-type / -compaction /
+// -context-compacted / -prev-tool-durations, and since 2.1.283
+// x-claude-code-prompt-id). "Set to `1` to send the gateway hint headers
+// ... on a custom proxy"; they are sent by default only on a direct
+// connection to the Anthropic API, "off by default" for a custom base URL
+// (https://code.claude.com/docs/en/env-vars,
+// https://code.claude.com/docs/en/llm-gateway-protocol#gateway-hint-headers).
+// The observer proxy records the prompt id (api_turns.prompt_id) and
+// forwards every hint header upstream untouched, so the durable route turns
+// them on exactly like the `observer claude` launcher does.
+const ClaudeGatewayHintEnv = "CLAUDE_CODE_GATEWAY_HINT_HEADERS"
+
+// claudeGatewayHintOn is the value the writer sets and the only value the
+// unregister removes (a "0" or any other operator value is theirs).
+const claudeGatewayHintOn = "1"
+
+// addClaudeGatewayHint sets env[ClaudeGatewayHintEnv]="1" when the key is
+// ABSENT. Presence wins: an operator's own "0" / "" / "1" is never touched
+// (settings.json `"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "0"` is the opt-out).
+// Returns whether it added the key.
+func addClaudeGatewayHint(env map[string]any) bool {
+	if _, present := env[ClaudeGatewayHintEnv]; present {
+		return false
+	}
+	env[ClaudeGatewayHintEnv] = claudeGatewayHintOn
+	return true
+}
+
 // claudeBaseURL is the proxy URL we write into Claude Code's settings.
 // Localhost-only because the observer proxy refuses non-loopback
 // connections (see internal/proxy/proxy.go).
@@ -21,7 +50,10 @@ func claudeBaseURL(port int) string {
 // RegisterClaudeCode writes `"env": { "ANTHROPIC_BASE_URL": "<proxy>" }`
 // into ~/.claude/settings.json so Claude Code routes through the
 // observer proxy across shell sessions without the operator needing to
-// `export ANTHROPIC_BASE_URL` manually.
+// `export ANTHROPIC_BASE_URL` manually. Beside it, it sets
+// CLAUDE_CODE_GATEWAY_HINT_HEADERS="1" when that key is absent (see
+// ClaudeGatewayHintEnv; an existing route of ours is topped up), so the
+// proxy receives the prompt-id hint without an `observer claude` launch.
 //
 // Idempotent — re-running with the same port returns AlreadySet.
 // Refuses without Force when ANTHROPIC_BASE_URL is set to a value the
@@ -85,6 +117,19 @@ func (r *Registrar) registerClaudeCodeAt(dir, want, toolLabel string) Registrati
 		case cur == want:
 			res.AlreadySet = true
 			res.BaseURL = cur
+			// Top up a route written before the hint switch existed. The
+			// route itself is unchanged, so AlreadySet stays true (the
+			// dashboard's routed probe keys on it).
+			if !addClaudeGatewayHint(env) {
+				return res
+			}
+			res.GatewayHintsAdded = true
+			if r.opts.DryRun {
+				return res
+			}
+			if err := writeClaudeEnv(dir, path, settings, env); err != nil {
+				res.Error = err
+			}
 			return res
 		case IsObserverBaseURL(cur) && !r.opts.Force:
 			// Another local observer install (different port). Don't
@@ -102,23 +147,28 @@ func (r *Registrar) registerClaudeCodeAt(dir, want, toolLabel string) Registrati
 	}
 
 	env["ANTHROPIC_BASE_URL"] = want
-	patched, err := json.Marshal(env)
-	if err != nil {
-		res.Error = fmt.Errorf("proxyroute.claude: marshal env: %w", err)
-		return res
-	}
-	settings["env"] = patched
+	res.GatewayHintsAdded = addClaudeGatewayHint(env)
 
 	if r.opts.DryRun {
 		res.Added = true
 		return res
 	}
-	if err := writeClaudeSettings(dir, path, settings); err != nil {
+	if err := writeClaudeEnv(dir, path, settings, env); err != nil {
 		res.Error = err
 		return res
 	}
 	res.Added = true
 	return res
+}
+
+// writeClaudeEnv marshals env back into settings["env"] and writes the file.
+func writeClaudeEnv(dir, path string, settings map[string]json.RawMessage, env map[string]any) error {
+	patched, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("proxyroute.claude: marshal env: %w", err)
+	}
+	settings["env"] = patched
+	return writeClaudeSettings(dir, path, settings)
 }
 
 // UnregisterClaudeCode removes ANTHROPIC_BASE_URL from
@@ -190,6 +240,15 @@ func (r *Registrar) UnregisterClaudeCode() RegistrationResult {
 	}
 
 	delete(env, "ANTHROPIC_BASE_URL")
+	// Symmetry with the register side: drop the hint switch only when it is
+	// the exact value the writer sets. Without the route Claude Code talks
+	// to the Anthropic API directly, where it sends the hint headers by
+	// default anyway, so removing our "1" changes nothing there; any other
+	// value is the operator's and stays.
+	if v, _ := env[ClaudeGatewayHintEnv].(string); v == claudeGatewayHintOn {
+		delete(env, ClaudeGatewayHintEnv)
+		res.GatewayHintsAdded = true
+	}
 	if len(env) == 0 {
 		// Don't leave an empty env block — drop the key entirely so
 		// the file diff is symmetric with RegisterClaudeCode's "create

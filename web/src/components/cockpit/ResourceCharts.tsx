@@ -15,7 +15,8 @@ import type {
 } from "recharts/types/component/DefaultTooltipContent";
 import { CHART_AXIS, CHART_GRID } from "@/components/charts/common";
 import { ChartState } from "@/components/ChartState";
-import { fmtBytes } from "@/lib/format";
+import { fmtBytes, localeTimeString } from "@/lib/format";
+import { Tooltip as HintTooltip } from "@/components/primitives";
 
 // ResourceCharts — the Session Cockpit's live compute/memory/disk/network
 // charts.
@@ -170,10 +171,14 @@ export function ResourceCharts({
   metrics,
   loading,
   error,
+  denied,
+  deniedPermission,
 }: {
   metrics: SessionMetricsResponse | null;
   loading: boolean;
   error: Error | null;
+  denied?: boolean;
+  deniedPermission?: string | null;
 }) {
   const rows: Row[] = useMemo(
     () =>
@@ -233,6 +238,9 @@ export function ResourceCharts({
       <ChartState
         loading={loading && !metrics}
         error={error && !metrics ? error : null}
+        // Same gate as the error: a failed poll keeps the charts on screen.
+        denied={denied && !metrics}
+        deniedPermission={deniedPermission}
         empty={!hasAny}
         emptyHint={emptyHint}
         // A loading skeleton reserves roughly the chart stack so the panel
@@ -282,32 +290,29 @@ function WindowLabel({ metrics }: { metrics: SessionMetricsResponse | null }) {
   const live = ageMs < staleAfter;
   return (
     <div className="mb-1 flex flex-wrap items-center gap-x-2 text-[10px] text-fg-4">
-      <span title={`${metrics.from} → ${metrics.to}`}>last {win}</span>
+      <HintTooltip content={`${metrics.from} → ${metrics.to}`}><span tabIndex={0}>last {win}</span></HintTooltip>
       <span>·</span>
       {live ? (
-        <span className="text-success" title="The newest bucket is current.">
+        <HintTooltip content="The newest bucket is current."><span tabIndex={0} className="text-success">
           live
-        </span>
+        </span></HintTooltip>
       ) : (
-        <span className="text-warn" title="No sample has landed recently - the series below is not current.">
+        <HintTooltip content="No sample has landed recently - the series below is not current."><span tabIndex={0} className="text-warn">
           stale · {fmtDur(ageMs)} old
-        </span>
+        </span></HintTooltip>
       )}
       <span>·</span>
-      <span title="Each point aggregates this much wall time.">{bucket} buckets</span>
+      <HintTooltip content="Each point aggregates this much wall time."><span tabIndex={0}>{bucket} buckets</span></HintTooltip>
       <span>·</span>
-      <span title="Every process attributed to this session that carries resource samples. All of them are summed - not just one.">
+      <HintTooltip content="Every process attributed to this session that carries resource samples. All of them are summed - not just one."><span tabIndex={0}>
         {procs} {procs === 1 ? "process" : "processes"}
-      </span>
+      </span></HintTooltip>
       {metrics.window_truncated && (
         <>
           <span>·</span>
-          <span
-            className="text-warn"
-            title="Older samples have already been dropped: the per-process sample ring is capped and lives in the daemon's memory, so it also resets when the daemon restarts. The window above is shorter than the process's life."
-          >
+          <HintTooltip content="Older samples have already been dropped: the per-process sample ring is capped and lives in the daemon's memory, so it also resets when the daemon restarts. The window above is shorter than the process's life."><span tabIndex={0} className="text-warn">
             window limited by sample ring
-          </span>
+          </span></HintTooltip>
         </>
       )}
     </div>
@@ -455,7 +460,8 @@ function trim(v: number): string {
 function clock(ms: number, withSeconds: boolean): string {
   const d = new Date(ms);
   if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], {
+  // Axis-tick hot path: the cached, byte-identical toLocaleTimeString.
+  return localeTimeString(d, [], {
     hour: "2-digit",
     minute: "2-digit",
     ...(withSeconds ? { second: "2-digit" } : {}),
@@ -465,7 +471,7 @@ function clock(ms: number, withSeconds: boolean): string {
 function clockFull(ms: number): string {
   const d = new Date(ms);
   if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return localeTimeString(d, [], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function fmtDur(ms: number): string {
