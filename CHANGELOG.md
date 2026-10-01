@@ -4,6 +4,36 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.34.0] — 2026-10-01
+
+Stable release on the `stable` channel (npm dist-tags `latest` + `stable`, PyPI, VS Code Marketplace and
+Open VSX). It promotes `v1.34.0-rc.11` unchanged except for one release-script fix, and collects
+everything that shipped on `edge` across `1.34.0-rc.1` through `rc.11` (`rc.9` was tagged but never
+published). The per-RC sections below carry the full notes. Headlines since 1.33.0:
+
+- Agent Access: SuperBased-minted agent identity and a governed MCP gateway (`observer-mcpgw`), off by
+  default and inert when off (see `docs/agent-access.md`).
+- Pricing chain: the full Tokenomics rate set reaches org and node pricing, the compiled price table is
+  regenerated from the signed feed v9, model context windows come from Tokenomics, the org pricing feed
+  gains a grade gate, and OpenAI Ultrafast turns are priced.
+- Org guardrail control wave, the org admin assistant reaching every admin route, the shared design kit
+  across the node and org dashboards, opt-in retroactive re-pricing, sandboxed-terminal containment, and a
+  node dashboard performance pass.
+- Enterprise deployment: cosign-signed `observer-org`, `observer-postgres` and `harness-gateway` images
+  in the private registry, plus the release-pipeline fixes found while cutting the first pre-release tags.
+- The VS Code extension publishes for the first time since 1.33.0 (the Marketplace refuses pre-release
+  versions, so no RC reached it).
+
+Upgrading from 1.33.0: node binaries run their agent migrations on `observer start` (head 147). On the
+org server run `observer-org upgrade preflight` and then `observer-org migrate` before starting the new
+image (server head 191, PostgreSQL head 0057; PostgreSQL 0032 needs `btree_gist`, see the rc.10 notes).
+On a node that was enrolled before rc.10, run `observer org resync` once (dry run by default, `--confirm`
+to queue).
+
+Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
+- fix(release): the CHANGELOG price-snapshot check no longer misses a line that is present.
+
 ## [1.34.0-rc.11] — 2026-10-01
 
 Pre-release on the `edge` channel; everything since rc.10 (2026-09-30): the pricing-chain arc (every
