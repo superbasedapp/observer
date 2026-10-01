@@ -2006,6 +2006,7 @@ func (s *Server) handleSuggestions(w http.ResponseWriter, r *http.Request) {
 		GuardMode:     guardMode,
 		RoutingMode:   routingMode,
 		RoutingShadow: shadow,
+		ContextWindow: s.modelWindows(r.Context()).Resolve,
 	})
 	if err != nil {
 		writeErr(w, err)

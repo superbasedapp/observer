@@ -184,8 +184,17 @@ type snapshotRow struct {
 	LongContextCacheWritePerMTok   *float64 `json:"long_context_cache_write_per_mtok,omitempty"`
 	LongContextCacheWrite1hPerMTok *float64 `json:"long_context_cache_write_1h_per_mtok,omitempty"`
 	WebSearchPerRequest            *float64 `json:"web_search_per_request,omitempty"`
-	// FastMultiplier is the latency-premium multiplier the feed carries in its
-	// Economics object. nil = not stated (the literal's value stays); a stated
+	// The extended rate dimensions (2026-09-30 pricing-chain contract), with
+	// the rates' presence rule: nil = not stated, the literal's value stays.
+	ReasoningPerMTok       *float64 `json:"reasoning_per_mtok,omitempty"`
+	RequestFeeUSD          *float64 `json:"request_fee_usd,omitempty"`
+	CacheWriteOtherPerMTok *float64 `json:"cache_write_other_per_mtok,omitempty"`
+	ImageInputPerMTok      *float64 `json:"image_input_per_mtok,omitempty"`
+	ImageOutputPerImage    *float64 `json:"image_output_per_image,omitempty"`
+	AudioInputPerMTok      *float64 `json:"audio_input_per_mtok,omitempty"`
+	AudioOutputPerMTok     *float64 `json:"audio_output_per_mtok,omitempty"`
+	// FastMultiplier is the latency-premium multiplier the feed carries (its
+	// top-level fast_multiplier, else the one in its Economics object). nil = not stated (the literal's value stays); a stated
 	// value replaces it.
 	FastMultiplier *float64 `json:"fast_multiplier,omitempty"`
 	// Peak is the time-of-day variant, wire-identical to orgcontract.PeakRates.
@@ -199,6 +208,12 @@ type snapshotRow struct {
 	// (see [SnapshotMinCacheable]) instead of two hand-edited tables drifting
 	// apart on every model release.
 	MinCacheableTokens *int64 `json:"min_cacheable_tokens,omitempty"`
+	// ContextWindowTokens is the model's context window as the export stated
+	// it. Like MinCacheableTokens it is NOT a rate and never reaches
+	// [Pricing]; it is declared here so the generator's row shape stays
+	// pinned to this one (TestSnapshotGeneratorShapeMatchesConsumer), and the
+	// context-window registry reads it from the same artifact.
+	ContextWindowTokens *int64 `json:"context_window_tokens,omitempty"`
 }
 
 // snapshotPrice is ONE parsed snapshot row: an [OrgPrice] (value + Set flags,
@@ -342,6 +357,13 @@ func snapshotPriceOf(key string, r snapshotRow) (snapshotPrice, string) {
 		{r.LongContextCacheWritePerMTok, &p.rates.LongContextCacheCreation, &p.rates.Set.LongContextCacheCreation},
 		{r.LongContextCacheWrite1hPerMTok, &p.rates.LongContextCacheCreation1h, &p.rates.Set.LongContextCacheCreation1h},
 		{r.WebSearchPerRequest, &p.rates.WebSearchPerRequest, &p.rates.Set.WebSearchPerRequest},
+		{r.ReasoningPerMTok, &p.rates.Reasoning, &p.rates.Set.Reasoning},
+		{r.RequestFeeUSD, &p.rates.RequestFee, &p.rates.Set.RequestFee},
+		{r.CacheWriteOtherPerMTok, &p.rates.CacheCreationOther, &p.rates.Set.CacheCreationOther},
+		{r.ImageInputPerMTok, &p.rates.ImageInput, &p.rates.Set.ImageInput},
+		{r.ImageOutputPerImage, &p.rates.ImageOutputPerImage, &p.rates.Set.ImageOutputPerImage},
+		{r.AudioInputPerMTok, &p.rates.AudioInput, &p.rates.Set.AudioInput},
+		{r.AudioOutputPerMTok, &p.rates.AudioOutput, &p.rates.Set.AudioOutput},
 	} {
 		if f.src != nil {
 			*f.dst, *f.set = *f.src, true

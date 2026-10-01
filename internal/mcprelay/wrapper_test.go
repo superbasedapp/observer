@@ -1,3 +1,5 @@
+//go:build !windows
+
 package mcprelay_test
 
 import (
@@ -11,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -47,33 +48,31 @@ func helperServer() {
 		_ = out.Flush()
 		mu.Unlock()
 	}
-	if runtime.GOOS != "windows" {
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, syscall.SIGUSR1)
-		go func() {
-			for range sigs {
-				emit([]byte(`{"jsonrpc":"2.0","method":"notifications/signal","params":{"sig":"USR1"}}`))
-			}
-		}()
-		// MCPRELAY_HELPER_TERM_EXIT=<code>: on SIGTERM emit a notification
-		// and exit with <code> (the client's own shutdown behaviour).
-		// MCPRELAY_HELPER_IGNORE_TERM=1: ignore SIGTERM (a server that
-		// hangs on shutdown) so the wrapper's grace -> kill ladder runs.
-		if os.Getenv("MCPRELAY_HELPER_IGNORE_TERM") == "1" {
-			signal.Ignore(syscall.SIGTERM)
-		} else if code := os.Getenv("MCPRELAY_HELPER_TERM_EXIT"); code != "" {
-			term := make(chan os.Signal, 1)
-			signal.Notify(term, syscall.SIGTERM)
-			go func() {
-				<-term
-				emit([]byte(`{"jsonrpc":"2.0","method":"notifications/signal","params":{"sig":"TERM"}}`))
-				n := 0
-				for _, ch := range code {
-					n = n*10 + int(ch-'0')
-				}
-				os.Exit(n)
-			}()
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGUSR1)
+	go func() {
+		for range sigs {
+			emit([]byte(`{"jsonrpc":"2.0","method":"notifications/signal","params":{"sig":"USR1"}}`))
 		}
+	}()
+	// MCPRELAY_HELPER_TERM_EXIT=<code>: on SIGTERM emit a notification
+	// and exit with <code> (the client's own shutdown behaviour).
+	// MCPRELAY_HELPER_IGNORE_TERM=1: ignore SIGTERM (a server that
+	// hangs on shutdown) so the wrapper's grace -> kill ladder runs.
+	if os.Getenv("MCPRELAY_HELPER_IGNORE_TERM") == "1" {
+		signal.Ignore(syscall.SIGTERM)
+	} else if code := os.Getenv("MCPRELAY_HELPER_TERM_EXIT"); code != "" {
+		term := make(chan os.Signal, 1)
+		signal.Notify(term, syscall.SIGTERM)
+		go func() {
+			<-term
+			emit([]byte(`{"jsonrpc":"2.0","method":"notifications/signal","params":{"sig":"TERM"}}`))
+			n := 0
+			for _, ch := range code {
+				n = n*10 + int(ch-'0')
+			}
+			os.Exit(n)
+		}()
 	}
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
@@ -311,12 +310,10 @@ func TestStdioWrapperMediatesPreservesAndAttests(t *testing.T) {
 		t.Fatalf("filtered list %s", m.Result)
 	}
 	// Signals reach the child.
-	if runtime.GOOS != "windows" {
-		e.signals <- syscall.SIGUSR1
-		m = e.recv()
-		if m.Method != "notifications/signal" {
-			t.Fatalf("signal notification %+v", m)
-		}
+	e.signals <- syscall.SIGUSR1
+	m = e.recv()
+	if m.Method != "notifications/signal" {
+		t.Fatalf("signal notification %+v", m)
 	}
 	// Notifications from the client reach the child unmediated by effect.
 	e.send([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
@@ -414,9 +411,6 @@ func TestStdioWrapperNoLocalPolicyBlocks(t *testing.T) {
 // the child's exit code - it never killed the child under a cancelled
 // context.
 func TestStdioWrapperForwardsTermSignalThenPropagatesExit(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX signals")
-	}
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGTERM)
 	defer signal.Stop(sigs)
@@ -452,9 +446,6 @@ func TestStdioWrapperForwardsTermSignalThenPropagatesExit(t *testing.T) {
 // given exactly the configured grace, then killed; the wrapper reports the
 // kill, never hangs.
 func TestStdioWrapperEscalatesAfterGrace(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX signals")
-	}
 	const grace = 700 * time.Millisecond
 	e := newWrapperEnvOpts(t, staticAttestor{id: mcprelay.ParentIdentity{Attestation: "configured"}},
 		wrapperEnvOpts{extraEnv: []string{"MCPRELAY_HELPER_IGNORE_TERM=1"}, grace: grace})
@@ -483,9 +474,6 @@ func TestStdioWrapperEscalatesAfterGrace(t *testing.T) {
 // TestStdioWrapperNonTerminatingSignalNeverEscalates: a forwarded SIGUSR1
 // is delivered and the child keeps running past any grace.
 func TestStdioWrapperNonTerminatingSignalNeverEscalates(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX signals")
-	}
 	e := newWrapperEnvOpts(t, staticAttestor{id: mcprelay.ParentIdentity{Attestation: "configured"}}, wrapperEnvOpts{grace: 200 * time.Millisecond})
 	// A call first: the child registers its SIGUSR1 handler before it reads
 	// stdin, so a reply proves the handler is installed.

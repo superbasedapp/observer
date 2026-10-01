@@ -247,6 +247,7 @@ const REASON_DOCS: Record<string, string> = {
   privacy_hold: "a privacy rule constrained the candidate set",
   quality_floor_hold: "the quality floor denied the proposed target - the turn stays on its model",
   capability_hold: "the capability basis denied the switch (provider shape, context window, tool support)",
+  context_window_unknown: "the target's context window isn't in the pricing data yet, so the prompt could not be checked against it",
   effort_downshift: "effort / thinking lowered instead of switching model - zero cache loss",
   budget_exhausted: "a budget scope hit 100% and its configured exhaustion behavior fired",
   calibration_demoted: "calibration graded this rule's downshift as regressing - logged, never applied until evidence clears",

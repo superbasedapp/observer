@@ -243,9 +243,9 @@ func feedOrgRows(ctx context.Context, st *store.Store, logger *slog.Logger) (cos
 // feedRowsOf projects the public feed's rows - and each row's price HISTORY,
 // when it carries one - onto the engine's input type, through the feed rail's
 // presence rule ([feedPriceRowsOf]). The feed also states the latency-premium
-// multiplier, in its Economics object (the org wire has no such field): a
-// stated value applies (0 = no fast tier), an absent one keeps the seed's -
-// per history period as much as on the row itself.
+// multiplier - top-level fast_multiplier (projected with the rates), else in
+// its Economics object: a stated value applies (0 = no fast tier), an absent
+// one keeps the seed's - per history period as much as on the row itself.
 func feedRowsOf(in []pricingfeed.Row) []cost.OrgPrice {
 	rows := make([]orgcontract.PricingPolicyRow, 0, len(in))
 	for _, r := range in {
@@ -261,9 +261,15 @@ func feedRowsOf(in []pricingfeed.Row) []cost.OrgPrice {
 	return priced
 }
 
+// applyFeedFastMultiplier falls back to the Economics object's multiplier when
+// the row states none at top level (the 2026-09-30 contract moved it there;
+// the top-level value, projected by pricewire, wins when both are present).
 func applyFeedFastMultiplier(p *cost.OrgPrice, e *pricingfeed.Economics) {
+	if p.Set.FastMultiplier {
+		return
+	}
 	if e != nil && e.FastMultiplier != nil && *e.FastMultiplier >= 0 {
-		p.FastMultiplier, p.Set.FastMultiplier = *e.FastMultiplier, true
+		p.FastMultiplier, p.Set.FastMultiplier = orgcontract.RoundPrice(*e.FastMultiplier), true
 	}
 }
 

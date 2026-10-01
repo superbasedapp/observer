@@ -246,7 +246,7 @@ func TestApplySnapshot_PresenceSemantics_RealRows(t *testing.T) {
 		t.Errorf("gpt-6-astra 300K prompt = %v, want the long-context rate", got)
 	}
 	grok, _ := tb.Lookup("grok-4.7")
-	if grok.LongContextThreshold != 200_000 || grok.LongContextInput != 4 {
+	if grok.LongContextThreshold != 199_999 || grok.LongContextInput != 4 {
 		t.Errorf("grok-4.7 LC tier lost: %+v", grok)
 	}
 	ds, _ := tb.Lookup("deepseek-v4-pro")
@@ -575,8 +575,8 @@ func TestApplySnapshot_ThresholdPresence(t *testing.T) {
 		{Model: "gpt-6-astra", InputPerMTok: f(10), OutputPerMTok: f(50), LongContextThreshold: i(0)},
 		{Model: "deepseek-v4-pro", InputPerMTok: f(0.66), OutputPerMTok: f(1.98), Peak: &PeakRates{}},
 	}})
-	if p, _ := tb.Lookup("grok-4.7"); p.LongContextThreshold != 200_000 {
-		t.Errorf("omitted threshold: grok-4.7 = %d, want the seed's 200000", p.LongContextThreshold)
+	if p, _ := tb.Lookup("grok-4.7"); p.LongContextThreshold != 199_999 {
+		t.Errorf("omitted threshold: grok-4.7 = %d, want the seed's 199999", p.LongContextThreshold)
 	}
 	if p, _ := tb.Lookup("gpt-6-astra"); p.LongContextThreshold != 0 {
 		t.Errorf("stated 0: gpt-6-astra threshold = %d, want 0 (quoted flat)", p.LongContextThreshold)

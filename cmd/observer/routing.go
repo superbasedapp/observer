@@ -263,10 +263,16 @@ func newRoutingSimulateCmd() *cobra.Command {
 			mvReport := modelvalue.Build(facts, modelvalue.Options{})
 			turns := modelvalue.AssembleSimTurns(facts, modelvalue.Options{})
 			turns = modelvalue.FilterSimTurnsByKind(turns, routing.TurnKind(turnKind))
+			// Context windows come from the node's Tokenomics window
+			// table (seed snapshot -> feed -> org); a load error
+			// leaves the seed rung, and an unknown window never
+			// excludes a candidate.
+			windows, _ := st.LoadModelContextWindows(cmd.Context())
 			snap := &routing.Snapshot{
-				GeneratedAt: facts.GeneratedAt,
-				Price:       facts.Price,
-				Tiers:       routing.NewTierResolver().Table(),
+				GeneratedAt:   facts.GeneratedAt,
+				Price:         facts.Price,
+				Tiers:         routing.NewTierResolver().Table(),
+				ContextWindow: windows.Resolve,
 			}
 			rep := routing.Simulate(policy, snap, turns, mvReport.EvidenceByKindTier())
 

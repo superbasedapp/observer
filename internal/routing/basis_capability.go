@@ -35,9 +35,11 @@ func (capabilityBasis) Allow(c ModelCandidate, bin BasisInput) (bool, ReasonCode
 	if c.Shape == ShapeUnknown || origShape == ShapeUnknown || c.Shape != origShape {
 		return false, ReasonCapabilityHold
 	}
-	// Context-window fit (§R11.2): a candidate whose window the prompt
-	// already exceeds would 4xx upstream.
-	if bin.In.Shape.PromptTokens > 0 && bin.In.Shape.PromptTokens > contextWindowTokens(c.Model) {
+	// Context-window fit (§R11.2): a candidate whose KNOWN window the
+	// prompt already exceeds would 4xx upstream. An unknown window is
+	// unknown — never a reason to exclude, never a default size
+	// (Decide annotates such a switch with ReasonContextWindowUnknown).
+	if win, known := contextWindow(bin.Snap, c.Model); known && bin.In.Shape.PromptTokens > win {
 		return false, ReasonCapabilityHold
 	}
 	// Tool-use support: requests carrying tool definitions can only
@@ -55,62 +57,30 @@ func (capabilityBasis) Allow(c ModelCandidate, bin BasisInput) (bool, ReasonCode
 	return true, ""
 }
 
-// contextWindowTokens resolves a model's context window from the seed
-// table by longest-prefix match. Unknown models get the conservative
-// 200K default — the lowest common window among the families the
-// engine routes between, so a fit check never passes on optimism.
-func contextWindowTokens(model string) int64 {
-	m := strings.ToLower(model)
-	if norm := normalizeUnplacedModel(m); norm != "" {
-		m = norm
+// contextWindow resolves a model's context window through the snapshot's
+// injected resolver (Tokenomics data, resolved at the boundary). A nil
+// snapshot or resolver, or a model the resolver does not know, reports
+// known=false: this package holds no window table and assumes no default.
+func contextWindow(snap *Snapshot, model string) (int64, bool) {
+	if snap == nil || snap.ContextWindow == nil {
+		return 0, false
 	}
-	best := ""
-	var win int64
-	for prefix, w := range seedContextWindows {
-		if strings.HasPrefix(m, prefix) && len(prefix) > len(best) {
-			best, win = prefix, w
-		}
+	win, known := snap.ContextWindow(model)
+	if !known || win <= 0 {
+		return 0, false
 	}
-	if best == "" {
-		return defaultContextWindowTokens
-	}
-	return win
+	return win, true
 }
 
-// defaultContextWindowTokens is the conservative unknown-model window.
-const defaultContextWindowTokens int64 = 200_000
-
-// seedContextWindows maps family prefixes to context windows (input
-// tokens), per published provider limits as of 2026-06. Longest prefix
-// wins. Values deliberately conservative: standard-tier windows, not
-// beta/preview extensions.
-var seedContextWindows = map[string]int64{
-	"claude":          200_000,
-	"claude-sonnet-4": 1_000_000, // 1M GA on Sonnet 4.x
-	// Claude Sonnet 5.5: 1M context per Anthropic's models overview
-	// (captured 2026-09-28).
-	"claude-sonnet-5-5": 1_000_000,
-	"gpt-5":             272_000,
-	"gpt-4.1":           1_000_000,
-	"gpt-4o":            128_000,
-	"o1":                200_000,
-	"o3":                200_000,
-	"o4":                200_000,
-	"gemini":            1_000_000,
-	"deepseek":          128_000,
-	"kimi":              256_000,
-	"grok":              256_000,
-	"qwen":              262_000,
-	"glm":               200_000,
-	"mistral":           128_000,
-	"hermes":            128_000,
-	"gpt-oss":           131_000,
-	"nemotron":          131_000,
-	"minimax":           1_000_000,
-	"composer":          262_000,
-	"kilo-auto/free":    262_000,
-	"kilo-auto/small":   262_000,
-	"ollama":            128_000,
+// contextWindowUnverified reports whether a decision that switched models
+// moved onto a candidate whose window fit could not be checked: the prompt
+// size is known but the candidate's window is not.
+func contextWindowUnverified(snap *Snapshot, in DecisionInput, d Decision) bool {
+	if !d.Changed || in.Shape.PromptTokens <= 0 {
+		return false
+	}
+	_, known := contextWindow(snap, d.SelectedModel)
+	return !known
 }
 
 // supportsTools reports tool-use capability. Every seed-table model

@@ -262,9 +262,10 @@ func TestHandleConfigPricingDefaults_ShapeAndCoverage(t *testing.T) {
 			t.Errorf("%s has zero rates: %+v", model, entry)
 		}
 	}
-	// LC tier round-trip: claude-sonnet-4-5 should expose its 200K threshold.
-	if s := got.Defaults["claude-sonnet-4-5"]; s.LongContextThreshold != 200_000 {
-		t.Errorf("claude-sonnet-4-5 LC threshold: got %v want 200000", s.LongContextThreshold)
+	// LC tier round-trip: claude-sonnet-4 should expose its 200K threshold
+	// (4.5 is flat since 2026-10-01: Anthropic states no premium for it).
+	if s := got.Defaults["claude-sonnet-4"]; s.LongContextThreshold != 200_000 {
+		t.Errorf("claude-sonnet-4 LC threshold: got %v want 200000", s.LongContextThreshold)
 	}
 	// Gross size sanity: there are 60+ baked-in models per pricing-reference.md.
 	if len(got.Defaults) < 50 {

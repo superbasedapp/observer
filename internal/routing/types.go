@@ -210,6 +210,12 @@ const (
 	// downshift as regressing (§R18.3 auto_demote) — the decision is
 	// logged but never applied until evidence clears.
 	ReasonCalibrationDemoted ReasonCode = "calibration_demoted"
+	// ReasonContextWindowUnknown: the decision switched to a model whose
+	// context window the Tokenomics window table does not state, so the
+	// capability filter could not verify the prompt fits (§R11.2). An
+	// annotation, not a hold: an unknown window never excludes a
+	// candidate, and no default size is assumed.
+	ReasonContextWindowUnknown ReasonCode = "context_window_unknown"
 )
 
 // KnownReasonCodes enumerates the closed enum, for lint and dashboards.
@@ -224,7 +230,7 @@ func KnownReasonCodes() []ReasonCode {
 		ReasonNoCandidate, ReasonNoRoute, ReasonInsufficientEvidence,
 		ReasonCustomRule, ReasonPrivacyHold, ReasonQualityFloorHold,
 		ReasonCapabilityHold, ReasonEffortDownshift, ReasonBudgetExhausted,
-		ReasonCalibrationDemoted,
+		ReasonCalibrationDemoted, ReasonContextWindowUnknown,
 	}
 }
 
@@ -420,6 +426,12 @@ type PromptUsage struct {
 // inventing them. Backed by cost.Engine.ComputeBreakdown at the boundary.
 type PriceFn func(model string, u PromptUsage) (usd float64, ok bool)
 
+// ContextWindowFn resolves a model's context window in tokens. known=false
+// means the window table does not name the model — unknown, not zero and not
+// a default. Backed at the boundary by the Tokenomics window table; this
+// package never holds window data of its own.
+type ContextWindowFn func(model string) (tokens int64, known bool)
+
 // Snapshot is the immutable, periodically refreshed view of signals the
 // decision engine reads (§R9.2). A store-side refresher builds it and swaps
 // it in via atomic.Pointer (the pricing-table hot-reload pattern); the
@@ -433,6 +445,15 @@ type Snapshot struct {
 	// Tiers is the tier-table snapshot decisions resolve against. Nil
 	// fails open (§R9.2): no table, no routing.
 	Tiers *TierTable
+	// ContextWindow is the injected per-model context-window resolver
+	// the capability filter's fit check reads (§R11.2). The boundary
+	// backs it with the node's Tokenomics-derived window table (seed
+	// snapshot -> feed -> org; store.LoadModelContextWindows). Nil, or
+	// known=false for a model, means the window is UNKNOWN: the filter
+	// then never excludes the candidate on fit and never assumes a
+	// default size, and a switch to it carries
+	// ReasonContextWindowUnknown.
+	ContextWindow ContextWindowFn
 	// Stale is set by the refresher when the snapshot is older than
 	// its staleness horizon — the engine fails open (§R9.2): better an
 	// unrouted turn than a decision off dead signals.

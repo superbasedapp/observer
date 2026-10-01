@@ -4,6 +4,31 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.34.0-rc.11] — 2026-10-01
+
+Pre-release on the `edge` channel; everything since rc.10 (2026-09-30): the pricing-chain arc (every
+Tokenomics rate component reaches org and node pricing; context windows come from Tokenomics, not a
+hard-coded table), the org pricing-feed grade gate, OpenAI Ultrafast pricing, the compiled price table
+regenerated from the signed feed v9, and the tokcron approval flow. This is also the first release that
+carries the rc.10 public-CI fixes (mcprelay signal tests `//go:build !windows`, the taxgen theme
+selectors, `admission_verify_test.go` scrubbed from the public tree, `projectskills_identity_test.go`) to
+the public repository. Migrations: server 190-191 / PostgreSQL 0056-0057 (additive); no new agent
+migrations (head stays 147). On the org server run `observer-org upgrade preflight` and then
+`observer-org migrate` before starting the new image.
+
+Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
+- feat(pricing): the full Tokenomics rate set reaches org and node pricing - the reasoning rate, the per-request fee, the other-TTL cache write, image and audio rates, the fast multiplier and the grade ride the feed rows, `org_model_prices` (server 190 / pg 0056, nine nullable columns) and the signed org pricing document, all additive with presence semantics. An enrolled node's fast-mode premium now comes from the org rail. The reasoning rate is applied to separately tracked reasoning tokens; the request / image / audio / other-TTL rates are carried and shown in `observer pricing status`. A quoted `long_context_threshold` of 0 means FLAT on the feed, snapshot and org paths alike; prices are rounded to 1e-10 at every decode boundary.
+- feat(org-pricing): the feed's grade now gates auto-apply vs park: a row below the configured minimum grade parks in auto mode (unknown mode or grade parks), through the existing park / approve flow. Mode and minimum grade live in `org_pricing_feed_settings` (server 191 / pg 0057), seeded once from `[pricing_feed].mode` and then dashboard-owned: `GET/PUT /api/org/pricing/feed/settings` (`read:budgets` / `write:pricing`, audited), a Pricing-page card and an assistant tool.
+- fix(org-pricing): `observer-org pricing status` no longer fails on PostgreSQL (it wrote on a read-only store); a new read-only org lookup serves it.
+- feat(routing): model context windows come from the Tokenomics data (the org document's windows, then the feed, then the compiled snapshot), never a hard-coded prefix table. An unknown window never excludes a candidate and never assumes a default; a switch to such a model carries the new reason code `context_window_unknown` (labelled on the Routing page). The advisor's balloon detector sizes sessions against the same composition, keeping its model-tag guess only for models the data does not cover yet.
+- feat(cost): an OpenAI Ultrafast turn (`service_tier: "ultrafast"`) is priced as the exact `<model>-ultrafast` price key from any rung; with no such key it bills the standard rate and records a pricing warning, never the Fast multiplier. A request-side `service_tier: "fast"` now counts as Fast. Proxy path only for now (non-proxied Codex and offline re-pricers do not store the tier yet).
+- feat(pricing): the compiled price table is regenerated from the signed Tokenomics feed v9 (maker prices over resellers, Claude Sonnet 5.5 at $2 / $10, the GPT-6 and Grok long-context tiers, gpt-6-astra-ultrafast, gpt-5.6-cyber, gpt-6.1-sol, gpt-realtime-2.1) and now carries context windows for 86 models. Claude Sonnet 4.5 is FLAT (Anthropic states no long-context premium); xAI's inclusive ">= 200K tokens" tier is encoded as threshold 199999.
+- feat(model-pricing): Tokenomics migrations 0032 (every rate component, a context-window fallback, `long_context_flat`, presence fill from the same maker's next-best card) and 0033 (the xAI inclusive threshold); the evidence gate reads real vendor pages (table structure, tier sections, multiples of the base rate) - a by-the-README OpenAI + xAI capture now passes 87/87 and 64/64 rows.
+- feat(tokcron): a price proposal is approved by ONE file (`APPROVAL.md`, `APPROVE: yes`) and `approve.sh` then runs unattended; the clone-of-prod rehearsal and prod load only the approved overlay files with prod's own identity; the rehearsal base mirrors prod's catalog state (`snapshot-prod.sh`), and `refresh` refuses before review when the local "before" differs from prod's export; a same-value cache-write slot move is an acknowledgement, a changed value is still refused.
+- fix(deploy): a working-tree `observer-org` build no longer embeds OpenTofu provider caches (1.08 GB -> 112 MB): `make tofu-validate` keeps its data under `~/.cache/observer-tofu`, a test fails if a `.terraform` directory is embedded, and `build-orgserver` enforces a 200 MB budget. Release images were never affected (they build from `git archive`).
+- test: CI timing flakes fixed (pricing-policy deadline, config-grid wall clock); the cross-engine context-gauge fixtures run on a model id the compiled snapshot does not name, so the "no catalog" rows stay meaningful as the snapshot grows.
+
 ## [1.34.0-rc.10] — 2026-09-30
 
 `v1.34.0-rc.9` was tagged but never published: its release build failed (the web apps did not declare `lucide-react`, which the shared design kit imports) and its public snapshot did not compile (`release.sh` committed the unpatched `no_obs` stubs). rc.10 carries the same changes plus those two fixes.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"testing"
 	"time"
 
@@ -76,7 +77,18 @@ func TestSkillHistoryLeavesExistingEndpointsByteIdentical(t *testing.T) {
 	if after := render(detailPath); !bytes.Equal(beforeDetail, after) {
 		t.Errorf("GET %s changed after seeding skill history:\nbefore=%s\nafter =%s", detailPath, beforeDetail, after)
 	}
-	if after := render(guidancePath); !bytes.Equal(beforeGuidance, after) {
+	// usage_since is "now minus the usage window", recomputed per request, so
+	// two renders a second apart differ there without anything having changed
+	// (CI flake 2026-09-30: 10:27:36 vs 10:27:37). Compare everything else.
+	if after := render(guidancePath); !bytes.Equal(stripUsageSince(beforeGuidance), stripUsageSince(after)) {
 		t.Errorf("GET %s changed after seeding skill history:\nbefore=%s\nafter =%s", guidancePath, beforeGuidance, after)
 	}
+}
+
+// usageSinceField matches the clock-derived usage_since member of a guidance body.
+var usageSinceField = regexp.MustCompile(`"usage_since":"[^"]*"`)
+
+// stripUsageSince blanks usage_since so a byte comparison ignores the clock.
+func stripUsageSince(b []byte) []byte {
+	return usageSinceField.ReplaceAll(b, []byte(`"usage_since":""`))
 }

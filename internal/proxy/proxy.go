@@ -211,6 +211,11 @@ type CostTokens struct {
 	// fast turn and the dashboard's recorded cost would understate the
 	// real spend by 2×.
 	Fast bool
+	// ServiceTier is the provider processing tier that served the turn
+	// (APITurn.ServiceTier). The cost computer prices a tier sold as its
+	// own SKU (OpenAI Ultrafast) under that SKU's id when the price table
+	// has it; see cost.Engine.ResolveServiceTier.
+	ServiceTier string
 	// At is the turn's wall-clock timestamp, used by the cost computer
 	// to resolve time-of-day-dependent rates such as peak/off-peak.
 	// Zero means resolve at current/flat rates.
@@ -2955,6 +2960,7 @@ func (p *Proxy) applyCost(t *models.APITurn) {
 		CacheCreation:   t.CacheCreationTokens,
 		CacheCreation1h: t.CacheCreation1hTokens,
 		Fast:            t.Fast,
+		ServiceTier:     t.ServiceTier,
 		At:              t.Timestamp,
 	}); ok {
 		t.CostUSD = usd
@@ -3689,7 +3695,8 @@ func (p *Proxy) buildTurn(
 		// tier (resp.ServiceTier) are observable — adapters reading on-disk
 		// logs don't surface either selector reliably. Cost engine picks up
 		// b.Fast at insert time and applies FastMultiplier.
-		Fast: isFastTurn(req, resp.ServiceTier),
+		Fast:        isFastTurn(req, resp.ServiceTier),
+		ServiceTier: effectiveTier(req, resp.ServiceTier),
 	}
 }
 
@@ -3732,7 +3739,8 @@ func (p *Proxy) buildStreamTurn(
 		// See buildTurn() above. Anthropic speed:"fast" rides the request
 		// shape; OpenAI/Codex priority rides the served tier parsed from
 		// the SSE response.completed event (result.ServiceTier).
-		Fast: isFastTurn(req, result.ServiceTier),
+		Fast:        isFastTurn(req, result.ServiceTier),
+		ServiceTier: effectiveTier(req, result.ServiceTier),
 	}
 }
 

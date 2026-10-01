@@ -35,6 +35,7 @@ import (
 func OrgPriceRows(rows []orgcontract.PricingPolicyRow) []cost.OrgPrice {
 	out := make([]cost.OrgPrice, 0, len(rows))
 	for _, r := range rows {
+		r = r.RoundedRates()
 		p := QuotedRates(r)
 		p.LongContextThreshold, p.Set.LongContextThreshold = r.OrgThreshold()
 		peak, quoted := r.OrgPeak()
@@ -55,6 +56,7 @@ func OrgPriceRows(rows []orgcontract.PricingPolicyRow) []cost.OrgPrice {
 func FeedPriceRows(rows []orgcontract.PricingPolicyRow) []cost.OrgPrice {
 	out := make([]cost.OrgPrice, 0, len(rows))
 	for _, r := range rows {
+		r = r.RoundedRates()
 		p := QuotedRates(r)
 		if r.LongContextThreshold != nil {
 			p.LongContextThreshold, p.Set.LongContextThreshold = *r.LongContextThreshold, true
@@ -65,9 +67,10 @@ func FeedPriceRows(rows []orgcontract.PricingPolicyRow) []cost.OrgPrice {
 	return out
 }
 
-// QuotedRates copies a wire row's identity and its eleven nullable rates
-// (server migration 135: nil = not quoted, a set 0 = negotiated free) onto a
-// cost.OrgPrice. It is the part of the projection the org rail and the feed
+// QuotedRates copies a wire row's identity and its nullable rates (server
+// migration 135: nil = not quoted, a set 0 = negotiated free) onto a
+// cost.OrgPrice - the eleven original rates, the extended dimensions of
+// server migration 190 and the fast multiplier (a stated 0 = no fast tier). It is the part of the projection the org rail and the feed
 // share; the structural dimensions differ per rail and are left to the caller.
 func QuotedRates(r orgcontract.PricingPolicyRow) cost.OrgPrice {
 	p := cost.OrgPrice{
@@ -90,6 +93,14 @@ func QuotedRates(r orgcontract.PricingPolicyRow) cost.OrgPrice {
 		{r.LongContextCacheWritePerMTok, &p.LongContextCacheCreation, &p.Set.LongContextCacheCreation},
 		{r.LongContextCacheWrite1hPerMTok, &p.LongContextCacheCreation1h, &p.Set.LongContextCacheCreation1h},
 		{r.WebSearchPerRequest, &p.WebSearchPerRequest, &p.Set.WebSearchPerRequest},
+		{r.ReasoningPerMTok, &p.Reasoning, &p.Set.Reasoning},
+		{r.RequestFeeUSD, &p.RequestFee, &p.Set.RequestFee},
+		{r.CacheWriteOtherPerMTok, &p.CacheCreationOther, &p.Set.CacheCreationOther},
+		{r.ImageInputPerMTok, &p.ImageInput, &p.Set.ImageInput},
+		{r.ImageOutputPerImage, &p.ImageOutputPerImage, &p.Set.ImageOutputPerImage},
+		{r.AudioInputPerMTok, &p.AudioInput, &p.Set.AudioInput},
+		{r.AudioOutputPerMTok, &p.AudioOutput, &p.Set.AudioOutput},
+		{r.FastMultiplier, &p.FastMultiplier, &p.Set.FastMultiplier},
 	} {
 		if f.src != nil {
 			*f.dst, *f.set = *f.src, true

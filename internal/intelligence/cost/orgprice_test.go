@@ -512,8 +512,15 @@ func TestOrgPriceOverlayPresenceSemantics(t *testing.T) {
 			if out.FastMultiplier != tc.wantFast {
 				t.Errorf("FastMultiplier = %v, want %v", out.FastMultiplier, tc.wantFast)
 			}
-			if out.LongContextInput != 12 {
-				t.Errorf("unquoted LongContextInput = %v, want the seed's 12", out.LongContextInput)
+			// An unquoted long-context rate keeps the seed's - EXCEPT under a
+			// quoted FLAT threshold (0), which clears the whole tier, rates
+			// included (the 2026-09-30 ruling: no tier = flat).
+			wantLC := 12.0
+			if tc.org.Set.LongContextThreshold && tc.org.LongContextThreshold == 0 {
+				wantLC = 0
+			}
+			if out.LongContextInput != wantLC {
+				t.Errorf("unquoted LongContextInput = %v, want %v", out.LongContextInput, wantLC)
 			}
 		})
 	}

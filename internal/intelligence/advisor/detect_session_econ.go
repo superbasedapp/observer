@@ -61,10 +61,17 @@ var contextWindowTiers = []int64{200_000, 272_000, 500_000, 1_000_000}
 // snapped UP to the smallest standard tier that contains the session's
 // observed max window: capability inferred from data, never trusted to
 // the label alone (operator feedback 2026-06-10).
+//
+// The Tokenomics window (s.ContextWindow) is the base whenever the data
+// states one. The model-tag guess below is only the fallback for models
+// the Tokenomics data does not cover yet; the capture docs require a
+// window for every model, so it shrinks as coverage grows.
 func contextWindowOf(s *SessionFacts) int64 {
 	base := int64(200_000)
 	m := sessionModelOf(s)
 	switch {
+	case s.ContextWindow > 0:
+		base = s.ContextWindow
 	case strings.Contains(m, "[1m]"):
 		base = 1_000_000
 	case strings.HasPrefix(m, "gpt-5"):

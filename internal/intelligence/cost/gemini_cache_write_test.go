@@ -167,13 +167,17 @@ func TestCacheWriteRule_GeminiLongContextTier(t *testing.T) {
 
 // TestCacheWriteRule_NonGeminiFamiliesUnaffected sweeps the rest of the
 // baked table: no row outside the ruled families may gain a
-// cache-write rate it did not already carry. This is the blast-radius
-// guard — the rule table must stay a Gemini-only change until another
-// provider is grounded.
+// cache-write rate the composed seed row (the hand literal plus the
+// generated snapshot, before the rule) did not already carry. This is the
+// blast-radius guard — the rule table must stay a Gemini-only change until
+// another provider is grounded. It compares against the composed row, not
+// the bare literal, because a regenerated snapshot may legitimately quote a
+// maker's cache-write rate (feed v6: MiniMax, Alibaba) - that is data, not
+// the rule leaking.
 func TestCacheWriteRule_NonGeminiFamiliesUnaffected(t *testing.T) {
 	t.Parallel()
 	tbl := NewTable()
-	for key, raw := range defaultPricing {
+	for key := range defaultPricing {
 		if cacheWritePolicyFor(key) == cacheWriteAtInputRate {
 			continue
 		}
@@ -181,7 +185,7 @@ func TestCacheWriteRule_NonGeminiFamiliesUnaffected(t *testing.T) {
 		if !ok {
 			t.Fatalf("Lookup(%q) missed on a baked row", key)
 		}
-		if want := fillDefaults(raw); got.CacheCreation != want.CacheCreation ||
+		if want := fillDefaults(tbl.exact[key]); got.CacheCreation != want.CacheCreation ||
 			got.CacheCreation1h != want.CacheCreation1h ||
 			got.LongContextCacheCreation != want.LongContextCacheCreation ||
 			got.LongContextCacheCreation1h != want.LongContextCacheCreation1h {

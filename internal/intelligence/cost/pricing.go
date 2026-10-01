@@ -130,6 +130,32 @@ type Pricing struct {
 	// flat seed row and the newest entry of its dated timeline, so the two
 	// compare equal.
 	Peak *PeakRates `json:"peak,omitempty"`
+
+	// The EXTENDED rate dimensions the Tokenomics feed and the org rail carry
+	// since the 2026-09-30 pricing-chain contract (orgcontract.PricingPolicyRow
+	// field of the same meaning). Zero means NOT QUOTED on every one of them,
+	// so an entry authored before they existed behaves exactly as before.
+	//
+	// Reasoning is USD per 1M reasoning tokens. It IS applied by
+	// ComputeBreakdown: TokenBundle.Reasoning is tracked separately, and a
+	// quoted rate bills it instead of the output rate (zero = billed at the
+	// output rate, the long-standing rule).
+	//
+	// The rest are CARRIED, not applied: the token bundle has no dimension to
+	// multiply them by (no request count - a bundle may be an aggregate - no
+	// image, audio or other-TTL cache-write tokens), and inventing a count
+	// would be worse than leaving the rate on the table for the surfaces that
+	// show it. RequestFee is USD per API request; CacheCreationOther is USD
+	// per 1M cache-write tokens of a TTL other than 5m / 1h; ImageInput and
+	// AudioInput / AudioOutput are USD per 1M tokens of that modality;
+	// ImageOutputPerImage is USD per generated image.
+	Reasoning           float64 `json:"reasoning,omitempty"`
+	RequestFee          float64 `json:"request_fee,omitempty"`
+	CacheCreationOther  float64 `json:"cache_creation_other,omitempty"`
+	ImageInput          float64 `json:"image_input,omitempty"`
+	ImageOutputPerImage float64 `json:"image_output_per_image,omitempty"`
+	AudioInput          float64 `json:"audio_input,omitempty"`
+	AudioOutput         float64 `json:"audio_output,omitempty"`
 }
 
 // Table maps normalized model IDs to Pricing. Lookup is exact first; on miss,
@@ -762,14 +788,17 @@ func bakedInDefaultsOf(t *Table) map[string]Pricing {
 
 // grokBuild01 is xAI Grok Build 0.1's card (docs.x.ai/developers/pricing,
 // re-grounded 2026-09-23): $1 / $2 with a $0.20 cached-input rate, and the
-// >=200K long-context tier at $2 / $4 / $0.40. It is ONE shared value because
+// >=200K long-context tier at $2 / $4 / $0.40 (threshold 199999: the engine
+// bills the base rate while prompt <= threshold, so ">= 200K" is 199999 - every
+// xAI row below uses the same encoding, as the Tokenomics feed does). It is ONE
+// shared value because
 // three keys carry it - grok-build-0.1 itself, and grok-code-fast-1 plus the
 // grok-code family, which xAI auto-routes (and bills) to Build 0.1 since the
 // 2026-05-15 retirement. The dated timelines for those two keys end on this
 // SAME value, which is what keeps ValidateDated's flat == newest check exact.
 var grokBuild01 = Pricing{
 	Input: 1, Output: 2, CacheRead: 0.20,
-	LongContextThreshold: 200_000,
+	LongContextThreshold: 199_999,
 	LongContextInput:     2, LongContextOutput: 4, LongContextCacheRead: 0.40,
 }
 
@@ -1197,18 +1226,16 @@ var defaultPricing = map[string]Pricing{
 	// this row fixes (handoff/estimate priced sonnet-5 carries at $0).
 	"claude-sonnet-5": {Input: 2, Output: 10, CacheRead: 0.20, CacheCreation: 2.50, CacheCreation1h: 4, WebSearchPerRequest: 0.01},
 	// Anthropic — Sonnet 4 family. Pricing identical across 3.7 / 4 / 4.5 / 4.6.
-	// 4.5 + 4 (incl. dated -20250514) carry the 200K long-context tier:
+	// 4 (incl. dated -20250514) carries the 200K long-context tier:
 	// $6 input, $22.50 output, $0.60 cache_read, $7.50 cache_write 5m,
 	// $12 cache_write 1h. 4.6 is flat-rate per the 2026-04-29 snapshot;
 	// 3.7 is deprecated. The "claude-sonnet-4" family prefix carries the
 	// LC tier so future undated 4.x SKUs (other than 4-6) inherit it.
 	"claude-sonnet-4-6": {Input: 3, Output: 15, CacheRead: 0.30, CacheCreation: 3.75, CacheCreation1h: 6, WebSearchPerRequest: 0.01},
-	"claude-sonnet-4-5": {
-		Input: 3, Output: 15, CacheRead: 0.30, CacheCreation: 3.75, CacheCreation1h: 6, WebSearchPerRequest: 0.01,
-		LongContextThreshold: 200_000,
-		LongContextInput:     6, LongContextOutput: 22.50, LongContextCacheRead: 0.60,
-		LongContextCacheCreation: 7.50, LongContextCacheCreation1h: 12,
-	},
+	// 4.5 is FLAT: Anthropic's page (Tokenomics 0029's citation) states a
+	// 200K context window and no long-context premium, and the feed publishes
+	// it flat (model-pricing/deploy/prod/README.md, "Capture BEFORE").
+	"claude-sonnet-4-5": {Input: 3, Output: 15, CacheRead: 0.30, CacheCreation: 3.75, CacheCreation1h: 6, WebSearchPerRequest: 0.01},
 	"claude-sonnet-4-20250514": {
 		Input: 3, Output: 15, CacheRead: 0.30, CacheCreation: 3.75, CacheCreation1h: 6, WebSearchPerRequest: 0.01,
 		LongContextThreshold: 200_000,
@@ -1874,12 +1901,12 @@ var defaultPricing = map[string]Pricing{
 	// reprice).
 	"grok-4.7": {
 		Input: 2, Output: 6, CacheRead: 0.50,
-		LongContextThreshold: 200_000,
+		LongContextThreshold: 199_999,
 		LongContextInput:     4, LongContextOutput: 12, LongContextCacheRead: 1.00,
 	},
 	"grok-4.6": {
 		Input: 2, Output: 6, CacheRead: 0.50,
-		LongContextThreshold: 200_000,
+		LongContextThreshold: 199_999,
 		LongContextInput:     4, LongContextOutput: 12, LongContextCacheRead: 1.00,
 	},
 	// Flagship 2026-07 through 2026-08, superseded by 4.6 then 4.7; still
@@ -1888,7 +1915,7 @@ var defaultPricing = map[string]Pricing{
 	// rate cards differ.
 	"grok-4.5": {
 		Input: 2, Output: 6, CacheRead: 0.30,
-		LongContextThreshold: 200_000,
+		LongContextThreshold: 199_999,
 		LongContextInput:     4, LongContextOutput: 12, LongContextCacheRead: 0.60,
 	},
 	// Agentic-coding model (256k ctx). It is the REPLACEMENT for the
@@ -1901,19 +1928,19 @@ var defaultPricing = map[string]Pricing{
 	"grok-build":     {Input: 1, Output: 2, CacheRead: 0.20}, // family prefix for future build-x SKUs; no LC tier on a family row
 	"grok-4.3": {
 		Input: 1.25, Output: 2.50, CacheRead: 0.20,
-		LongContextThreshold: 200_000,
+		LongContextThreshold: 199_999,
 		LongContextInput:     2.50, LongContextOutput: 5.00, LongContextCacheRead: 0.40,
 	},
 	// covers the grok-4.20-0309-* family (reasoning / non-reasoning /
 	// multi-agent), which shares 4.3's rate card exactly.
 	"grok-4.20": {
 		Input: 1.25, Output: 2.50, CacheRead: 0.20,
-		LongContextThreshold: 200_000,
+		LongContextThreshold: 199_999,
 		LongContextInput:     2.50, LongContextOutput: 5.00, LongContextCacheRead: 0.40,
 	},
 	"grok-4-20": {
 		Input: 1.25, Output: 2.50, CacheRead: 0.20,
-		LongContextThreshold: 200_000,
+		LongContextThreshold: 199_999,
 		LongContextInput:     2.50, LongContextOutput: 5.00, LongContextCacheRead: 0.40,
 	},
 	// grok-code-fast-1 was RETIRED 2026-05-15 and xAI now auto-routes the id

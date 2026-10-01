@@ -30,6 +30,17 @@ const FeedSigningDomain = "sbo-pricing-feed-v1"
 // (state='known_free' in Tokenomics). The embedding flattens in JSON, so a Row
 // marshals as { ...the policy-row fields... , "grade": "..." } — exactly the
 // §A envelope shape.
+//
+// The 2026-09-30 pricing-chain contract's ADDITIVE fields - reasoning_per_mtok,
+// request_fee_usd, cache_write_other_per_mtok, image_input_per_mtok,
+// image_output_per_image, audio_input_per_mtok, audio_output_per_mtok and the
+// top-level fast_multiplier - live on the embedded policy row, so they reach
+// every history period too, with the same presence rule (absent = not quoted,
+// a present 0 = quoted free). A present long_context_threshold of 0 is an
+// explicit FLAT row (no long-context tier); an absent one is an old feed that
+// did not know the tier. Every consumer rounds the decoded floats to
+// orgcontract.PricePrecision (Tokenomics' NUMERIC(20,10)) at its projection
+// step - after Verify, never inside the signed bytes.
 type Row struct {
 	orgcontract.PricingPolicyRow
 	// Grade is the Tokenomics source grade (e.g. "verified", "observed") the

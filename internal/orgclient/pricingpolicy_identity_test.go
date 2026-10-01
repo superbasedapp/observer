@@ -512,7 +512,11 @@ func TestFetchPricingPolicyPersistenceFailurePreservesETagAndWitness(t *testing.
 	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
 		t.Fatalf("BEGIN IMMEDIATE: %v", err)
 	}
-	fetchCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	// The deadline must outlast the request, verify and identity steps that
+	// run BEFORE the save, so only the write-locked save can hit it (CI
+	// 2026-09-30: 200ms expired during the identity re-check on a loaded
+	// runner, which this rail rightly treats as a changed identity).
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	failed, fetchErr := c.FetchPricingPolicy(fetchCtx)
 	cancel()
 	if fetchErr == nil || failed.Body.Version != 1 || failed.Witness != first.Witness || failed.State != orgcontract.PricingFetchUnverified {

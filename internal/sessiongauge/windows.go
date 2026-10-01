@@ -134,6 +134,15 @@ func (w Windows) WindowFor(model string) int64 {
 	return 0
 }
 
+// Resolve is WindowFor in the (tokens, known) shape a consumer that must
+// tell "unknown" apart from a size wants (the routing capability filter's
+// routing.ContextWindowFn). known is false exactly when WindowFor returns 0:
+// the table does not name the model, and the caller must not assume a size.
+func (w Windows) Resolve(model string) (int64, bool) {
+	v := w.WindowFor(model)
+	return v, v > 0
+}
+
 // normalizeModel is the catalog's key normalization (trim + lowercase, the
 // org pricing package's NormalizeModel).
 func normalizeModel(m string) string {

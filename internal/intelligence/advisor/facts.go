@@ -83,6 +83,9 @@ type SessionFacts struct {
 	Model       string // session-level model (fallback when a row's is empty)
 	ProjectRoot string
 	Rows        []TurnFact
+	// ContextWindow is the model's context window from the Tokenomics
+	// data (Options.ContextWindow); zero = not known there.
+	ContextWindow int64
 	// Phase-2 enrichment.
 	Mix             ActionMix
 	CompressionOrig int64 // Σ api_turns.compression_original_bytes

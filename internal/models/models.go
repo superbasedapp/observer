@@ -1742,7 +1742,13 @@ type APITurn struct {
 	// request body carries "speed":"fast". Persisted to api_turns.fast
 	// via migration 035. The CostUSD on this row is the FastMultiplier-
 	// applied total computed at insert time.
-	Fast             bool
+	Fast bool
+	// ServiceTier is the provider processing tier that served the turn
+	// (OpenAI's response `service_tier`, else the requested one on a path
+	// with no response). CAPTURE-TIME ONLY — there is no api_turns column;
+	// the proxy hands it to the cost computer so a tier sold as its own SKU
+	// (OpenAI Ultrafast → `<model>-ultrafast`) is priced into CostUSD.
+	ServiceTier      string
 	CostUSD          float64
 	MessageCount     int
 	ToolUseCount     int

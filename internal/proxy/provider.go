@@ -609,13 +609,31 @@ func parseOpenAIResponse(body []byte) responseShape {
 //     under capacity/ramp limits and bill at the standard rate. servedTier
 //     wins; req.ServiceTier (what the client asked for) is the fallback
 //     for paths with no parsed response (errors).
+//
+// OpenAI documents both request spellings of Fast mode: "include the
+// `service_tier=fast` or `service_tier=priority` parameter ... The
+// response will show `service_tier=priority` regardless" (API reference,
+// responses create, fetched 2026-09-30) — so the request-side fallback
+// accepts "fast" too. "ultrafast" is NOT Fast: it is its own priced SKU,
+// resolved by the cost engine from APITurn.ServiceTier (effectiveTier).
 func isFastTurn(req requestShape, servedTier string) bool {
 	if req.Speed == "fast" {
 		return true
 	}
-	tier := servedTier
-	if tier == "" {
-		tier = req.ServiceTier
+	switch effectiveTier(req, servedTier) {
+	case "priority", "fast":
+		return true
 	}
-	return tier == "priority"
+	return false
+}
+
+// effectiveTier is the OpenAI processing tier to attribute a turn to: the
+// tier the response says served it (authoritative — OpenAI "may be
+// different from the value set in the parameter"), else the requested tier
+// for paths with no parsed response. Empty for Anthropic.
+func effectiveTier(req requestShape, servedTier string) string {
+	if servedTier != "" {
+		return servedTier
+	}
+	return req.ServiceTier
 }

@@ -137,7 +137,8 @@ func buildErrorTurn(
 		// non-2xx paths means an operator filtering "fast turns" sees the
 		// rejected ones too (e.g. a 429 on a fast request). No response to
 		// read the served tier from, so the request-side value is used.
-		Fast: isFastTurn(req, ""),
+		Fast:        isFastTurn(req, ""),
+		ServiceTier: effectiveTier(req, ""),
 	}
 }
 

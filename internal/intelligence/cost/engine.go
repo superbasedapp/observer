@@ -57,6 +57,10 @@ type Engine struct {
 	// the one process-wide engine is also the one owner of the cache; it is
 	// consulted only for a context marked with WithRowCache.
 	rows rowCache
+	// tierGaps remembers turns served at a tier-as-SKU service tier the
+	// table could not price (servicetier.go). Runtime state, not table
+	// state: it survives a rebuild so a gap stays visible until restart.
+	tierGaps tierGapSet
 }
 
 // NewEngine returns an engine seeded with baked-in defaults + user pricing
@@ -202,18 +206,20 @@ func (e *Engine) clock() time.Time {
 // PricingWarnings returns advisory problems found while building the
 // active table — malformed [intelligence.pricing.dated] rows that were
 // SKIPPED, and dated timelines whose newest entry disagrees with the
-// current flat rate. Empty when the table is clean. Pricing never fails
-// closed on these; the slice exists so a surface can tell the operator
-// their override was ignored instead of silently applied.
+// current flat rate — plus turns served at a tier-as-SKU service tier
+// (OpenAI Ultrafast) whose own SKU the table cannot price. Empty when
+// the table is clean. Pricing never fails closed on these; the slice
+// exists so a surface can tell the operator their override was ignored
+// (or a tier was under-priced) instead of silently applied.
 func (e *Engine) PricingWarnings() []string {
 	if e == nil {
 		return nil
 	}
-	w := e.warnings.Load()
-	if w == nil {
-		return nil
+	var out []string
+	if w := e.warnings.Load(); w != nil {
+		out = append(out, *w...)
 	}
-	return append([]string(nil), *w...)
+	return append(out, e.tierGaps.warnings()...)
 }
 
 // HasDatedPricing reports whether the active table carries any dated
@@ -567,7 +573,15 @@ func ComputeBreakdown(p Pricing, b TokenBundle) Breakdown {
 	// model's output rate. LC-adjusted along with regular output
 	// (reasoning is part of the model's output stream). Folded into
 	// OutputCost so the four bucket components still sum to AICost.
-	outputCost += float64(b.Reasoning) * rates.Output / 1_000_000
+	//
+	// A QUOTED reasoning rate (Pricing.Reasoning > 0, from the Tokenomics
+	// feed or the org rail) bills the separately-tracked reasoning tokens at
+	// that rate instead; it has no long-context tier of its own.
+	reasoningRate := rates.Output
+	if p.Reasoning > 0 {
+		reasoningRate = p.Reasoning
+	}
+	outputCost += float64(b.Reasoning) * reasoningRate / 1_000_000
 
 	// Fast-mode premium: scale every per-token bucket by FastMultiplier
 	// when the turn was served fast AND the model has a fast tier. A

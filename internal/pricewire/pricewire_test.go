@@ -3,6 +3,8 @@ package pricewire
 import (
 	"testing"
 
+	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 )
 
@@ -83,5 +85,52 @@ func TestOrgHistoryProjected(t *testing.T) {
 func TestPeakRatesToCostNil(t *testing.T) {
 	if PeakRatesToCost(nil) != nil {
 		t.Fatal("nil in must be nil out")
+	}
+}
+
+// TestExtendedRatesProjected: both rails carry the extended dimensions and the
+// fast multiplier with the plain presence rule, rounded to the 1e-10 grid, so
+// an enrolled node takes its fast premium from the org rail.
+func TestExtendedRatesProjected(t *testing.T) {
+	row := orgcontract.PricingPolicyRow{
+		Model: "m", InputPerMTok: rate(1), OutputPerMTok: rate(2),
+		ReasoningPerMTok: rate(0.1 + 0.2), RequestFeeUSD: rate(0), FastMultiplier: rate(2.5),
+		ImageOutputPerImage: rate(0.04),
+	}
+	for name, project := range map[string]func([]orgcontract.PricingPolicyRow) []cost.OrgPrice{
+		"org": OrgPriceRows, "feed": FeedPriceRows,
+	} {
+		p := project([]orgcontract.PricingPolicyRow{row})[0]
+		switch {
+		case !p.Set.Reasoning || p.Reasoning != 0.3:
+			t.Errorf("%s: reasoning = %v set=%v, want rounded 0.3", name, p.Reasoning, p.Set.Reasoning)
+		case !p.Set.RequestFee || p.RequestFee != 0:
+			t.Errorf("%s: a quoted-free request fee lost its presence", name)
+		case !p.Set.FastMultiplier || p.FastMultiplier != 2.5:
+			t.Errorf("%s: fast multiplier = %v set=%v, want 2.5", name, p.FastMultiplier, p.Set.FastMultiplier)
+		case !p.Set.ImageOutputPerImage || p.ImageOutputPerImage != 0.04:
+			t.Errorf("%s: image output = %v", name, p.ImageOutputPerImage)
+		case p.Set.AudioInput || p.Set.CacheCreationOther:
+			t.Errorf("%s: an unquoted dimension was marked quoted", name)
+		}
+	}
+}
+
+// TestOrgRailFastMultiplierReachesTheEngine: an enrolled node's fast premium
+// comes from the org rail's fast_multiplier, overriding the seed's, through
+// the real engine rebuild (the 2026-09-30 operator ruling).
+func TestOrgRailFastMultiplierReachesTheEngine(t *testing.T) {
+	e := cost.NewEngine(config.IntelligenceConfig{})
+	const model = "zz-chain-fast"
+	e.SetOrgRows(OrgPriceRows([]orgcontract.PricingPolicyRow{{
+		Model: model, InputPerMTok: rate(1), OutputPerMTok: rate(2), FastMultiplier: rate(3),
+	}}), 1, true, "binding")
+	p, ok := e.Lookup(model)
+	if !ok || p.FastMultiplier != 3 {
+		t.Fatalf("lookup = %+v ok=%v, want the org rail's fast multiplier 3", p, ok)
+	}
+	b, _ := e.ComputeBreakdown(model, cost.TokenBundle{Input: 1_000_000, Fast: true})
+	if b.InputCost != 3 {
+		t.Fatalf("fast input cost = %v, want 1 x 3", b.InputCost)
 	}
 }

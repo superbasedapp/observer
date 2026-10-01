@@ -114,6 +114,14 @@ type OrgPriceSet struct {
 	WebSearchPerRequest bool
 	FastMultiplier      bool
 
+	Reasoning           bool
+	RequestFee          bool
+	CacheCreationOther  bool
+	ImageInput          bool
+	ImageOutputPerImage bool
+	AudioInput          bool
+	AudioOutput         bool
+
 	LongContextThreshold bool
 	Peak                 bool
 }
@@ -144,6 +152,17 @@ func (p OrgPrice) overlay(base Pricing) Pricing {
 	out := p.overlayQuotedRates(base)
 	if p.Set.LongContextThreshold {
 		out.LongContextThreshold = p.LongContextThreshold
+		if p.LongContextThreshold == 0 {
+			// Quoted FLAT (the 2026-09-30 ruling: no published tier = flat,
+			// never "keep the built-in tier"): the base's long-context
+			// rates go too, so the resolved rate carries no dormant tier a
+			// display surface or a later overlay could mistake for a live
+			// one. A flat row cannot quote a long-context rate that means
+			// anything, so none is kept.
+			out.LongContextInput, out.LongContextOutput = 0, 0
+			out.LongContextCacheRead = 0
+			out.LongContextCacheCreation, out.LongContextCacheCreation1h = 0, 0
+		}
 	}
 	if p.Set.Peak {
 		if p.Peak == nil || len(p.Peak.Schedule.Windows) == 0 {
@@ -176,6 +195,13 @@ func (p OrgPrice) overlayQuotedRates(base Pricing) Pricing {
 		{p.Set.LongContextCacheCreation1h, &out.LongContextCacheCreation1h, p.LongContextCacheCreation1h},
 		{p.Set.WebSearchPerRequest, &out.WebSearchPerRequest, p.WebSearchPerRequest},
 		{p.Set.FastMultiplier, &out.FastMultiplier, p.FastMultiplier},
+		{p.Set.Reasoning, &out.Reasoning, p.Reasoning},
+		{p.Set.RequestFee, &out.RequestFee, p.RequestFee},
+		{p.Set.CacheCreationOther, &out.CacheCreationOther, p.CacheCreationOther},
+		{p.Set.ImageInput, &out.ImageInput, p.ImageInput},
+		{p.Set.ImageOutputPerImage, &out.ImageOutputPerImage, p.ImageOutputPerImage},
+		{p.Set.AudioInput, &out.AudioInput, p.AudioInput},
+		{p.Set.AudioOutput, &out.AudioOutput, p.AudioOutput},
 	} {
 		if f.set {
 			*f.dst = f.src
@@ -204,6 +230,13 @@ func (p OrgPrice) negativeQuotedRate() bool {
 		{p.Set.LongContextCacheCreation1h, p.LongContextCacheCreation1h},
 		{p.Set.WebSearchPerRequest, p.WebSearchPerRequest},
 		{p.Set.FastMultiplier, p.FastMultiplier},
+		{p.Set.Reasoning, p.Reasoning},
+		{p.Set.RequestFee, p.RequestFee},
+		{p.Set.CacheCreationOther, p.CacheCreationOther},
+		{p.Set.ImageInput, p.ImageInput},
+		{p.Set.ImageOutputPerImage, p.ImageOutputPerImage},
+		{p.Set.AudioInput, p.AudioInput},
+		{p.Set.AudioOutput, p.AudioOutput},
 	} {
 		if f.set && f.value < 0 {
 			return true

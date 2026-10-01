@@ -58,6 +58,7 @@ func newAdviseCmd() *cobra.Command {
 				GuardMode:     guardMode,
 				RoutingMode:   routingMode,
 				RoutingShadow: shadow,
+				ContextWindow: advisorContextWindows(cmd.Context(), store.New(database)),
 			})
 			if err != nil {
 				return err
@@ -195,4 +196,13 @@ func advisorPostureInputs(ctx context.Context, cfg config.Config, st *store.Stor
 		MinDecisions:    rep.MinDecisions,
 		Ready:           rep.ReadyToPromote,
 	}
+}
+
+// advisorContextWindows returns the Tokenomics context-window resolver the
+// advisor sizes sessions against: the same store composition routing and
+// the session gauge read (org rail, then feed, then compiled snapshot). A
+// load error degrades to the table's seed rung, never to a failure.
+func advisorContextWindows(ctx context.Context, st *store.Store) func(string) (int64, bool) {
+	windows, _ := st.LoadModelContextWindows(ctx)
+	return windows.Resolve
 }

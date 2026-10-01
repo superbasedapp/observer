@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "feed_version": 43,
-  "digest": "f04ea343ccff4965985783c504d1da57bd12af121c19620079cd585ed65aab14",
+  "digest": "34985dfc1c41ac1c34dcc2ef51f44e4ef25c6e8f28e84df51b9012f578dfdd56",
   "key_id": "pricing-feed-v1",
   "generated_at": "2026-09-27T12:00:00Z",
   "source": "observer-pricing-v43.json",
@@ -18,21 +18,24 @@
       "effective_from": "2025-09-05T16:00:00Z",
       "input_per_mtok": 0.56,
       "output_per_mtok": 1.68,
-      "cache_read_per_mtok": 0.07
+      "cache_read_per_mtok": 0.07,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek",
       "effective_from": "2025-09-29T10:00:00Z",
       "input_per_mtok": 0.28,
       "output_per_mtok": 0.42,
-      "cache_read_per_mtok": 0.028
+      "cache_read_per_mtok": 0.028,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek",
       "effective_from": "2026-04-24T00:00:00Z",
       "input_per_mtok": 0.14,
       "output_per_mtok": 0.28,
-      "cache_read_per_mtok": 0.0028
+      "cache_read_per_mtok": 0.0028,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek",
@@ -40,6 +43,7 @@
       "input_per_mtok": 0.22,
       "output_per_mtok": 0.66,
       "cache_read_per_mtok": 0.007,
+      "long_context_threshold": 0,
       "peak": {
         "input": 0.44,
         "output": 1.32,
@@ -84,6 +88,7 @@
       "input_per_mtok": 0.15,
       "output_per_mtok": 0.6,
       "cache_read_per_mtok": 0.003,
+      "long_context_threshold": 0,
       "peak": {
         "input": 0.3,
         "output": 1.2,
@@ -123,21 +128,24 @@
       "effective_from": "2025-09-05T16:00:00Z",
       "input_per_mtok": 0.56,
       "output_per_mtok": 1.68,
-      "cache_read_per_mtok": 0.07
+      "cache_read_per_mtok": 0.07,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek-chat",
       "effective_from": "2025-09-29T10:00:00Z",
       "input_per_mtok": 0.28,
       "output_per_mtok": 0.42,
-      "cache_read_per_mtok": 0.028
+      "cache_read_per_mtok": 0.028,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek-chat",
       "effective_from": "2026-04-24T00:00:00Z",
       "input_per_mtok": 0.14,
       "output_per_mtok": 0.28,
-      "cache_read_per_mtok": 0.0028
+      "cache_read_per_mtok": 0.0028,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek-chat",
@@ -145,6 +153,7 @@
       "input_per_mtok": 0.22,
       "output_per_mtok": 0.66,
       "cache_read_per_mtok": 0.007,
+      "long_context_threshold": 0,
       "peak": {
         "input": 0.44,
         "output": 1.32,
@@ -189,6 +198,7 @@
       "input_per_mtok": 0.15,
       "output_per_mtok": 0.6,
       "cache_read_per_mtok": 0.003,
+      "long_context_threshold": 0,
       "peak": {
         "input": 0.3,
         "output": 1.2,
@@ -228,21 +238,24 @@
       "effective_from": "2025-09-05T16:00:00Z",
       "input_per_mtok": 0.56,
       "output_per_mtok": 1.68,
-      "cache_read_per_mtok": 0.07
+      "cache_read_per_mtok": 0.07,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek-reasoner",
       "effective_from": "2025-09-29T10:00:00Z",
       "input_per_mtok": 0.28,
       "output_per_mtok": 0.42,
-      "cache_read_per_mtok": 0.028
+      "cache_read_per_mtok": 0.028,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek-reasoner",
       "effective_from": "2026-04-24T00:00:00Z",
       "input_per_mtok": 0.14,
       "output_per_mtok": 0.28,
-      "cache_read_per_mtok": 0.0028
+      "cache_read_per_mtok": 0.0028,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek-reasoner",
@@ -250,6 +263,7 @@
       "input_per_mtok": 0.22,
       "output_per_mtok": 0.66,
       "cache_read_per_mtok": 0.007,
+      "long_context_threshold": 0,
       "peak": {
         "input": 0.44,
         "output": 1.32,
@@ -294,6 +308,7 @@
       "input_per_mtok": 0.15,
       "output_per_mtok": 0.6,
       "cache_read_per_mtok": 0.003,
+      "long_context_threshold": 0,
       "peak": {
         "input": 0.3,
         "output": 1.2,
@@ -332,7 +347,8 @@
       "model": "deepseek-v4",
       "input_per_mtok": 0.14,
       "output_per_mtok": 0.28,
-      "cache_read_per_mtok": 0.0028
+      "cache_read_per_mtok": 0.0028,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek-v4",
@@ -340,6 +356,7 @@
       "input_per_mtok": 0.22,
       "output_per_mtok": 0.66,
       "cache_read_per_mtok": 0.007,
+      "long_context_threshold": 0,
       "peak": {
         "input": 0.44,
         "output": 1.32,
@@ -384,6 +401,7 @@
       "input_per_mtok": 0.15,
       "output_per_mtok": 0.6,
       "cache_read_per_mtok": 0.003,
+      "long_context_threshold": 0,
       "peak": {
         "input": 0.3,
         "output": 1.2,
@@ -422,7 +440,8 @@
       "model": "deepseek-v4-flash",
       "input_per_mtok": 0.14,
       "output_per_mtok": 0.28,
-      "cache_read_per_mtok": 0.0028
+      "cache_read_per_mtok": 0.0028,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek-v4-flash",
@@ -430,6 +449,7 @@
       "input_per_mtok": 0.22,
       "output_per_mtok": 0.66,
       "cache_read_per_mtok": 0.007,
+      "long_context_threshold": 0,
       "peak": {
         "input": 0.44,
         "output": 1.32,
@@ -474,6 +494,7 @@
       "input_per_mtok": 0.15,
       "output_per_mtok": 0.6,
       "cache_read_per_mtok": 0.003,
+      "long_context_threshold": 0,
       "peak": {
         "input": 0.3,
         "output": 1.2,
@@ -512,7 +533,8 @@
       "model": "deepseek-v4-pro",
       "input_per_mtok": 0.435,
       "output_per_mtok": 0.87,
-      "cache_read_per_mtok": 0.003625
+      "cache_read_per_mtok": 0.003625,
+      "long_context_threshold": 0
     },
     {
       "model": "deepseek-v4-pro",
@@ -520,6 +542,7 @@
       "input_per_mtok": 0.66,
       "output_per_mtok": 1.98,
       "cache_read_per_mtok": 0.022,
+      "long_context_threshold": 0,
       "peak": {
         "input": 1.32,
         "output": 3.96,
@@ -564,6 +587,7 @@
       "input_per_mtok": 0.66,
       "output_per_mtok": 1.98,
       "cache_read_per_mtok": 0.022,
+      "long_context_threshold": 0,
       "peak": {
         "input": 1.32,
         "output": 3.96,
@@ -602,67 +626,77 @@
       "model": "gemini-3.6-flash",
       "input_per_mtok": 1.5,
       "output_per_mtok": 7.5,
-      "cache_read_per_mtok": 0.15
+      "cache_read_per_mtok": 0.15,
+      "long_context_threshold": 0
     },
     {
       "model": "gemini-3.6-flash",
       "effective_from": "2026-08-15T00:00:00Z",
       "input_per_mtok": 0.75,
       "output_per_mtok": 3.75,
-      "cache_read_per_mtok": 0.075
+      "cache_read_per_mtok": 0.075,
+      "long_context_threshold": 0
     },
     {
       "model": "gemini-3.6-flash",
       "effective_from": "2027-01-01T00:00:00Z",
       "input_per_mtok": 1.5,
       "output_per_mtok": 7.5,
-      "cache_read_per_mtok": 0.15
+      "cache_read_per_mtok": 0.15,
+      "long_context_threshold": 0
     },
     {
       "model": "gemini-3.7-flash",
       "input_per_mtok": 0.75,
       "output_per_mtok": 3.75,
-      "cache_read_per_mtok": 0.075
+      "cache_read_per_mtok": 0.075,
+      "long_context_threshold": 0
     },
     {
       "model": "gemini-3.7-flash",
       "effective_from": "2027-01-01T00:00:00Z",
       "input_per_mtok": 1.5,
       "output_per_mtok": 7.5,
-      "cache_read_per_mtok": 0.15
+      "cache_read_per_mtok": 0.15,
+      "long_context_threshold": 0
     },
     {
       "model": "gemini-3.8-flash",
       "input_per_mtok": 0.75,
       "output_per_mtok": 3.75,
-      "cache_read_per_mtok": 0.075
+      "cache_read_per_mtok": 0.075,
+      "long_context_threshold": 0
     },
     {
       "model": "gemini-3.8-flash",
       "effective_from": "2027-01-01T00:00:00Z",
       "input_per_mtok": 1.5,
       "output_per_mtok": 7.5,
-      "cache_read_per_mtok": 0.15
+      "cache_read_per_mtok": 0.15,
+      "long_context_threshold": 0
     },
     {
       "model": "glm-5.3-flash",
       "input_per_mtok": 0.15,
       "output_per_mtok": 0.5,
-      "cache_read_per_mtok": 0.03
+      "cache_read_per_mtok": 0.03,
+      "long_context_threshold": 0
     },
     {
       "model": "glm-5.3-flash",
       "effective_from": "2026-09-07T15:00:00Z",
       "input_per_mtok": 0.075,
       "output_per_mtok": 0.25,
-      "cache_read_per_mtok": 0.015
+      "cache_read_per_mtok": 0.015,
+      "long_context_threshold": 0
     },
     {
       "model": "glm-5.3-flash",
       "effective_from": "2026-09-09T16:00:00Z",
       "input_per_mtok": 0.15,
       "output_per_mtok": 0.5,
-      "cache_read_per_mtok": 0.03
+      "cache_read_per_mtok": 0.03,
+      "long_context_threshold": 0
     },
     {
       "model": "gpt-5.6-luna",
@@ -671,6 +705,7 @@
       "cache_read_per_mtok": 0.1,
       "cache_write_per_mtok": 1.25,
       "cache_write_1h_per_mtok": 1.25,
+      "long_context_threshold": 0,
       "web_search_per_request": 0.01
     },
     {
@@ -730,6 +765,7 @@
       "cache_read_per_mtok": 0.25,
       "cache_write_per_mtok": 3.125,
       "cache_write_1h_per_mtok": 3.125,
+      "long_context_threshold": 0,
       "web_search_per_request": 0.01
     },
     {
@@ -753,7 +789,8 @@
       "model": "grok-code",
       "input_per_mtok": 0.2,
       "output_per_mtok": 1.5,
-      "cache_read_per_mtok": 0.02
+      "cache_read_per_mtok": 0.02,
+      "long_context_threshold": 0
     },
     {
       "model": "grok-code",
@@ -761,7 +798,7 @@
       "input_per_mtok": 1,
       "output_per_mtok": 2,
       "cache_read_per_mtok": 0.2,
-      "long_context_threshold": 200000,
+      "long_context_threshold": 199999,
       "long_context_input_per_mtok": 2,
       "long_context_output_per_mtok": 4,
       "long_context_cache_read_per_mtok": 0.4
@@ -770,7 +807,8 @@
       "model": "grok-code-fast-1",
       "input_per_mtok": 0.2,
       "output_per_mtok": 1.5,
-      "cache_read_per_mtok": 0.02
+      "cache_read_per_mtok": 0.02,
+      "long_context_threshold": 0
     },
     {
       "model": "grok-code-fast-1",
@@ -778,7 +816,7 @@
       "input_per_mtok": 1,
       "output_per_mtok": 2,
       "cache_read_per_mtok": 0.2,
-      "long_context_threshold": 200000,
+      "long_context_threshold": 199999,
       "long_context_input_per_mtok": 2,
       "long_context_output_per_mtok": 4,
       "long_context_cache_read_per_mtok": 0.4

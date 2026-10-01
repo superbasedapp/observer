@@ -22,12 +22,14 @@ const committedDir = "../../shared/lib"
 // canonical category, in both themes.
 const tokensPath = "../../shared/styles/tokens.css"
 
-// The two theme blocks in tokens.css. A category colour missing from
-// either one renders as the meta gray in that theme only — the kind of
+// The two theme blocks in tokens.css, matched on the LAST selector of each
+// selector list (`:root[data-theme="dark"],\n[data-theme-scope="dark"] {`)
+// so the block body starts right after the match. A category colour missing
+// from either one renders as the meta gray in that theme only — the kind of
 // half-applied change a single grep would miss.
 var themeSelectors = []string{
-	`:root[data-theme="dark"] {`,
-	`:root[data-theme="light"] {`,
+	`[data-theme-scope="dark"] {`,
+	`[data-theme-scope="light"] {`,
 }
 
 func generateOrFail(t *testing.T) []byte {

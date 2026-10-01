@@ -31,7 +31,20 @@ const EstimateVersion = "p1-v1"
 // wins, §24.5) and resolve the matched intent against the pipeline's
 // survivors → with no rule, apply privacy enforcement and modifier
 // demotions from the pipeline alone.
+//
+// A switch onto a candidate whose context window the snapshot's resolver
+// does not know carries ReasonContextWindowUnknown (§R11.2): the fit could
+// not be verified, and the decision says so rather than assuming a size.
 func Decide(p Policy, snap *Snapshot, in DecisionInput) Decision {
+	d := decide(p, snap, in)
+	if contextWindowUnverified(snap, in, d) {
+		d.ReasonCodes = append(d.ReasonCodes, ReasonContextWindowUnknown)
+	}
+	return d
+}
+
+// decide is Decide's evaluation, before the context-window annotation.
+func decide(p Policy, snap *Snapshot, in DecisionInput) Decision {
 	d := Decision{
 		OriginalModel:   in.Shape.Model,
 		SelectedModel:   in.Shape.Model,

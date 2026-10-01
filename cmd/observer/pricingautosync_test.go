@@ -206,7 +206,7 @@ func TestPricingAutoSyncOnce_FeedRowKeepsSeedLongContextTier(t *testing.T) {
 	cfg.Pricing.Feed.URL = "http://x"
 	engine := acquireProcessCostEngine(ctx, cfg, database, slog.Default())
 	seed, ok := engine.Lookup("grok-4.7")
-	if !ok || seed.LongContextThreshold != 200_000 || seed.LongContextInput != 4 {
+	if !ok || seed.LongContextThreshold != 199_999 || seed.LongContextInput != 4 {
 		t.Fatalf("precondition: seed grok-4.7 = %+v", seed)
 	}
 
@@ -234,7 +234,7 @@ func TestPricingAutoSyncOnce_FeedRowKeepsSeedLongContextTier(t *testing.T) {
 	if !ok || src != cost.PricingSourceOrg {
 		t.Fatalf("grok-4.7 after sync = %+v %q %v, want the feed row applied (source org)", p, src, ok)
 	}
-	if p.LongContextThreshold != 200_000 || p.LongContextInput != 4 || p.LongContextOutput != 12 || p.LongContextCacheRead != 1.00 {
+	if p.LongContextThreshold != 199_999 || p.LongContextInput != 4 || p.LongContextOutput != 12 || p.LongContextCacheRead != 1.00 {
 		t.Errorf("grok-4.7 >=200K tier cleared by a feed row that did not state it: %+v", p)
 	}
 	if bd, _ := engine.ComputeBreakdown("grok-4.7", cost.TokenBundle{Input: 300_000}); bd.InputCost < 1.2-1e-9 {

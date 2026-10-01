@@ -298,6 +298,41 @@ type pricingStatusReport struct {
 	FeedState      string                        `json:"feed_state,omitempty"`
 	ModelSources   map[string]string             `json:"model_sources"`
 	Economics      []pricingStatusModelEconomics `json:"economics,omitempty"`
+	// ExtendedRates lists, per model, the extended rate dimensions the
+	// effective table quotes (the 2026-09-30 pricing-chain contract). Only
+	// the reasoning rate is APPLIED by the cost math; the rest are CARRIED -
+	// the token bundle has no request, image, audio or other-TTL dimension
+	// to bill them against - and this is where an operator sees them.
+	ExtendedRates []pricingStatusExtendedRates `json:"extended_rates,omitempty"`
+}
+
+// pricingStatusExtendedRates is one model's quoted extended dimensions, as the
+// engine resolved them. A zero field is not quoted and is omitted.
+type pricingStatusExtendedRates struct {
+	Model                  string  `json:"model"`
+	ReasoningPerMTok       float64 `json:"reasoning_per_mtok,omitempty"`
+	RequestFeeUSD          float64 `json:"request_fee_usd,omitempty"`
+	CacheWriteOtherPerMTok float64 `json:"cache_write_other_per_mtok,omitempty"`
+	ImageInputPerMTok      float64 `json:"image_input_per_mtok,omitempty"`
+	ImageOutputPerImage    float64 `json:"image_output_per_image,omitempty"`
+	AudioInputPerMTok      float64 `json:"audio_input_per_mtok,omitempty"`
+	AudioOutputPerMTok     float64 `json:"audio_output_per_mtok,omitempty"`
+}
+
+// extendedRatesOf projects a resolved price onto the status line, reporting
+// ok=false when the model quotes none of the extended dimensions.
+func extendedRatesOf(model string, p cost.Pricing) (pricingStatusExtendedRates, bool) {
+	e := pricingStatusExtendedRates{
+		Model:                  model,
+		ReasoningPerMTok:       p.Reasoning,
+		RequestFeeUSD:          p.RequestFee,
+		CacheWriteOtherPerMTok: p.CacheCreationOther,
+		ImageInputPerMTok:      p.ImageInput,
+		ImageOutputPerImage:    p.ImageOutputPerImage,
+		AudioInputPerMTok:      p.AudioInput,
+		AudioOutputPerMTok:     p.AudioOutput,
+	}
+	return e, e != (pricingStatusExtendedRates{Model: model})
 }
 
 // buildPricingStatus composes the status report from config + the feed cache +
@@ -344,11 +379,14 @@ func buildPricingStatus(enabled, auto bool, url string, interval int, enrolled, 
 	if engine != nil {
 		if table := engine.Table(); table != nil {
 			for _, model := range table.Known() {
-				_, src, ok := engine.LookupWithSource(model)
+				p, src, ok := engine.LookupWithSource(model)
 				if !ok {
 					continue
 				}
 				rep.ModelSources[model] = pricingSourceLabel(src, feedActive)
+				if e, quoted := extendedRatesOf(model, p); quoted {
+					rep.ExtendedRates = append(rep.ExtendedRates, e)
+				}
 			}
 		}
 	}
@@ -413,6 +451,15 @@ func printPricingStatus(w io.Writer, rep pricingStatusReport) {
 		sort.Slice(rep.Economics, func(i, j int) bool { return rep.Economics[i].Model < rep.Economics[j].Model })
 		for _, e := range rep.Economics {
 			fmt.Fprintf(bw, "  %s\tcache=%s reasoning=%s\n", e.Model, pricingOrDash(e.CacheMode), pricingOrDash(e.ReasoningBilling))
+		}
+	}
+	if len(rep.ExtendedRates) > 0 {
+		fmt.Fprintln(bw, "Extended rates (reasoning applied; the rest carried, not billed)")
+		sort.Slice(rep.ExtendedRates, func(i, j int) bool { return rep.ExtendedRates[i].Model < rep.ExtendedRates[j].Model })
+		for _, e := range rep.ExtendedRates {
+			fmt.Fprintf(bw, "  %s	reasoning=%g request=%g cache_write_other=%g image_in=%g image_out/img=%g audio_in=%g audio_out=%g\n",
+				e.Model, e.ReasoningPerMTok, e.RequestFeeUSD, e.CacheWriteOtherPerMTok,
+				e.ImageInputPerMTok, e.ImageOutputPerImage, e.AudioInputPerMTok, e.AudioOutputPerMTok)
 		}
 	}
 	if len(rep.ModelSources) > 0 {

@@ -3855,6 +3855,10 @@ var forbiddenOrgControlPlaneTables = []string{
 	// signed GET /api/agent/pricing rail, it never pushes this. Pinned as a
 	// fixed expected member by TestForbiddenOrgControlPlaneTablesExpectedSet.
 	"org_pricing_feed_state",
+	// org_pricing_feed_settings (server migration 191) is the importer's
+	// dashboard-owned apply mode + grade threshold: admin config, server-side
+	// only, never pushed node -> server.
+	"org_pricing_feed_settings",
 	// control_schema_data_applied is the ONE-SHOT marker for the DATA
 	// retrofits in controlstore/schema.go (that file is replayed on every
 	// server start, so a data statement needs a marker or it runs forever);
@@ -4158,6 +4162,8 @@ func TestForbiddenOrgControlPlaneTablesExpectedSet(t *testing.T) {
 		// control-plane, server-side only, distributed to nodes only on the
 		// signed pricing rail — never pushed node -> server.
 		"org_pricing_feed_state",
+		// The importer's apply mode + grade threshold (server migration 191).
+		"org_pricing_feed_settings",
 		// The Postgres-only one-shot DATA marker for controlstore/schema.go's
 		// retrofits: server-side bookkeeping the node has no concept of.
 		"control_schema_data_applied",

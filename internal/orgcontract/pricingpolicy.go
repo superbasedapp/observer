@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 )
@@ -262,6 +263,40 @@ type PricingPolicyRow struct {
 	LongContextThresholdUnquoted bool `json:"long_context_threshold_unquoted,omitempty"`
 	PeakUnquoted                 bool `json:"peak_unquoted,omitempty"`
 
+	// The EXTENDED rate dimensions (server migration 190 / pg 0056, the
+	// 2026-09-30 pricing-chain contract). Every one follows the migration-135
+	// presence rule on BOTH rails: nil = not quoted (the node keeps its seed's
+	// value), a set value wins, a set 0 = quoted free. They are new, so unlike
+	// the threshold and the peak there is no legacy absence meaning to keep.
+	// Declared after the presence markers and omitempty, so a row that sets
+	// none marshals byte-identically to a document from before they existed,
+	// and a node verifies them through the raw received rows untouched.
+	//
+	// ReasoningPerMTok is USD per 1M reasoning tokens (absent = billed at the
+	// output rate). RequestFeeUSD is USD per API request.
+	// CacheWriteOtherPerMTok is USD per 1M cache-write tokens of a TTL other
+	// than the 5-minute and 1-hour ones. ImageInputPerMTok / AudioInputPerMTok
+	// / AudioOutputPerMTok are USD per 1M tokens of that modality;
+	// ImageOutputPerImage is USD per generated image.
+	ReasoningPerMTok       *float64 `json:"reasoning_per_mtok,omitempty"`
+	RequestFeeUSD          *float64 `json:"request_fee_usd,omitempty"`
+	CacheWriteOtherPerMTok *float64 `json:"cache_write_other_per_mtok,omitempty"`
+	ImageInputPerMTok      *float64 `json:"image_input_per_mtok,omitempty"`
+	ImageOutputPerImage    *float64 `json:"image_output_per_image,omitempty"`
+	AudioInputPerMTok      *float64 `json:"audio_input_per_mtok,omitempty"`
+	AudioOutputPerMTok     *float64 `json:"audio_output_per_mtok,omitempty"`
+	// FastMultiplier is the provider's latency-tier premium (dimensionless,
+	// e.g. 2.0), carried as DATA from the Tokenomics feed so an enrolled node
+	// takes its fast-mode premium from the org rail rather than from its
+	// built-in table. nil = not stated (the seed's stays), 0 = no fast tier.
+	FastMultiplier *float64 `json:"fast_multiplier,omitempty"`
+	// Grade is the Tokenomics source grade an imported row carried
+	// ("verified", "observed", ...), provenance only: no node arithmetic reads
+	// it. "" = not graded (an org-authored row). On the public feed the feed
+	// Row's own top-level Grade shadows this field (encoding/json picks the
+	// shallower one), so the feed's bytes are unchanged by it.
+	Grade string `json:"grade,omitempty"`
+
 	// History is this model's WHOLE dated timeline in the org's price book
 	// (lane R2-PRICING-2): every org_model_prices row for the model, ascending
 	// by effective_from, each projected exactly as a top-level row is (the
@@ -361,6 +396,74 @@ func Rate(v float64) *float64 { return &v }
 // sibling (server migration 175): a builder must be able to say "this
 // threshold IS set, to zero" - quoted flat - as distinct from nil.
 func Threshold(v int64) *int64 { return &v }
+
+// PricePrecision is the price-precision quantum every float decode boundary
+// on the pricing chain rounds to (the 2026-09-30 contract): Tokenomics stores
+// NUMERIC(20,10), so a rate that crossed a float64 wire is snapped back onto
+// that grid and two decoders of the same number never disagree in the 17th
+// significant digit.
+const PricePrecision = 1e-10
+
+// RoundPrice rounds v to [PricePrecision]. Non-finite values pass through
+// unchanged (validation, not rounding, is what refuses them).
+func RoundPrice(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return v
+	}
+	// Scale by the EXACT power of ten (1e10 is representable in float64) and
+	// divide back, so a value already on the grid (3, 0.3, 1.25e-7) survives
+	// bit-identically; multiplying by the inexact 1e-10 would not.
+	return math.Round(v*1e10) / 1e10
+}
+
+// roundPtr rounds a quoted rate in place of a copy; nil stays nil.
+func roundPtr(p *float64) *float64 {
+	if p == nil {
+		return nil
+	}
+	v := RoundPrice(*p)
+	return &v
+}
+
+// RoundedRates returns a copy of r with every quoted rate, the fast
+// multiplier, the peak variant's rates and every history period rounded to
+// [PricePrecision]. It is the ONE rounding step the decode boundaries call
+// (node feed and org-rail projection, org import); presence is preserved (a
+// nil stays nil, a quoted 0 stays a quoted 0). It never touches the signed
+// bytes: callers round AFTER verification.
+func (r PricingPolicyRow) RoundedRates() PricingPolicyRow {
+	out := r
+	for _, p := range []**float64{
+		&out.InputPerMTok, &out.OutputPerMTok, &out.CacheReadPerMTok,
+		&out.CacheWritePerMTok, &out.CacheWrite1hPerMTok,
+		&out.LongContextInputPerMTok, &out.LongContextOutputPerMTok,
+		&out.LongContextCacheReadPerMTok, &out.LongContextCacheWritePerMTok,
+		&out.LongContextCacheWrite1hPerMTok, &out.WebSearchPerRequest,
+		&out.ReasoningPerMTok, &out.RequestFeeUSD, &out.CacheWriteOtherPerMTok,
+		&out.ImageInputPerMTok, &out.ImageOutputPerImage,
+		&out.AudioInputPerMTok, &out.AudioOutputPerMTok, &out.FastMultiplier,
+	} {
+		*p = roundPtr(*p)
+	}
+	if r.Peak != nil {
+		pk := *r.Peak
+		for _, f := range []*float64{
+			&pk.Input, &pk.Output, &pk.CacheRead, &pk.CacheCreation, &pk.CacheCreation1h,
+			&pk.LongContextInput, &pk.LongContextOutput, &pk.LongContextCacheRead,
+			&pk.LongContextCacheCreation, &pk.LongContextCacheCreation1h,
+		} {
+			*f = RoundPrice(*f)
+		}
+		out.Peak = &pk
+	}
+	if r.History != nil {
+		out.History = make([]PricingPolicyRow, len(r.History))
+		for i, h := range r.History {
+			out.History[i] = h.RoundedRates()
+		}
+	}
+	return out
+}
 
 // PricingPolicyBody is the signed body.
 //

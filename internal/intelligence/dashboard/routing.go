@@ -467,10 +467,15 @@ func (s *Server) handleRoutingSimulate(w http.ResponseWriter, r *http.Request) {
 	mvReport := modelvalue.Build(facts, modelvalue.Options{})
 	turns := modelvalue.AssembleSimTurns(facts, modelvalue.Options{})
 	turns = modelvalue.FilterSimTurnsByKind(turns, routing.TurnKind(req.TurnKind))
+	// Context windows: the same Tokenomics window table the live
+	// router reads (store.LoadModelContextWindows); a load error leaves
+	// the seed rung, and an unknown window never excludes a candidate.
+	windows, _ := st.LoadModelContextWindows(r.Context())
 	snap := &routing.Snapshot{
-		GeneratedAt: facts.GeneratedAt,
-		Price:       facts.Price,
-		Tiers:       routing.NewTierResolver().Table(),
+		GeneratedAt:   facts.GeneratedAt,
+		Price:         facts.Price,
+		Tiers:         routing.NewTierResolver().Table(),
+		ContextWindow: windows.Resolve,
 	}
 	rep := routing.Simulate(policy, snap, turns, mvReport.EvidenceByKindTier())
 

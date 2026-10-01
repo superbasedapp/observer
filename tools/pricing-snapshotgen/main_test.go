@@ -349,3 +349,35 @@ func TestRunWith_RefusesReplay(t *testing.T) {
 		t.Fatalf("snapshot after v6 = %+v (err %v), want feed_version 6", doc, err)
 	}
 }
+
+// TestRowOfCarriesExtendedFastAndWindow (lane CHAIN): the generator copies the
+// extended rate dimensions, prefers the row's top-level fast_multiplier over
+// the Economics one, carries the context window flat, and keeps a present
+// threshold of 0 (FLAT) as a stated 0.
+func TestRowOfCarriesExtendedFastAndWindow(t *testing.T) {
+	econFast, window := 3.0, int64(1_000_000)
+	zero := int64(0)
+	r := pricingfeed.Row{
+		PricingPolicyRow: orgcontract.PricingPolicyRow{
+			Model: "m", InputPerMTok: orgcontract.Rate(1), ReasoningPerMTok: orgcontract.Rate(2),
+			RequestFeeUSD: orgcontract.Rate(0), FastMultiplier: orgcontract.Rate(2),
+			LongContextThreshold: &zero,
+		},
+		Economics: &pricingfeed.Economics{FastMultiplier: &econFast, ContextWindowTokens: &window},
+	}
+	got := rowOf(r)
+	switch {
+	case got.FastMultiplier == nil || *got.FastMultiplier != 2:
+		t.Errorf("fast = %v, want the top-level 2", got.FastMultiplier)
+	case got.ReasoningPerMTok == nil || *got.ReasoningPerMTok != 2 || got.RequestFeeUSD == nil || *got.RequestFeeUSD != 0:
+		t.Errorf("extended rates not carried: %+v", got)
+	case got.ContextWindowTokens == nil || *got.ContextWindowTokens != window:
+		t.Errorf("context window = %v, want %d", got.ContextWindowTokens, window)
+	case got.LongContextThreshold == nil || *got.LongContextThreshold != 0:
+		t.Errorf("a present flat threshold was not carried as 0: %v", got.LongContextThreshold)
+	}
+	r.FastMultiplier = nil
+	if got := rowOf(r); got.FastMultiplier == nil || *got.FastMultiplier != 3 {
+		t.Errorf("economics fallback fast = %v, want 3", got.FastMultiplier)
+	}
+}

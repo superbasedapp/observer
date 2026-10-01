@@ -1,6 +1,7 @@
 package cost
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -689,9 +690,9 @@ func TestTable_BareAnthropicFamilyRowsAndLegacyAlias(t *testing.T) {
 		// Sonnet 5 keeps the introductory $2/$10 through 2026-08-31.
 		{"guard: sonnet-5 keeps INTRO 2/10", "claude-sonnet-5", PricingSourceExact, 2, 10, 0.20, 2.50, 4, 0, 0},
 		{"guard: sonnet-4-6 exact", "claude-sonnet-4-6", PricingSourceExact, 3, 15, 0.30, 3.75, 6, 0, 0},
-		// Sonnet 4.5 keeps its per-SKU 200K long-context tier — the bare
-		// family row carries none and must not have displaced it.
-		{"guard: sonnet-4-5 keeps its LC tier", "claude-sonnet-4-5", PricingSourceExact, 3, 15, 0.30, 3.75, 6, 0, 200_000},
+		// Sonnet 4.5 is FLAT (Anthropic states no premium; the feed
+		// publishes it flat) and still resolves to its own exact row.
+		{"guard: sonnet-4-5 exact and flat", "claude-sonnet-4-5", PricingSourceExact, 3, 15, 0.30, 3.75, 6, 0, 0},
 		{"guard: sonnet-3-7 deprecated exact", "claude-sonnet-3-7", PricingSourceExact, 3, 15, 0.30, 3.75, 6, 0, 0},
 		{"guard: haiku-4-5 exact", "claude-haiku-4-5", PricingSourceExact, 1, 5, 0.10, 1.25, 2, 0, 0},
 		{"guard: haiku-4.5 dot variant exact", "claude-haiku-4.5", PricingSourceExact, 1, 5, 0.10, 1.25, 2, 0, 0},
@@ -879,7 +880,7 @@ func TestTable_CursorGrokPricing(t *testing.T) {
 	if !ok || src != PricingSourceExact {
 		t.Fatalf("direct xAI grok-4.6 = (%+v, %q, %v), want exact", xai, src, ok)
 	}
-	if xai.LongContextThreshold != 200_000 || xai.LongContextInput != 4 ||
+	if xai.LongContextThreshold != 199_999 || xai.LongContextInput != 4 ||
 		xai.LongContextOutput != 12 || xai.LongContextCacheRead != 1.00 {
 		t.Fatalf("direct xAI long-context tier changed: %+v", xai)
 	}
@@ -988,6 +989,12 @@ func TestTable_CodexFastModeMultiplier(t *testing.T) {
 func TestTable_OpenWeightFamilies2026Q2Pricing(t *testing.T) {
 	tb := NewTable()
 	floor := newLiteralTableAt(time.Now().UTC())
+	// explicitCacheWrite: models whose MAKER card quotes a cache-write rate
+	// (everything else here is the auto-cache shape, 0).
+	explicitCacheWrite := map[string]float64{
+		"minimax-m2.7": 0.375,
+		"minimax-m2.5": 0.375,
+	}
 	for _, tc := range []struct {
 		name, model     string
 		in, cacheR, out float64
@@ -1072,10 +1079,11 @@ func TestTable_OpenWeightFamilies2026Q2Pricing(t *testing.T) {
 			if diff := p.CacheRead - tc.cacheR; diff > 1e-9 || diff < -1e-9 {
 				t.Errorf("Lookup(%q) cache_read=%v want %v", tc.model, p.CacheRead, tc.cacheR)
 			}
-			// Auto-cache shape — no separate cache-write charge.
-			if p.CacheCreation != 0 {
-				t.Errorf("Lookup(%q) CacheCreation=%v want 0 (auto-cache shape)",
-					tc.model, p.CacheCreation)
+			// Auto-cache shape — no separate cache-write charge — unless the
+			// maker's own card quotes one (feed v6, migration 0031: MiniMax
+			// charges $0.375/M for a cache write on M2.5 and M2.7).
+			if want := explicitCacheWrite[tc.model]; math.Abs(p.CacheCreation-want) > 1e-9 {
+				t.Errorf("Lookup(%q) CacheCreation=%v want %v", tc.model, p.CacheCreation, want)
 			}
 		})
 	}
@@ -2125,9 +2133,9 @@ func TestTable_20260816Sweep(t *testing.T) {
 		if p.Input != 2 || p.Output != 6 || p.CacheRead != 0.50 {
 			t.Errorf("base rates: %+v want input=2 output=6 cacheRead=0.50", p)
 		}
-		if p.LongContextThreshold != 200_000 || p.LongContextInput != 4 ||
+		if p.LongContextThreshold != 199_999 || p.LongContextInput != 4 ||
 			p.LongContextOutput != 12 || p.LongContextCacheRead != 1.00 {
-			t.Errorf("long-context fields: %+v want threshold=200000 input=4 output=12 cacheRead=1.00", p)
+			t.Errorf("long-context fields: %+v want threshold=199999 input=4 output=12 cacheRead=1.00", p)
 		}
 	})
 

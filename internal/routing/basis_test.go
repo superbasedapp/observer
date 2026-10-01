@@ -195,6 +195,14 @@ func modelsOf(cs []CandidateState) []string {
 	return out
 }
 
+// mapWindows is a test ContextWindowFn over a literal table.
+func mapWindows(m map[string]int64) ContextWindowFn {
+	return func(model string) (int64, bool) {
+		v, ok := m[model]
+		return v, ok && v > 0
+	}
+}
+
 // TestCapabilityBasis_Rows — one row per capability behavior (§R11.2,
 // §R11.3): incumbent immunity, cross-shape denial, unknown shape,
 // context-window fit, subscription entitlement vs router slugs.
@@ -205,8 +213,10 @@ func TestCapabilityBasis_Rows(t *testing.T) {
 		name      string
 		candidate ModelCandidate
 		in        DecisionInput
-		want      bool
-		reason    ReasonCode
+		// windows backs Snapshot.ContextWindow; nil = no resolver.
+		windows map[string]int64
+		want    bool
+		reason  ReasonCode
 	}{
 		{
 			name:      "incumbent_never_denied",
@@ -229,16 +239,38 @@ func TestCapabilityBasis_Rows(t *testing.T) {
 			reason:    ReasonCapabilityHold,
 		},
 		{
-			name:      "context_window_overflow_denied",
+			name:      "context_window_known_too_small_denied",
 			candidate: ModelCandidate{Model: "claude-haiku-4-5", Tier: TierHaikuClass, Shape: ShapeAnthropic},
 			in:        DecisionInput{Shape: TurnShape{Model: "claude-opus-4-8", PromptTokens: 250_000}, Entitlement: EntitlementAPIKey},
+			windows:   map[string]int64{"claude-haiku-4-5": 200_000},
 			want:      false,
 			reason:    ReasonCapabilityHold,
 		},
 		{
-			name:      "context_window_fit_allowed",
+			name:      "context_window_known_fits_allowed",
 			candidate: ModelCandidate{Model: "claude-haiku-4-5", Tier: TierHaikuClass, Shape: ShapeAnthropic},
 			in:        DecisionInput{Shape: TurnShape{Model: "claude-opus-4-8", PromptTokens: 50_000}, Entitlement: EntitlementAPIKey},
+			windows:   map[string]int64{"claude-haiku-4-5": 200_000},
+			want:      true,
+		},
+		{
+			name:      "context_window_exact_fit_allowed",
+			candidate: ModelCandidate{Model: "claude-haiku-4-5", Tier: TierHaikuClass, Shape: ShapeAnthropic},
+			in:        DecisionInput{Shape: TurnShape{Model: "claude-opus-4-8", PromptTokens: 200_000}, Entitlement: EntitlementAPIKey},
+			windows:   map[string]int64{"claude-haiku-4-5": 200_000},
+			want:      true,
+		},
+		{
+			name:      "context_window_unknown_not_excluded",
+			candidate: ModelCandidate{Model: "claude-haiku-4-5", Tier: TierHaikuClass, Shape: ShapeAnthropic},
+			in:        DecisionInput{Shape: TurnShape{Model: "claude-opus-4-8", PromptTokens: 5_000_000}, Entitlement: EntitlementAPIKey},
+			windows:   map[string]int64{"some-other-model": 100},
+			want:      true,
+		},
+		{
+			name:      "context_window_no_resolver_not_excluded",
+			candidate: ModelCandidate{Model: "claude-haiku-4-5", Tier: TierHaikuClass, Shape: ShapeAnthropic},
+			in:        DecisionInput{Shape: TurnShape{Model: "claude-opus-4-8", PromptTokens: 5_000_000}, Entitlement: EntitlementAPIKey},
 			want:      true,
 		},
 		{
@@ -265,7 +297,11 @@ func TestCapabilityBasis_Rows(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, reason := cb.Allow(tc.candidate, BasisInput{In: tc.in})
+			bin := BasisInput{In: tc.in}
+			if tc.windows != nil {
+				bin.Snap = &Snapshot{ContextWindow: mapWindows(tc.windows)}
+			}
+			got, reason := cb.Allow(tc.candidate, bin)
 			if got != tc.want {
 				t.Fatalf("Allow = %v, want %v", got, tc.want)
 			}

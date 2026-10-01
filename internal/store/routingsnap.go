@@ -15,6 +15,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/routing"
+	"github.com/marmutapp/superbased-observer/internal/sessiongauge"
 )
 
 // RoutingRefresher assembles routing.Snapshot from store signals on a
@@ -80,6 +81,12 @@ type slowSignals struct {
 	budgetBurn []routing.BudgetBurnState
 	latencyP75 map[string]int64
 	window     *routing.WindowState
+	// windows is the Tokenomics context-window table
+	// (LoadModelContextWindows) the capability filter's fit check reads
+	// through Snapshot.ContextWindow. Refreshed on the slow tick so a
+	// feed sync or an org pricing delivery reaches the live router
+	// without a restart.
+	windows sessiongauge.Windows
 }
 
 // Breaker thresholds (§R12.3). Passive: computed from the observed
@@ -254,6 +261,7 @@ func (r *RoutingRefresher) publish(ctx context.Context) error {
 		LatencyP75Ms:     r.slow.latencyP75,
 		BudgetBurn:       r.slow.budgetBurn,
 		Window:           r.slow.window,
+		ContextWindow:    r.slow.windows.Resolve,
 		SessionCacheRead: cacheReads,
 		Sessions:         sessions,
 	}
@@ -276,7 +284,15 @@ func (r *RoutingRefresher) refreshSlow(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("store.RoutingRefresher: window: %w", err)
 	}
-	r.slow = slowSignals{budgetBurn: burn, latencyP75: lat, window: win}
+	// The window table degrades rather than failing the slow refresh: a
+	// load error on both runtime rungs keeps the last good table (an
+	// unknown window never excludes a candidate, so an empty one is the
+	// fail-open direction, never a wrong exclusion).
+	windows, werr := r.store.LoadModelContextWindows(ctx)
+	if werr != nil && r.slow.windows != nil {
+		windows = r.slow.windows
+	}
+	r.slow = slowSignals{budgetBurn: burn, latencyP75: lat, window: win, windows: windows}
 	return nil
 }
 

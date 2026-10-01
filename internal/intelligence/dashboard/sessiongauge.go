@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmutapp/superbased-observer/internal/pricingfeed"
 	"github.com/marmutapp/superbased-observer/internal/sessiongauge"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -41,13 +40,17 @@ type windowCache struct {
 //  2. the economics.context_window_tokens of the node's own persisted
 //     pricing feed (store.LoadPricingFeed, agent migration 113), which a
 //     STANDALONE node accepts (an enrolled node ignores the public feed,
-//     orgpricing.FeedApplies, so its stored feed is at most stale).
+//     orgpricing.FeedApplies, so its stored feed is at most stale);
+//  3. the compiled Tokenomics snapshot's windows (the seed rung).
+//
+// The composition is store.LoadModelContextWindows, the one owner the
+// routing capability filter reads too.
 //
 // This mirrors the pricing precedence: an enrolled node's org rail is its
 // one authority and outranks the public feed. A node with neither has an
 // empty table, and every model's window reads as unknown. Each source's load
-// error degrades that source to empty; both failing keeps the last good
-// table (or empty), never an error.
+// error degrades that source to empty; both runtime sources failing keeps the
+// last good table (or the seed rung alone), never an error.
 func (s *Server) modelWindows(ctx context.Context) sessiongauge.Windows {
 	s.windows.mu.Lock()
 	defer s.windows.mu.Unlock()
@@ -56,26 +59,11 @@ func (s *Server) modelWindows(ctx context.Context) sessiongauge.Windows {
 		return s.windows.windows
 	}
 	s.windows.loadedAt = now
-	st := store.New(s.db())
-	var orgWindows, feedWindows sessiongauge.Windows
-	orgPricing, orgErr := st.LoadOrgPricing(ctx)
-	if orgErr == nil {
-		orgWindows = sessiongauge.DocWindows(orgPricing.Document.ContextWindows)
-	}
-	feed, feedErr := st.LoadPricingFeed(ctx)
-	if feedErr == nil {
-		econ := map[string]*pricingfeed.Economics{}
-		for _, row := range feed.Envelope.Rows {
-			if row.Economics != nil {
-				econ[row.Model] = row.Economics
-			}
-		}
-		feedWindows = sessiongauge.ModelWindows(econ)
-	}
-	if orgErr != nil && feedErr != nil {
+	windows, err := store.New(s.db()).LoadModelContextWindows(ctx)
+	if err != nil && s.windows.windows != nil {
 		return s.windows.windows
 	}
-	s.windows.windows = sessiongauge.MergeWindows(orgWindows, feedWindows)
+	s.windows.windows = windows
 	return s.windows.windows
 }
 

@@ -3768,3 +3768,70 @@ func TestProxy_CompressInSessionForTool_ReceivesResolvedTool(t *testing.T) {
 		t.Errorf("provider: got %q", comp.class.Provider)
 	}
 }
+
+// TestBuildTurn_ServiceTierCapture pins the Ultrafast capture: the SERVED
+// service_tier (OpenAI: "a response served through it will show
+// `service_tier=ultrafast`") lands on APITurn.ServiceTier for the cost
+// engine's tier-as-SKU rule, the request tier is the fallback when no
+// response tier is parsed, and Ultrafast is never flagged Fast (it is its
+// own priced SKU, so the Fast multiplier must not also apply). Request
+// `service_tier:"fast"` is Fast mode per OpenAI's reference ("include the
+// `service_tier=fast` or `service_tier=priority` parameter").
+func TestBuildTurn_ServiceTierCapture(t *testing.T) {
+	t.Parallel()
+	p := &Proxy{now: func() time.Time { return time.Unix(0, 0) }}
+	for _, tc := range []struct {
+		name, reqTier, respTier string
+		wantTier                string
+		wantFast                bool
+	}{
+		{"served ultrafast", "ultrafast", "ultrafast", "ultrafast", false},
+		{"ultrafast downgraded to default", "ultrafast", "default", "default", false},
+		{"requested ultrafast, no served tier", "ultrafast", "", "ultrafast", false},
+		{"served priority", "priority", "priority", "priority", true},
+		{"requested fast, served priority", "fast", "priority", "priority", true},
+		{"requested fast, no served tier", "fast", "", "fast", true},
+		{"unknown tier", "hyperdrive", "hyperdrive", "hyperdrive", false},
+		{"no tier", "", "", "", false},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := requestShape{Model: "gpt-6-astra", ServiceTier: tc.reqTier}
+			body := `{"model":"gpt-6-astra","usage":{"input_tokens":10,"output_tokens":5}}`
+			if tc.respTier != "" {
+				body = `{"model":"gpt-6-astra","service_tier":"` + tc.respTier + `","usage":{"input_tokens":10,"output_tokens":5}}`
+			}
+			turn := p.buildTurn(models.ProviderOpenAI, req, []byte(body), http.Header{}, time.Unix(0, 0), "")
+			if turn.ServiceTier != tc.wantTier || turn.Fast != tc.wantFast {
+				t.Errorf("buildTurn = (tier %q, fast %v), want (%q, %v)", turn.ServiceTier, turn.Fast, tc.wantTier, tc.wantFast)
+			}
+			inner := `{"type":"response.completed","response":{"id":"r1","model":"gpt-6-astra","status":"completed",`
+			if tc.respTier != "" {
+				inner += `"service_tier":"` + tc.respTier + `",`
+			}
+			inner += `"usage":{"input_tokens":10,"output_tokens":5}}}`
+			st := p.buildStreamTurn(models.ProviderOpenAI, req, []byte("event: response.completed\ndata: "+inner+"\n\n"), http.Header{}, time.Unix(0, 0), "")
+			if st.ServiceTier != tc.wantTier || st.Fast != tc.wantFast {
+				t.Errorf("buildStreamTurn = (tier %q, fast %v), want (%q, %v)", st.ServiceTier, st.Fast, tc.wantTier, tc.wantFast)
+			}
+		})
+	}
+	errTurn := buildErrorTurn(models.ProviderOpenAI, requestShape{Model: "gpt-6-astra", ServiceTier: "ultrafast"},
+		[]byte(`{"error":{"message":"boom"}}`), http.Header{}, 500, time.Unix(0, 0), "")
+	if errTurn.ServiceTier != "ultrafast" || errTurn.Fast {
+		t.Errorf("buildErrorTurn = (tier %q, fast %v), want (ultrafast, false)", errTurn.ServiceTier, errTurn.Fast)
+	}
+}
+
+// TestApplyCost_ThreadsServiceTier pins the wiring from APITurn.ServiceTier
+// to CostTokens.ServiceTier, the input the cost engine's tier-as-SKU rule
+// (cost.Engine.ResolveServiceTier) needs to price an Ultrafast turn.
+func TestApplyCost_ThreadsServiceTier(t *testing.T) {
+	fake := &fakeCostComputer{rate: 0.01}
+	p := &Proxy{cost: fake}
+	p.applyCost(&models.APITurn{Model: "gpt-6-astra", InputTokens: 1000, ServiceTier: "ultrafast"})
+	if fake.lastTokens.ServiceTier != "ultrafast" {
+		t.Errorf("applyCost.ServiceTier = %q, want ultrafast", fake.lastTokens.ServiceTier)
+	}
+}

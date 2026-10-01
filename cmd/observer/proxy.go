@@ -629,6 +629,10 @@ func (a costEngineAdapter) Compute(model string, t proxy.CostTokens) (float64, b
 	if a.e == nil {
 		return 0, false
 	}
+	// A tier sold as its own SKU (OpenAI Ultrafast) is priced under that
+	// SKU when the table has it; otherwise the model's own rate applies and
+	// the engine records a PricingWarnings entry (TierUnpriced).
+	model, _ = a.e.ResolveServiceTier(model, t.ServiceTier)
 	return a.e.ComputeAt(model, cost.TokenBundle{
 		Input:           t.Input,
 		Output:          t.Output,

@@ -1649,6 +1649,7 @@ func newStartCmd() *cobra.Command {
 						GuardMode:     guardMode,
 						RoutingMode:   routingMode,
 						RoutingShadow: shadow,
+						ContextWindow: advisorContextWindows(gctx, store.New(adb)),
 					})
 					if rerr == nil {
 						rerr = advisor.SaveDigest(gctx, adb, rep, 5)

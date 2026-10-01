@@ -653,7 +653,6 @@ func TestTable_LongContextDefaults(t *testing.T) {
 		lcIn, lcOut, lcCR float64
 		lcCC, lcCC1h      float64 // 0 if not applicable (non-Anthropic)
 	}{
-		{"claude-sonnet-4-5", 200_000, 6, 22.50, 0.60, 7.50, 12},
 		{"claude-sonnet-4-20250514", 200_000, 6, 22.50, 0.60, 7.50, 12},
 		{"claude-sonnet-4", 200_000, 6, 22.50, 0.60, 7.50, 12},
 		// OpenAI gpt-5.x LC rule is 2× input, 1.5× output above 272K

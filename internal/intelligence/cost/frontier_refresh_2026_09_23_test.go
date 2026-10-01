@@ -56,15 +56,15 @@ func TestFrontierRefresh_2026_09_23(t *testing.T) {
 		// xAI. The flagship needed a row for the TIER, not the base rate: the
 		// `grok` family prefix already answered $2/$6/$0.50 but must never
 		// carry the doubled >=200K tier.
-		{"grok 4.7", "grok-4.7", 2, 0.50, 6, 200_000, PricingSourceExact},
-		{"grok 4.5 published cache rate", "grok-4.5", 2, 0.30, 6, 200_000, PricingSourceExact},
-		{"grok 4.3 published cache rate", "grok-4.3", 1.25, 0.20, 2.50, 200_000, PricingSourceExact},
-		{"grok build 0.1 published cache rate", "grok-build-0.1", 1, 0.20, 2, 200_000, PricingSourceExact},
+		{"grok 4.7", "grok-4.7", 2, 0.50, 6, 199_999, PricingSourceExact},
+		{"grok 4.5 published cache rate", "grok-4.5", 2, 0.30, 6, 199_999, PricingSourceExact},
+		{"grok 4.3 published cache rate", "grok-4.3", 1.25, 0.20, 2.50, 199_999, PricingSourceExact},
+		{"grok build 0.1 published cache rate", "grok-build-0.1", 1, 0.20, 2, 199_999, PricingSourceExact},
 		// The exact Grok 4.20 vendor API ids (research-xai.md) resolve to the
 		// `grok-4.20` row, which carries their shared card AND the 200K tier.
-		{"grok 4.20 reasoning exact id", "grok-4.20-0309-reasoning", 1.25, 0.20, 2.50, 200_000, PricingSourceFamily},
-		{"grok 4.20 non-reasoning exact id", "grok-4.20-0309-non-reasoning", 1.25, 0.20, 2.50, 200_000, PricingSourceFamily},
-		{"grok 4.20 multi-agent exact id", "grok-4.20-multi-agent-0309", 1.25, 0.20, 2.50, 200_000, PricingSourceFamily},
+		{"grok 4.20 reasoning exact id", "grok-4.20-0309-reasoning", 1.25, 0.20, 2.50, 199_999, PricingSourceFamily},
+		{"grok 4.20 non-reasoning exact id", "grok-4.20-0309-non-reasoning", 1.25, 0.20, 2.50, 199_999, PricingSourceFamily},
+		{"grok 4.20 multi-agent exact id", "grok-4.20-multi-agent-0309", 1.25, 0.20, 2.50, 199_999, PricingSourceFamily},
 		{"grok family carries no long-context tier", "grok", 2, 0.50, 6, 0, PricingSourceExact},
 		{"an unknown grok SKU inherits the base tier only", "grok-9.9", 2, 0.50, 6, 0, PricingSourceFamily},
 
@@ -85,7 +85,7 @@ func TestFrontierRefresh_2026_09_23(t *testing.T) {
 		{"swe-1.7 medium cache read is unquoted, not defaulted", "swe-1-7-medium", 0.50, 0, 2.50, 0, PricingSourceExact},
 		// grok-code-fast-1 is retired; its CURRENT rate is the replacement's
 		// (review finding 6). History is pinned in the dated test below.
-		{"retired grok-code-fast-1 bills the replacement today", "grok-code-fast-1", 1, 0.20, 2, 200_000, PricingSourceExact},
+		{"retired grok-code-fast-1 bills the replacement today", "grok-code-fast-1", 1, 0.20, 2, 199_999, PricingSourceExact},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, src, ok := tb.LookupWithSource(tc.model)

@@ -50,6 +50,11 @@ type Options struct {
 	// store.AdviseShadowSignal (one gate owner; cheap COUNT early-out
 	// when no advise history exists). Nil = detector stays silent.
 	RoutingShadow *ShadowSignal
+	// ContextWindow resolves a model's context window from the Tokenomics
+	// data (callers pass store.LoadModelContextWindows(...).Resolve, the
+	// same composition routing reads). Nil, or an unknown model, falls
+	// back to the observed-window inference in contextWindowOf.
+	ContextWindow func(model string) (int64, bool)
 	// Now overrides time.Now for deterministic tests.
 	Now func() time.Time
 }
@@ -125,6 +130,13 @@ func Run(ctx context.Context, db *sql.DB, opts Options) (Report, error) {
 	f.GuardMode = opts.GuardMode
 	f.RoutingMode = opts.RoutingMode
 	f.RoutingShadow = opts.RoutingShadow
+	if opts.ContextWindow != nil {
+		for i := range f.Sessions {
+			if w, ok := opts.ContextWindow(sessionModelOf(&f.Sessions[i])); ok && w > 0 {
+				f.Sessions[i].ContextWindow = w
+			}
+		}
+	}
 
 	th := DefaultThresholds()
 	if opts.Thresholds != nil {

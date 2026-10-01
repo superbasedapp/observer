@@ -187,6 +187,10 @@ func TestContextWindowOf(t *testing.T) {
 	mk := func(model string, maxWin int64) *SessionFacts {
 		return &SessionFacts{Model: model, Rows: []TurnFact{{Model: model, Input: maxWin}}}
 	}
+	withWindow := func(s *SessionFacts, w int64) *SessionFacts {
+		s.ContextWindow = w
+		return s
+	}
 	cases := []struct {
 		name string
 		s    *SessionFacts
@@ -197,6 +201,10 @@ func TestContextWindowOf(t *testing.T) {
 		{"plain claude small", mk("claude-opus-4-7", 120_000), 200_000},
 		{"untagged 1M-beta snaps up", mk("claude-opus-4-7", 646_000), 1_000_000},
 		{"untagged mid snaps to 272K", mk("claude-sonnet-4-6", 250_000), 272_000},
+		// The Tokenomics window, when known, replaces the model-tag guess.
+		{"tokenomics window wins over the tag", withWindow(mk("gpt-5.4", 50_000), 400_000), 400_000},
+		{"tokenomics 1M on a plain id", withWindow(mk("claude-sonnet-5-5", 50_000), 1_000_000), 1_000_000},
+		{"observed above tokenomics still snaps up", withWindow(mk("claude-opus-4-7", 646_000), 500_000), 1_000_000},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

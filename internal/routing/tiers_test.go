@@ -378,13 +378,7 @@ func TestTierTable_SonnetFiveFiveFamilyFallback(t *testing.T) {
 	if m, ok := tbl.Representative(ShapeAnthropic, TierSonnetClass); !ok || m != "claude-sonnet-4-6" {
 		t.Errorf("Representative(anthropic, sonnet-class) = (%q,%v), want (claude-sonnet-4-6, true) - unchanged", m, ok)
 	}
-	// Context window: 1M per Anthropic's models overview; Sonnet 5 keeps
-	// the conservative bare-"claude" seed (a fit check never passes on
-	// optimism).
-	if got := contextWindowTokens("claude-sonnet-5-5"); got != 1_000_000 {
-		t.Errorf("contextWindowTokens(claude-sonnet-5-5) = %d, want 1000000", got)
-	}
-	if got := contextWindowTokens("claude-sonnet-5"); got != 200_000 {
-		t.Errorf("contextWindowTokens(claude-sonnet-5) = %d, want 200000 (conservative claude seed)", got)
-	}
+	// Context windows are NOT a routing-package fact: they come from the
+	// Tokenomics window table through Snapshot.ContextWindow (see
+	// TestCapabilityBasis_ContextWindowFit).
 }
