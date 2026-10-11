@@ -80,12 +80,12 @@ jobs:
       matrix:
         distro: [minimal, developer, managed, full]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -105,13 +105,13 @@ jobs:
           SBO_DISTRO_PROOF="$GITHUB_WORKSPACE/web-proof/web-proof.json" npm run build
           test -f dist/index.html
           test -f "$GITHUB_WORKSPACE/web-proof/web-proof.modules.json"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: web-proof-${{ matrix.distro }}
           path: web-proof/
           retention-days: 3
           if-no-files-found: error
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: web-dist-${{ matrix.distro }}
           path: web/dist/
@@ -132,12 +132,12 @@ jobs:
           - goos: windows
             goarch: arm64
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: web-dist-${{ matrix.distro }}
           path: web/dist/
@@ -168,7 +168,7 @@ jobs:
             case "$f" in *.txt|*.json) continue ;; esac
             go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -mode binary -format openvex "$f" > "$f.vex.json"
           done
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: staged-${{ matrix.distro }}-${{ matrix.goos }}-${{ matrix.goarch }}
           path: staged/
@@ -191,8 +191,8 @@ jobs:
       matrix:
         image: [full, core]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -214,7 +214,7 @@ jobs:
           got="$(go version -m staged/observer-org-in-image-${{ matrix.image }} | awk '$1=="build" && $2 ~ /^-tags=/ {sub(/^-tags=/,"",$2); print $2}')"
           echo "image tags: ${got:-none}; catalog: ${want:-none}"
           [ "$got" = "$want" ]
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: staged-observer-org-${{ matrix.image }}
           path: staged/
@@ -231,12 +231,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           pattern: staged-*
           path: in/
@@ -285,7 +285,7 @@ jobs:
           echo "  cosign sign-blob --yes --bundle <file>.cosign.bundle <file>"
           echo "  slsa-github-generator generic provenance over SHA256SUMS"
           echo "This workflow has no id-token permission and runs neither."
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: release-shape
           path: shape/

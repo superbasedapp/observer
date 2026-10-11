@@ -63,12 +63,12 @@ jobs:
     outputs:
       distro: ${{ steps.resolve.outputs.distro }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -97,13 +97,13 @@ jobs:
           npm ci
           SBO_DISTRO_PROOF="$GITHUB_WORKSPACE/resolved/web-proof.json" npm run build
           test -f dist/index.html
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: custom-resolved
           path: resolved/
           retention-days: 3
           if-no-files-found: error
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: custom-web-dist
           path: web/dist/
@@ -123,12 +123,12 @@ jobs:
           - goos: windows
             goarch: arm64
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: custom-web-dist
           path: web/dist/
@@ -157,7 +157,7 @@ jobs:
             case "$f" in *.txt|*.json) continue ;; esac
             go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -mode binary -format openvex "$f" > "$f.vex.json"
           done
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: custom-staged-${{ matrix.goos }}-${{ matrix.goarch }}
           path: staged/
@@ -171,17 +171,17 @@ jobs:
     env:
       DISTRO: ${{ needs.resolve.outputs.distro }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: true
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           pattern: custom-staged-*
           path: in/
           merge-multiple: true
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: custom-resolved
           path: resolved/
@@ -229,7 +229,7 @@ jobs:
           echo "  slsa-github-generator generic provenance over SHA256SUMS"
           echo "and sign with the vendor key, never this ephemeral one."
           echo "This workflow has no id-token permission and runs neither."
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: custom-bundle
           path: bundle/
