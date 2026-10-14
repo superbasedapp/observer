@@ -149,7 +149,7 @@ jobs:
       shard_count: ${{ steps.plan.outputs.shard_count }}
       omit: ${{ steps.plan.outputs.omit }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # Restore (never save) the go job's cache: go list needs the module
       # sources, and a new cache family would cost budget for nothing.
       - uses: ./.github/actions/go-cache
@@ -207,7 +207,7 @@ jobs:
           fi
           echo "full=$full packages=$(grep -c . plan/affected.txt) race_packages=$(grep -c . plan/race.txt) shards=$count"
           { echo "run=true"; echo "full=$full"; echo "shards=$shards"; echo "shard_count=$count"; echo "omit=$omit"; } >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: test-plan
           path: plan/
@@ -228,9 +228,9 @@ jobs:
     if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -293,7 +293,7 @@ jobs:
     if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/go-cache
         id: go
@@ -377,7 +377,7 @@ jobs:
 
       - name: save go cache (full runs only, D-612)
         if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ steps.go.outputs.gocache }}
@@ -453,7 +453,7 @@ jobs:
       RACE_FILTER: plan/race.txt
       SBO_SKIP_TOOLCHAIN_TESTS: '1'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/go-cache
         id: go
@@ -464,7 +464,7 @@ jobs:
           # 10 GB cache budget.
           family: go-test
 
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: test-plan
           path: plan
@@ -484,7 +484,7 @@ jobs:
       # newest entry is what every shard restores.
       - name: save go cache (nightly, shard 0 only)
         if: ${{ !cancelled() && matrix.shard == 0 && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ steps.go.outputs.gocache }}
@@ -514,7 +514,7 @@ jobs:
       matrix:
         distro: [minimal, developer, managed, full]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/go-cache
         id: go
@@ -546,7 +546,7 @@ jobs:
 
       - name: save go cache (full runs only, D-612)
         if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ steps.go.outputs.gocache }}
@@ -578,9 +578,9 @@ jobs:
         if: runner.os == 'Windows'
         run: git config --global core.longpaths true
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: false # the restore collides with the go.mod toolchain download (D-612)
@@ -630,7 +630,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.omit) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # One cache family for every batch: build tags only change which files
       # a package selects, so the untagged packages compile identically.
       - uses: ./.github/actions/go-cache
@@ -646,7 +646,7 @@ jobs:
       # every tag set, the per-push job only the distro sets.
       - name: save go cache (nightly, batch 0 only)
         if: ${{ !cancelled() && matrix.name == 'batch 0/6' && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ steps.go.outputs.gocache }}
@@ -680,12 +680,12 @@ jobs:
     if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: false # the restore collides with the go.mod toolchain download (D-612)
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -733,12 +733,12 @@ jobs:
     if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           cache: false # the restore collides with the go.mod toolchain download (D-612)
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
