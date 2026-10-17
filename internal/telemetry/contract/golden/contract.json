@@ -1,0 +1,276 @@
+{
+  "contract_version": "1.2.0",
+  "deep_disclosure_digest": "4d0de50b944dd1a4abee7536230da7ae8f5d84df36a342cb3a356400233708dc",
+  "digest": "83c745c56882e019364d8b9701ff043dce56b5aeb0b92238bbcd4e21d575d9ef",
+  "envelope_version": "v1",
+  "events": {
+    "app_start": {
+      "classification": "SystemMetaData",
+      "purpose": "PerformanceAndHealth"
+    },
+    "app_stop": {
+      "classification": "SystemMetaData",
+      "purpose": "PerformanceAndHealth"
+    },
+    "batch_meta": {
+      "classification": "SystemMetaData",
+      "purpose": "PerformanceAndHealth"
+    },
+    "day_active": {
+      "classification": "SystemMetaData",
+      "purpose": "FeatureInsight"
+    },
+    "diag_command": {
+      "classification": "EndUserPseudonymizedInformation",
+      "deep_only": true,
+      "purpose": "FeatureInsight"
+    },
+    "error": {
+      "classification": "CallstackOrException",
+      "purpose": "PerformanceAndHealth"
+    },
+    "prompt_cycle": {
+      "classification": "SystemMetaData",
+      "purpose": "BusinessInsight"
+    },
+    "session_end": {
+      "classification": "SystemMetaData",
+      "purpose": "FeatureInsight"
+    },
+    "session_start": {
+      "classification": "SystemMetaData",
+      "purpose": "FeatureInsight"
+    },
+    "token_use": {
+      "classification": "SystemMetaData",
+      "purpose": "BusinessInsight"
+    },
+    "tool_use": {
+      "classification": "SystemMetaData",
+      "purpose": "FeatureInsight"
+    }
+  },
+  "fields": {
+    "app_start": [
+      "arch",
+      "os",
+      "version"
+    ],
+    "app_stop": [
+      "arch",
+      "os",
+      "version"
+    ],
+    "batch_meta": [
+      "dropped_count",
+      "retry_count"
+    ],
+    "day_active": [],
+    "diag_command": [
+      "argv_trunc",
+      "exit",
+      "tool_name"
+    ],
+    "error": [
+      "error_class",
+      "surface"
+    ],
+    "prompt_cycle": [
+      "cache_percentage",
+      "end_to_end_duration_ms",
+      "input_size",
+      "model",
+      "output_size",
+      "provider",
+      "segment",
+      "session_span",
+      "turn_id"
+    ],
+    "session_end": [
+      "adapter",
+      "duration_ms",
+      "outcome"
+    ],
+    "session_start": [
+      "adapter"
+    ],
+    "token_use": [
+      "cache_read",
+      "model_tier",
+      "role",
+      "tokens_in",
+      "tokens_out"
+    ],
+    "tool_use": [
+      "count",
+      "tool_name"
+    ]
+  },
+  "ident_pattern": "^[A-Za-z0-9._+-]{1,64}$",
+  "max_argv_len": 120,
+  "max_uncompressed_bytes": 1048576,
+  "schema_version": "2026-09-14T00:00:00Z",
+  "tiers": {
+    "baseline": [
+      "app_start",
+      "app_stop",
+      "session_start",
+      "session_end",
+      "tool_use",
+      "error",
+      "token_use",
+      "day_active",
+      "batch_meta",
+      "prompt_cycle"
+    ],
+    "deep": [
+      "app_start",
+      "app_stop",
+      "session_start",
+      "session_end",
+      "tool_use",
+      "error",
+      "token_use",
+      "day_active",
+      "batch_meta",
+      "prompt_cycle",
+      "diag_command"
+    ],
+    "enrichment": [
+      "app_start",
+      "app_stop",
+      "session_start",
+      "session_end",
+      "tool_use",
+      "error",
+      "token_use",
+      "day_active",
+      "batch_meta",
+      "prompt_cycle"
+    ],
+    "error": [
+      "error",
+      "batch_meta"
+    ],
+    "off": [],
+    "usage": [
+      "app_start",
+      "app_stop",
+      "session_start",
+      "session_end",
+      "tool_use",
+      "error",
+      "token_use",
+      "day_active",
+      "batch_meta",
+      "prompt_cycle"
+    ]
+  },
+  "vocabularies": {
+    "adapter": [
+      "claudecode",
+      "codex",
+      "cursor",
+      "cline",
+      "copilot",
+      "copilot-cli",
+      "gemini",
+      "antigravity",
+      "hermes",
+      "other"
+    ],
+    "consent_tier": [
+      "off",
+      "baseline",
+      "enrichment",
+      "error",
+      "usage",
+      "deep"
+    ],
+    "error_class": [
+      "tool_timeout",
+      "tool_failed",
+      "hook_failed",
+      "proxy_5xx",
+      "proxy_4xx",
+      "adapter_parse",
+      "db_locked",
+      "scrub_reject",
+      "consent_missing",
+      "network_unreachable",
+      "other"
+    ],
+    "error_surface": [
+      "tool",
+      "hook",
+      "proxy",
+      "adapter",
+      "db",
+      "watcher",
+      "batcher"
+    ],
+    "model": [
+      "anthropic",
+      "openai",
+      "google",
+      "cursor",
+      "copilot",
+      "codex",
+      "antigravity",
+      "cline",
+      "other"
+    ],
+    "model_tier": [
+      "frontier",
+      "standard",
+      "fast",
+      "local"
+    ],
+    "outcome": [
+      "ok",
+      "user_stop",
+      "error",
+      "cancelled"
+    ],
+    "provider": [
+      "anthropic",
+      "openai",
+      "google",
+      "cursor",
+      "copilot",
+      "codex",
+      "antigravity",
+      "cline",
+      "other"
+    ],
+    "role": [
+      "user",
+      "assistant",
+      "tool"
+    ],
+    "segment": [
+      "user_prompt",
+      "system_nudge",
+      "tool_call",
+      "other"
+    ],
+    "tool_name": [
+      "read",
+      "edit",
+      "write",
+      "glob",
+      "grep",
+      "shell",
+      "apply_patch",
+      "browser_click",
+      "browser_navigate",
+      "terminal_write",
+      "planner",
+      "web_search",
+      "read_url",
+      "todo_write",
+      "ask_user",
+      "other"
+    ]
+  }
+}
